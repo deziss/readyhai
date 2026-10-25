@@ -1,0 +1,67 @@
+{
+  "file_name": "diva.apk",
+  "app_name": "DIVA",
+  "package_name": "jakhar.aseem.diva",
+  "version_name": "1.0",
+  "version_code": "1",
+  "target_sdk": "28",
+  "min_sdk": "15",
+  "permissions": {
+    "android.permission.WRITE_EXTERNAL_STORAGE": {"status": "dangerous", "info": "read/modify/delete external storage contents", "description": "Allows an app to write to external storage."},
+    "android.permission.READ_EXTERNAL_STORAGE": {"status": "dangerous", "info": "read external storage contents", "description": "Allows an app to read from external storage."},
+    "android.permission.INTERNET": {"status": "normal", "info": "full Internet access", "description": "Allows network sockets."}
+  },
+  "manifest_analysis": {
+    "manifest_findings": [
+      {"rule": "app_is_debuggable", "title": "Debug Enabled For App [android:debuggable=true]", "severity": "high", "description": "Debugging was enabled on the app which makes it easier for reverse engineers to hook a debugger to it.", "name": "Debug Enabled For App", "component": []},
+      {"rule": "app_allowbackup", "title": "Application Data can be Backed up [android:allowBackup=true]", "severity": "warning", "description": "This flag allows anyone to backup your application data via adb.", "name": "Application Data can be Backed up", "component": []},
+      {"rule": "android_clear_text_traffic", "title": "Clear text traffic is Enabled For App [android:usesCleartextTraffic=true]", "severity": "high", "description": "The app intends to use cleartext network traffic.", "name": "Clear Text Traffic", "component": []},
+      {"rule": "exported_activity", "title": "Activity (jakhar.aseem.diva.APICredsActivity) is not Protected.", "severity": "warning", "description": "An intent-filter exists.", "name": "Activity is not Protected", "component": ["jakhar.aseem.diva.APICredsActivity"]},
+      {"rule": "target_sdk_info", "title": "App has a target SDK note", "severity": "info", "description": "informational", "name": "info", "component": []},
+      {"rule": "good_one", "title": "Fine", "severity": "secure", "description": "ok", "name": "ok", "component": []}
+    ],
+    "manifest_summary": {"high": 2, "warning": 2, "info": 1, "suppressed": 0}
+  },
+  "network_security": {
+    "network_findings": [
+      {"description": "Base config is insecurely configured to permit clear text traffic to all domains.", "severity": "high", "scope": ["*"]}
+    ],
+    "network_summary": {"high": 1, "warning": 0, "info": 0, "secure": 0}
+  },
+  "certificate_analysis": {
+    "certificate_info": "Binary is signed\nv1 signature: True",
+    "certificate_findings": [
+      ["warning", "Signed Application", "Application is signed with a debug certificate."],
+      ["high", "Application signed with debug certificate", "Production application must not be shipped with a debug certificate."]
+    ],
+    "certificate_summary": {"high": 1, "warning": 1, "info": 0}
+  },
+  "code_analysis": {
+    "findings": {
+      "android_insecure_random": {
+        "files": {"jakhar/aseem/diva/Rng.java": "14,22", "jakhar/aseem/diva/Other.java": "3"},
+        "metadata": {"description": "The App uses an insecure Random Number Generator.", "severity": "warning", "cwe": "CWE-330: Use of Insufficiently Random Values", "owasp-mobile": "M5: Insufficient Cryptography", "masvs": "MSTG-CRYPTO-6"}
+      },
+      "android_sql_raw_query": {
+        "files": {"jakhar/aseem/diva/SQLInjectionActivity.java": "52"},
+        "metadata": {"description": "App uses SQLite Database and execute raw SQL query.", "severity": "high", "cwe": "CWE-89: SQL Injection", "owasp-mobile": "M7", "masvs": "MSTG-PLATFORM-2"}
+      },
+      "android_logging": {
+        "files": {"jakhar/aseem/diva/LogActivity.java": "30"},
+        "metadata": {"description": "The App logs information.", "severity": "info", "cwe": "CWE-532", "owasp-mobile": "M1", "masvs": "MSTG-STORAGE-3"}
+      }
+    },
+    "summary": {"high": 1, "warning": 1, "info": 1, "secure": 0, "suppressed": 0}
+  },
+  "binary_analysis": [
+    {"title": "Binary Analysis: libnative.so", "severity": "warning", "description": "Stack canary not found in libnative.so", "file": "lib/arm64-v8a/libnative.so"}
+  ],
+  "trackers": {"detected_trackers": 2, "total_trackers": 432, "trackers": [{"name": "Google Firebase Analytics"}, {"name": "Google AdMob"}]},
+  "secrets": [
+    "google_api_key = \"AIzaSyFAKEFAKEFAKEFAKEFAKEFAKEFAKE12345\"",
+    "aws_secret = \"wJalrFAKEFAKEFAKEFAKEsecretFAKEVALUE99\""
+  ],
+  "urls": [{"urls": ["https://fake.example.com/api?token=SUPERSECRETURLTOKEN"], "path": "a/B.java"}],
+  "emails": [{"emails": ["dev@fake.example.com"], "path": "a/B.java"}],
+  "strings": {"strings_apk_res": {"api_pw": "FAKEPASSWORD-STRING-VALUE"}}
+}

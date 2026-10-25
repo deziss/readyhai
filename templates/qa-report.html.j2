@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QA test summary - {{ target }}</title>
+<style>
+:root{--bg:#f7f8fa;--fg:#1c2128;--muted:#5b6572;--card:#fff;--line:#dde2e8;--pass:#1a7f37;--warn:#b7791f;--fail:#c62828;--info:#6b7280;--low:#2563a8;--advbg:#eef3fb}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1318;--fg:#e6e9ee;--muted:#9aa4b2;--card:#171c23;--line:#2a323d;--pass:#3fb950;--warn:#e3b341;--fail:#f47067;--info:#9aa4b2;--low:#6cb0f5;--advbg:#1a2433}}
+@page{size:A4;margin:12mm}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:1.5rem;margin:.2rem 0}h2{font-size:1.15rem;margin:1.6rem 0 .5rem;border-bottom:1px solid var(--line);padding-bottom:.2rem}h3{font-size:1rem;margin:.2rem 0}
+.cover{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-top:10px}
+.meta div span{display:block;color:var(--muted);font-size:.72rem;text-transform:uppercase}
+.meta div b{word-break:break-all;font-weight:600}
+.rec{border-radius:10px;padding:18px;color:#fff;margin:14px 0}
+.rec.go{background:var(--pass)}.rec.cgo{background:var(--warn)}.rec.nogo{background:var(--fail)}
+.rec .v{font-size:2.4rem;font-weight:800;letter-spacing:.04em}
+.rec ul{margin:.4rem 0 0;padding-left:1.2rem}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;background:var(--card);border:1px solid var(--line)}
+th,td{padding:5px 9px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:.88rem}
+th{color:var(--muted);font-weight:600}td.n{text-align:right;font-variant-numeric:tabular-nums}
+.pill{display:inline-block;padding:0 8px;border-radius:99px;font-size:.75rem;font-weight:700;border:1px solid currentColor}
+.badge{font-size:.72rem;padding:0 6px;border-radius:4px;background:var(--line);margin-left:4px}
+.critical,.high,.fail,.failed,.errored,.NO{color:var(--fail)}.medium,.warn,.partial,.skipped{color:var(--warn)}.low{color:var(--low)}.info,.passed.na{color:var(--info)}.passed,.pass{color:var(--pass)}
+.p1{color:var(--fail)}.p2{color:var(--warn)}.p3{color:var(--low)}.p4{color:var(--info)}
+.adv{background:var(--advbg);border:1px dashed var(--info);border-radius:8px;padding:8px 12px;margin:8px 0}
+.adv b.t{display:block;color:var(--muted);font-size:.72rem;text-transform:uppercase}
+.defect{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin:12px 0;page-break-inside:avoid;break-inside:avoid}
+pre{white-space:pre-wrap;word-break:break-word;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;margin:.4rem 0;font:12px ui-monospace,Menlo,monospace}
+.k{color:var(--muted);font-size:.8rem}
+.cov td.c,.cov th.c{text-align:center;font-size:.75rem;min-width:56px}
+.cov td.pass{background:rgba(26,127,55,.25)}.cov td.fail{background:rgba(198,40,40,.3)}.cov td.untested{background:rgba(120,120,120,.15)}.cov td.na{background:transparent;color:var(--info)}
+.thumb{max-width:320px;max-height:200px;border:1px solid var(--line);margin:4px 4px 4px 0}
+.legend span{margin-right:12px;font-size:.8rem}
+.break{page-break-before:always;break-before:page}
+footer{color:var(--muted);font-size:.8rem;margin:2rem 0}
+@media print{body{background:#fff}main{max-width:none;padding:0}h2{page-break-after:avoid}tr{page-break-inside:avoid}.rec,.cov td{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+</style>
+</head>
+<body><main>
+<div class="cover">
+<h1>QA test summary report</h1>
+<div class="meta">
+<div><span>Target</span><b>{{ target }}</b></div>
+<div><span>Environment</span><b>{{ environment }}</b></div>
+<div><span>Run id</span><b>{{ run_id }}</b></div>
+<div><span>Date</span><b>{{ date }}</b></div>
+<div><span>ReadyHai version</span><b>{{ version }}</b></div>
+<div><span>Mode</span><b><span class="pill">{{ mode }}</span></b></div>
+<div><span>Profile</span><b>{{ profile }}</b></div>
+<div><span>Scanner verdict</span><b>{{ verdict }}</b></div>
+</div>
+</div>
+
+<div class="rec {{ rec_class }}">
+<div class="k" style="color:#fff">Recommendation</div>
+<div class="v">{{ rec }}</div>
+{% if conditions %}<ul>{% for c in conditions %}<li>{{ c }}</li>{% endfor %}</ul>{% endif %}
+</div>
+
+<h2>Executive summary</h2>
+<p>{{ summary }}</p>
+{% if ai_summary %}<div class="adv"><b class="t">AI-written summary &mdash; advisory</b>{{ ai_summary }}</div>{% endif %}
+
+<h2>Scope &amp; approach</h2>
+<table>
+<tr><th>Areas tested</th><td>{{ areas|join(", ") }}</td></tr>
+<tr><th>Techniques</th><td>{{ techniques|join(", ") }}</td></tr>
+<tr><th>Roles</th><td>{{ roles|join(", ") }}</td></tr>
+<tr><th>In scope</th><td>{% for s in scope %}{{ s }}{% if not loop.last %}; {% endif %}{% endfor %}</td></tr>
+<tr><th>Out of scope</th><td>{% for s in out_of_scope %}{{ s }}{% if not loop.last %}; {% endif %}{% endfor %}</td></tr>
+</table>
+
+<h2>Results</h2>
+<div class="tw"><table>
+<tr><th>Planned</th><th>Executed</th><th>Passed</th><th>Failed</th><th>Blocked</th><th>Skipped</th><th>Flaky</th></tr>
+<tr><td class="n">{{ counts.planned }}</td><td class="n">{{ counts.executed }}</td><td class="n">{{ counts.passed }}</td><td class="n">{{ counts.failed }}</td><td class="n">{{ counts.blocked }}</td><td class="n">{{ counts.skipped }}</td><td class="n">{{ counts.flaky }}</td></tr>
+</table></div>
+<svg viewBox="0 0 600 22" width="100%" height="22" role="img" aria-label="Result distribution" preserveAspectRatio="none" style="margin-top:8px">
+{% for b in bar %}<rect class="{{ b.cls }}" x="{{ b.x }}" y="0" width="{{ b.w }}" height="22" fill="{% if b.cls == 'pass' %}#1a7f37{% elif b.cls == 'fail' %}#c62828{% elif b.cls == 'flaky' %}#b7791f{% elif b.cls == 'blocked' %}#2563a8{% else %}#8a93a0{% endif %}"><title>{{ b.label }}: {{ b.n }}</title></rect>{% endfor %}
+</svg>
+<div class="legend k">{% for b in bar %}<span>{{ b.label }} {{ b.n }}</span>{% endfor %}</div>
+
+<h2>Coverage matrix</h2>
+{% if coverage.rows %}
+<div class="tw"><table class="cov">
+<tr><th>Component</th>{% for c in coverage.columns %}<th class="c">{{ c }}</th>{% endfor %}</tr>
+{% for r in coverage.rows %}<tr><td>{{ r.name }}</td>{% for c in r.cells %}<td class="c {{ c }}">{% if c == 'pass' %}pass{% elif c == 'fail' %}FAIL{% elif c == 'na' %}n/a{% else %}untested{% endif %}</td>{% endfor %}</tr>
+{% endfor %}</table></div>
+{% if coverage.truncated %}<p class="k">Showing 60 of {{ coverage.total }} rows; {{ coverage.truncated }} more are in the JSON report.</p>{% endif %}
+{% else %}<p class="k">No coverage recorded.</p>{% endif %}
+
+<h2 class="break">Defects ({{ defects|length }})</h2>
+{% if defects %}
+<div class="tw"><table>
+<tr><th>ID</th><th>Priority</th><th>Severity</th><th>Component</th><th>Title</th><th>Status</th></tr>
+{% for d in defects %}<tr><td>{{ d.id }}</td><td class="{{ d.priority|lower }}"><b>{{ d.priority }}</b></td><td class="{{ d.severity }}">{{ d.severity }}</td><td>{{ d.component }}</td><td>{{ d.title }}</td><td>{{ d.status }}{% if d.regression %} <span class="badge">regression</span>{% endif %}</td></tr>
+{% endfor %}</table></div>
+{% for d in defects %}
+<div class="defect">
+<h3>{{ d.id }} &mdash; {{ d.title }}</h3>
+<div class="k"><b class="{{ d.priority|lower }}">{{ d.priority }}</b> &middot; <span class="{{ d.severity }}">{{ d.severity }}</span> &middot; {{ d.component }} &middot; {{ d.area }} &middot; {{ d.status }} &middot; reproduced {{ d.reproduced }}{% if d.environment %} &middot; {{ d.environment }}{% endif %} &middot; {{ d.rule }}</div>
+{% if d.steps or d.code %}<b>Steps to reproduce</b>
+<ol>{% for s in d.steps %}<li>{{ s }}</li>{% endfor %}</ol>
+{% if d.code %}<pre>{{ d.code }}</pre>{% endif %}{% endif %}
+<table><tr><th style="width:50%">Expected</th><th>Actual</th></tr><tr><td>{{ d.expected }}</td><td>{{ d.actual }}</td></tr></table>
+{% if d.evidence %}<b>Evidence</b>
+<div>{% for e in d.evidence %}{% if e.data %}<img class="thumb" src="{{ e.data }}" alt="{{ e.kind }}">{% endif %}{% endfor %}</div>
+<ul>{% for e in d.evidence %}<li>{{ e.kind }}: {% if e.link %}<a href="{{ e.link }}">{{ e.path }}</a>{% else %}{{ e.path }}{% endif %}{% if e.note %} &mdash; {{ e.note }}{% endif %}</li>{% endfor %}</ul>{% endif %}
+{% if d.remediation %}<p><b>Remediation:</b> {{ d.remediation }}</p>{% endif %}
+{% if d.ai_note %}<div class="adv"><b class="t">AI note &mdash; advisory</b>{{ d.ai_note }}</div>{% endif %}
+</div>
+{% endfor %}
+{% else %}<p>No defects.</p>{% endif %}
+
+<h2>Risks</h2>
+{% if risks %}<div class="tw"><table><tr><th>Risk</th><th>Level</th><th>Mitigation</th></tr>
+{% for r in risks %}<tr><td>{{ r.title }}</td><td class="{{ r.level }}">{{ r.level }}</td><td>{{ r.mitigation }}</td></tr>{% endfor %}</table></div>{% else %}<p class="k">None recorded.</p>{% endif %}
+
+<h2>Exit criteria</h2>
+<div class="tw"><table><tr><th>Criterion</th><th>Met</th><th>Blocking</th><th>Detail</th></tr>
+{% for e in exit %}<tr><td>{{ e.name }}</td><td class="{% if e.met %}pass{% else %}fail{% endif %}"><b>{% if e.met %}&#10003;{% else %}&#10007;{% endif %}</b></td><td>{% if e.blocking %}yes{% else %}no{% endif %}</td><td>{{ e.detail }}</td></tr>
+{% endfor %}</table></div>
+
+<h2 class="break">Security &amp; readiness summary</h2>
+{% if categories %}<div class="tw"><table>
+<tr><th>Category</th><th>Crit</th><th>High</th><th>Med</th><th>Low</th><th>Info</th><th>New</th><th>Existing</th><th>Suppressed</th></tr>
+{% for c in categories %}<tr><td>{{ c.category }}</td><td class="n">{{ c.critical }}</td><td class="n">{{ c.high }}</td><td class="n">{{ c.medium }}</td><td class="n">{{ c.low }}</td><td class="n">{{ c.info }}</td><td class="n">{{ c.new }}</td><td class="n">{{ c.existing }}</td><td class="n">{{ c.suppressed }}</td></tr>
+{% endfor %}</table></div>{% endif %}
+{% if top_findings %}<h3 style="margin-top:.8rem">Top findings (non-QA)</h3>
+<div class="tw"><table><tr><th>Severity</th><th>Finding</th><th>Location</th></tr>
+{% for f in top_findings %}<tr><td class="{{ f.severity }}">{{ f.severity }}</td><td>{{ f.title }}</td><td>{{ f.location }}</td></tr>{% endfor %}</table></div>{% endif %}
+
+{% if errors %}<h2>Top errors</h2>
+<div class="tw"><table><tr><th>Count</th><th>Source</th><th>Signature</th><th>Example</th></tr>
+{% for e in errors %}<tr><td class="n">{{ e.count }}</td><td>{{ e.source }}</td><td>{{ e.signature }}</td><td>{{ e.example }}</td></tr>{% endfor %}</table></div>{% endif %}
+
+<h2>Appendix: checks</h2>
+<div class="tw"><table><tr><th>Check</th><th>Status</th><th>Findings</th><th>Reason</th></tr>
+{% for c in checks %}<tr><td>{{ c.id }}</td><td class="{{ c.status }}">{{ c.status }}</td><td class="n">{{ c.findings }}</td><td>{{ c.reason }}</td></tr>{% endfor %}</table></div>
+{% if notes %}<h2>Notes</h2><ul>{% for n in notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+<footer>Generated by ReadyHai {{ version }}. Self-contained report, no scripts.</footer>
+</main></body></html>

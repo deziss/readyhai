@@ -1,0 +1,8 @@
+{"matches":[
+ {"vulnerability":{"id":"GHSA-xxxx-yyyy-zzzz","severity":"High","fix":{"versions":["2.31.0"],"state":"fixed"},"epss":[{"cve":"CVE-2024-35195","epss":0.0123,"percentile":0.7}],"knownExploited":[]},
+  "relatedVulnerabilities":[{"id":"CVE-2024-35195","severity":"Medium"}],
+  "artifact":{"name":"requests","version":"2.25.0","type":"python","locations":[{"path":"/requirements.txt"}]}},
+ {"vulnerability":{"id":"CVE-2021-44228","severity":"Critical","fix":{"versions":[],"state":"not-fixed"},"epss":[{"epss":0.97,"percentile":0.99}],"knownExploited":[{"cve":"CVE-2021-44228","vendorProject":"Apache"}]},
+  "relatedVulnerabilities":[],
+  "artifact":{"name":"log4j-core","version":"2.14.0","type":"java-archive","locations":[{"path":"/app/lib/log4j-core-2.14.0.jar"}]}}
+],"source":{"type":"sbom"}}

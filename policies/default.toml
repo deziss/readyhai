@@ -1,0 +1,20 @@
+# ReadyHai default gate policy. Override with --policy <file>.
+
+# FAIL when any considered finding is at or above this severity.
+fail_severity = "critical"
+# WARN when any considered finding is at or above this severity.
+warn_severity = "medium"
+# Gate only on findings that are new versus the baseline (legacy debt doesn't block deploys).
+only_new = true
+# A KEV-listed (known exploited) vulnerability always fails.
+kev_fails = true
+# Rule-id prefixes that fail regardless of severity.
+hard_fail = [
+  "secrets.",
+  "readiness.repo.tracked_secret_file",
+  "readiness.compose.privileged",
+  "readiness.k8s.privileged",
+  "tests.failed",
+  "web.5xx",
+  "api.server_error",
+]

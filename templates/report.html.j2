@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReadyHai report - {{ target }}</title>
+<style>
+:root{--bg:#f7f8fa;--fg:#1c2128;--muted:#5b6572;--card:#fff;--line:#dde2e8;--pass:#1a7f37;--warn:#b7791f;--fail:#c62828;--crit:#8e1b1b;--high:#c62828;--med:#b7791f;--low:#2563a8;--info:#6b7280}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1318;--fg:#e6e9ee;--muted:#9aa4b2;--card:#171c23;--line:#2a323d;--pass:#3fb950;--warn:#e3b341;--fail:#f47067;--crit:#ff8a80;--high:#f47067;--med:#e3b341;--low:#6cb0f5;--info:#9aa4b2}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1000px;margin:0 auto;padding:16px}
+h1{font-size:1.3rem;margin:.2rem 0}h2{font-size:1.1rem;margin:1.6rem 0 .5rem}
+.banner{border-radius:10px;padding:20px;color:#fff;margin:12px 0}
+.banner.pass{background:var(--pass)}.banner.warn{background:var(--warn)}.banner.fail{background:var(--fail)}
+.banner .v{font-size:2.4rem;font-weight:800;letter-spacing:.04em}
+.banner ul{margin:.5rem 0 0;padding-left:1.2rem}
+.meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px}
+.meta div span{display:block;color:var(--muted);font-size:.75rem;text-transform:uppercase}
+.meta div b{word-break:break-all;font-weight:600}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;background:var(--card);border:1px solid var(--line);border-radius:8px}
+th,td{padding:6px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;font-size:.9rem}
+th{color:var(--muted);font-weight:600}td.n{text-align:right;font-variant-numeric:tabular-nums}
+.pill{display:inline-block;padding:1px 9px;border-radius:99px;font-size:.78rem;font-weight:700;border:1px solid currentColor}
+.passed{color:var(--pass)}.failed,.errored{color:var(--fail)}.partial,.skipped{color:var(--warn)}.not_applicable{color:var(--info)}
+.critical{color:var(--crit)}.high{color:var(--high)}.medium{color:var(--med)}.low{color:var(--low)}.info{color:var(--info)}
+details{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:6px 0;padding:8px 12px}
+summary{cursor:pointer;font-weight:600;word-break:break-word}
+.k{color:var(--muted);font-size:.8rem}.loc{font-family:ui-monospace,Menlo,monospace;font-size:.82rem;word-break:break-all}
+pre{white-space:pre-wrap;word-break:break-word;margin:.4rem 0}
+.badge{font-size:.72rem;padding:0 6px;border-radius:4px;background:var(--line);margin-left:4px}
+.badge.kev{background:var(--fail);color:#fff}
+footer{color:var(--muted);font-size:.8rem;margin:2rem 0}
+</style>
+</head>
+<body><main>
+<h1>ReadyHai readiness report</h1>
+<div class="banner {{ verdict_class }}">
+<div class="v">{{ verdict }}</div>
+{% if reasons %}<ul>{% for r in reasons %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
+</div>
+<div class="meta">
+<div><span>Target</span><b>{{ target }}</b></div>
+<div><span>Kind</span><b>{{ kind }}</b></div>
+<div><span>Profile</span><b>{{ profile }}</b></div>
+<div><span>Run id</span><b>{{ run_id }}</b></div>
+<div><span>Started</span><b>{{ started }}</b></div>
+<div><span>Finished</span><b>{{ finished }}</b></div>
+<div><span>Version</span><b>{{ version }}</b></div>
+<div><span>Fixed since baseline</span><b>{{ fixed }}</b></div>
+</div>
+
+<h2>Categories</h2>
+<div class="tw"><table>
+<tr><th>Category</th><th>Crit</th><th>High</th><th>Med</th><th>Low</th><th>Info</th><th>New</th><th>Existing</th><th>Suppressed</th></tr>
+{% for c in categories %}<tr><td>{{ c.category }}</td><td class="n">{{ c.critical }}</td><td class="n">{{ c.high }}</td><td class="n">{{ c.medium }}</td><td class="n">{{ c.low }}</td><td class="n">{{ c.info }}</td><td class="n">{{ c.new }}</td><td class="n">{{ c.existing }}</td><td class="n">{{ c.suppressed }}</td></tr>
+{% endfor %}</table></div>
+
+<h2>Checks</h2>
+<div class="tw"><table>
+<tr><th>Check</th><th>Status</th><th>Findings</th><th>Reason</th><th>Time</th></tr>
+{% for c in checks %}<tr><td>{{ c.title }}<div class="k">{{ c.id }}{% if c.tool %} / {{ c.tool }}{% endif %}</div></td><td><span class="pill {{ c.status }}">{{ c.status }}</span></td><td class="n">{{ c.findings }}</td><td>{{ c.reason }}</td><td class="n">{{ c.duration_ms }} ms</td></tr>
+{% endfor %}</table></div>
+
+{% if errors %}<h2>Top errors</h2>
+<div class="tw"><table>
+<tr><th>Count</th><th>Source</th><th>Signature</th><th>Example</th></tr>
+{% for e in errors %}<tr><td class="n">{{ e.count }}</td><td>{{ e.source }}</td><td><code>{{ e.signature }}</code></td><td><code>{{ e.example }}</code></td></tr>
+{% endfor %}</table></div>
+{% endif %}
+
+<h2>Findings ({{ finding_count }})</h2>
+{% if not groups %}<p>No findings.</p>{% endif %}
+{% for g in groups %}
+<h2 class="{{ g.severity }}">{{ g.severity }} ({{ g.items|length }})</h2>
+{% for f in g.items %}
+<details>
+<summary><span class="pill {{ f.severity }}">{{ f.severity }}</span> {{ f.title }}
+{% if f.status == "new" %}<span class="badge">NEW</span>{% elif f.status == "suppressed" %}<span class="badge">suppressed</span>{% else %}<span class="badge">existing</span>{% endif %}
+{% if f.kev %}<span class="badge kev">KEV</span>{% endif %}{% if f.epss %}<span class="badge">EPSS {{ f.epss }}</span>{% endif %}</summary>
+<div class="k">rule</div><div class="loc">{{ f.rule }}</div>
+<div class="k">category / check</div><div>{{ f.category }} / {{ f.check }}</div>
+{% if f.location %}<div class="k">location</div><div class="loc">{{ f.location }}</div>{% endif %}
+{% if f.ids %}<div class="k">ids</div><div class="loc">{{ f.ids|join(", ") }}</div>{% endif %}
+{% if f.package %}<div class="k">package</div><div class="loc">{{ f.package }}{% if f.version %}@{{ f.version }}{% endif %}{% if f.fix_version %} &rarr; {{ f.fix_version }}{% endif %}</div>{% endif %}
+{% if f.detail %}<div class="k">detail</div><pre>{{ f.detail }}</pre>{% endif %}
+{% if f.remediation %}<div class="k">remediation</div><pre>{{ f.remediation }}</pre>{% endif %}
+{% if f.suppressed_reason %}<div class="k">suppressed because</div><pre>{{ f.suppressed_reason }}</pre>{% endif %}
+</details>
+{% endfor %}{% endfor %}
+
+{% if notes %}<h2>Notes</h2><ul>{% for n in notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+<footer>Generated by ReadyHai {{ version }}. Self-contained report, no scripts.</footer>
+</main></body></html>

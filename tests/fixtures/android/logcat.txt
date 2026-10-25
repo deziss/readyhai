@@ -1,0 +1,20 @@
+--------- beginning of crash
+I/chatty  ( 2211): uid=10123(jakhar.aseem.diva) identical 3 lines
+E/NetworkMonitor( 1301): isCaptivePortal: failed for other.app
+E/jakhar.aseem.diva( 4242): Failed to load config for user dev@fake.example.com token=abcdef0123456789abcdef0123456789abcd
+E/AndroidRuntime( 4242): FATAL EXCEPTION: main
+E/AndroidRuntime( 4242): Process: jakhar.aseem.diva, PID: 4242
+E/AndroidRuntime( 4242): java.lang.NullPointerException: Attempt to invoke virtual method 'int java.lang.String.length()' on a null object reference
+E/AndroidRuntime( 4242): 	at jakhar.aseem.diva.MainActivity.onCreate(MainActivity.java:41)
+E/AndroidRuntime( 4242): 	at android.app.Activity.performCreate(Activity.java:7994)
+E/AndroidRuntime( 4242): 	at android.app.Instrumentation.callActivityOnCreate(Instrumentation.java:1309)
+E/AndroidRuntime( 4242): 	at android.app.ActivityThread.performLaunchActivity(ActivityThread.java:3422)
+E/AndroidRuntime( 4242): 	at android.app.ActivityThread.handleLaunchActivity(ActivityThread.java:3601)
+E/AndroidRuntime( 4242): 	at android.os.Handler.dispatchMessage(Handler.java:106)
+E/AndroidRuntime( 5555): FATAL EXCEPTION: main
+E/AndroidRuntime( 5555): Process: com.other.app, PID: 5555
+E/AndroidRuntime( 5555): java.lang.IllegalStateException: not ours
+E/AndroidRuntime( 5555): 	at com.other.app.Main.run(Main.java:1)
+E/ActivityManager(  900): ANR in jakhar.aseem.diva (jakhar.aseem.diva/.SlowActivity)
+E/ActivityManager(  900): Reason: Input dispatching timed out
+E/wifi    ( 1000): noise unrelated line

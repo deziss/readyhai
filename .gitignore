@@ -1,0 +1,5 @@
+/target
+readyhai-report*/
+.readyhai/
+*.log
+.env

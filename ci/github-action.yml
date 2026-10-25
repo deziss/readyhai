@@ -1,0 +1,52 @@
+name: readyhai
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  readyhai:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install readyhai
+        # TODO: replace <release-url> with the real release tarball URL.
+        run: curl -sSfL <release-url> | sudo tar xz -C /usr/local/bin
+
+      - name: Update tool definitions
+        run: readyhai tools update
+
+      - name: Scan
+        id: scan
+        run: |
+          set +e
+          readyhai scan . --profile quick --format sarif,html,junit --out readyhai-report
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: readyhai-report/readyhai-report.sarif
+
+      - name: Upload HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: readyhai-report
+          path: readyhai-report/
+
+      - name: Gate
+        if: always()
+        run: |
+          code="${{ steps.scan.outputs.code }}"
+          # 0 PASS, 1 WARN (non-blocking), 2 FAIL, 3 error; empty means the scan never ran.
+          if [ -z "$code" ] || [ "$code" -ge 2 ]; then
+            echo "readyhai exit: ${code:-none}"
+            exit 1
+          fi

@@ -1,0 +1,8 @@
+target/
+.git
+**/.env*
+!**/.env.example
+*.pem
+*.key
+tests/fixtures/vuln-app/.env
+readyhai-report*

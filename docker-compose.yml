@@ -1,0 +1,58 @@
+# socket-proxy filters Docker API paths, not request bodies: it is NOT a security boundary.
+# Prefer rootless Docker/Podman on shared hosts.
+services:
+  readyhai:
+    build: .
+    image: readyhai:local
+    container_name: readyhai
+    env_file: .env
+    environment:
+      DOCKER_HOST: tcp://readyhai-socket-proxy:2375
+      READYHAI_DATA: /data
+      READYHAI_DATA_VOLUME: readyhai_data
+      READYHAI_ALLOWED_ROOTS: /targets
+    volumes:
+      - readyhai_data:/data
+      - ${TARGETS_DIR:-./targets}:/targets:ro
+    ports:
+      - "127.0.0.1:${READYHAI_PORT:-8080}:8080"
+    depends_on:
+      - socket-proxy
+    restart: unless-stopped
+    mem_limit: 1g
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:v0.3.0
+    container_name: readyhai-socket-proxy
+    environment:
+      CONTAINERS: "1"
+      IMAGES: "1"
+      POST: "1"
+      VOLUMES: "1"
+      INFO: "1"
+      VERSION: "1"
+      PING: "1"
+      ALLOW_START: "1"
+      ALLOW_STOP: "1"
+      EXEC: "0"
+      BUILD: "0"
+      SWARM: "0"
+      SECRETS: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    tmpfs:
+      - /run
+    mem_limit: 64m
+    restart: unless-stopped
+
+volumes:
+  readyhai_data:
+    name: readyhai_data

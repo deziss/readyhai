@@ -1,0 +1,4 @@
+{"check_type":"kubernetes","results":{"passed_checks":[],"failed_checks":[
+ {"check_id":"CKV_K8S_23","check_name":"Minimize the admission of root containers","file_path":"/deploy/app.yaml","file_line_range":[1,40],"resource":"Deployment.default.app","severity":null,"guideline":"https://docs.prismacloud.io/x","code_block":[[1,"env: FAKE-SECRET-VALUE-9f8e7d6c\n"]]},
+ {"check_id":"CKV_DOCKER_2","check_name":"Ensure HEALTHCHECK","file_path":"/Dockerfile","file_line_range":[1,5],"resource":"/Dockerfile.HEALTHCHECK","severity":"HIGH","code_block":[]}
+]},"summary":{"failed":2}}

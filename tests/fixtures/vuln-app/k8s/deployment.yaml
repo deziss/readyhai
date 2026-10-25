@@ -1,0 +1,16 @@
+# privileged: false is intentionally not set here
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vuln-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: vuln-app}
+  template:
+    metadata:
+      labels: {app: vuln-app}
+    spec:
+      containers:
+        - name: api
+          image: vuln-app:latest

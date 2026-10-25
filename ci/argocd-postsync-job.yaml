@@ -1,0 +1,81 @@
+# Web checks only (no docker in-cluster). Intrusive checks require env = "nonprod".
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: readyhai-scope
+data:
+  target_host: app.nonprod.example
+  scope.toml: |
+    [[hosts]]
+    host = "app.nonprod.example"
+    env = "nonprod"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: readyhai-postsync
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: HookSucceeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 900
+  template:
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: readyhai
+          # TODO: replace with the registry path once the image is published.
+          image: readyhai:local
+          args:
+            - scan
+            - "https://$(TARGET_HOST)"
+            - --profile
+            - standard
+            - --scope
+            - /config/scope.toml
+            - --format
+            - json,html
+            - --out
+            - /tmp/report
+          env:
+            - name: TARGET_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: readyhai-scope
+                  key: target_host
+            - name: READYHAI_DATA
+              value: /data
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: scope
+              mountPath: /config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: scope
+          configMap:
+            name: readyhai-scope
+        - name: tmp
+          emptyDir: {}
+        - name: data
+          emptyDir: {}

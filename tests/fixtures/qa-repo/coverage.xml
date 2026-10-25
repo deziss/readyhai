@@ -1,0 +1,11 @@
+<?xml version="1.0" ?>
+<coverage version="7.0" line-rate="0.42" branch-rate="0" lines-valid="100" lines-covered="42">
+  <packages>
+    <package name="app" line-rate="0.42">
+      <classes>
+        <class name="main.py" filename="app/main.py" line-rate="0.84"/>
+        <class name="auth.py" filename="app/auth.py" line-rate="0"/>
+      </classes>
+    </package>
+  </packages>
+</coverage>

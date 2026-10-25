@@ -1,0 +1,151 @@
+{
+ "base_url": "http://host.docker.internal:8099/",
+ "modes": [
+  "crawl"
+ ],
+ "notes": [],
+ "pages": [
+  {
+   "url": "http://host.docker.internal:8099/",
+   "path": "/",
+   "status": 200,
+   "console_errors": [
+    "seeded"
+   ],
+   "page_errors": [],
+   "failed_requests": [],
+   "vitals": {
+    "lcp_ms": 3100,
+    "cls": 0.02,
+    "longtask_ms": 0,
+    "transfer_bytes": 1000,
+    "requests": 2
+   },
+   "axe": [],
+   "viewports": {
+    "375": {
+     "overflow": false,
+     "clipped": [],
+     "small_targets": 0,
+     "scroll_width": 375,
+     "inner_width": 375
+    }
+   },
+   "shots": [
+    {
+     "viewport": 375,
+     "file": "shots/index-375.png",
+     "baseline": true,
+     "diff_ratio": 0.2,
+     "diff_file": "shots/index-375.diff.png"
+    }
+   ]
+  },
+  {
+   "url": "http://host.docker.internal:8099/wide.html",
+   "path": "/wide.html",
+   "status": 200,
+   "console_errors": [],
+   "page_errors": [],
+   "failed_requests": [],
+   "vitals": {
+    "lcp_ms": 100,
+    "cls": 0.3,
+    "longtask_ms": 0,
+    "transfer_bytes": 500,
+    "requests": 1
+   },
+   "viewports": {
+    "375": {
+     "overflow": true,
+     "clipped": [
+      {
+       "el": "div",
+       "left": 8,
+       "right": 1208
+      }
+     ],
+     "small_targets": 2,
+     "scroll_width": 1216,
+     "inner_width": 375
+    },
+    "1366": {
+     "overflow": false,
+     "clipped": [],
+     "small_targets": 0
+    }
+   }
+  },
+  {
+   "url": "http://host.docker.internal:8099/a11y.html",
+   "path": "/a11y.html",
+   "status": 200,
+   "console_errors": [],
+   "page_errors": [],
+   "failed_requests": [],
+   "axe": [
+    {
+     "id": "image-alt",
+     "impact": "critical",
+     "help": "Images must have alt",
+     "nodes": 1,
+     "target": "img"
+    },
+    {
+     "id": "color-contrast",
+     "impact": "serious",
+     "help": "contrast",
+     "nodes": 1,
+     "target": "p"
+    },
+    {
+     "id": "region",
+     "impact": "moderate",
+     "help": "landmarks",
+     "nodes": 1,
+     "target": "body"
+    }
+   ]
+  }
+ ],
+ "forms": [
+  {
+   "page": "http://host.docker.internal:8099/signup.html",
+   "form": "form#signup",
+   "field": "email",
+   "value_kind": "invalid_email",
+   "value": "not-an-email",
+   "client_blocked": false,
+   "server_status": 200,
+   "error_shown": false,
+   "gap": true
+  },
+  {
+   "page": "http://host.docker.internal:8099/signup.html",
+   "form": "form#signup",
+   "field": "name",
+   "value_kind": "markup_probe",
+   "value": "<rh-probe>",
+   "client_blocked": false,
+   "server_status": 200,
+   "error_shown": true,
+   "gap": false
+  }
+ ],
+ "journeys": [
+  {
+   "name": "login",
+   "role": "user",
+   "status": "fail",
+   "failed_step": 2,
+   "message": "timeout",
+   "trace": "traces/login-user.zip",
+   "screenshot": "traces/login-user.png"
+  },
+  {
+   "name": "login",
+   "role": "admin",
+   "status": "pass"
+  }
+ ]
+}

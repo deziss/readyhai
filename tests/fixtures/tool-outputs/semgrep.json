@@ -1,0 +1,6 @@
+{"version":"1.0","results":[
+ {"check_id":"python.flask.security.injection.tainted-sql-string","path":"/src/app/db.py","start":{"line":42,"col":5},"end":{"line":42,"col":60},
+  "extra":{"severity":"ERROR","message":"Detected user input used to build a SQL string.\nUse parameterized queries.","lines":"    q = \"SELECT * FROM t WHERE k='\" + FAKE-SECRET-VALUE-9f8e7d6c + \"'\"","metadata":{"cwe":["CWE-89"]}}},
+ {"check_id":"generic.secrets.weak-hash","path":"app/util.py","start":{"line":7,"col":1},"end":{"line":7,"col":20},
+  "extra":{"severity":"WARNING","message":"Weak hash md5.","lines":"h = md5(x)","metadata":{}}}
+],"errors":[]}

@@ -1,0 +1,25 @@
+// Replaces `if command -v trivy ... || true` steps, which can never fail the build.
+// Requires the readyhai binary on the agent PATH.
+// Exit codes: 0 PASS, 1 WARN, 2 FAIL, 3 error.
+stage('ReadyHai gate') {
+    steps {
+        script {
+            def rc = sh(
+                script: 'readyhai scan . --profile quick --format html,sarif,junit --out readyhai-report',
+                returnStatus: true
+            )
+            echo "readyhai exit code: ${rc}"
+            if (rc == 1) {
+                unstable('ReadyHai: WARN findings')
+            } else if (rc >= 2) {
+                error("ReadyHai: exit ${rc} (2=FAIL, 3=error)")
+            }
+        }
+    }
+    post {
+        always {
+            archiveArtifacts artifacts: 'readyhai-report/**', allowEmptyArchive: true
+            junit testResults: 'readyhai-report/readyhai-report.junit.xml', allowEmptyResults: true
+        }
+    }
+}

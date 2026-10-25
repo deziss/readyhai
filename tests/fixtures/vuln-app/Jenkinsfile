@@ -1,0 +1,11 @@
+pipeline {
+  agent any
+  stages {
+    stage('Build') { steps { sh 'docker build -t vuln-app .' } }
+    stage('Scan') {
+      steps {
+        sh 'if command -v trivy; then trivy image vuln-app || true; fi'
+      }
+    }
+  }
+}

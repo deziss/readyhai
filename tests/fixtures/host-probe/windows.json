@@ -1,0 +1,8 @@
+{"probe":"windows","os":{"caption":"Microsoft Windows Server 2019","version":"10.0.17763","build":"17763"},"uptime_secs":5000,
+"language_mode":"ConstrainedLanguage","elevated":false,
+"defender":{"realtime":false,"signature_age_days":9.5,"antivirus_enabled":true},
+"firewall":[{"name":"Domain","enabled":true},{"name":"Private","enabled":false},{"name":"Public","enabled":true}],
+"pending_updates":{"count":7,"security":3},"smb1_enabled":true,"rdp":{"enabled":true,"nla":false},
+"local_admins":["HOST\\Administrator","HOST\\svc"],"listening":["0.0.0.0:3389"],
+"error_lines":["Service Control Manager: The Foo service terminated unexpectedly."],
+"packages":[{"name":"7-Zip","version":"23.01"}],"partial":["LanguageMode is ConstrainedLanguage: checks limited"]}

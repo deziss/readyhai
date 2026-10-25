@@ -1,0 +1,11 @@
+# Scope file for `readyhai scan --scope`. One [[hosts]] entry per target.
+# Intrusive checks run only on env = "nonprod" hosts.
+
+[[hosts]]
+host = "app.nonprod.example"
+env = "nonprod"
+
+# Production: web/passive checks only.
+[[hosts]]
+host = "app.example.com"
+env = "prod"

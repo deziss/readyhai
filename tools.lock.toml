@@ -1,0 +1,59 @@
+# Pinned tool images. `readyhai tools pull --lock` fills `digest` (sha256:...).
+# Empty digest => image runs but is reported as UNPINNED. Tags marked "latest"
+# were not verified against a registry at authoring time.
+[tools.syft]
+image = "anchore/syft:latest"
+digest = ""
+version = "latest"
+[tools.grype]
+image = "anchore/grype:latest"
+digest = ""
+version = "latest"
+[tools.gitleaks]
+image = "zricethezav/gitleaks:latest"
+digest = ""
+version = "latest"
+[tools.semgrep]
+image = "semgrep/semgrep:latest"
+digest = ""
+version = "latest"
+[tools.hadolint]
+image = "hadolint/hadolint:latest"
+digest = ""
+version = "latest"
+[tools.checkov]
+image = "bridgecrew/checkov:latest"
+digest = ""
+version = "latest"
+[tools.dockle]
+image = "goodwithtech/dockle:latest"
+digest = ""
+version = "latest"
+[tools.zap]
+image = "ghcr.io/zaproxy/zaproxy:stable"
+digest = ""
+version = "stable"
+[tools.schemathesis]
+image = "schemathesis/schemathesis:latest"
+digest = ""
+version = "latest"
+[tools.git]
+image = "alpine/git:latest"
+digest = ""
+version = "latest"
+[tools.mobsf]
+image = "opensecurity/mobile-security-framework-mobsf:latest"
+digest = ""
+version = "latest"
+# Built locally: docker build -t readyhai/playwright-runner:local runners/playwright
+# (base mcr.microsoft.com/playwright:v1.56.0-noble; pin its digest in the Dockerfile).
+# No registry digest exists for a :local image, so it is reported UNPINNED.
+[tools.playwright]
+image = "readyhai/playwright-runner:local"
+digest = ""
+version = "1.56.0"
+
+[tools.k6]
+image = "grafana/k6:latest"
+digest = ""
+version = "latest"
