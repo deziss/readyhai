@@ -1,0 +1,4 @@
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"x"}},"results":[
+ {"ruleId":"XR001","level":"error","message":{"text":"Bad thing found"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"file:///src/a/b.py"},"region":{"startLine":5}}}]},
+ {"ruleId":"XR002","level":"note","message":{"text":"Minor"},"locations":[]}
+]}]}

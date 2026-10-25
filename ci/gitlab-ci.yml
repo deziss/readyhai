@@ -1,0 +1,18 @@
+readyhai:
+  stage: test
+  image:
+    # TODO: replace with the registry path once the image is published.
+    name: readyhai:local
+    # Image ENTRYPOINT is readyhai; clear it so the script runs in a shell.
+    entrypoint: [""]
+  script:
+    - readyhai scan . --profile quick --format sarif,html,junit --out readyhai-report
+  artifacts:
+    when: always
+    reports:
+      junit: readyhai-report/readyhai-report.junit.xml
+    paths:
+      - readyhai-report/
+  allow_failure:
+    exit_codes:
+      - 1

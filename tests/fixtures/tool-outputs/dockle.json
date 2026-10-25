@@ -1,0 +1,5 @@
+{"summary":{"fatal":1,"warn":1,"info":1,"skip":0,"pass":10},"details":[
+ {"code":"CIS-DI-0001","title":"Create a user for the container","level":"WARN","alerts":["Last user should not be root"]},
+ {"code":"DKL-DI-0005","title":"Clear apt-get caches","level":"FATAL","alerts":["Use 'rm -rf /var/lib/apt/lists'"]},
+ {"code":"CIS-DI-0005","title":"Enable Content trust","level":"INFO","alerts":["export DOCKER_CONTENT_TRUST=1"]},
+ {"code":"CIS-DI-0006","title":"Add HEALTHCHECK","level":"PASS","alerts":[]}]}

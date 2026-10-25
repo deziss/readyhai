@@ -1,0 +1,4 @@
+[
+ {"RuleID":"aws-access-token","Description":"Identified a pattern that may indicate AWS access keys.","StartLine":12,"EndLine":12,"StartColumn":10,"EndColumn":40,"Match":"AWS_KEY=FAKE-SECRET-VALUE-9f8e7d6c","Secret":"FAKE-SECRET-VALUE-9f8e7d6c","File":"/src/config/settings.py","Entropy":3.9,"Tags":["key","AWS"],"Fingerprint":"config/settings.py:aws-access-token:12"},
+ {"RuleID":"generic-api-key","Description":"Detected a Generic API Key.","StartLine":3,"EndLine":3,"Match":"api_key = FAKE-SECRET-VALUE-9f8e7d6c","Secret":"FAKE-SECRET-VALUE-9f8e7d6c","File":"app/.deploy.sh","Tags":[]}
+]

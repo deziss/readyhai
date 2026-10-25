@@ -1,0 +1,1 @@
+{"mcpServers":{"readyhai":{"command":"readyhai","args":["mcp"],"env":{"READYHAI_ALLOWED_ROOTS":"/path/to/code"}}}}

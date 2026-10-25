@@ -1,0 +1,21 @@
+# Example roles for the qa-api fixture. Tokens are FAKE fixture values; export before running:
+#   export RH_ALICE_TOKEN=alice-token RH_BOB_TOKEN=bob-token RH_ADMIN_TOKEN=admin-token
+[[role]]
+name = "alice"
+auth = "bearer"
+token_env = "RH_ALICE_TOKEN"
+allow = ["/orders", "/orders/**", "/search", "/reports/**", "/health"]
+deny = ["/admin/**"]
+
+[[role]]
+name = "bob"
+auth = "bearer"
+token_env = "RH_BOB_TOKEN"
+allow = ["/orders", "/orders/**", "/search", "/reports/**", "/health"]
+deny = ["/admin/**"]
+
+[[role]]
+name = "admin"
+auth = "bearer"
+token_env = "RH_ADMIN_TOKEN"
+allow = ["/**"]
