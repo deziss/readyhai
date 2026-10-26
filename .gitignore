@@ -1,5 +1,91 @@
-/target
+# ==============================================================================
+# ReadyHai - Comprehensive Git Ignore
+# ==============================================================================
+
+# Rust / Cargo artifacts
+/target/
+**/*.rs.bk
+*.profraw
+*.profdata
+Cargo.lock.orig
+
+# Environment & Sensitive Credentials (Strict Protection)
+.env
+.env.*
+.env*.local
+!.env.example
+*.pem
+*.key
+*.pkcs12
+*.pfx
+*.p12
+*.crt
+*.cert
+*.id_rsa
+*.id_ed25519
+*.secret
+credentials.json
+token.json
+secrets/
+
+# Allow intentionally fake test fixtures in tests/fixtures to remain tracked
+!tests/fixtures/**/.env
+!tests/fixtures/**/.env.example
+
+# Node & Playwright (runners/playwright)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+runners/playwright/node_modules/
+runners/playwright/test-results/
+runners/playwright/playwright-report/
+runners/playwright/.cache/
+
+# Python & testing artifacts (from test fixtures or runner scripts)
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+ENV/
+env/
+
+# ReadyHai runtime generated files & reports
 readyhai-report*/
 .readyhai/
 *.log
-.env
+reports/
+targets/
+readyhai-bundle.tar
+
+# Operating System & IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.bak

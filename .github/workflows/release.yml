@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  publish-release:
+    name: Build & Publish Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify Version matches Tag
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$TAG_VERSION" != "$FILE_VERSION" ]]; then
+            echo "Error: Tag ($TAG_VERSION) does not match VERSION file ($FILE_VERSION)!" >&2
+            exit 1
+          fi
+          echo "Verified tag matches VERSION: $TAG_VERSION"
+
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Package Binary Artifact
+        run: |
+          mkdir -p dist
+          cp target/release/readyhai dist/
+          tar -czf dist/readyhai-${GITHUB_REF_NAME}-linux-x86_64.tar.gz -C dist readyhai
+          (cd dist && sha256sum readyhai-${GITHUB_REF_NAME}-linux-x86_64.tar.gz > readyhai-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256)
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "ReadyHai ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          files: |
+            dist/readyhai-${{ github.ref_name }}-linux-x86_64.tar.gz
+            dist/readyhai-${{ github.ref_name }}-linux-x86_64.tar.gz.sha256
+          generate_release_notes: true

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check version synchronization
+        run: |
+          chmod +x scripts/version.sh
+          ./scripts/version.sh check
+
+      - name: Check code formatting
+        run: cargo fmt -- --check
+        continue-on-error: true
+
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+        continue-on-error: true
+
+      - name: Run test suite
+        run: cargo test --verbose
+
+      - name: Build release binary
+        run: cargo build --release
