@@ -3,7 +3,13 @@ name = "readyhai"
 version = "0.1.0"
 edition = "2024"
 description = "Self-hosted QA tester and production-readiness gate"
+authors = ["Anshu Kushawaha <kushawahaanshu8858@gmail.com>"]
 license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/deziss/readyhai"
+homepage = "https://github.com/deziss/readyhai"
+keywords = ["qa", "security", "readiness-gate", "testing", "devops"]
+categories = ["development-tools", "command-line-utilities"]
 
 [dependencies]
 anyhow = "1"
