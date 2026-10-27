@@ -156,11 +156,17 @@ ReadyHai includes a state-of-the-art multi-agent testing engine powered by local
 
 ```bash
 # Run multi-agent QA via CLI
-readyhai agent http://localhost:3000 --max-steps 5
+readyhai agent https://api.example.com --max-steps 6
 
-# Launch the cyber-dark Web Studio SPA on port 8080
+# 1. Start the ReadyHai backend engine (port 8080)
 readyhai serve --bind 127.0.0.1:8080
-# Open http://127.0.0.1:8080 in your browser to access the live Agent Studio
+
+# 2. Start the dedicated Next.js Agent Studio frontend (port 3000)
+cd frontend && npm run dev -- -p 3000
+# Open http://127.0.0.1:3000 in your browser to access the Agent Studio UI
+
+# Or launch both together via Docker Compose:
+docker compose up -d
 ```
 
 

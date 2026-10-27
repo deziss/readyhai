@@ -118,7 +118,7 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
             type="text"
             value={operator}
             onChange={(e) => setOperator(e.target.value)}
-            placeholder="Operator Sign-Off ID (e.g. secops@nuhire.in)"
+            placeholder="Operator Sign-Off ID (e.g. secops@readyhai.io)"
             className="bg-[#07090e] border border-[#1e2a40] rounded px-3 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-cyan-500"
           />
           <input

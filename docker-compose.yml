@@ -28,6 +28,23 @@ services:
     cap_drop:
       - ALL
 
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: readyhai-frontend:local
+    container_name: readyhai-frontend
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - READYHAI_BACKEND_URL=http://readyhai:8080
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - readyhai
+    restart: unless-stopped
+    mem_limit: 512m
+
   socket-proxy:
     image: tecnativa/docker-socket-proxy:v0.3.0
     container_name: readyhai-socket-proxy

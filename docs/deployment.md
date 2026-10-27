@@ -11,6 +11,7 @@ ReadyHai does not host scanners. It runs as one small service (or as a CLI) and 
 | Service | Image | Notes |
 |---|---|---|
 | `readyhai` | built from `Dockerfile` as `readyhai:local` | Runs `readyhai serve --bind 0.0.0.0:8080` as uid 10001. Read-only rootfs, `/tmp` tmpfs, `cap_drop: ALL`, `no-new-privileges`, `mem_limit: 1g`. Published on `127.0.0.1:${READYHAI_PORT:-8080}` only. Healthcheck `readyhai ping`. `env_file: .env`. |
+| `frontend` | built from `frontend/Dockerfile` as `readyhai-frontend:local` | Production Next.js Agent Studio UI on port 3000. Multi-stage minimal standalone build, non-root user `readyhai` (UID 10001). Published on `127.0.0.1:${FRONTEND_PORT:-3000}`. Connects internally to `http://readyhai:8080`. |
 | `socket-proxy` | `tecnativa/docker-socket-proxy:v0.3.0` | Mounts `/var/run/docker.sock` read-only; enables `CONTAINERS IMAGES POST VOLUMES INFO VERSION PING ALLOW_START ALLOW_STOP`; disables `EXEC BUILD SWARM SECRETS`. `mem_limit: 64m`. |
 
 Environment set by compose: `DOCKER_HOST=tcp://readyhai-socket-proxy:2375`, `READYHAI_DATA=/data`, `READYHAI_DATA_VOLUME=readyhai_data`, `READYHAI_ALLOWED_ROOTS=/targets`. Volumes: named volume `readyhai_data` at `/data`; `${TARGETS_DIR:-./targets}` at `/targets` read-only.
