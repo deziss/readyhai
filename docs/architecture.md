@@ -23,7 +23,47 @@ Single Rust crate (`readyhai`, edition 2024, ~16,300 lines in `src/` after incre
 | Log clustering | `src/logs.rs` | Normalizes error lines into signatures, groups, redacts examples. |
 | REST server | `src/serve.rs` | axum 0.8, bearer token, one in-process worker. |
 | MCP server | `src/mcp.rs` | Hand-written JSON-RPC 2.0 over stdio. No `rmcp` crate. |
-| LLM abstraction | `src/llm.rs` | Provider catalog and OpenAI/Anthropic transports. Not called by anything yet. |
+| LLM abstraction | `src/llm.rs` | Provider catalog (vLLM, Ollama, cloud), reasoning token extraction, token budgeting. |
+| Agentic AI Engine | `src/agent.rs` | Autonomous 4-agent loop (Planner -> Explorer -> Triager -> Readiness Gate), 4-pillar Evidence Ledger scoring. |
+| Web Studio SPA | `src/web_ui.rs` | Cyber-dark single-page web app with real-time pipeline status, terminal trace, scenario inspector, and runs history. |
+
+## Agentic AI Architecture & Evidence Ledger (Increment 3)
+
+The Agentic AI subsystem in `src/agent.rs` introduces an autonomous multi-agent testing architecture governed by an LLM-as-a-Judge supervisor:
+
+```
+[Target URL / Spec]
+        │
+        ▼
+1. Planner Agent ────────► Synthesizes boundary, negative, RBAC, and injection scenarios
+        │
+        ▼
+2. Explorer Agent ───────► Executes probes, measures latency, captures reproduction cURL
+        │
+        ▼
+3. Triager Agent ────────► Clusters defects by root cause, tags OWASP Top 10 vulnerabilities
+        │
+        ▼
+4. Readiness Gate ───────► Evaluates exit criteria, assesses residual risk, computes Evidence Ledger
+        │
+        ▼
+[Evidence Ledger] ───────► GO / CONDITIONAL_GO / NO_GO Verdict
+```
+
+### The 4 Pillars of the 2026 Evidence Ledger
+
+1. **Value Pillar (Weight: 25%):**
+   - Verifies core functional journeys, payload structure tolerances, and boundary values.
+2. **Authority Pillar (Weight: 25%):**
+   - Tests horizontal/vertical access boundaries, IDOR manipulation, and tenancy separation.
+3. **Safety Pillar (Weight: 25%):**
+   - Probes SQL/NoSQL injections, stored/reflected XSS, path traversal, prompt shielding, and credential masking.
+4. **Evidence Pillar (Weight: 25%):**
+   - Ensures all identified defects include reproducible, self-contained cURL commands and verifiable audit trails.
+
+### Web Studio SPA Integration
+
+Implemented directly in `src/web_ui.rs` as an embedded single-page application served via axum (`GET /` and `GET /ui`). It provides real-time model telemetry, interactive agent pipeline state tracking, copyable reproduction commands, and historical run comparison without external CDN dependencies.
 
 ## Executors
 

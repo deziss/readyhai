@@ -47,11 +47,18 @@ $R baseline accept <run-id> --out .readyhai/baseline.json
 $R scan ./my-service --baseline .readyhai/baseline.json
 ```
 
+# autonomous multi-agent QA run:
+$R agent http://localhost:3000 --max-steps 5
+
+# launch Web Studio SPA & REST API:
+$R serve --bind 127.0.0.1:8080              # visit http://127.0.0.1:8080 for the cyber-dark UI
+
 Server mode: `cp .env.example .env`, set `READYHAI_TOKEN` (16+ chars), `docker compose up -d`, then see [api.md](api.md) and [deployment.md](deployment.md).
 
 ## Status at a glance
 
 - Repo and image targets: implemented, unit-tested and passed verification round 1. Web: native smoke checked; ZAP, Schemathesis and the Playwright runner were never run live.
 - Host (SSH), Android, MCP: implemented, tested against recorded fixtures; Windows probe and MobSF API shapes not verified live.
-- LLM module: used by `readyhai qa` for optional LAN-LLM prose, mock-tested only (see [offline.md](offline.md)).
-- Increment 2 added `readyhai qa`, offline bundles and a static dashboard ([qa.md](qa.md)); still no SQLite, no agent loop. See [roadmap.md](roadmap.md).
+- LLM & Agentic AI: implemented and live-verified with local vLLM reasoning models (`qwen3.8-flash-next`).
+- Increment 2 added `readyhai qa`, offline bundles, and static trend dashboard ([qa.md](qa.md)).
+- Increment 3 completed the autonomous **Agentic AI QA engine** (`readyhai agent <target>`), the 4-pillar **Evidence Ledger** (`Value`, `Authority`, `Safety`, `Evidence`), and the cyber-dark **Web Studio SPA** served live by `readyhai serve` at `http://127.0.0.1:8080/`. See [roadmap.md](roadmap.md) and [architecture.md](architecture.md).

@@ -39,9 +39,11 @@ readyhai/
 | `android.rs` | 752 | MobSF client, adb runtime, logcat parser |
 | `logs.rs` | 168 | Error clustering and redaction |
 | `report.rs` | 278 | HTML, JSON, SARIF, JUnit |
-| `serve.rs` | 225 | REST and worker |
+| `serve.rs` | 326 | REST API, background worker, Web UI endpoints |
 | `mcp.rs` | 295 | MCP stdio server and `precheck` |
-| `llm.rs` | 254 | Provider catalog and clients (unused) |
+| `llm.rs` | 544 | Provider catalog (vLLM, Ollama, cloud), reasoning token parser, token budget |
+| `agent.rs` | 639 | Autonomous multi-agent QA loop, Evidence Ledger calculation, defect triage |
+| `web_ui.rs` | 1168 | Cyber-dark Web Studio SPA (HTML, CSS, JS) with live pipeline telemetry |
 
 ## Adding a check
 

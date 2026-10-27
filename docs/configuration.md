@@ -209,8 +209,8 @@ Defaults without `[hosts.perf]`: 5 VUs, 60 s, abort above 5% errors. Writes, loa
 | `READYHAI_LICENSE_DENY` | `qa.release.licenses` | extra denied licences, comma separated |
 | `READYHAI_OFFLINE` | all | `1`/`true`: no pulls, no DB updates, no `bundle export`; disables the LLM in `qa` |
 | `READYHAI_BUNDLE_TOOLS` | `bundle export` | comma-separated tool names to restrict the bundle |
-| `READYHAI_LLM_PROVIDER`, `READYHAI_LLM_MODEL`, `READYHAI_LLM_ALLOW_CLOUD`, `READYHAI_VLLM_URL` | `qa` | LAN LLM enrichment, now used (no longer "unused"). Setting only `READYHAI_VLLM_URL` selects `vllm` with default model `Qwen/Qwen3-8B`. See [offline.md](offline.md#lan-llm-mode) |
+| `READYHAI_LLM_PROVIDER`, `READYHAI_LLM_MODEL`, `READYHAI_LLM_ALLOW_CLOUD`, `READYHAI_VLLM_URL` | `qa`, `agent` | Local LLM configuration for QA enrichment and autonomous multi-agent runs (`readyhai agent`). Supports `vllm` (default) and `ollama`. See [offline.md](offline.md#lan-llm-mode) |
 
 Lock precedence (increment 2): `READYHAI_TOOLS_LOCK` > `<data>/tools.lock.toml` > embedded. Lock entries may carry an image `id`, which is run by ID.
 
-Data dir additions: `<data>/baselines/<key>.perf.json`, `<key>.perf.last.json`, `<data>/baselines/<key>/visual/*.png`, `<data>/index.jsonl`, `<data>/llm-cache/`, `<data>/bundles/`, `<data>/cache/endoflife.json`.
+Data dir additions: `<data>/baselines/<key>.perf.json`, `<key>.perf.last.json`, `<data>/baselines/<key>/visual/*.png`, `<data>/index.jsonl`, `<data>/llm-cache/`, `<data>/bundles/`, `<data>/cache/endoflife.json`, `<data>/agent-runs/<run_id>/report.json`.

@@ -45,7 +45,7 @@ Rules (severity as coded): `authz_missing` High P1, `privilege_escalation` High 
 
 Each defect carries steps to reproduce as a curl command; tokens appear only as `$RH_<ROLE>_TOKEN`. Evidence bodies are redacted and capped at 8 KB.
 
-Not done: the AI-proposed cases are recorded as report notes only; the executor does not run them yet. Schemathesis remains an optional separate fuzzer (see [checks.md](checks.md)).
+Note on AI execution: In `readyhai qa`, AI-proposed cases are recorded as advisory report notes. For fully autonomous end-to-end synthesis, execution, triage, and Evidence Ledger gating of AI test scenarios, use `readyhai agent <target>` (see [usage.md](usage.md)). Schemathesis remains an optional separate fuzzer (see [checks.md](checks.md)).
 
 ## UI testing (`src/qa/ui.rs` + `runners/playwright/qa.mjs`)
 

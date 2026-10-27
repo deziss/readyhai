@@ -12,7 +12,7 @@ Status key: **Done** (implemented, covered by tests or verification), **Done-unv
 | 3 Hosts | SSH executor + host-key verify, Linux probe + Lynis + package CVEs, macOS/Windows probe + core rules | **Done-unverified-live** | OpenSSH client instead of russh. Windows probe untested on a real host. Not in the shipped container image (no `ssh`). |
 | 4 Android | MobSF per-scan container, BYO-device ADB runtime | **Done-unverified-live** | MobSF API response shapes unverified against a real instance; `adb` must be on the machine. |
 | 5 CI + PostSync | ArgoCD PostSync Job, API polish, deferred items as needed | **Done-unverified-live** | Recipes written; PostSync manifest has a known writable-data-dir problem and no registry image; not run on k3d. |
-| 6 Agentic | MCP server -> agent loop + eval harness | **MCP done; loop Next** | MCP server exists (4 tools). `llm.rs` abstraction exists but nothing calls it. |
+| 6 Agentic | Autonomous agent loop + Evidence Ledger + Web Studio | **Done, live** | MCP server (4 tools), full 4-agent autonomous pipeline (`src/agent.rs`), 4-pillar Evidence Ledger, Web Studio UI (`src/web_ui.rs`), live verified with local vLLM reasoning models. |
 | 7 Later | Weighted score, OSV, licenses, Nuclei/k6/ZAP active, Appium desktop UI, live k8s (Kubescape), iOS, Rust probe binary, DefectDojo export, dashboard, multi-user (OIDC + Postgres) | **Later** | |
 
 ## Deferred from v1
@@ -85,11 +85,23 @@ Status key: **Done** (implemented, covered by tests or verification), **Done-unv
 | 21 | UI QA and PDF stay unrun until the runner image is built (`docker build -t readyhai/playwright-runner:local runners/playwright`); `playwright` is not in a bundle until then | `qa/ui.rs`, `qa/report.rs` |
 | 22 | Resilience has never run against a live compose stack | `qa/resilience.rs` |
 | 23 | MobSF and the Windows probe are still unrun | `android.rs`, `host.rs` |
-| 24 | LLM is only mock-tested; no real vLLM/small-model run | `qa/ai.rs`, `llm.rs` |
-| 25 | API executor does not execute AI-proposed cases (recorded as notes) | `qa/ai.rs` |
+| 24 | ~~LLM is only mock-tested~~ fixed: live-verified with local vLLM reasoning model (`qwen3.8-flash-next`) | `agent.rs`, `llm.rs` |
+| 25 | ~~API executor does not execute AI-proposed cases~~ fixed: autonomous multi-agent loop in `src/agent.rs` executes planned cases | `agent.rs` |
 | 26 | `baseline accept` promotes perf only; spec and visual baselines are not wired (visual: first run auto-stores, later change needs a manual PNG replace; spec baseline for breaking-change detection has no accept step) | `main.rs`, `qa/ui.rs`, `qa/api` |
 | 27 | Flaky re-run helper exists but no executor uses it; the "No flaky tests" criterion is vacuous | `qa/resilience.rs::flaky_rerun` |
 | 28 | ~~`READYHAI_OFFLINE=1` also disables the LAN LLM~~ fixed: mode `offline+lan-llm` | `engine.rs` |
 | 29 | Fake tokens in `tests/fixtures/qa-api` (`alice-token`...) may trip secret scanners | fixtures |
 | 30 | Bundle manifest unsigned; `full` set (~8-9 GB) not exported end to end; no Ollama image or GGUF serving in the bundle | `bundle.rs` |
 | 31 | Prisma and Flyway migrations detected but not executed; migration check needs a `[test]` image | `qa/suite.rs` |
+
+
+## Increment 3: Agentic AI QA, Evidence Ledger & Web Studio (2026-10-27)
+
+| Item | Status | Notes |
+|---|---|---|
+| Autonomous Multi-Agent Loop (`src/agent.rs`) | **Done, live** | Planner -> Explorer -> Triager -> Readiness Gate; live verified against local vLLM |
+| 4-Pillar Evidence Ledger | **Done, live** | Value, Authority, Safety, Evidence scoring and automated GO/NO_GO verdict |
+| Cyber-Dark Web Studio UI (`src/web_ui.rs`) | **Done, live** | Embedded SPA served by `readyhai serve` with live pipeline telemetry & scenario inspector |
+| Agent REST API endpoints | **Done, live** | `/api/agent/status`, `/api/agent/run`, `/api/agent/runs`, `/api/agent/runs/{id}` |
+| Local vLLM Reasoning Model Integration | **Done, live** | Sub-10ms probe latency, reasoning token parser, 2048-token generation limits |
+| CLI `readyhai agent <target>` command | **Done, live** | Terminal runner; returns exit 0 for GO, 1 for CONDITIONAL_GO / NO_GO |

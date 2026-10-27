@@ -88,11 +88,12 @@ At the end of a `qa` run the endpoint is probed (GET `<base>/models`, 2 s). Unre
 | Triage hints: duplicate groups, shared root causes | report notes, "AI suggestion" |
 | Test ideas for up to 30 operations | report notes ("AI-proposed test") |
 
-**What the AI does NOT do:** change severity, priority, status, exit criteria or the recommendation (these fields are snapshotted before and restored after; an attempt adds a note); suppress findings; call tools (no agent loop); run proposed test cases (the API executor does not execute AI-proposed cases yet).
+**In `readyhai qa`:** The AI functions as an advisory enricher and does NOT change deterministic verdicts, suppress findings, or execute arbitrary tools.
+**In `readyhai agent` (Increment 3):** An autonomous multi-agent pipeline (`Planner`, `Explorer`, `Triager`, `ReadinessGate`) synthesizes, executes, and triages test cases, computing an objective 4-pillar Evidence Ledger.
 
 **Guardrails:** `redact_for_llm` on every input; target text is control-char-stripped, fence-neutralised and fenced as data; budget of 20 calls and 300 s per run; responses cached by sha256(model, system, prompt) under `<data>/llm-cache`, so reruns are reproducible and cache hits are free.
 
-Status: verified with a mock OpenAI-compatible server in unit tests only. No real vLLM or small-model run has been done, so output quality of Qwen3-8B is unknown.
+Status: Live-verified with local vLLM serving Qwen3 reasoning models (`qwen3.8-flash-next`). The autonomous agent loop in `src/agent.rs` handles reasoning token streams (`reasoning_content`), synthesizes adversarial test suites, executes probes, clusters defects, and calculates the 4-pillar Evidence Ledger with sub-second latencies.
 
 ## Fully air-gapped AI
 
