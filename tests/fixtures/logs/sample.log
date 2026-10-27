@@ -1,0 +1,15 @@
+2026-10-20T10:00:01.123Z ERROR db: connection refused to 10.0.0.11:5432
+2026-10-20T10:00:02.456Z ERROR db: connection refused to 10.0.0.12:5433
+2026-10-20T10:00:03Z ERROR db: connection refused to 10.0.0.13:5432
+2026-10-20 10:00:04,001 ERROR db: connection refused to 10.0.0.14:5432
+Oct 20 10:00:05 ERROR db: connection refused to 10.0.0.15:5432
+Traceback (most recent call last):
+  File "/app/main.py", line 42, in handler
+ValueError: invalid literal for int() with base 10: 'abc123'
+ValueError: invalid literal for int() with base 10: 'xyz'
+2026/10/20 10:01:00 [error] 777#777: *1048 open() "/usr/share/nginx/html/missing1.png" failed (2: No such file or directory), client: 192.168.1.5, server: example.com
+2026/10/20 10:01:09 [error] 777#777: *1099 open() "/usr/share/nginx/html/missing2.png" failed (2: No such file or directory), client: 192.168.1.9, server: example.com
+Oct 20 10:02:00 host systemd[1]: Failed to start worker-3f2b8c1a-1111-2222-3333-444455556666.service.
+Oct 20 10:02:10 host systemd[1]: Failed to start worker-aaaaaaaa-1111-2222-3333-444455556666.service.
+Uncaught TypeError: Cannot read properties of undefined (reading 'id') at app.js:10:5
+Auth failed for user bob@example.com Authorization: Bearer abc.def.ghi password=hunter2 key=AKIAABCDEFGHIJKLMNOP
