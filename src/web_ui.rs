@@ -639,9 +639,9 @@ pub const HTML_PAGE: &str = r##"<!DOCTYPE html>
         </div>
 
         <div class="mode-tabs">
-          <button class="mode-tab active" onclick="setMode('autonomous')">⚡ Autonomous QA</button>
-          <button class="mode-tab" onclick="setMode('adversarial')">🎯 Adversarial & Auth</button>
-          <button class="mode-tab" onclick="setMode('contract')">📊 Contract & Spec</button>
+          <button class="mode-tab active" data-mode="autonomous" onclick="setMode('autonomous', this)">⚡ Autonomous QA</button>
+          <button class="mode-tab" data-mode="adversarial" onclick="setMode('adversarial', this)">🎯 Adversarial & Auth</button>
+          <button class="mode-tab" data-mode="contract" onclick="setMode('contract', this)">📊 Contract & Spec</button>
         </div>
 
         <div class="field-group">
@@ -786,11 +786,11 @@ pub const HTML_PAGE: &str = r##"<!DOCTYPE html>
       
       <!-- Canvas Tabs -->
       <div class="canvas-nav">
-        <button class="canvas-tab active" onclick="switchCanvasTab('scenarios')">📋 Scenarios & Inspector <span class="tab-badge" id="scenarios-badge">0</span></button>
-        <button class="canvas-tab" onclick="switchCanvasTab('ledger')">🛡️ Evidence Ledger</button>
-        <button class="canvas-tab" onclick="switchCanvasTab('routes')">🌐 Discovered Routes <span class="tab-badge" id="routes-badge">0</span></button>
-        <button class="canvas-tab" onclick="switchCanvasTab('triage')">🔍 Threat Triage <span class="tab-badge" id="defects-badge">0</span></button>
-        <button class="canvas-tab" onclick="switchCanvasTab('history')">🕒 Runs History <span class="tab-badge" id="history-badge">0</span></button>
+        <button class="canvas-tab active" data-tab="scenarios" onclick="switchCanvasTab('scenarios', this)">📋 Scenarios & Inspector <span class="tab-badge" id="scenarios-badge">0</span></button>
+        <button class="canvas-tab" data-tab="ledger" onclick="switchCanvasTab('ledger', this)">🛡️ Evidence Ledger</button>
+        <button class="canvas-tab" data-tab="routes" onclick="switchCanvasTab('routes', this)">🌐 Discovered Routes <span class="tab-badge" id="routes-badge">0</span></button>
+        <button class="canvas-tab" data-tab="triage" onclick="switchCanvasTab('triage', this)">🔍 Threat Triage <span class="tab-badge" id="defects-badge">0</span></button>
+        <button class="canvas-tab" data-tab="history" onclick="switchCanvasTab('history', this)">🕒 Runs History <span class="tab-badge" id="history-badge">0</span></button>
       </div>
 
       <!-- Tab 1: Scenarios & Deep Payload Inspector -->
@@ -1002,14 +1002,21 @@ pub const HTML_PAGE: &str = r##"<!DOCTYPE html>
     let activeCaseIndex = null;
     let currentMode = 'autonomous';
 
-    function setMode(mode) {
+    function setMode(mode, btn) {
       currentMode = mode;
       document.querySelectorAll('.mode-tab').forEach(b => b.classList.remove('active'));
-      event.target.classList.add('active');
+      if (btn) {
+        btn.classList.add('active');
+      } else {
+        const el = document.querySelector('.mode-tab[data-mode="' + mode + '"]');
+        if (el) el.classList.add('active');
+      }
 
       const directives = document.getElementById('agent-directives');
       if (mode === 'adversarial') {
         directives.value = 'Focus heavily on authorization bypass, BOLA, IDOR, token forgery, and prompt injection canaries.';
+      } else if (mode === 'contract') {
+        directives.value = 'Focus on OpenAPI contract compliance, boundary values, negative JSON parsing, and HTTP status codes.';
       } else if (mode === 'contract') {
         directives.value = 'Focus on OpenAPI contract compliance, boundary values, negative JSON parsing, and HTTP status codes.';
       } else {
@@ -1040,12 +1047,16 @@ pub const HTML_PAGE: &str = r##"<!DOCTYPE html>
       }
     }
 
-    function switchCanvasTab(tabId) {
+    function switchCanvasTab(tabId, btn) {
       document.querySelectorAll('.canvas-tab').forEach(b => b.classList.remove('active'));
       document.querySelectorAll('.canvas-content').forEach(c => c.style.display = 'none');
       
-      const activeBtn = Array.from(document.querySelectorAll('.canvas-tab')).find(b => b.getAttribute('onclick').includes(tabId));
-      if (activeBtn) activeBtn.classList.add('active');
+      if (btn) {
+        btn.classList.add('active');
+      } else {
+        const activeBtn = document.querySelector('.canvas-tab[data-tab="' + tabId + '"]');
+        if (activeBtn) activeBtn.classList.add('active');
+      }
 
       const activeSection = document.getElementById('tab-' + tabId);
       if (activeSection) activeSection.style.display = 'block';
