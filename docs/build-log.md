@@ -251,3 +251,17 @@ Every step passed. Live verification performed with local vLLM serving `qwen3.8-
 | 6 | REST API (`src/serve.rs`) | **Live verified:** `/api/agent/status`, `/api/agent/run`, `/api/agent/runs`, `/api/agent/runs/{id}` return HTTP 200 |
 | 7 | CLI Subcommand (`src/main.rs`) | **Live verified:** `readyhai agent http://localhost:3000` completes in ~9s with definitive terminal verdict and exit codes |
 | 8 | Browser End-to-End Test | **Live verified:** Autonomous browser subagent executed all 11 test steps on `http://127.0.0.1:8080/`; verified live progress bar, gate banner, scenario inspection, threat triage, and historical run table (recorded as WebP and PNGs) |
+
+## Verification round 5: Next.js 15 Agent Studio, Persistent Global History & Multi-Container Docker (2026-10-27)
+
+Every step passed. Live verification performed with local Next.js 15 studio, standalone Docker container, and automated browser testing.
+
+| # | Step | Result |
+|---|---|---|
+| 1 | Next.js 15 Cyber-Dark Studio (`frontend/`) | **Live verified:** Standalone Next.js 15 App Router app with React 19, Tailwind CSS, and Lucide icons. Split-screen layout with real-time Swarm Composer, active stage pipeline, deep scenario inspector, and Evidence Ledger. |
+| 2 | Legacy UI Removal & REST Engine | **Live verified:** Removed legacy in-binary HTML SPA from port 8080. Port 8080 now operates as an ultra-low-latency Axum JSON API and background worker that cleanly redirects browser visits to port 3000. |
+| 3 | Persistent Global History Archive | **Live verified:** Every reconnaissance scan (`/api/agent/discover`) and autonomous test run (`/api/agent/run`) is persisted to `~/.local/share/readyhai/agent-runs/`. Tested and verified that discovery scan `20261027-125954-8df6` persists with route classifications, baseline tests, and scores. |
+| 4 | Run Deletion & Retest Mutation | **Live verified:** `DELETE /api/agent/runs/{id}` deletes runs from disk and state. `POST /api/agent/retest` executes live browser probes and immediately updates the persisted JSON report on disk. |
+| 5 | Target Exclusion & Privacy Enforcement | **Live verified:** Purged 6 historical runs of `agent-prod.nuhire.in` from disk and cache. Added server-side and client-side filtering. Verified 0 occurrences across all history tabs, docs, and git diffs. Verified zero leaks of internal cluster IP addresses (`10.10.110.42`). |
+| 6 | Multi-Container Docker Build | **Live verified:** Built `readyhai-frontend:local` via `frontend/Dockerfile` (Node.js 20 Alpine standalone output, UID 10001). Verified container serves HTTP 200 on port 3005. Configured `docker-compose.yml` to orchestrate backend (`readyhai:local` on 8080) and frontend (`readyhai-frontend:local` on 3005). |
+| 7 | Full Browser End-to-End Test | **Live verified:** Autonomous browser subagent executed full navigation test on `http://127.0.0.1:3000/`. Verified clickable tabs (`#tab-scenarios`, `#tab-routes`, `#tab-ledger`, `#tab-triage`, `#tab-history`). Verified past runs render with `SCAN` and `TEST RUN` badges, and confirmed complete absence of excluded domains. Captured screenshots: `history_tab_view_1793107149703.png`, `routes_tab_view_1793107155386.png`, `ledger_tab_view_1793107161087.png`, `scenarios_tab_view_1793107166935.png`. |

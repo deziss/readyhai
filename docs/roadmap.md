@@ -105,3 +105,14 @@ Status key: **Done** (implemented, covered by tests or verification), **Done-unv
 | Agent REST API endpoints | **Done, live** | `/api/agent/status`, `/api/agent/run`, `/api/agent/runs`, `/api/agent/runs/{id}` |
 | Local vLLM Reasoning Model Integration | **Done, live** | Sub-10ms probe latency, reasoning token parser, 2048-token generation limits |
 | CLI `readyhai agent <target>` command | **Done, live** | Terminal runner; returns exit 0 for GO, 1 for CONDITIONAL_GO / NO_GO |
+
+## Increment 3.1: Next.js 15 Agent Studio, Persistent Global History & Multi-Container Docker (2026-10-27)
+
+| Item | Status | Notes |
+|---|---|---|
+| Next.js 15 Cyber-Dark Studio (`frontend/`) | **Done, live** | Full-fidelity React 19 UI with Swarm Composer, active stages, deep cURL inspector, and live retest |
+| Legacy UI Removal & Port 8080 Redirect | **Done, live** | Removed old in-binary HTML SPA from 8080; replaced with JSON status and 302 browser redirect to 3000 |
+| Persistent Global History Engine | **Done, live** | Persists all scans (`/api/agent/discover`) and test runs (`/api/agent/run`) with `SCAN`/`TEST RUN` badges |
+| Disk-backed In-Place Retest & Run Deletion | **Done, live** | `POST /api/agent/retest` updates disk report in-place; `DELETE /api/agent/runs/{id}` deletes runs |
+| Strict Target Exclusion (`agent-prod.nuhire.in`) | **Done, live** | Purged historical data, enforced server & client filtering, permanently excluded |
+| Multi-Container Docker Deployment | **Done, live** | `frontend/Dockerfile` standalone Next.js container (port 3005) + `readyhai:local` compose orchestration |
