@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 :root {
   --bg-base: #06080e;
@@ -21,9 +22,8 @@
 
 html, body {
   height: 100%;
-  overflow: hidden;
-  background-color: var(--bg-base);
-  color: var(--fg-default);
+  background-color: #06080e;
+  color: #f8fafc;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   letter-spacing: -0.011em;
 }
@@ -46,7 +46,7 @@ html, body {
 
 /* Code Previews */
 pre, code {
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 /* Animations */
@@ -56,12 +56,4 @@ pre, code {
 }
 .pulse-subtle {
   animation: pulseSubtle 2.2s infinite ease-in-out;
-}
-
-.glow-cyan {
-  box-shadow: 0 0 20px -3px rgba(6, 182, 212, 0.25);
-}
-
-.glow-emerald {
-  box-shadow: 0 0 20px -3px rgba(16, 185, 129, 0.25);
 }
