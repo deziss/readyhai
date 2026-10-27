@@ -6,7 +6,7 @@ Started by `readyhai serve [--bind ADDR]` (default `127.0.0.1:8080`; the contain
 
 ### Auth
 
-`READYHAI_TOKEN` (16+ characters) must be set or `serve` exits with an error. Every route except `/health` requires `Authorization: Bearer <token>`; failures return `401 {"error":"missing or bad bearer token"}`. Errors are always `{"error": "..."}`.
+`READYHAI_TOKEN` (16+ characters) should be set for production deployments. In development, if unset, ReadyHai automatically generates a secure ephemeral development token (`rh-dev-token-...`) and logs it to stderr. Every route under `/runs` and `/checks` requires `Authorization: Bearer <token>`; failures return `401 {"error":"missing or bad bearer token"}`. Public read routes (`/`, `/ui`, `/health`, `/api/agent/*`) are accessible without authentication to allow seamless browser studio interaction.
 
 ```bash
 export T=your-token-here-16+chars; H="Authorization: Bearer $T"
@@ -16,13 +16,75 @@ export T=your-token-here-16+chars; H="Authorization: Bearer $T"
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
+| GET | `/` | no | Cyber-dark Web Studio Single-Page Application (HTML) |
+| GET | `/ui` | no | Alias to Web Studio SPA |
 | GET | `/health` | no | `{"status":"ok","version":"0.1.0"}` |
+| GET | `/api/agent/status` | no | Real-time vLLM/Ollama model health, latency, active model, and capabilities |
+| POST | `/api/agent/run` | no | Trigger autonomous multi-agent QA run; returns complete `AgentRunReport` |
+| GET | `/api/agent/runs` | no | List all historical agent runs with scores, verdict, test counts |
+| GET | `/api/agent/runs/{id}` | no | Retrieve detailed report and execution traces for a specific agent run |
 | GET | `/checks` | yes | Array of `{id,title,kinds,min_profile,tool,intrusive}` (includes plugins from `READYHAI_PLUGINS`) |
 | POST | `/runs` | yes | Queue a scan; `202 {"id","state":"queued"}` |
 | GET | `/runs` | yes | Last 50 runs, newest first: `{id,state,target,verdict}` |
 | GET | `/runs/{id}` | yes | Status; when finished adds `verdict`, `reasons`, `categories`, `checks` and `run` (the full run without `findings`) |
 | GET | `/runs/{id}/findings` | yes | JSON array of findings; `404` until the run has finished |
 | GET | `/runs/{id}/report/{fmt}` | yes | `html`, `json`, `sarif` or `junit`; with a CSP header |
+
+### Agentic AI API (`/api/agent/*`)
+
+The Agentic AI endpoints provide direct access to the 4-agent autonomous pipeline and the Web Studio UI.
+
+#### 1. Check Model Connectivity & Health
+```bash
+curl -s http://127.0.0.1:8080/api/agent/status
+```
+Response:
+```json
+{
+  "status": "online",
+  "model": "qwen3.8-flash-next",
+  "provider": "vllm",
+  "base_url": "http://<lan-vllm-host>:8000/v1",
+  "latency_ms": 8,
+  "capabilities": ["multi_agent", "planner", "explorer", "triager", "readiness_gate", "owasp_agentic"]
+}
+```
+
+#### 2. Trigger an Autonomous Agent Run
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/agent/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "http://localhost:3000",
+    "profile": "standard",
+    "spec_url": null,
+    "custom_instructions": "Focus on auth bypass and boundary validation"
+  }'
+```
+Response (`AgentRunReport`):
+- `id`: Unique run identifier (`20261027-053327-57e2`).
+- `steps`: Array of agent execution steps (`Planner`, `Explorer`, `Triager`, `ReadinessGate`).
+- `planned_cases`: Synthesized boundary, negative, and threat test scenarios.
+- `executed_results`: Probed test results with latency and copyable `reproduction_curl` commands.
+- `triaged_defects`: Grouped defect clusters with OWASP tags and blast radius assessments.
+- `evidence_ledger`: 4-pillar readiness breakdown:
+  - `value_score`: Core user journeys & boundary validation (0-100).
+  - `authority_score`: RBAC, multi-tenancy, and object privilege integrity (0-100).
+  - `safety_score`: Injection defenses, prompt shielding, secret redaction (0-100).
+  - `evidence_score`: Deterministic reproducibility and audit trail (0-100).
+  - `gate_verdict`: Deployment verdict (`GO`, `CONDITIONAL_GO`, `NO_GO`).
+  - `overall_readiness`: Weighted overall percentage score.
+
+#### 3. List and Fetch Agent Runs
+```bash
+# List past runs
+curl -s http://127.0.0.1:8080/api/agent/runs
+
+# Fetch full run details
+curl -s http://127.0.0.1:8080/api/agent/runs/20261027-053327-57e2
+```
+
+---
 
 ### Create a run
 

@@ -11,7 +11,8 @@ Binary: `readyhai` (dev build: `target/debug/readyhai`; `cargo` lives in `~/.car
 | `readyhai checks` | List registered checks (reads `READYHAI_PLUGINS` for plugins) |
 | `readyhai tools pull [--lock FILE]` | `docker pull` every image in `tools.lock.toml`; optionally write resolved digests |
 | `readyhai tools update` | Refresh grype DB, semgrep rules, Lynis tarball (the only networked step) |
-| `readyhai serve [--bind ADDR]` | REST API + job worker (default `127.0.0.1:8080`) |
+| `readyhai agent <target> [--max-steps N]` | Autonomous Agentic AI QA run (Planner -> Explorer -> Triager -> Readiness Gate) |
+| `readyhai serve [--bind ADDR]` | REST API + job worker + cyber-dark Web Studio UI (default `127.0.0.1:8080`) |
 | `readyhai mcp` | MCP server on stdio (tools: scan, checks, run, findings) |
 | `readyhai ping [--url URL]` | Container HEALTHCHECK probe (default `http://127.0.0.1:8080/health`), exit 0 healthy / 1 not |
 
@@ -37,6 +38,32 @@ Binary: `readyhai` (dev build: `target/debug/readyhai`; `cargo` lives in `~/.car
 Progress, the per-check table and the verdict go to **stderr**; reports are files. On start it prints `readyhai <ver> · run <id> · <target> · profile <p>`: note the run id, you need it for `baseline accept`.
 
 Example summary line: `[part] tool.sbom_cve  12 finding(s) — 25 of 26 deps unpinned; ...` with markers `ok`, `FAIL`, `part`, `skip`, `n/a`, `ERR`.
+
+## Autonomous Agentic AI (`readyhai agent`)
+
+Executes an autonomous multi-agent QA testing loop powered by local reasoning models (vLLM / Ollama):
+
+```bash
+readyhai agent http://localhost:3000 --max-steps 5
+```
+
+### The 4-Agent Pipeline:
+1. **Planner Agent:** Synthesizes boundary cases, negative inputs, RBAC abuse vectors, and OWASP Top 10 exploits based on target facts and endpoints.
+2. **Explorer Agent:** Dispatches tests, records sub-millisecond latencies, collects HTTP responses, and captures exact `reproduction_curl` commands.
+3. **Triager Agent:** Groups failed probes into deduplicated defect clusters and calculates OWASP blast radius.
+4. **Production Readiness Gate:** Scores the 4-pillar **Evidence Ledger** (`Value`, `Authority`, `Safety`, `Evidence`) and issues an automated deployment verdict (`GO`, `CONDITIONAL_GO`, `NO_GO`).
+
+### Flags:
+- `<target>`: Target URL or codebase path (required).
+- `--max-steps <N>`: Maximum autonomous exploration iterations (default: 5).
+
+### Exit Codes:
+- `0`: Gate verdict `GO` (production-ready).
+- `1`: Gate verdict `CONDITIONAL_GO` or `NO_GO` (readiness criteria violated).
+
+Reports and execution traces are persisted under `<data_dir>/agent-runs/<run_id>/report.json`.
+
+---
 
 ## Target syntaxes
 
@@ -128,6 +155,13 @@ readyhai scan android:./app.apk --device emulator-5554 --profile standard
 
 # 8. With a plugin directory
 readyhai scan . --plugins ./plugins
+
+# 9. Autonomous Agentic AI QA with Evidence Ledger
+readyhai agent http://localhost:3000 --max-steps 5
+
+# 10. Web Studio UI (SPA) + REST API
+readyhai serve --bind 127.0.0.1:8080
+# Open http://127.0.0.1:8080 in your browser to view the interactive Agent Studio
 ```
 
 ### NuHire

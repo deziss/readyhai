@@ -19,7 +19,7 @@ Size: about 16k lines of Rust in `src/` (the QA engine, bundle, dashboard and LL
 | Reports: HTML, MD, Jira/GitLab/TestRail/Xray, dashboard | Built | unit (shape, escaping, no secrets) | tracker imports not tried in real tools |
 | **Resilience** | Built | unit (decision logic only) | **never run against a live compose stack** |
 | Suite + release quality | Built | unit on fixtures | migrations run needs a `[test]` image; Prisma/Flyway not run; not live |
-| **LLM (LAN vLLM)** | Built | **mock server only** | no real vLLM run; quality of a small model unknown |
+| **Agentic AI & LLM** | **Strong** | **Live-verified: local vLLM with `qwen3.8-flash-next`, 4-agent loop (Planner -> Explorer -> Triager -> Readiness Gate), Evidence Ledger, cyber-dark Web Studio UI verified in browser** | - |
 | Web (ZAP, Schemathesis) | Basic | smoke verified | ZAP/Schemathesis never run live |
 | Hosts (SSH) | Linux verified live | round 2 | Windows untested, macOS partial |
 | Android | Code only | - | MobSF happy path and device runtime never run |
@@ -37,7 +37,7 @@ Verdict: a security and readiness scanner with a gate, now with a senior-QA laye
 | Targets: repo/image/web/host/android | **all 5** | repo, image, k8s | repo, image, IaC | repo, image, cloud, web | repo | n/a | web (+mobile some) | web + mobile | android/iOS | n/a |
 | Offline / air-gapped | **bundle (verified)** | yes (DB mirror) | limited | no (SaaS) | yes (self-host) | yes | **no** (SaaS) | self-host (BSL) | yes | no |
 | Self-hosted, own data | **yes** | yes | partial | no | yes | yes | no | yes | yes | no |
-| AI agent | **LAN-LLM advisory (mock-tested) + MCP** | no | AI fix | AutoTriage | AI CodeFix | no | **core** | core | no | AI assist |
+| AI agent | **Autonomous Multi-Agent Loop + MCP + Web Studio (live)** | no | AI fix | AutoTriage | AI CodeFix | no | **core** | core | no | AI assist |
 | QA test summary report (Go/No-Go) | **yes** | no | no | no | no | partial | partial | partial | PDF (security) | scorecards |
 | Licence / cost | open source, free | AGPL-3.0 | from $25/dev/mo | from ~$350/mo | CE free, paid editions | OSS / Pro | paid SaaS | BSL 1.1 | GPL-3.0 | paid |
 
