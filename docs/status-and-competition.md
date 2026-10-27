@@ -39,7 +39,7 @@ Verdict: a security and readiness scanner with a gate, now with a senior-QA laye
 | Self-hosted, own data | **yes** | yes | partial | no | yes | yes | no | yes | yes | no |
 | AI agent | **LAN-LLM advisory (mock-tested) + MCP** | no | AI fix | AutoTriage | AI CodeFix | no | **core** | core | no | AI assist |
 | QA test summary report (Go/No-Go) | **yes** | no | no | no | no | partial | partial | partial | PDF (security) | scorecards |
-| Licence / cost | open source, free | Apache-2.0 | from $25/dev/mo | from ~$350/mo | CE free, paid editions | OSS / Pro | paid SaaS | BSL 1.1 | GPL-3.0 | paid |
+| Licence / cost | open source, free | AGPL-3.0 | from $25/dev/mo | from ~$350/mo | CE free, paid editions | OSS / Pro | paid SaaS | BSL 1.1 | GPL-3.0 | paid |
 
 **Ahead:** the only tool here combining security, readiness and functional QA across repo, image, web, host and Android with one computed verdict; offline and self-hosted with secret-safe sandboxing; evidence-first findings with prompt-injection handling.
 

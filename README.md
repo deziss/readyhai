@@ -4,7 +4,7 @@
 
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted QA tester and production-readiness gate.
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
 [![Tests](https://img.shields.io/badge/tests-117%20passed-success.svg)](tests/)
@@ -342,5 +342,5 @@ GitHub: [@AnshuKushwaha](https://github.com/AnshuKushwaha)
 
 ## License
 
-ReadyHai is distributed under the [Apache License 2.0](LICENSE).  
+ReadyHai is distributed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).  
 See [`LICENSE`](LICENSE) for full details.
