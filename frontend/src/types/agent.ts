@@ -20,7 +20,7 @@ export interface TestCaseResult {
   component: string;
   technique: string;
   method: string;
-  status: "PASS" | "FAIL" | "WARN";
+  status: "PASS" | "FAIL" | "WARN" | "SKIPPED" | "PLANNED" | "PENDING";
   latency_ms: number;
   curl: string;
   request_payload?: string | null;
@@ -46,15 +46,22 @@ export interface PillarScore {
 }
 
 export interface EvidenceLedger {
-  contract: PillarScore;
-  authz: PillarScore;
-  resilience: PillarScore;
-  observability: PillarScore;
-  composite_score: number;
-  verdict: "GO" | "CONDITIONAL_GO" | "NO_GO";
+  contract?: PillarScore;
+  authz?: PillarScore;
+  resilience?: PillarScore;
+  observability?: PillarScore;
+  value_score?: number;
+  authority_score?: number;
+  safety_score?: number;
+  evidence_score?: number;
+  overall_readiness?: number;
+  gate_verdict?: string;
+  composite_score?: number;
+  verdict?: "GO" | "CONDITIONAL_GO" | "NO_GO";
   approval_status?: "PENDING" | "APPROVED" | "REJECTED";
   approved_by?: string;
   approval_notes?: string;
+  executive_summary?: string;
 }
 
 export interface AgentRunData {

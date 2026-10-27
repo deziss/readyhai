@@ -50,8 +50,11 @@ $R scan ./my-service --baseline .readyhai/baseline.json
 # autonomous multi-agent QA run:
 $R agent http://localhost:3000 --max-steps 5
 
-# launch Web Studio SPA & REST API:
-$R serve --bind 127.0.0.1:8080              # visit http://127.0.0.1:8080 for the cyber-dark UI
+# launch backend REST API & Execution Engine (port 8080):
+$R serve --bind 127.0.0.1:8080
+
+# launch Next.js Agent Studio UI (port 3000):
+cd frontend && npm run dev                  # visit http://127.0.0.1:3000
 
 Server mode: `cp .env.example .env`, set `READYHAI_TOKEN` (16+ chars), `docker compose up -d`, then see [api.md](api.md) and [deployment.md](deployment.md).
 
@@ -61,4 +64,4 @@ Server mode: `cp .env.example .env`, set `READYHAI_TOKEN` (16+ chars), `docker c
 - Host (SSH), Android, MCP: implemented, tested against recorded fixtures; Windows probe and MobSF API shapes not verified live.
 - LLM & Agentic AI: implemented and live-verified with local vLLM reasoning models (`qwen3.8-flash-next`).
 - Increment 2 added `readyhai qa`, offline bundles, and static trend dashboard ([qa.md](qa.md)).
-- Increment 3 completed the autonomous **Agentic AI QA engine** (`readyhai agent <target>`), the 4-pillar **Evidence Ledger** (`Value`, `Authority`, `Safety`, `Evidence`), and the cyber-dark **Web Studio SPA** served live by `readyhai serve` at `http://127.0.0.1:8080/`. See [roadmap.md](roadmap.md) and [architecture.md](architecture.md).
+- Increment 3 completed the autonomous **Agentic AI QA engine** (`readyhai agent <target>`), the 4-pillar **Evidence Ledger** (`Value`, `Authority`, `Safety`, `Evidence`), and the cyber-dark **Agent Studio** Next.js interface at `http://127.0.0.1:3000` with the backend REST API on port `8080`. See [roadmap.md](roadmap.md) and [architecture.md](architecture.md).

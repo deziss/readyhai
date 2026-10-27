@@ -136,7 +136,7 @@ export function Composer({
             type="text"
             value={target}
             onChange={(e) => setTarget(e.target.value)}
-            placeholder="https://agent-prod.nuhire.in or http://localhost:3000"
+            placeholder="https://api.example.com or http://localhost:3000"
             className="flex-1 bg-[#07090e] border border-[#1e2a40] rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors"
           />
           <button
@@ -161,7 +161,7 @@ export function Composer({
 
         {/* Quick Domain Triggers */}
         <div className="flex flex-wrap gap-1.5">
-          {["https://agent-prod.nuhire.in", "http://localhost:3000", "http://127.0.0.1:8080"].map((url) => (
+          {["https://api.example.com", "http://localhost:3000", "http://127.0.0.1:8080"].map((url) => (
             <button
               key={url}
               type="button"

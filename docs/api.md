@@ -34,7 +34,33 @@ export T=your-token-here-16+chars; H="Authorization: Bearer $T"
 
 The Agentic AI endpoints provide direct access to the 4-agent autonomous pipeline and the Web Studio UI.
 
-#### 1. Check Model Connectivity & Health
+#### 1. URL Reconnaissance & Surface Scan
+Initiates route discovery and SPA shell detection. Every scan is automatically persisted to the global history archive with synthesized baseline test scenarios.
+```bash
+# Query via GET
+curl -s "http://127.0.0.1:8080/api/agent/discover?target=http://localhost:3000"
+
+# Or query via POST
+curl -s -X POST http://127.0.0.1:8080/api/agent/discover \
+  -H "Content-Type: application/json" \
+  -d '{"target": "https://api.example.com", "spec_url": null}'
+```
+Response:
+```json
+{
+  "target": "https://api.example.com",
+  "is_spa": false,
+  "count": 4,
+  "routes": [
+    {"path": "/", "method": "GET", "status_code": 200, "content_type": "application/json", "is_spa_shell": false, "is_api": true},
+    {"path": "/health", "method": "GET", "status_code": 200, "content_type": "application/json", "is_spa_shell": false, "is_api": true}
+  ],
+  "run_id": "20261027-183000-abcd",
+  "report": { ... }
+}
+```
+
+#### 2. Check Model Connectivity & Health
 ```bash
 curl -s http://127.0.0.1:8080/api/agent/status
 ```
@@ -75,13 +101,39 @@ Response (`AgentRunReport`):
   - `gate_verdict`: Deployment verdict (`GO`, `CONDITIONAL_GO`, `NO_GO`).
   - `overall_readiness`: Weighted overall percentage score.
 
-#### 3. List and Fetch Agent Runs
+#### 4. List, Fetch, and Delete Runs (Global History)
 ```bash
-# List past runs
+# List all past scans and test runs with full data
 curl -s http://127.0.0.1:8080/api/agent/runs
 
-# Fetch full run details
+# Fetch full run/scan report (including curl, payloads, logs, evidence ledger)
 curl -s http://127.0.0.1:8080/api/agent/runs/20261027-053327-57e2
+
+# Delete a run from persistent storage
+curl -s -X DELETE http://127.0.0.1:8080/api/agent/runs/20261027-053327-57e2
+```
+
+#### 5. Retest Individual Test Case
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/agent/retest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "https://api.example.com",
+    "case": {
+      "id": "TC-001",
+      "title": "Unauthenticated access check",
+      "component": "/api/auth/session",
+      "method": "GET",
+      "technique": "authz",
+      "input_hint": "Request without auth header",
+      "payload": null,
+      "expected_behavior": "HTTP 401 Unauthorized",
+      "expected_status": 401,
+      "risk_level": "high"
+    },
+    "is_spa": false,
+    "run_id": "20261027-053327-57e2"
+  }'
 ```
 
 ---

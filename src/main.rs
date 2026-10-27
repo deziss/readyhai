@@ -22,7 +22,6 @@ mod serve;
 mod snapshot;
 mod tools;
 mod web;
-mod web_ui;
 
 use clap::{Parser, Subcommand};
 use engine::ScanOpts;

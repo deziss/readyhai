@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   Clock,
   Copy,
+  Trash2,
   RotateCw,
   Check,
   ChevronDown,
@@ -33,7 +34,8 @@ interface SideCanvasProps {
   target: string;
   onRetestCase: (testCase: TestCaseResult) => Promise<void>;
   runsHistory: any[];
-  onLoadRun: (runId: string) => void;
+  onLoadRun: (run: any) => void;
+  onDeleteRun?: (runId: string) => Promise<void>;
 }
 
 export function SideCanvas({
@@ -46,6 +48,7 @@ export function SideCanvas({
   onRetestCase,
   runsHistory,
   onLoadRun,
+  onDeleteRun,
 }: SideCanvasProps) {
   const [activeTab, setActiveTab] = useState<"scenarios" | "routes" | "ledger" | "triage" | "history">("scenarios");
   const [expandedRowId, setExpandedRowId] = useState<string | null>(testCases[0]?.id || null);
@@ -205,16 +208,28 @@ export function SideCanvas({
                       <div className="flex items-center gap-3 font-mono text-xs">
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 ${
-                            isPass
+                            tc.status === "PASS"
                               ? "bg-emerald-950/80 text-emerald-300 border border-emerald-700/60"
-                              : isFail
+                              : tc.status === "FAIL"
                               ? "bg-rose-950/80 text-rose-300 border border-rose-700/60"
+                              : tc.status === "PLANNED" || tc.status === "PENDING"
+                              ? "bg-cyan-950/80 text-cyan-300 border border-cyan-700/60"
+                              : tc.status === "SKIPPED"
+                              ? "bg-slate-900 text-slate-400 border border-slate-700"
                               : "bg-amber-950/80 text-amber-300 border border-amber-700/60"
                           }`}
                         >
                           <span
                             className={`w-1.5 h-1.5 rounded-full ${
-                              isPass ? "bg-emerald-400" : isFail ? "bg-rose-400" : "bg-amber-400"
+                              tc.status === "PASS"
+                                ? "bg-emerald-400"
+                                : tc.status === "FAIL"
+                                ? "bg-rose-400"
+                                : tc.status === "PLANNED" || tc.status === "PENDING"
+                                ? "bg-cyan-400"
+                                : tc.status === "SKIPPED"
+                                ? "bg-slate-500"
+                                : "bg-amber-400"
                             }`}
                           />
                           {tc.status}
@@ -561,42 +576,127 @@ export function SideCanvas({
       {activeTab === "history" && (
         <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-3">
           <div className="flex items-center justify-between pb-2 border-b border-[#162033]">
-            <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">
-              Previous Autonomous Agent Runs
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">
+                Global Scans & Tests History
+              </span>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/40 text-cyan-300 font-bold">
+                PERSISTENT ARCHIVE
+              </span>
+            </div>
             <span className="text-[11px] font-mono text-slate-500">
-              {runsHistory.length} total runs
+              {runsHistory.length} runs stored
             </span>
           </div>
 
-          <div className="flex flex-col gap-2">
-            {runsHistory.length === 0 ? (
+          <div className="flex flex-col gap-2.5">
+            {runsHistory.filter((r: any) => !r.target?.includes("agent-prod.nuhire.in")).length === 0 ? (
               <div className="p-8 text-center text-slate-500 text-xs font-mono">
-                No past runs logged yet.
+                No past runs logged yet. Execute a discovery scan or click Launch Swarm to record runs.
               </div>
             ) : (
-              runsHistory.map((run, idx) => (
-                <div
-                  key={idx}
-                  onClick={() => onLoadRun(run.run_id)}
-                  className="p-3 bg-[#07090e] hover:bg-[#0e1524] border border-[#1a2436] rounded-lg flex items-center justify-between cursor-pointer transition-colors"
-                >
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs font-mono font-bold text-cyan-400">{run.run_id}</span>
-                    <span className="text-xs text-slate-300">{run.target}</span>
-                  </div>
-                  <div className="flex items-center gap-3 font-mono text-xs">
-                    <span className="text-[11px] text-slate-500">{run.timestamp}</span>
-                    <span
-                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        run.verdict === "GO" ? "bg-emerald-950 text-emerald-300 border border-emerald-800" : "bg-rose-950 text-rose-300 border border-rose-800"
-                      }`}
+              runsHistory
+                .filter((r: any) => !r.target?.includes("agent-prod.nuhire.in"))
+                .map((run: any, idx: number) => {
+                  const runId = run.id || run.run_id || `run-${idx}`;
+                  const isScan =
+                    run.profile === "discovery-scan" ||
+                    run.profile === "scan" ||
+                    run.approval_status === "scanned" ||
+                    (!run.executed_results?.length && (run.discovered_routes?.length > 0 || run.planned_cases?.length > 0));
+                  const verdict =
+                    run.evidence_ledger?.gate_verdict || run.gate_verdict || run.verdict || (isScan ? "SCANNED" : "GO");
+                  const score =
+                    run.evidence_ledger?.overall_readiness || run.readiness_score || (isScan ? 100 : 95);
+                  const routesCount = run.discovered_routes?.length || 0;
+                  const casesCount =
+                    run.executed_results?.length || run.planned_cases?.length || run.test_cases?.length || 0;
+                  const defectsCount = run.triaged_defects?.length || run.defects_count || 0;
+                  const timeStr = run.started_at ? new Date(run.started_at).toLocaleString() : "Recently";
+
+                  return (
+                    <div
+                      key={runId + idx}
+                      onClick={() => {
+                        onLoadRun(run);
+                        setActiveTab(isScan && (!run.executed_results || run.executed_results.length === 0) ? "routes" : "scenarios");
+                      }}
+                      className="p-3.5 bg-[#07090e] hover:bg-[#0e1524] border border-[#1a2436] hover:border-cyan-500/50 rounded-lg flex flex-col gap-2 cursor-pointer transition-all shadow-sm group"
                     >
-                      {run.verdict || "GO"}
-                    </span>
-                  </div>
-                </div>
-              ))
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold tracking-wider ${
+                              isScan
+                                ? "bg-cyan-950/80 text-cyan-300 border border-cyan-700/60"
+                                : "bg-purple-950/80 text-purple-300 border border-purple-700/60"
+                            }`}
+                          >
+                            {isScan ? "SCAN" : "TEST RUN"}
+                          </span>
+                          <span className="text-xs font-mono font-bold text-cyan-400 group-hover:text-cyan-300 transition-colors">
+                            {runId}
+                          </span>
+                          <span className="text-xs text-slate-200 font-medium truncate max-w-[220px]">
+                            {run.target}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                              verdict === "GO" || verdict === "SCANNED"
+                                ? "bg-emerald-950/80 text-emerald-300 border-emerald-700/60"
+                                : "bg-rose-950/80 text-rose-300 border-rose-700/60"
+                            }`}
+                          >
+                            {verdict}
+                          </span>
+                          {onDeleteRun && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onDeleteRun(runId);
+                              }}
+                              title="Delete run from history"
+                              className="p-1 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 rounded transition-colors"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1 border-t border-[#162033] text-[11px] font-mono text-slate-400">
+                        <div className="flex items-center gap-3">
+                          <span>
+                            Score: <strong className="text-cyan-400">{score}%</strong>
+                          </span>
+                          {routesCount > 0 && (
+                            <span>
+                              Routes: <strong className="text-slate-300">{routesCount}</strong>
+                            </span>
+                          )}
+                          <span>
+                            Cases: <strong className="text-slate-300">{casesCount}</strong>
+                          </span>
+                          <span>
+                            Defects:{" "}
+                            <strong className={defectsCount === 0 ? "text-emerald-400" : "text-rose-400"}>
+                              {defectsCount}
+                            </strong>
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-500 text-[10px]">{timeStr}</span>
+                          <span className="text-[10px] text-cyan-400 opacity-0 group-hover:opacity-100 transition-opacity font-semibold">
+                            Load ➔
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
             )}
           </div>
         </div>

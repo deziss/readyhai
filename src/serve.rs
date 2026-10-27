@@ -94,13 +94,13 @@ pub fn serve(bind: &str) -> Result<()> {
         });
         let app = Arc::new(App { token, tx, allowed_roots, scope, plugins });
         let router = Router::new()
-            .route("/", get(ui_index))
-            .route("/ui", get(ui_index))
+            .route("/", get(api_index))
+            .route("/ui", get(api_index))
             .route("/api/agent/status", get(agent_status))
-            .route("/api/agent/discover", get(agent_discover))
+            .route("/api/agent/discover", get(agent_discover).post(agent_discover_post))
             .route("/api/agent/run", post(agent_run))
             .route("/api/agent/runs", get(agent_runs_list))
-            .route("/api/agent/runs/{id}", get(agent_run_get))
+            .route("/api/agent/runs/{id}", get(agent_run_get).delete(agent_run_delete))
             .route("/api/agent/runs/{id}/approve", post(agent_approve))
             .route("/api/agent/runs/{id}/reject", post(agent_reject))
             .route("/api/agent/retest", post(agent_retest))
@@ -123,8 +123,27 @@ pub fn serve(bind: &str) -> Result<()> {
 }
 
 
-async fn ui_index() -> impl IntoResponse {
-    axum::response::Html(crate::web_ui::HTML_PAGE)
+async fn api_index() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(json!({
+            "name": "ReadyHai QA Engine & Production Gate API",
+            "version": env!("CARGO_PKG_VERSION"),
+            "status": "online",
+            "frontend_url": "http://localhost:3000",
+            "endpoints": {
+                "health": "/health",
+                "agent_status": "/api/agent/status",
+                "agent_discover": "/api/agent/discover",
+                "agent_run": "/api/agent/run",
+                "agent_runs": "/api/agent/runs",
+                "agent_run_detail": "/api/agent/runs/{id}",
+                "agent_run_approve": "/api/agent/runs/{id}/approve",
+                "agent_run_reject": "/api/agent/runs/{id}/reject",
+                "agent_retest": "/api/agent/retest"
+            }
+        })),
+    )
 }
 
 async fn agent_status() -> Response {
@@ -171,8 +190,8 @@ async fn agent_run(Json(req): Json<crate::agent::AgentRunRequest>) -> Response {
 }
 
 async fn agent_runs_list() -> Response {
-    let list = crate::agent::list_agent_runs();
-    Json(list).into_response()
+    let list = crate::agent::list_agent_full_runs();
+    Json(json!({"runs": list})).into_response()
 }
 
 async fn agent_run_get(Path(id): Path<String>) -> Response {
@@ -346,23 +365,69 @@ fn default_approver() -> String {
 #[derive(Deserialize)]
 struct DiscoverQuery {
     target: String,
-    #[serde(default)]
+    #[serde(default, alias = "spec_url")]
     spec: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct DiscoverBody {
+    target: String,
+    #[serde(default, alias = "spec")]
+    spec_url: Option<String>,
+}
+
 async fn agent_discover(Query(q): Query<DiscoverQuery>) -> Response {
+    let target = q.target.clone();
+    let spec = q.spec.clone();
     let res = tokio::task::spawn_blocking(move || {
-        let (routes, is_spa) = crate::agent::discover_routes(&q.target, q.spec.as_deref());
-        json!({
-            "target": q.target,
-            "is_spa": is_spa,
-            "routes": routes,
-            "count": routes.len(),
-        })
+        crate::agent::run_discovery_scan(&target, spec.as_deref())
     }).await;
 
     match res {
-        Ok(j) => Json(j).into_response(),
+        Ok(Ok(report)) => {
+            let is_spa = report.discovered_routes.iter().any(|r| r.is_spa_shell);
+            Json(json!({
+                "target": report.target,
+                "is_spa": is_spa,
+                "routes": report.discovered_routes,
+                "count": report.discovered_routes.len(),
+                "run_id": report.id,
+                "report": report,
+            })).into_response()
+        }
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Worker panicked: {e}")}))).into_response(),
+    }
+}
+
+async fn agent_discover_post(Json(b): Json<DiscoverBody>) -> Response {
+    let res = tokio::task::spawn_blocking(move || {
+        crate::agent::run_discovery_scan(&b.target, b.spec_url.as_deref())
+    }).await;
+
+    match res {
+        Ok(Ok(report)) => {
+            let is_spa = report.discovered_routes.iter().any(|r| r.is_spa_shell);
+            Json(json!({
+                "target": report.target,
+                "is_spa": is_spa,
+                "routes": report.discovered_routes,
+                "count": report.discovered_routes.len(),
+                "run_id": report.id,
+                "report": report,
+            })).into_response()
+        }
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Worker panicked: {e}")}))).into_response(),
+    }
+}
+
+async fn agent_run_delete(Path(id): Path<String>) -> Response {
+    if !engine::valid_run_id(&id) {
+        return err(StatusCode::BAD_REQUEST, "bad run id");
+    }
+    match crate::agent::delete_agent_run(&id) {
+        Ok(_) => Json(json!({"deleted": id, "status": "ok"})).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }
@@ -393,12 +458,18 @@ struct RetestPayload {
     case: crate::agent::PlannedCase,
     #[serde(default)]
     is_spa: bool,
+    #[serde(default)]
+    run_id: Option<String>,
 }
 
 async fn agent_retest(Json(body): Json<RetestPayload>) -> Response {
     let res = tokio::task::spawn_blocking(move || {
         let results = crate::agent::execute_cases(&[body.case], &body.target, body.is_spa);
-        results.into_iter().next()
+        let first = results.into_iter().next();
+        if let (Some(r), Some(run_id)) = (&first, &body.run_id) {
+            let _ = crate::agent::update_run_case_result(run_id, r);
+        }
+        first
     }).await;
 
     match res {
