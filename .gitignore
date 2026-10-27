@@ -31,6 +31,7 @@ secrets/
 # Allow intentionally fake test fixtures in tests/fixtures to remain tracked
 !tests/fixtures/**/.env
 !tests/fixtures/**/.env.example
+!tests/fixtures/**
 
 # Node & Playwright (runners/playwright)
 node_modules/
@@ -89,3 +90,7 @@ Thumbs.db
 *.swo
 *~
 *.bak
+
+# Allow test fixtures to remain tracked
+!tests/fixtures/**
+!tests/fixtures/**/*.log
