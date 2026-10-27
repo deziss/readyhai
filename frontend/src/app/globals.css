@@ -1,52 +1,67 @@
 @import "tailwindcss";
 
 :root {
-  --background: #080c14;
-  --foreground: #f1f5f9;
-  --card: #0e1526;
-  --card-border: #1e293b;
+  --bg-base: #06080e;
+  --bg-surface: #0b101a;
+  --bg-elevated: #111827;
+  --bg-overlay: #162033;
+  --border-subtle: #1a2436;
+  --border-muted: #24324a;
+  --border-accent: #0891b2;
   --primary: #06b6d4;
   --primary-glow: rgba(6, 182, 212, 0.25);
-  --accent: #3b82f6;
   --success: #10b981;
   --warning: #f59e0b;
   --danger: #f43f5e;
+  --info: #3b82f6;
+  --fg-default: #f8fafc;
+  --fg-muted: #94a3b8;
+  --fg-dim: #64748b;
 }
 
-body {
-  background-color: var(--background);
-  color: var(--foreground);
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--bg-base);
+  color: var(--fg-default);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  min-height: 100vh;
+  letter-spacing: -0.011em;
 }
 
-/* Custom Scrollbars */
+/* Custom Sleek Scrollbar */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
-  background: #080c14;
+  background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: #1e293b;
-  border-radius: 3px;
+  border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }
 
-/* Pulsing indicators */
-@keyframes pulseGlow {
-  0%, 100% {
-    transform: scale(1);
-    opacity: 0.9;
-  }
-  50% {
-    transform: scale(1.15);
-    opacity: 0.4;
-  }
+/* Code Previews */
+pre, code {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
-.pulse-glow {
-  animation: pulseGlow 2s infinite ease-in-out;
+
+/* Animations */
+@keyframes pulseSubtle {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(1.1); }
+}
+.pulse-subtle {
+  animation: pulseSubtle 2.2s infinite ease-in-out;
+}
+
+.glow-cyan {
+  box-shadow: 0 0 20px -3px rgba(6, 182, 212, 0.25);
+}
+
+.glow-emerald {
+  box-shadow: 0 0 20px -3px rgba(16, 185, 129, 0.25);
 }

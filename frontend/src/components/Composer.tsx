@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Zap, ShieldAlert, FileText, Search, Loader2, Sparkles, Play } from "lucide-react";
+import { Zap, ShieldAlert, FileCode, Search, Loader2, Sparkles, Play, Globe, Check } from "lucide-react";
 import type { DiscoveredTarget } from "@/types/agent";
 
 interface ComposerProps {
@@ -57,73 +57,77 @@ export function Composer({
   }
 
   return (
-    <div className="bg-[#0e1526] border border-slate-800/80 rounded-xl p-5 shadow-xl flex flex-col gap-4">
-      {/* Title */}
-      <div className="flex items-center justify-between">
+    <div className="bg-[#0b101a] border border-[#1a2436] rounded-xl p-4 shadow-xl flex flex-col gap-3.5">
+      {/* Title Bar */}
+      <div className="flex items-center justify-between pb-2 border-b border-[#162033]">
         <div className="flex items-center gap-2">
-          <span className="text-cyan-400 font-bold text-sm tracking-wide uppercase flex items-center gap-1.5">
-            <Sparkles className="w-4 h-4 text-cyan-400" />
+          <div className="w-5 h-5 rounded bg-cyan-950/60 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
+            <Sparkles className="w-3 h-3" />
+          </div>
+          <span className="text-xs font-bold tracking-wider uppercase text-slate-200">
             Agent Command Composer
           </span>
         </div>
-        <span className="text-[11px] font-mono text-cyan-400/80 bg-cyan-950/40 border border-cyan-800/40 px-2 py-0.5 rounded">
+        <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 border border-cyan-800/50 px-2 py-0.5 rounded font-semibold">
           NuHire Reference Mode
         </span>
       </div>
 
-      {/* Mode Switcher */}
-      <div className="grid grid-cols-3 gap-1.5 p-1 bg-slate-900/90 rounded-lg border border-slate-800">
+      {/* Segmented Mode Switcher */}
+      <div className="grid grid-cols-3 gap-1 p-1 bg-[#07090e] rounded-lg border border-[#162033]">
         <button
           type="button"
           onClick={() => handleModeChange("autonomous")}
-          className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
+          className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeMode === "autonomous"
-              ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-sm"
+              ? "bg-[#111827] text-cyan-300 border border-cyan-500/50 shadow-sm font-semibold"
               : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          <Zap className="w-3.5 h-3.5" />
+          <Zap className="w-3.5 h-3.5 text-cyan-400" />
           Autonomous QA
         </button>
         <button
           type="button"
           onClick={() => handleModeChange("adversarial")}
-          className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
+          className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeMode === "adversarial"
-              ? "bg-rose-500/20 text-rose-300 border border-rose-500/40 shadow-sm"
+              ? "bg-[#111827] text-rose-300 border border-rose-500/50 shadow-sm font-semibold"
               : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          <ShieldAlert className="w-3.5 h-3.5" />
+          <ShieldAlert className="w-3.5 h-3.5 text-rose-400" />
           Adversarial & Auth
         </button>
         <button
           type="button"
           onClick={() => handleModeChange("contract")}
-          className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5 ${
+          className={`py-1.5 px-2 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
             activeMode === "contract"
-              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm"
+              ? "bg-[#111827] text-emerald-300 border border-emerald-500/50 shadow-sm font-semibold"
               : "text-slate-400 hover:text-slate-200"
           }`}
         >
-          <FileText className="w-3.5 h-3.5" />
+          <FileCode className="w-3.5 h-3.5 text-emerald-400" />
           Contract & Spec
         </button>
       </div>
 
-      {/* Target URL */}
+      {/* Target URL with Architecture Badge */}
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between">
-          <label className="text-xs font-semibold text-slate-300">Target URL or Host</label>
+          <label className="text-[11px] font-mono uppercase font-bold text-slate-400">
+            Target Host or URL
+          </label>
           {discoveredData && (
             <span
-              className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
+              className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold tracking-tight ${
                 discoveredData.is_spa
                   ? "bg-purple-950/80 text-purple-300 border border-purple-700/60"
                   : "bg-emerald-950/80 text-emerald-300 border border-emerald-700/60"
               }`}
             >
-              {discoveredData.is_spa ? "SPA DETECTED (Next.js/React)" : "REST API DETECTED"} ({discoveredData.count} routes)
+              {discoveredData.is_spa ? "SPA DETECTED (Next.js/React)" : "REST API"} ({discoveredData.count} routes)
             </span>
           )}
         </div>
@@ -133,13 +137,13 @@ export function Composer({
             value={target}
             onChange={(e) => setTarget(e.target.value)}
             placeholder="https://agent-prod.nuhire.in or http://localhost:3000"
-            className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors"
+            className="flex-1 bg-[#07090e] border border-[#1e2a40] rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors"
           />
           <button
             type="button"
             onClick={onDiscover}
             disabled={isDiscovering || isRunning}
-            className="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50"
+            className="px-3 py-2 bg-[#111827] hover:bg-[#162033] border border-[#1e2a40] text-slate-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
           >
             {isDiscovering ? (
               <>
@@ -155,14 +159,14 @@ export function Composer({
           </button>
         </div>
 
-        {/* Quick Target Chips */}
-        <div className="flex flex-wrap gap-1.5 mt-1">
+        {/* Quick Domain Triggers */}
+        <div className="flex flex-wrap gap-1.5">
           {["https://agent-prod.nuhire.in", "http://localhost:3000", "http://127.0.0.1:8080"].map((url) => (
             <button
               key={url}
               type="button"
               onClick={() => setTarget(url)}
-              className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-900/80 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-cyan-300 transition-colors"
+              className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#07090e] hover:bg-[#111827] border border-[#1a2436] text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer"
             >
               {url}
             </button>
@@ -172,47 +176,49 @@ export function Composer({
 
       {/* OpenAPI Spec URL */}
       <div className="flex flex-col gap-1.5">
-        <label className="text-xs font-semibold text-slate-300">
-          OpenAPI Specification URL <span className="text-slate-500 font-normal">(Optional)</span>
+        <label className="text-[11px] font-mono uppercase font-bold text-slate-400">
+          OpenAPI Specification URL <span className="text-slate-500 font-normal lowercase">(optional)</span>
         </label>
         <input
           type="text"
           value={specUrl}
           onChange={(e) => setSpecUrl(e.target.value)}
-          placeholder="e.g. /openapi.json (leave blank for auto-discovery)"
-          className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
+          placeholder="/openapi.json or leave blank for auto-discovery"
+          className="bg-[#07090e] border border-[#1e2a40] rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
         />
       </div>
 
-      {/* Directives & Focus */}
+      {/* Directives & Suggestion Chips */}
       <div className="flex flex-col gap-1.5">
-        <label className="text-xs font-semibold text-slate-300">Agent Directives & Focus</label>
+        <label className="text-[11px] font-mono uppercase font-bold text-slate-400">
+          Agent Directives & Focus
+        </label>
         <textarea
           rows={3}
           value={directives}
           onChange={(e) => setDirectives(e.target.value)}
-          placeholder="e.g. Focus on unauthenticated session access, boundary limits, and prompt injection canaries"
-          className="bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors resize-none"
+          placeholder="e.g. Focus on unauthenticated session access, IDOR tenant boundaries, and prompt injection canaries"
+          className="bg-[#07090e] border border-[#1e2a40] rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors resize-none leading-relaxed"
         />
-        <div className="flex flex-wrap gap-1.5 mt-1">
+        <div className="flex flex-wrap gap-1.5">
           <button
             type="button"
             onClick={() => appendDirective("Check unauthenticated access to /api/auth/session")}
-            className="text-[11px] px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-800/40 text-cyan-300 transition-colors"
+            className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-800/50 text-cyan-300 transition-colors cursor-pointer"
           >
             + Auth Session Check
           </button>
           <button
             type="button"
             onClick={() => appendDirective("Probe 100KB boundary size on chat input")}
-            className="text-[11px] px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-800/40 text-cyan-300 transition-colors"
+            className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-800/50 text-cyan-300 transition-colors cursor-pointer"
           >
             + 100KB Boundary
           </button>
           <button
             type="button"
             onClick={() => appendDirective("Inject prompt override canary on chat")}
-            className="text-[11px] px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-800/40 text-cyan-300 transition-colors"
+            className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-800/50 text-cyan-300 transition-colors cursor-pointer"
           >
             + Prompt Injection
           </button>
@@ -222,11 +228,11 @@ export function Composer({
       {/* Profile & Max Steps */}
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-300">Execution Profile</label>
+          <label className="text-[11px] font-mono uppercase font-bold text-slate-400">Profile</label>
           <select
             value={profile}
             onChange={(e) => setProfile(e.target.value)}
-            className="bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
+            className="bg-[#07090e] border border-[#1e2a40] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 cursor-pointer"
           >
             <option value="standard">Standard (Multi-Agent)</option>
             <option value="quick">Quick (Contract/Smoke)</option>
@@ -234,14 +240,14 @@ export function Composer({
           </select>
         </div>
         <div className="flex flex-col gap-1">
-          <label className="text-xs font-semibold text-slate-300">Max Steps</label>
+          <label className="text-[11px] font-mono uppercase font-bold text-slate-400">Max Steps</label>
           <input
             type="number"
             min={1}
             max={20}
             value={maxSteps}
             onChange={(e) => setMaxSteps(Number(e.target.value))}
-            className="bg-slate-900 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+            className="bg-[#07090e] border border-[#1e2a40] rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
           />
         </div>
       </div>
@@ -251,7 +257,7 @@ export function Composer({
         type="button"
         onClick={onLaunch}
         disabled={isRunning}
-        className="w-full mt-2 py-2.5 px-4 bg-gradient-to-r from-blue-600 via-cyan-600 to-teal-500 hover:from-blue-500 hover:via-cyan-500 hover:to-teal-400 text-white rounded-lg font-bold text-xs tracking-wide uppercase flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(6,182,212,0.3)] transition-all disabled:opacity-50"
+        className="w-full mt-1 py-2.5 px-4 bg-gradient-to-r from-cyan-600 via-blue-600 to-indigo-600 hover:from-cyan-500 hover:via-blue-500 hover:to-indigo-500 text-white rounded-lg font-bold text-xs tracking-wider uppercase flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(6,182,212,0.35)] transition-all disabled:opacity-50 cursor-pointer active:scale-[0.99]"
       >
         {isRunning ? (
           <>
@@ -260,7 +266,7 @@ export function Composer({
           </>
         ) : (
           <>
-            <Play className="w-4 h-4 fill-white" />
+            <Play className="w-3.5 h-3.5 fill-white" />
             Launch Multi-Agent Swarm
           </>
         )}

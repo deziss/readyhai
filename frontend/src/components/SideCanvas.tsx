@@ -2,19 +2,20 @@
 
 import { useState } from "react";
 import {
-  ListChecks,
-  Shield,
-  Compass,
-  AlertOctagon,
-  History,
+  ListFilter,
+  Network,
+  ShieldCheck,
+  AlertTriangle,
+  Clock,
   Copy,
   RotateCw,
   Check,
   ChevronDown,
   ChevronUp,
+  FileCode2,
   ExternalLink,
-  Code2,
-  FileCheck2,
+  Shield,
+  Layers,
 } from "lucide-react";
 import type {
   TestCaseResult,
@@ -67,21 +68,21 @@ export function SideCanvas({
   }
 
   return (
-    <div className="bg-[#0e1526] border border-slate-800/80 rounded-xl flex flex-col h-full shadow-2xl overflow-hidden">
-      {/* Canvas Tab Navigation */}
-      <div className="flex items-center gap-1 p-2 border-b border-slate-800/80 bg-slate-900/60 overflow-x-auto">
+    <div className="bg-[#0b101a] border border-[#1a2436] rounded-xl flex flex-col h-full shadow-2xl overflow-hidden">
+      {/* Sleek Canvas Tab Bar */}
+      <div className="flex items-center gap-1.5 p-2 border-b border-[#162033] bg-[#07090e]/80 shrink-0 overflow-x-auto">
         <button
           type="button"
           onClick={() => setActiveTab("scenarios")}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
+          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap cursor-pointer ${
             activeTab === "scenarios"
-              ? "bg-[#0e1526] text-cyan-400 border border-slate-700 shadow-sm font-semibold"
-              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+              ? "bg-[#111827] text-cyan-300 border border-cyan-500/40 shadow-sm font-semibold"
+              : "text-slate-400 hover:text-slate-200 hover:bg-[#0e1524]"
           }`}
         >
-          <ListChecks className="w-3.5 h-3.5" />
+          <ListFilter className="w-3.5 h-3.5 text-cyan-400" />
           Scenarios & Inspector
-          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-300">
+          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-[#1e2a40] text-slate-300">
             {testCases.length}
           </span>
         </button>
@@ -89,15 +90,15 @@ export function SideCanvas({
         <button
           type="button"
           onClick={() => setActiveTab("routes")}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
+          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap cursor-pointer ${
             activeTab === "routes"
-              ? "bg-[#0e1526] text-cyan-400 border border-slate-700 shadow-sm font-semibold"
-              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+              ? "bg-[#111827] text-cyan-300 border border-cyan-500/40 shadow-sm font-semibold"
+              : "text-slate-400 hover:text-slate-200 hover:bg-[#0e1524]"
           }`}
         >
-          <Compass className="w-3.5 h-3.5" />
+          <Network className="w-3.5 h-3.5 text-cyan-400" />
           Discovered Routes
-          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-slate-800 text-slate-300">
+          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-[#1e2a40] text-slate-300">
             {discoveredRoutes.length}
           </span>
         </button>
@@ -105,28 +106,28 @@ export function SideCanvas({
         <button
           type="button"
           onClick={() => setActiveTab("ledger")}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
+          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap cursor-pointer ${
             activeTab === "ledger"
-              ? "bg-[#0e1526] text-cyan-400 border border-slate-700 shadow-sm font-semibold"
-              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+              ? "bg-[#111827] text-cyan-300 border border-cyan-500/40 shadow-sm font-semibold"
+              : "text-slate-400 hover:text-slate-200 hover:bg-[#0e1524]"
           }`}
         >
-          <Shield className="w-3.5 h-3.5" />
+          <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
           Evidence Ledger
         </button>
 
         <button
           type="button"
           onClick={() => setActiveTab("triage")}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
+          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap cursor-pointer ${
             activeTab === "triage"
-              ? "bg-[#0e1526] text-cyan-400 border border-slate-700 shadow-sm font-semibold"
-              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+              ? "bg-[#111827] text-cyan-300 border border-cyan-500/40 shadow-sm font-semibold"
+              : "text-slate-400 hover:text-slate-200 hover:bg-[#0e1524]"
           }`}
         >
-          <AlertOctagon className="w-3.5 h-3.5" />
+          <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
           Threat Triage
-          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-rose-950 text-rose-300">
+          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded-full bg-rose-950/80 text-rose-300 border border-rose-800/60 font-bold">
             {threats.length}
           </span>
         </button>
@@ -134,13 +135,13 @@ export function SideCanvas({
         <button
           type="button"
           onClick={() => setActiveTab("history")}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-all whitespace-nowrap ${
+          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap cursor-pointer ${
             activeTab === "history"
-              ? "bg-[#0e1526] text-cyan-400 border border-slate-700 shadow-sm font-semibold"
-              : "text-slate-400 hover:text-slate-200 hover:bg-slate-800/50"
+              ? "bg-[#111827] text-cyan-300 border border-cyan-500/40 shadow-sm font-semibold"
+              : "text-slate-400 hover:text-slate-200 hover:bg-[#0e1524]"
           }`}
         >
-          <History className="w-3.5 h-3.5" />
+          <Clock className="w-3.5 h-3.5 text-slate-400" />
           Runs History
         </button>
       </div>
@@ -148,9 +149,9 @@ export function SideCanvas({
       {/* Tab 1: Scenarios & Deep Payload Inspector */}
       {activeTab === "scenarios" && (
         <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-3">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-800/60">
-            <span className="text-xs font-semibold text-slate-300">
-              SYNTHESIZED TEST SCENARIOS & REPRODUCTIONS
+          <div className="flex items-center justify-between pb-2 border-b border-[#162033]">
+            <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">
+              Synthesized Adversarial Scenarios
             </span>
             <span className="text-[11px] font-mono text-slate-500">
               Click any scenario to inspect payloads & cURL
@@ -171,12 +172,12 @@ export function SideCanvas({
                 return (
                   <div
                     key={tc.id}
-                    className="border border-slate-800 rounded-lg bg-slate-900/50 overflow-hidden transition-all"
+                    className="border border-[#1a2436] rounded-lg bg-[#07090e]/70 overflow-hidden transition-all hover:border-[#24324a]"
                   >
                     {/* Scenario Summary Row */}
                     <div
                       onClick={() => setExpandedRowId(isExpanded ? null : tc.id)}
-                      className="p-3 flex items-center justify-between cursor-pointer hover:bg-slate-800/50 transition-colors"
+                      className="p-3 flex items-center justify-between cursor-pointer hover:bg-[#0e1524]/60 transition-colors"
                     >
                       <div className="flex items-center gap-3">
                         <span className="text-xs font-mono font-bold text-cyan-400 w-16">
@@ -185,25 +186,25 @@ export function SideCanvas({
                         <span
                           className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
                             tc.method === "POST"
-                              ? "bg-blue-950 text-blue-300 border border-blue-800"
-                              : "bg-slate-800 text-slate-300"
+                              ? "bg-emerald-950/80 text-emerald-300 border border-emerald-800"
+                              : "bg-sky-950/80 text-sky-300 border border-sky-800"
                           }`}
                         >
                           {tc.method || "GET"}
                         </span>
                         <div className="flex flex-col">
-                          <span className="text-xs font-medium text-slate-200">
+                          <span className="text-xs font-semibold text-slate-200">
                             {tc.title}
                           </span>
-                          <span className="text-[10px] font-mono text-slate-500">
-                            {tc.component} · {tc.technique}
+                          <span className="text-[10px] font-mono text-slate-400">
+                            {tc.component} · <span className="text-slate-500">{tc.technique}</span>
                           </span>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-3 font-mono text-xs">
                         <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 ${
                             isPass
                               ? "bg-emerald-950/80 text-emerald-300 border border-emerald-700/60"
                               : isFail
@@ -211,9 +212,24 @@ export function SideCanvas({
                               : "bg-amber-950/80 text-amber-300 border border-amber-700/60"
                           }`}
                         >
+                          <span
+                            className={`w-1.5 h-1.5 rounded-full ${
+                              isPass ? "bg-emerald-400" : isFail ? "bg-rose-400" : "bg-amber-400"
+                            }`}
+                          />
                           {tc.status}
                         </span>
-                        <span className="text-slate-400 text-[11px]">{tc.latency_ms}ms</span>
+                        <span
+                          className={`text-[11px] font-mono ${
+                            tc.latency_ms < 50
+                              ? "text-emerald-400"
+                              : tc.latency_ms < 150
+                              ? "text-amber-400"
+                              : "text-rose-400"
+                          }`}
+                        >
+                          {tc.latency_ms}ms
+                        </span>
                         {isExpanded ? (
                           <ChevronUp className="w-4 h-4 text-slate-400" />
                         ) : (
@@ -224,12 +240,13 @@ export function SideCanvas({
 
                     {/* Expandable Deep Inspector */}
                     {isExpanded && (
-                      <div className="p-4 border-t border-slate-800 bg-[#080d1a] flex flex-col gap-3">
+                      <div className="p-4 border-t border-[#1a2436] bg-[#05070c] flex flex-col gap-3.5">
                         {/* Request & Response Split Grid */}
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                           {/* Request Panel */}
-                          <div className="bg-slate-900/90 border border-slate-800 rounded p-3 text-xs flex flex-col gap-2">
-                            <span className="font-mono text-[10px] uppercase font-bold text-cyan-400">
+                          <div className="bg-[#0b101a] border border-[#1a2436] rounded-lg p-3 text-xs flex flex-col gap-2">
+                            <span className="font-mono text-[10px] uppercase font-bold text-cyan-400 flex items-center gap-1.5">
+                              <FileCode2 className="w-3.5 h-3.5" />
                               Request Details
                             </span>
                             <div className="font-mono text-[11px] text-slate-300">
@@ -241,16 +258,19 @@ export function SideCanvas({
                               {tc.component}
                             </div>
                             <div>
-                              <span className="text-slate-500 text-[10px] block font-mono">Payload:</span>
-                              <pre className="bg-slate-950 p-2 rounded text-[10px] font-mono text-slate-300 overflow-x-auto max-h-24">
+                              <span className="text-slate-500 text-[10px] block font-mono mb-1 font-semibold">
+                                Request Payload:
+                              </span>
+                              <pre className="bg-[#04060a] border border-[#162033] p-2.5 rounded text-[10px] font-mono text-slate-300 overflow-x-auto max-h-24">
                                 {tc.request_payload || "(None - Empty Request Body)"}
                               </pre>
                             </div>
                           </div>
 
                           {/* Response Panel */}
-                          <div className="bg-slate-900/90 border border-slate-800 rounded p-3 text-xs flex flex-col gap-2">
-                            <span className="font-mono text-[10px] uppercase font-bold text-cyan-400">
+                          <div className="bg-[#0b101a] border border-[#1a2436] rounded-lg p-3 text-xs flex flex-col gap-2">
+                            <span className="font-mono text-[10px] uppercase font-bold text-cyan-400 flex items-center gap-1.5">
+                              <ShieldCheck className="w-3.5 h-3.5" />
                               Observed Server Response
                             </span>
                             <div className="flex items-center gap-3 font-mono text-[11px]">
@@ -259,8 +279,8 @@ export function SideCanvas({
                                 <strong
                                   className={
                                     tc.response_status && tc.response_status >= 200 && tc.response_status < 400
-                                      ? "text-emerald-400"
-                                      : "text-amber-400"
+                                      ? "text-emerald-400 font-bold"
+                                      : "text-amber-400 font-bold"
                                   }
                                 >
                                   {tc.response_status || (tc.status === "PASS" ? 401 : 200)}
@@ -268,26 +288,28 @@ export function SideCanvas({
                               </div>
                               <div className="truncate">
                                 <span className="text-slate-500">Type: </span>
-                                <span className="text-slate-400">
+                                <span className="text-slate-300">
                                   {tc.response_content_type || "application/json"}
                                 </span>
                               </div>
                             </div>
                             <div>
-                              <span className="text-slate-500 text-[10px] block font-mono">Response Snippet:</span>
-                              <pre className="bg-slate-950 p-2 rounded text-[10px] font-mono text-slate-300 overflow-x-auto max-h-24">
+                              <span className="text-slate-500 text-[10px] block font-mono mb-1 font-semibold">
+                                Response Body Snippet:
+                              </span>
+                              <pre className="bg-[#04060a] border border-[#162033] p-2.5 rounded text-[10px] font-mono text-slate-300 overflow-x-auto max-h-24">
                                 {tc.response_body || '{"status": 401, "error": "authentication_required"}'}
                               </pre>
                             </div>
                           </div>
                         </div>
 
-                        {/* Assertion Verdict & Anti-False-Positive Proof */}
-                        <div className="p-2.5 rounded bg-cyan-950/30 border border-cyan-800/40 text-xs">
-                          <span className="text-cyan-400 font-bold block mb-1">
+                        {/* Semantic Assertion Proof */}
+                        <div className="p-3 rounded-lg bg-cyan-950/25 border border-cyan-800/40 text-xs">
+                          <span className="text-cyan-400 font-bold block mb-1 font-mono text-[11px] uppercase tracking-wider">
                             Semantic Assertion Proof:
                           </span>
-                          <span className="text-slate-300 text-[11px] leading-relaxed">
+                          <span className="text-slate-300 text-xs leading-relaxed">
                             {tc.assertion_details ||
                               "Verified real JSON API response. Distinguishes genuine API endpoints from SPA HTML fallbacks, eliminating false positives on single-page applications."}
                           </span>
@@ -304,7 +326,7 @@ export function SideCanvas({
                                 type="button"
                                 onClick={() => handleRetest(tc)}
                                 disabled={retestingId === tc.id}
-                                className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] font-mono flex items-center gap-1 transition-colors"
+                                className="px-2.5 py-1 rounded bg-[#111827] hover:bg-[#162033] border border-[#1e2a40] text-slate-300 text-[11px] font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
                               >
                                 <RotateCw className={`w-3 h-3 text-cyan-400 ${retestingId === tc.id ? "animate-spin" : ""}`} />
                                 Re-Test in Browser
@@ -312,7 +334,7 @@ export function SideCanvas({
                               <button
                                 type="button"
                                 onClick={() => copyCurl(tc.curl, tc.id)}
-                                className="px-2 py-1 rounded bg-cyan-950/60 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[11px] font-mono flex items-center gap-1 transition-colors"
+                                className="px-2.5 py-1 rounded bg-cyan-950/60 hover:bg-cyan-900 border border-cyan-800 text-cyan-300 text-[11px] font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
                               >
                                 {copiedId === tc.id ? (
                                   <>
@@ -328,7 +350,7 @@ export function SideCanvas({
                               </button>
                             </div>
                           </div>
-                          <pre className="p-2.5 rounded bg-black/80 border border-slate-800 font-mono text-[11px] text-cyan-300 overflow-x-auto select-all">
+                          <pre className="p-2.5 rounded bg-black/80 border border-[#1a2436] font-mono text-[11px] text-cyan-300 overflow-x-auto select-all">
                             {tc.curl}
                           </pre>
                         </div>
@@ -345,9 +367,9 @@ export function SideCanvas({
       {/* Tab 2: Discovered Routes */}
       {activeTab === "routes" && (
         <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-3">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-800/60">
+          <div className="flex items-center justify-between pb-2 border-b border-[#162033]">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-slate-300 uppercase">Target Endpoint Discovery</span>
+              <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">Target Endpoint Discovery</span>
               <span
                 className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
                   isSpa
@@ -363,10 +385,10 @@ export function SideCanvas({
             </span>
           </div>
 
-          <div className="border border-slate-800 rounded-lg overflow-hidden bg-slate-900/60">
+          <div className="border border-[#1a2436] rounded-lg overflow-hidden bg-[#07090e]/60">
             <table className="w-full text-left border-collapse text-xs font-mono">
               <thead>
-                <tr className="border-b border-slate-800 bg-slate-900 text-slate-400 text-[11px]">
+                <tr className="border-b border-[#1a2436] bg-[#090d16] text-slate-400 text-[11px]">
                   <th className="p-3">Method</th>
                   <th className="p-3">Route Path</th>
                   <th className="p-3">Status</th>
@@ -374,19 +396,19 @@ export function SideCanvas({
                   <th className="p-3">Classification</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800">
+              <tbody className="divide-y divide-[#162033]">
                 {discoveredRoutes.map((route, idx) => (
-                  <tr key={idx} className="hover:bg-slate-800/40 transition-colors">
+                  <tr key={idx} className="hover:bg-[#0e1524]/50 transition-colors">
                     <td className="p-3 text-cyan-400 font-bold">{route.method}</td>
                     <td className="p-3 text-slate-200">{route.path}</td>
                     <td className="p-3">
                       <span
                         className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                           route.status_code >= 200 && route.status_code < 300
-                            ? "bg-emerald-950 text-emerald-300"
+                            ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
                             : route.status_code === 401 || route.status_code === 403
-                            ? "bg-blue-950 text-blue-300"
-                            : "bg-amber-950 text-amber-300"
+                            ? "bg-blue-950 text-blue-300 border border-blue-800"
+                            : "bg-amber-950 text-amber-300 border border-amber-800"
                         }`}
                       >
                         {route.status_code}
@@ -421,8 +443,8 @@ export function SideCanvas({
       {/* Tab 3: Evidence Ledger */}
       {activeTab === "ledger" && (
         <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-4">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-800/60">
-            <span className="text-xs font-semibold text-slate-300 uppercase">
+          <div className="flex items-center justify-between pb-2 border-b border-[#162033]">
+            <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">
               4-Pillar Quality & Security Evidence Ledger
             </span>
             <span className="text-xs font-mono font-bold text-cyan-400">
@@ -465,17 +487,17 @@ export function SideCanvas({
                   "Verified response headers redact secrets, stack traces, and internal cloud infrastructure metadata.",
               },
             ].map((pillar, idx) => (
-              <div key={idx} className="bg-slate-900/80 border border-slate-800 rounded-lg p-3 flex flex-col gap-2">
+              <div key={idx} className="bg-[#07090e] border border-[#1a2436] rounded-lg p-3.5 flex flex-col gap-2.5">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-semibold text-slate-200">{pillar.title}</span>
-                  <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 px-1.5 py-0.5 rounded">
+                  <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 border border-cyan-800/40 px-1.5 py-0.5 rounded font-bold">
                     {pillar.weight}
                   </span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1 bg-slate-950 rounded-full h-2 overflow-hidden">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex-1 bg-[#04060a] border border-[#162033] rounded-full h-2 overflow-hidden">
                     <div
-                      className="bg-gradient-to-r from-cyan-500 to-emerald-400 h-full rounded-full"
+                      className="bg-gradient-to-r from-cyan-500 to-emerald-400 h-full rounded-full transition-all duration-500"
                       style={{ width: `${pillar.score}%` }}
                     />
                   </div>
@@ -491,8 +513,8 @@ export function SideCanvas({
       {/* Tab 4: Threat Triage */}
       {activeTab === "triage" && (
         <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-3">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-800/60">
-            <span className="text-xs font-semibold text-slate-300 uppercase">
+          <div className="flex items-center justify-between pb-2 border-b border-[#162033]">
+            <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">
               OWASP API Threat Triage & Blast Radius
             </span>
             <span className="text-[11px] font-mono text-slate-500">
@@ -509,11 +531,11 @@ export function SideCanvas({
               {threats.map((threat, idx) => (
                 <div
                   key={idx}
-                  className="bg-slate-900/80 border border-slate-800 rounded-lg p-3.5 flex flex-col gap-2"
+                  className="bg-[#07090e] border border-[#1a2436] rounded-lg p-3.5 flex flex-col gap-2"
                 >
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-bold text-rose-300 flex items-center gap-1.5">
-                      <AlertOctagon className="w-3.5 h-3.5 text-rose-400" />
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
                       {threat.title}
                     </span>
                     <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-rose-950 text-rose-300 border border-rose-800 font-bold">
@@ -524,7 +546,7 @@ export function SideCanvas({
                     <span className="text-slate-500">Affected: </span>
                     {threat.affected_routes.join(", ")}
                   </div>
-                  <div className="p-2.5 rounded bg-slate-950 border border-slate-850 text-[11px] text-slate-300 leading-relaxed">
+                  <div className="p-2.5 rounded bg-[#04060a] border border-[#162033] text-[11px] text-slate-300 leading-relaxed">
                     <strong className="text-cyan-400 block mb-1">Recommended Remediation:</strong>
                     {threat.remediation}
                   </div>
@@ -538,8 +560,8 @@ export function SideCanvas({
       {/* Tab 5: Runs History */}
       {activeTab === "history" && (
         <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-3">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-800/60">
-            <span className="text-xs font-semibold text-slate-300 uppercase">
+          <div className="flex items-center justify-between pb-2 border-b border-[#162033]">
+            <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">
               Previous Autonomous Agent Runs
             </span>
             <span className="text-[11px] font-mono text-slate-500">
@@ -557,7 +579,7 @@ export function SideCanvas({
                 <div
                   key={idx}
                   onClick={() => onLoadRun(run.run_id)}
-                  className="p-3 bg-slate-900/60 hover:bg-slate-850 border border-slate-800 rounded-lg flex items-center justify-between cursor-pointer transition-colors"
+                  className="p-3 bg-[#07090e] hover:bg-[#0e1524] border border-[#1a2436] rounded-lg flex items-center justify-between cursor-pointer transition-colors"
                 >
                   <div className="flex items-center gap-3">
                     <span className="text-xs font-mono font-bold text-cyan-400">{run.run_id}</span>
@@ -567,7 +589,7 @@ export function SideCanvas({
                     <span className="text-[11px] text-slate-500">{run.timestamp}</span>
                     <span
                       className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                        run.verdict === "GO" ? "bg-emerald-950 text-emerald-300" : "bg-rose-950 text-rose-300"
+                        run.verdict === "GO" ? "bg-emerald-950 text-emerald-300 border border-emerald-800" : "bg-rose-950 text-rose-300 border border-rose-800"
                       }`}
                     >
                       {run.verdict || "GO"}

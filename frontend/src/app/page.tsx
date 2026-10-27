@@ -228,7 +228,6 @@ export default function AgentStudioPage() {
     );
 
     try {
-      // Trigger live agent run
       const payload = {
         target,
         spec_url: specUrl || null,
@@ -237,7 +236,6 @@ export default function AgentStudioPage() {
         directives,
       };
 
-      // Animate stages
       setTimeout(() => {
         setStages((prev) =>
           prev.map((s, idx) =>
@@ -336,14 +334,14 @@ export default function AgentStudioPage() {
   }
 
   return (
-    <div className="flex flex-col min-h-screen bg-[#080c14]">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#06080e]">
       {/* Header */}
       <Header currentTarget={target} />
 
-      {/* Main Dual-Pane Studio Layout */}
-      <main className="flex-1 p-5 grid grid-cols-1 lg:grid-cols-12 gap-5 max-w-[1720px] w-full mx-auto">
+      {/* Main Dual-Pane Studio Layout (True Full Viewport Split) */}
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 min-h-0 overflow-hidden max-w-[1920px] w-full mx-auto">
         {/* Left Pane: Command Center & Tool Timeline (5 cols) */}
-        <div className="lg:col-span-5 flex flex-col gap-4">
+        <div className="lg:col-span-5 flex flex-col gap-3.5 h-full overflow-y-auto pr-1">
           <Composer
             target={target}
             setTarget={setTarget}
@@ -375,7 +373,7 @@ export default function AgentStudioPage() {
         </div>
 
         {/* Right Pane: Dynamic Side Canvas (7 cols) */}
-        <div className="lg:col-span-7 flex flex-col h-[calc(100vh-6rem)] sticky top-18">
+        <div className="lg:col-span-7 flex flex-col h-full min-h-0 overflow-hidden">
           <SideCanvas
             testCases={testCases}
             discoveredRoutes={discoveredData?.routes || []}
