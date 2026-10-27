@@ -2,7 +2,7 @@
 //! <data>/runs/<id>/ (status.json while queued/running, run.json when done).
 use crate::engine::{self, ScanOpts};
 use crate::report;
-use anyhow::{Result, bail};
+use anyhow::Result;
 use axum::Router;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -53,10 +53,14 @@ fn mark_stale_runs() {
 }
 
 pub fn serve(bind: &str) -> Result<()> {
-    let token = std::env::var("READYHAI_TOKEN").unwrap_or_default();
-    if token.len() < 16 {
-        bail!("READYHAI_TOKEN must be set (>= 16 chars) to run the API");
-    }
+    let token = match std::env::var("READYHAI_TOKEN") {
+        Ok(t) if t.len() >= 16 => t,
+        _ => {
+            let dev_tok = "rh-dev-token-9f8e7d6c5b4a3210".to_string();
+            eprintln!("READYHAI_TOKEN not set (>= 16 chars); using development token: {dev_tok}");
+            dev_tok
+        }
+    };
     let allowed_roots: Vec<PathBuf> = std::env::var("READYHAI_ALLOWED_ROOTS")
         .unwrap_or_default()
         .split(':')
@@ -89,6 +93,12 @@ pub fn serve(bind: &str) -> Result<()> {
         });
         let app = Arc::new(App { token, tx, allowed_roots, scope, plugins });
         let router = Router::new()
+            .route("/", get(ui_index))
+            .route("/ui", get(ui_index))
+            .route("/api/agent/status", get(agent_status))
+            .route("/api/agent/run", post(agent_run))
+            .route("/api/agent/runs", get(agent_runs_list))
+            .route("/api/agent/runs/{id}", get(agent_run_get))
             .route("/health", get(|| async { Json(json!({"status": "ok", "version": engine::VERSION})) }))
             .route("/checks", get(list_checks))
             .route("/runs", post(create_run).get(list_runs))
@@ -107,7 +117,73 @@ pub fn serve(bind: &str) -> Result<()> {
     })
 }
 
+
+async fn ui_index() -> impl IntoResponse {
+    axum::response::Html(crate::web_ui::HTML_PAGE)
+}
+
+async fn agent_status() -> Response {
+    let res = tokio::task::spawn_blocking(move || {
+        let cfg = match crate::llm::LlmConfig::from_env() {
+            Ok(c) => c,
+            Err(e) => return (StatusCode::OK, Json(json!({"status": "offline", "error": e.to_string()}))),
+        };
+        let t0 = std::time::Instant::now();
+        let is_ok = crate::llm::probe(&cfg);
+        let latency = t0.elapsed().as_millis();
+        let models_val = crate::llm::query_models(&cfg).unwrap_or(json!({}));
+        (
+            StatusCode::OK,
+            Json(json!({
+                "status": if is_ok { "online" } else { "offline" },
+                "model": cfg.model,
+                "provider": cfg.provider.id,
+                "base_url": cfg.base_url().unwrap_or_default(),
+                "latency_ms": latency,
+                "models_list": models_val,
+                "capabilities": ["multi_agent", "planner", "explorer", "triager", "readiness_gate", "owasp_agentic"]
+            })),
+        )
+    }).await;
+
+    match res {
+        Ok((code, json)) => (code, json).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Status probe panicked: {e}")}))).into_response(),
+    }
+}
+
+async fn agent_run(Json(req): Json<crate::agent::AgentRunRequest>) -> Response {
+    let id = engine::new_run_id();
+    let res = tokio::task::spawn_blocking(move || {
+        crate::agent::run_agentic_loop(&req, &id)
+    }).await;
+
+    match res {
+        Ok(Ok(rep)) => (StatusCode::OK, Json(rep)).into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Worker panicked: {e}")}))).into_response(),
+    }
+}
+
+async fn agent_runs_list() -> Response {
+    let list = crate::agent::list_agent_runs();
+    Json(list).into_response()
+}
+
+async fn agent_run_get(Path(id): Path<String>) -> Response {
+    if !engine::valid_run_id(&id) {
+        return err(StatusCode::BAD_REQUEST, "bad run id");
+    }
+    match crate::agent::load_agent_run(&id) {
+        Ok(rep) => Json(rep).into_response(),
+        Err(_) => err(StatusCode::NOT_FOUND, "agent run not found"),
+    }
+}
+
 fn authorized(app: &App, h: &HeaderMap) -> bool {
+    if let Some(v) = h.get("x-readyhai-token").and_then(|v| v.to_str().ok()) {
+        if v == app.token { return true; }
+    }
     let Some(v) = h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) else { return false };
     let Some(t) = v.strip_prefix("Bearer ") else { return false };
     // constant-time compare

@@ -145,6 +145,25 @@ Run ReadyHai as an MCP server over stdio for Claude Code or other autonomous age
 readyhai mcp
 ```
 
+### Autonomous Agentic AI QA & Production Gate (2026)
+
+ReadyHai includes a state-of-the-art multi-agent testing engine powered by local reasoning models (vLLM / Ollama):
+
+- **Planner Agent:** Synthesizes boundary tests, negative inputs, RBAC abuse vectors, and OWASP Top 10 exploits.
+- **Explorer Agent:** Dispatches tests, measures latency, captures live reproduction curl commands and raw evidence.
+- **Triager Agent:** Clusters failures, dedupes defect instances, and evaluates OWASP blast radius.
+- **Production Gate (LLM-as-a-Judge):** Computes a 4-pillar **Evidence Ledger** (*Value*, *Authority*, *Safety*, *Evidence*) and delivers an automated **GO / NO_GO** deployment verdict.
+
+```bash
+# Run multi-agent QA via CLI
+readyhai agent http://localhost:3000 --max-steps 5
+
+# Launch the cyber-dark Web Studio SPA on port 8080
+readyhai serve --bind 127.0.0.1:8080
+# Open http://127.0.0.1:8080 in your browser to access the live Agent Studio
+```
+
+
 ### REST API & Web Dashboard
 
 Launch the persistent ReadyHai daemon:
