@@ -4,7 +4,8 @@ use crate::engine::{self, ScanOpts};
 use crate::report;
 use anyhow::Result;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, State, Query};
+use serde::Deserialize;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -96,9 +97,13 @@ pub fn serve(bind: &str) -> Result<()> {
             .route("/", get(ui_index))
             .route("/ui", get(ui_index))
             .route("/api/agent/status", get(agent_status))
+            .route("/api/agent/discover", get(agent_discover))
             .route("/api/agent/run", post(agent_run))
             .route("/api/agent/runs", get(agent_runs_list))
             .route("/api/agent/runs/{id}", get(agent_run_get))
+            .route("/api/agent/runs/{id}/approve", post(agent_approve))
+            .route("/api/agent/runs/{id}/reject", post(agent_reject))
+            .route("/api/agent/retest", post(agent_retest))
             .route("/health", get(|| async { Json(json!({"status": "ok", "version": engine::VERSION})) }))
             .route("/checks", get(list_checks))
             .route("/runs", post(create_run).get(list_runs))
@@ -322,5 +327,83 @@ mod tests {
         assert_eq!(l[0]["state"], "queued");
         assert!(l[0]["verdict"].is_null());
         let _ = std::fs::remove_dir_all(d);
+    }
+}
+
+
+#[derive(Deserialize)]
+struct ApprovalPayload {
+    #[serde(default = "default_approver")]
+    user: String,
+    #[serde(default)]
+    notes: String,
+}
+
+fn default_approver() -> String {
+    "Lead QA Engineer".to_string()
+}
+
+#[derive(Deserialize)]
+struct DiscoverQuery {
+    target: String,
+    #[serde(default)]
+    spec: Option<String>,
+}
+
+async fn agent_discover(Query(q): Query<DiscoverQuery>) -> Response {
+    let res = tokio::task::spawn_blocking(move || {
+        let (routes, is_spa) = crate::agent::discover_routes(&q.target, q.spec.as_deref());
+        json!({
+            "target": q.target,
+            "is_spa": is_spa,
+            "routes": routes,
+            "count": routes.len(),
+        })
+    }).await;
+
+    match res {
+        Ok(j) => Json(j).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn agent_approve(Path(id): Path<String>, Json(body): Json<ApprovalPayload>) -> Response {
+    if !engine::valid_run_id(&id) {
+        return err(StatusCode::BAD_REQUEST, "bad run id");
+    }
+    match crate::agent::approve_agent_run(&id, &body.user, &body.notes) {
+        Ok(rep) => Json(rep).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn agent_reject(Path(id): Path<String>, Json(body): Json<ApprovalPayload>) -> Response {
+    if !engine::valid_run_id(&id) {
+        return err(StatusCode::BAD_REQUEST, "bad run id");
+    }
+    match crate::agent::reject_agent_run(&id, &body.user, &body.notes) {
+        Ok(rep) => Json(rep).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RetestPayload {
+    target: String,
+    case: crate::agent::PlannedCase,
+    #[serde(default)]
+    is_spa: bool,
+}
+
+async fn agent_retest(Json(body): Json<RetestPayload>) -> Response {
+    let res = tokio::task::spawn_blocking(move || {
+        let results = crate::agent::execute_cases(&[body.case], &body.target, body.is_spa);
+        results.into_iter().next()
+    }).await;
+
+    match res {
+        Ok(Some(r)) => Json(r).into_response(),
+        Ok(None) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "No execution result"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }
