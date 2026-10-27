@@ -1,3 +1,4 @@
+mod agent;
 mod android;
 mod baseline;
 mod bundle;
@@ -21,6 +22,7 @@ mod serve;
 mod snapshot;
 mod tools;
 mod web;
+mod web_ui;
 
 use clap::{Parser, Subcommand};
 use engine::ScanOpts;
@@ -130,6 +132,13 @@ enum Cmd {
     Tools {
         #[command(subcommand)]
         cmd: ToolsCmd,
+    },
+    /// Autonomous Agentic AI QA run (Planner -> Explorer -> Triager -> Readiness Gate)
+    Agent {
+        target: String,
+        /// Maximum autonomous exploration iterations
+        #[arg(long, default_value_t = 5)]
+        max_steps: usize,
     },
     /// REST API + job worker
     Serve {
@@ -304,6 +313,32 @@ fn run() -> anyhow::Result<u8> {
         Cmd::Tools { cmd: ToolsCmd::Update } => {
             tools::tools_update(&tools::Docker::detect(&engine::data_dir()))?;
             Ok(0)
+        }
+        Cmd::Agent { target, max_steps: _ } => {
+            let req = agent::AgentRunRequest {
+                target: target.clone(),
+                profile: "standard".to_string(),
+                spec_url: None,
+                custom_instructions: None,
+                dry_run: false,
+            };
+            let run_id = engine::new_run_id();
+            eprintln!("readyhai agent: starting autonomous loop for {target} (run {run_id})...");
+            let report = agent::run_agentic_loop(&req, &run_id)?;
+            let verdict = report.evidence_ledger.as_ref().map(|l| l.gate_verdict.as_str()).unwrap_or("UNKNOWN");
+            let score = report.evidence_ledger.as_ref().map(|l| l.overall_readiness).unwrap_or(0);
+            let summary = report.evidence_ledger.as_ref().map(|l| l.executive_summary.as_str()).unwrap_or("No summary");
+            println!("
+=== ReadyHai Agentic QA Report ===");
+            println!("Run ID:       {}", report.id);
+            println!("Target:       {}", report.target);
+            println!("Model:        {} ({})", report.model, report.provider);
+            println!("Gate Verdict: {}", verdict);
+            println!("Readiness:    {}%", score);
+            println!("Summary:      {}", summary);
+            println!("Defects:      {}", report.triaged_defects.len());
+            println!("Test Cases:   {}", report.executed_results.len());
+            Ok(if verdict == "GO" { 0 } else { 1 })
         }
         Cmd::Serve { bind } => {
             serve::serve(&bind)?;

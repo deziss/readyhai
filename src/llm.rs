@@ -24,7 +24,7 @@ pub struct ProviderDescriptor {
 
 pub const CATALOG: &[ProviderDescriptor] = &[
     ProviderDescriptor { id: "ollama", transport: Transport::OpenAiChat, base_url: "http://localhost:11434/v1", base_url_env: None, api_key_env: None, default_model: "qwen2.5-coder", local: true },
-    ProviderDescriptor { id: "vllm", transport: Transport::OpenAiChat, base_url: "", base_url_env: Some("READYHAI_VLLM_URL"), api_key_env: None, default_model: "Qwen/Qwen3-8B", local: true },
+    ProviderDescriptor { id: "vllm", transport: Transport::OpenAiChat, base_url: "http://10.10.110.42:13320/v1", base_url_env: Some("READYHAI_VLLM_URL"), api_key_env: None, default_model: "qwen3.8-flash-next", local: true },
     ProviderDescriptor { id: "openai", transport: Transport::OpenAiChat, base_url: "https://api.openai.com/v1", base_url_env: None, api_key_env: Some("OPENAI_API_KEY"), default_model: "gpt-4.1", local: false },
     ProviderDescriptor { id: "anthropic", transport: Transport::AnthropicMessages, base_url: "https://api.anthropic.com", base_url_env: None, api_key_env: Some("ANTHROPIC_API_KEY"), default_model: "claude-sonnet-5-5", local: false },
     ProviderDescriptor { id: "openrouter", transport: Transport::OpenAiChat, base_url: "https://openrouter.ai/api/v1", base_url_env: None, api_key_env: Some("OPENROUTER_API_KEY"), default_model: "anthropic/claude-sonnet-5-5", local: false },
@@ -48,9 +48,9 @@ pub struct LlmConfig {
 impl LlmConfig {
     pub fn from_env() -> Result<Self> {
         let explicit = std::env::var("READYHAI_LLM_PROVIDER").ok();
-        let default = if explicit.is_none() && std::env::var("READYHAI_VLLM_URL").is_ok() { Some("vllm".to_string()) } else { None };
+        let provider_id = explicit.unwrap_or_else(|| "vllm".to_string());
         Self::resolve(
-            explicit.or(default).as_deref(),
+            Some(&provider_id),
             std::env::var("READYHAI_LLM_MODEL").ok().as_deref(),
             matches!(std::env::var("READYHAI_LLM_ALLOW_CLOUD").as_deref(), Ok("1") | Ok("true")),
         )
@@ -69,10 +69,17 @@ impl LlmConfig {
         if let Some(b) = &self.base_override {
             return Ok(b.clone());
         }
-        match self.provider.base_url_env {
-            Some(e) => std::env::var(e).map_err(|_| anyhow::anyhow!("{e} not set")),
-            None => Ok(self.provider.base_url.to_string()),
+        if let Some(e) = self.provider.base_url_env {
+            if let Ok(v) = std::env::var(e) {
+                if !v.trim().is_empty() {
+                    return Ok(v);
+                }
+            }
         }
+        if !self.provider.base_url.is_empty() {
+            return Ok(self.provider.base_url.to_string());
+        }
+        bail!("{} base URL not set", self.provider.id)
     }
 }
 
@@ -233,6 +240,18 @@ pub fn probe(cfg: &LlmConfig) -> bool {
     matches!(rq.send(), Ok(r) if r.status().as_u16() < 500)
 }
 
+/// Fetch list of models from provider /models endpoint.
+pub fn query_models(cfg: &LlmConfig) -> Result<Value> {
+    let base = cfg.base_url()?;
+    let c = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(3)).build()?;
+    let mut rq = c.get(format!("{}/models", base.trim_end_matches('/')));
+    if let Ok(Some(k)) = key(cfg) {
+        rq = rq.bearer_auth(k);
+    }
+    let r = rq.send()?.error_for_status()?.json()?;
+    Ok(r)
+}
+
 /// Per-run call and wall-clock budget. Cache hits are free.
 #[derive(Debug)]
 pub struct Budget {
@@ -309,7 +328,7 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
                 "model": cfg.model,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 800,
+                "max_tokens": 2048,
                 "response_format": {"type": "json_object"},
             });
             for attempt in 0..2 {
@@ -323,7 +342,17 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
                     continue;
                 }
                 let v: Value = r.error_for_status()?.json()?;
-                return Ok(v["choices"][0]["message"]["content"].as_str().unwrap_or("").to_string());
+                let msg = &v["choices"][0]["message"];
+                let content = msg["content"].as_str().unwrap_or("").to_string();
+                if !content.trim().is_empty() {
+                    return Ok(content);
+                }
+                if let Some(reasoning) = msg["reasoning"].as_str().or_else(|| msg["reasoning_content"].as_str()) {
+                    if reasoning.contains("{") && reasoning.contains("}") {
+                        return Ok(reasoning.to_string());
+                    }
+                }
+                return Ok(content);
             }
             bail!("LLM rejected the request")
         }
