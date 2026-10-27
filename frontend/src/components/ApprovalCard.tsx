@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { CheckCircle2, XCircle, ShieldCheck, UserCheck, AlertTriangle } from "lucide-react";
+import { CheckCircle2, XCircle, ShieldCheck, UserCheck, AlertTriangle, Stamp } from "lucide-react";
 import type { EvidenceLedger } from "@/types/agent";
 
 interface ApprovalCardProps {
@@ -37,18 +37,18 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
 
   return (
     <div
-      className={`border rounded-xl p-5 shadow-xl transition-all ${
+      className={`border rounded-xl p-4 shadow-xl transition-all ${
         signStatus === "approved"
-          ? "bg-emerald-950/20 border-emerald-500/40"
+          ? "bg-emerald-950/20 border-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.15)]"
           : signStatus === "rejected"
-          ? "bg-rose-950/20 border-rose-500/40"
-          : "bg-[#0e1526] border-slate-800"
+          ? "bg-rose-950/20 border-rose-500/50 shadow-[0_0_20px_rgba(244,63,94,0.15)]"
+          : "bg-[#0b101a] border-[#1a2436]"
       }`}
     >
-      <div className="flex items-start justify-between mb-3">
+      <div className="flex items-start justify-between pb-2.5 border-b border-[#162033] mb-3">
         <div className="flex items-center gap-2.5">
           <div
-            className={`w-9 h-9 rounded-lg flex items-center justify-center ${
+            className={`w-8 h-8 rounded-lg flex items-center justify-center ${
               signStatus === "approved"
                 ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
                 : signStatus === "rejected"
@@ -56,13 +56,13 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
                 : "bg-cyan-500/10 text-cyan-400 border border-cyan-500/30"
             }`}
           >
-            <ShieldCheck className="w-5 h-5" />
+            <ShieldCheck className="w-4 h-4" />
           </div>
           <div>
             <span className="text-[10px] font-bold tracking-wider text-slate-400 uppercase block font-mono">
               Governance Gate Review
             </span>
-            <span className="text-sm font-semibold text-slate-100">
+            <span className="text-xs font-semibold text-slate-100">
               Human-in-the-Loop Release Approval
             </span>
           </div>
@@ -71,32 +71,32 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
         <span
           className={`px-3 py-1 rounded-full text-xs font-mono font-bold border tracking-wider ${
             isGo
-              ? "bg-emerald-950/60 text-emerald-300 border-emerald-600/60"
-              : "bg-rose-950/60 text-rose-300 border-rose-600/60"
+              ? "bg-emerald-950/80 text-emerald-300 border-emerald-600/70"
+              : "bg-rose-950/80 text-rose-300 border-rose-600/70"
           }`}
         >
           {evidenceLedger.verdict}
         </span>
       </div>
 
-      <p className="text-xs text-slate-400 mb-3 leading-relaxed">
+      <p className="text-xs text-slate-300 mb-3 leading-relaxed">
         Autonomous QA verification complete. Review the Evidence Ledger score and sign off for production deployment:
       </p>
 
-      {/* Stats Row */}
-      <div className="grid grid-cols-3 gap-2 p-2.5 bg-slate-900/80 rounded-lg border border-slate-800/80 mb-3 text-xs font-mono">
+      {/* Stats Metric Strip */}
+      <div className="grid grid-cols-3 gap-2 p-2.5 bg-[#07090e] rounded-lg border border-[#162033] mb-3 text-xs font-mono">
         <div>
-          <span className="text-slate-500 block text-[10px]">COMPOSITE SCORE</span>
+          <span className="text-slate-500 block text-[10px] uppercase font-bold">Score</span>
           <span className="text-cyan-400 font-bold text-sm">{evidenceLedger.composite_score}%</span>
         </div>
         <div>
-          <span className="text-slate-500 block text-[10px]">DEFECT COUNT</span>
+          <span className="text-slate-500 block text-[10px] uppercase font-bold">Defects</span>
           <span className={defectCount === 0 ? "text-emerald-400 font-bold text-sm" : "text-rose-400 font-bold text-sm"}>
             {defectCount}
           </span>
         </div>
         <div>
-          <span className="text-slate-500 block text-[10px]">OPERATOR STATUS</span>
+          <span className="text-slate-500 block text-[10px] uppercase font-bold">Review</span>
           <span
             className={`font-bold text-xs uppercase ${
               signStatus === "approved"
@@ -111,29 +111,29 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
         </div>
       </div>
 
-      {/* Operator Inputs */}
+      {/* Operator Sign-Off Action */}
       {signStatus === "pending" ? (
-        <div className="flex flex-col gap-2 mb-3">
+        <div className="flex flex-col gap-2">
           <input
             type="text"
             value={operator}
             onChange={(e) => setOperator(e.target.value)}
             placeholder="Operator Sign-Off ID (e.g. secops@nuhire.in)"
-            className="bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-xs text-slate-200 font-mono"
+            className="bg-[#07090e] border border-[#1e2a40] rounded px-3 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-cyan-500"
           />
           <input
             type="text"
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Audit notes"
-            className="bg-slate-900 border border-slate-800 rounded px-3 py-1.5 text-xs text-slate-200"
+            className="bg-[#07090e] border border-[#1e2a40] rounded px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
           />
           <div className="grid grid-cols-2 gap-2 mt-1">
             <button
               type="button"
               disabled={isSubmitting}
               onClick={() => handleAction("approved")}
-              className="py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all"
+              className="py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-all cursor-pointer"
             >
               <CheckCircle2 className="w-3.5 h-3.5" />
               Approve for Deployment
@@ -142,7 +142,7 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
               type="button"
               disabled={isSubmitting}
               onClick={() => handleAction("rejected")}
-              className="py-2 px-3 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(244,63,94,0.2)] transition-all"
+              className="py-2 px-3 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(244,63,94,0.3)] transition-all cursor-pointer"
             >
               <XCircle className="w-3.5 h-3.5" />
               Block Release
@@ -150,9 +150,9 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
           </div>
         </div>
       ) : (
-        <div className="p-3 bg-slate-900/80 rounded-lg border border-slate-800 flex items-center gap-2 text-xs font-mono">
-          <UserCheck className="w-4 h-4 text-cyan-400" />
-          <span className="text-slate-300">
+        <div className="p-3 bg-[#07090e] rounded-lg border border-[#162033] flex items-center gap-2.5 text-xs font-mono">
+          <UserCheck className="w-4 h-4 text-cyan-400 shrink-0" />
+          <span className="text-slate-300 leading-normal">
             Signed off by <strong className="text-cyan-300">{operator}</strong> · {notes}
           </span>
         </div>
