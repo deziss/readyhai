@@ -76,7 +76,7 @@ export function SideCanvas({
       <div className="flex items-center gap-1.5 p-2 border-b border-[#162033] bg-[#07090e]/80 shrink-0 overflow-x-auto">
         <button
           type="button"
-          onClick={() => setActiveTab("scenarios")}
+          id="tab-scenarios" onClick={() => setActiveTab("scenarios")}
           className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap cursor-pointer ${
             activeTab === "scenarios"
               ? "bg-[#111827] text-cyan-300 border border-cyan-500/40 shadow-sm font-semibold"
@@ -92,7 +92,7 @@ export function SideCanvas({
 
         <button
           type="button"
-          onClick={() => setActiveTab("routes")}
+          id="tab-routes" onClick={() => setActiveTab("routes")}
           className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap cursor-pointer ${
             activeTab === "routes"
               ? "bg-[#111827] text-cyan-300 border border-cyan-500/40 shadow-sm font-semibold"
@@ -108,7 +108,7 @@ export function SideCanvas({
 
         <button
           type="button"
-          onClick={() => setActiveTab("ledger")}
+          id="tab-ledger" onClick={() => setActiveTab("ledger")}
           className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap cursor-pointer ${
             activeTab === "ledger"
               ? "bg-[#111827] text-cyan-300 border border-cyan-500/40 shadow-sm font-semibold"
@@ -121,7 +121,7 @@ export function SideCanvas({
 
         <button
           type="button"
-          onClick={() => setActiveTab("triage")}
+          id="tab-triage" onClick={() => setActiveTab("triage")}
           className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap cursor-pointer ${
             activeTab === "triage"
               ? "bg-[#111827] text-cyan-300 border border-cyan-500/40 shadow-sm font-semibold"
@@ -137,7 +137,7 @@ export function SideCanvas({
 
         <button
           type="button"
-          onClick={() => setActiveTab("history")}
+          id="tab-history" onClick={() => setActiveTab("history")}
           className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all whitespace-nowrap cursor-pointer ${
             activeTab === "history"
               ? "bg-[#111827] text-cyan-300 border border-cyan-500/40 shadow-sm font-semibold"

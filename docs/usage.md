@@ -12,7 +12,7 @@ Binary: `readyhai` (dev build: `target/debug/readyhai`; `cargo` lives in `~/.car
 | `readyhai tools pull [--lock FILE]` | `docker pull` every image in `tools.lock.toml`; optionally write resolved digests |
 | `readyhai tools update` | Refresh grype DB, semgrep rules, Lynis tarball (the only networked step) |
 | `readyhai agent <target> [--max-steps N]` | Autonomous Agentic AI QA run (Planner -> Explorer -> Triager -> Readiness Gate) |
-| `readyhai serve [--bind ADDR]` | REST API + job worker + cyber-dark Web Studio UI (default `127.0.0.1:8080`) |
+| `readyhai serve [--bind ADDR]` | High-performance REST API + async engine; auto-redirects to Next.js Agent Studio (default `127.0.0.1:8080`) |
 | `readyhai mcp` | MCP server on stdio (tools: scan, checks, run, findings) |
 | `readyhai ping [--url URL]` | Container HEALTHCHECK probe (default `http://127.0.0.1:8080/health`), exit 0 healthy / 1 not |
 
@@ -38,6 +38,14 @@ Binary: `readyhai` (dev build: `target/debug/readyhai`; `cargo` lives in `~/.car
 Progress, the per-check table and the verdict go to **stderr**; reports are files. On start it prints `readyhai <ver> · run <id> · <target> · profile <p>`: note the run id, you need it for `baseline accept`.
 
 Example summary line: `[part] tool.sbom_cve  12 finding(s) — 25 of 26 deps unpinned; ...` with markers `ok`, `FAIL`, `part`, `skip`, `n/a`, `ERR`.
+
+## Persistent Global History & Live Retesting
+
+Every scan and test run in ReadyHai is persistently archived on disk in `~/.local/share/readyhai/agent-runs/`:
+- **Active URL Reconnaissance Scans (`/api/agent/discover`):** Automatically saves route classifications (API vs SPA fallback), synthesized baseline test vectors, probe latencies, and initial evidence ledger.
+- **Autonomous Swarm Test Runs (`/api/agent/run`):** Archives full 4-agent trace logs, adversarial payloads, live response bodies, reproduction cURL commands, OWASP threat clusters, and signed governance gate verdicts.
+- **Live Re-Testing in Browser:** Retesting any individual scenario via the UI or `POST /api/agent/retest` executes a live browser probe and mutates the persisted run record on disk with updated latencies and assertion proofs.
+- **Run Management & Deletion:** The UI "Runs History" tab renders distinct `SCAN` vs `TEST RUN` badges, test case counts, defect metrics, and an instant deletion action via `DELETE /api/agent/runs/{id}`.
 
 ## Autonomous Agentic AI (`readyhai agent`)
 
@@ -160,8 +168,13 @@ readyhai scan . --plugins ./plugins
 readyhai agent http://localhost:3000 --max-steps 5
 
 # 10. Web Studio UI (SPA) + REST API
+# Start ReadyHai Backend API Engine (default port 8080)
 readyhai serve --bind 127.0.0.1:8080
-# Open http://127.0.0.1:8080 in your browser to view the interactive Agent Studio
+
+# In a separate terminal or service, launch the Next.js 15 Agent Studio (port 3000):
+cd frontend && npm run dev -- -p 3000
+# Open http://127.0.0.1:3000 in your browser for the full cyber-dark studio interface.
+# (Visiting http://127.0.0.1:8080 in a browser automatically redirects you to port 3000)
 ```
 
 ### NuHire

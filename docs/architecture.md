@@ -50,6 +50,14 @@ The Agentic AI subsystem in `src/agent.rs` introduces an autonomous multi-agent 
 [Evidence Ledger] ───────► GO / CONDITIONAL_GO / NO_GO Verdict
 ```
 
+### Global History Archive & Persistence Engine
+
+All scans and test runs are persisted in the local data directory under `~/.local/share/readyhai/agent-runs/`:
+- **Unified `AgentRunReport` Schema:** Standardized JSON persistence containing discovered routes, synthesized test vectors, response payloads, reproduction cURL snippets, defect clusters, and 4-pillar Evidence Ledgers.
+- **Reconnaissance Discovery Persistence:** When `/api/agent/discover` executes, a full report profile `"discovery-scan"` is stored, making active discovery history visible across browser sessions and CLI runs.
+- **In-Place Retest Mutation:** When `/api/agent/retest` is invoked, the engine updates the test case result in-memory and atomically rewrites the JSON file on disk, maintaining an accurate audit ledger.
+- **Strict Domain Exclusions:** Enforced server-side filtering (`out.retain(...)`) guarantees that sensitive or excluded domains (such as `agent-prod.nuhire.in`) never appear in query listings or disk-backed reports.
+
 ### The 4 Pillars of the 2026 Evidence Ledger
 
 1. **Value Pillar (Weight: 25%):**
