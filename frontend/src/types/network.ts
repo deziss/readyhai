@@ -191,3 +191,58 @@ export interface DeepAuditReport {
   mtu_sweep: MtuSweepAudit;
   remediation_checklist: string[];
 }
+
+export interface MultiRegionRequest {
+  target: string;
+  timeout_ms?: number;
+}
+
+export interface RegionProbeResult {
+  region_id: string;
+  region_name: string;
+  flag: string;
+  location: string;
+  resolved_ip: string;
+  dns_time_ms: number;
+  tcp_connect_ms: number;
+  ttfb_ms: number;
+  total_time_ms: number;
+  http_status: number;
+  edge_pop: string;
+  status: "OPTIMAL" | "ELEVATED" | "DEGRADED" | "OFFLINE" | string;
+  jitter_ms: number;
+  packet_loss_pct: number;
+  notes: string;
+}
+
+export interface MultiRegionReport {
+  target: string;
+  timestamp: string;
+  regions: RegionProbeResult[];
+  fastest_region: string;
+  slowest_region: string;
+  geo_dns_consistent: boolean;
+  cdn_edge_active: boolean;
+  regional_disparity_ms: number;
+  agent_verdict: string;
+  recommendations: string[];
+}
+
+export interface PrCommentPayload {
+  title?: string;
+  verdict?: string;
+  score?: number;
+  commit_sha?: string;
+  target?: string;
+  findings_count?: number;
+  ledger_conformance?: number;
+  ledger_rbac?: number;
+  ledger_resilience?: number;
+  ledger_observability?: number;
+}
+
+export interface PrCommentResponse {
+  markdown: string;
+  github_action_yaml: string;
+  badge_markdown: string;
+}
