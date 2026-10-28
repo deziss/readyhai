@@ -161,13 +161,36 @@ readyhai agent https://api.example.com --max-steps 6
 # 1. Start the ReadyHai backend engine (port 8080)
 readyhai serve --bind 127.0.0.1:8080
 
-# 2. Start the dedicated Next.js Agent Studio frontend (port 3000)
+# 2. Start the dedicated Next.js SaaS frontend (port 3000)
 cd frontend && npm run dev -- -p 3000
-# Open http://127.0.0.1:3000 in your browser to access the Agent Studio UI
+# Open http://127.0.0.1:3000 in your browser to access the SaaS UI suite
 
 # Or launch both together via Docker Compose:
 docker compose up -d
 ```
+
+### Hierarchical SaaS Web Interface (Port 3000)
+
+The enterprise Next.js SaaS interface features top-level hierarchical navigation separating operational modes and history sessions:
+
+1. **Agent Studio**:
+   - Interactive 4-agent QA composer (Supervisor, Discovery, Planner, Critic).
+   - Real-time pipeline stage monitor and live adversarial case retesting.
+2. **Agent QA Swarms History**:
+   - Master-detail session archive of all autonomous agent runs.
+   - Discovered attack surfaces and route classification (API contracts vs SPA shell).
+   - Adversarial test scenarios with exact reproduction cURLs, payload assertions, and observed HTTP response snippets.
+   - 4-Pillar Evidence Ledger (*Contract Fidelity*, *AuthZ Boundary*, *Failure Resilience*, *Observability*) and gate sign-off certificate.
+   - "Load Session into Studio" for instant interactive continuation.
+3. **Codebase & Security Scans History**:
+   - Master-detail session archive of all static scans (git repos, local codebases, container images).
+   - Instant filtering by verdict (`PASS`, `WARN`, `FAIL`), target kind (`repo`, `image`, `host`), and finding severity.
+   - Security Checks Execution Grid (Dockerfile, Dependencies, Compose, K8s, CI, Repo, Gitleaks, Grype, Semgrep, Hadolint, Checkov).
+   - **Direct Report Artifact Downloads & Modal Preview**:
+     - Embedded Interactive HTML Report (`readyhai-report.html`)
+     - GitHub Security & VS Code SARIF 2.1.0 (`readyhai-report.sarif`)
+     - Structured JSON (`readyhai-report.json`)
+     - CI/CD Gate JUnit XML (`readyhai-report.junit.xml`)
 
 
 ### REST API & Web Dashboard

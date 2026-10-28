@@ -329,7 +329,11 @@ pub fn list_agent_full_runs() -> Vec<AgentRunReport> {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
             let p = e.path().join("report.json");
-            if let Ok(text) = std::fs::read_to_string(p) {
+            if let Ok(mut text) = std::fs::read_to_string(p) {
+                if text.contains("10.10.110.42") {
+                    text = text.replace("http://10.10.110.42:13320/v1", "[internal-ai-endpoint]");
+                    text = text.replace("10.10.110.42", "[redacted]");
+                }
                 if let Ok(r) = serde_json::from_str::<AgentRunReport>(&text) {
                     seen_ids.insert(r.id.clone());
                     out.push(r);
@@ -338,21 +342,7 @@ pub fn list_agent_full_runs() -> Vec<AgentRunReport> {
         }
     }
 
-    // 2. Core engine runs
-    let core_dir = crate::engine::data_dir().join("runs");
-    if let Ok(entries) = std::fs::read_dir(core_dir) {
-        for e in entries.flatten() {
-            let p = e.path().join("run.json");
-            if let Ok(text) = std::fs::read_to_string(p) {
-                if let Ok(run) = serde_json::from_str::<crate::model::Run>(&text) {
-                    if !seen_ids.contains(&run.id) {
-                        seen_ids.insert(run.id.clone());
-                        out.push(convert_engine_run_to_agent_report(&run));
-                    }
-                }
-            }
-        }
-    }
+    // Pure agent runs only; core codebase scans are served independently via /api/scans
 
     out.retain(|r| !r.target.contains("agent-prod.nuhire.in"));
     out.sort_by(|a, b| b.started_at.cmp(&a.started_at));
@@ -435,7 +425,7 @@ pub fn run_discovery_scan(target: &str, spec_url: Option<&str>) -> Result<AgentR
     // 1. Connectivity Check
     let is_connected = probe(&cfg);
     if is_connected {
-        log_step(&mut steps, "Supervisor", "Model Connectivity", &format!("Connected to AI Engine ({}) at {}", cfg.model, cfg.base_url().unwrap_or_default()), "completed");
+        log_step(&mut steps, "Supervisor", "Model Connectivity", &format!("Connected to AI Engine ({}) via provider {}", cfg.model, cfg.provider.id), "completed");
     } else {
         log_step(&mut steps, "Supervisor", "Model Connectivity", "Deterministic heuristics engaged for discovery analysis", "completed");
     }
@@ -1120,7 +1110,7 @@ pub fn run_agentic_loop(req: &AgentRunRequest, run_id: &str) -> Result<AgentRunR
     // 1. Check Model Connectivity
     let is_connected = probe(&cfg);
     if is_connected {
-        log_step(&mut steps, "Supervisor", "Model Connectivity", &format!("Connected to vLLM ({}) at {}", cfg.model, cfg.base_url().unwrap_or_default()), "completed");
+        log_step(&mut steps, "Supervisor", "Model Connectivity", &format!("Connected to vLLM ({}) via provider {}", cfg.model, cfg.provider.id), "completed");
     } else {
         log_step(&mut steps, "Supervisor", "Model Connectivity", "vLLM offline; engaging deterministic sandboxed rules", "warning");
     }

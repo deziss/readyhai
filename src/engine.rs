@@ -456,6 +456,7 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
         run.qa = Some(report);
     }
     std::fs::write(dir.join("run.json"), serde_json::to_string_pretty(&run)?)?;
+    let _ = crate::report::write(&run, &dir.join("report"), &["html".into(), "json".into(), "sarif".into(), "junit".into()]);
     crate::dashboard::append_index(&run);
     Ok(run)
 }

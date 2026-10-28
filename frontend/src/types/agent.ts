@@ -14,6 +14,19 @@ export interface DiscoveredTarget {
   routes: DiscoveredRoute[];
 }
 
+export interface PlannedCase {
+  id: string;
+  component: string;
+  title: string;
+  method: string;
+  technique: string;
+  input_hint: string;
+  payload: string | null;
+  expected_behavior: string;
+  expected_status: number;
+  risk_level: string;
+}
+
 export interface TestCaseResult {
   id: string;
   title: string;
@@ -37,6 +50,24 @@ export interface ThreatFinding {
   title: string;
   affected_routes: string[];
   remediation: string;
+}
+
+export interface TriagedDefect {
+  case_id: string;
+  owasp_category: string;
+  severity: string;
+  title: string;
+  evidence_snippet: string;
+  remediation_patch_suggestion: string;
+  affected_endpoints: string[];
+}
+
+export interface AgentStep {
+  agent: string;
+  action: string;
+  details: string;
+  status: string;
+  timestamp: string;
 }
 
 export interface PillarScore {
@@ -74,4 +105,24 @@ export interface AgentRunData {
   test_cases: TestCaseResult[];
   threats: ThreatFinding[];
   evidence_ledger: EvidenceLedger;
+}
+
+export interface AgentRunFull {
+  id: string;
+  target: string;
+  status: string;
+  started_at: string;
+  completed_at?: string;
+  profile: string;
+  provider: string;
+  steps: AgentStep[];
+  discovered_routes: DiscoveredRoute[];
+  planned_cases: PlannedCase[];
+  executed_results: TestCaseResult[];
+  triaged_defects: TriagedDefect[];
+  evidence_ledger?: EvidenceLedger;
+  approval_status?: string;
+  approved_by?: string;
+  approval_notes?: string;
+  approved_at?: string;
 }
