@@ -90,7 +90,7 @@ export function Header({
           }`}
         >
           <Bot className="w-3.5 h-3.5 text-cyan-400" />
-          <span>Agent QA Swarms</span>
+          <span>QA Agent Reports</span>
           {agentRunsCount > 0 && (
             <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-cyan-900/60 text-cyan-200 border border-cyan-700/40">
               {agentRunsCount}

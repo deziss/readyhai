@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import {
+  Bot,
+  ArrowRight,
   ListFilter,
   Network,
   ShieldCheck,
@@ -45,6 +47,7 @@ interface SideCanvasProps {
   onCrawlSite?: () => Promise<void>;
   isCrawling?: boolean;
   onTestEndpoint?: (path: string, method?: string) => Promise<void>;
+  onOpenAgentHistory?: () => void;
 }
 
 export function SideCanvas({
@@ -62,6 +65,7 @@ export function SideCanvas({
   onCrawlSite,
   isCrawling = false,
   onTestEndpoint,
+  onOpenAgentHistory,
 }: SideCanvasProps) {
   const [activeTab, setActiveTab] = useState<"scenarios" | "routes" | "ledger" | "triage" | "history">("scenarios");
   const [expandedRowId, setExpandedRowId] = useState<string | null>(testCases[0]?.id || null);
@@ -164,6 +168,20 @@ export function SideCanvas({
           <Clock className="w-3.5 h-3.5 text-slate-400" />
           Runs History
         </button>
+
+        {onOpenAgentHistory && (
+          <button
+            type="button"
+            id="tab-btn-open-qa-reports"
+            onClick={onOpenAgentHistory}
+            className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-950/70 hover:bg-cyan-900 border border-cyan-700/60 text-cyan-300 text-xs font-mono font-bold transition-all cursor-pointer shadow-sm group shrink-0"
+            title="Open QA Agent Reports & Swarm History"
+          >
+            <Bot className="w-3.5 h-3.5 text-cyan-400 group-hover:scale-110 transition-transform" />
+            <span>QA Agent Reports</span>
+            <ArrowRight className="w-3 h-3 text-cyan-400 group-hover:translate-x-0.5 transition-transform" />
+          </button>
+        )}
       </div>
 
       {/* Tab 1: Scenarios & Deep Payload Inspector */}
