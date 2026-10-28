@@ -98,6 +98,7 @@ pub fn serve(bind: &str) -> Result<()> {
             .route("/ui", get(api_index))
             .route("/api/agent/status", get(agent_status))
             .route("/api/agent/discover", get(agent_discover).post(agent_discover_post))
+            .route("/api/agent/crawl", get(agent_crawl_get).post(agent_crawl_post))
             .route("/api/agent/run", post(agent_run))
             .route("/api/agent/runs", get(agent_runs_list))
             .route("/api/agent/runs/{id}", get(agent_run_get).delete(agent_run_delete))
@@ -570,6 +571,66 @@ async fn agent_discover_post(Json(b): Json<DiscoverBody>) -> Response {
         }
         Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Worker panicked: {e}")}))).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct CrawlQuery {
+    target: String,
+    #[serde(default)]
+    max_pages: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct CrawlBody {
+    target: String,
+    #[serde(default)]
+    max_pages: Option<usize>,
+}
+
+async fn agent_crawl_get(Query(q): Query<CrawlQuery>) -> Response {
+    let target = q.target.clone();
+    let max = q.max_pages.unwrap_or(25);
+    let res = tokio::task::spawn_blocking(move || {
+        crate::agent::crawl_and_discover_routes(&target, None, max)
+    }).await;
+
+    match res {
+        Ok((routes, tech_profile)) => {
+            Json(json!({
+                "target": q.target,
+                "crawled_count": routes.len(),
+                "routes": routes,
+                "app_architecture": tech_profile.app_architecture,
+                "framework": tech_profile.primary_framework,
+                "detected_tech": tech_profile.detected_signals,
+                "is_spa": tech_profile.is_spa,
+            })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Crawler panicked: {e}")}))).into_response(),
+    }
+}
+
+async fn agent_crawl_post(Json(b): Json<CrawlBody>) -> Response {
+    let target = b.target.clone();
+    let max = b.max_pages.unwrap_or(25);
+    let res = tokio::task::spawn_blocking(move || {
+        crate::agent::crawl_and_discover_routes(&target, None, max)
+    }).await;
+
+    match res {
+        Ok((routes, tech_profile)) => {
+            Json(json!({
+                "target": b.target,
+                "crawled_count": routes.len(),
+                "routes": routes,
+                "app_architecture": tech_profile.app_architecture,
+                "framework": tech_profile.primary_framework,
+                "detected_tech": tech_profile.detected_signals,
+                "is_spa": tech_profile.is_spa,
+            })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Crawler panicked: {e}")}))).into_response(),
     }
 }
 

@@ -36,6 +36,7 @@ export default function Home() {
   // Discovered Routes
   const [discoveredData, setDiscoveredData] = useState<DiscoveredTarget | null>(null);
   const [isDiscovering, setIsDiscovering] = useState(false);
+  const [isCrawling, setIsCrawling] = useState(false);
 
   // Execution Stages
   const [stages, setStages] = useState<StageState[]>([
@@ -100,6 +101,89 @@ export default function Home() {
       console.error("Discovery failed:", err);
     } finally {
       setIsDiscovering(false);
+    }
+  }
+
+  async function handleCrawl() {
+    if (!target) return;
+    setIsCrawling(true);
+    try {
+      const res = await fetch("/api/agent/crawl", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, max_pages: 35 }),
+      });
+      if (res.ok) {
+        const data: DiscoveredTarget = await res.json();
+        setDiscoveredData(data);
+      }
+    } catch (err) {
+      console.error("Crawl failed:", err);
+    } finally {
+      setIsCrawling(false);
+    }
+  }
+
+  async function handleTestEndpoint(path: string, method: string = "GET") {
+    if (!target) return;
+    const testId = `CRAWL-${Math.floor(100 + Math.random() * 900)}`;
+    const newCase: TestCaseResult = {
+      id: testId,
+      title: `Direct Probe: ${path}`,
+      component: path,
+      technique: "crawled_url_probe",
+      method: method,
+      status: "PENDING" as any,
+      latency_ms: 0,
+      curl: `curl -i -X ${method} "${target.replace(/\/$/, '')}${path}"`,
+      assertion_details: "Active verification of crawled real URL",
+    };
+    setTestCases((prev) => [newCase, ...prev.filter((c) => c.id !== testId)]);
+
+    try {
+      const res = await fetch("/api/agent/retest", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target,
+          case: {
+            id: testId,
+            title: `Direct Probe: ${path}`,
+            component: path,
+            method: method,
+            technique: "crawled_url_probe",
+            input_hint: "Target crawl verification",
+            payload: null,
+            expected_behavior: "Returns valid HTTP response (non-500)",
+            expected_status: 200,
+            risk_level: "low",
+          },
+          run_id: currentRunId || null,
+        }),
+      });
+      if (res.ok) {
+        const updated = await res.json();
+        setTestCases((prev) =>
+          prev.map((c) =>
+            c.id === testId
+              ? {
+                  ...c,
+                  status: (updated.status || "PASS") as any,
+                  latency_ms: updated.latency_ms || 25,
+                  curl: updated.reproduction_curl || c.curl,
+                  response_status: updated.status_code || 200,
+                  response_body: updated.evidence || "",
+                  retested: true,
+                }
+              : c
+          )
+        );
+      }
+    } catch (err) {
+      console.error("Test endpoint error:", err);
+      setTestCases((prev) =>
+        prev.map((c) => (c.id === testId ? { ...c, status: "FAIL" as any } : c))
+      );
     }
   }
 
@@ -438,6 +522,8 @@ export default function Home() {
               setMaxSteps={setMaxSteps}
               onDiscover={handleDiscover}
               isDiscovering={isDiscovering}
+              onCrawl={handleCrawl}
+              isCrawling={isCrawling}
               discoveredData={discoveredData}
               onLaunch={handleLaunch}
               isRunning={isRunning}
@@ -475,6 +561,9 @@ export default function Home() {
               runsHistory={runsHistory}
               onLoadRun={handleLoadRun}
               onDeleteRun={handleDeleteRun}
+              onCrawlSite={handleCrawl}
+              isCrawling={isCrawling}
+              onTestEndpoint={handleTestEndpoint}
             />
           </div>
         </main>

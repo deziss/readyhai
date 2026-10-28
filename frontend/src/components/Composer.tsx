@@ -28,6 +28,8 @@ interface ComposerProps {
   setMaxSteps: (n: number) => void;
   onDiscover: () => Promise<void>;
   isDiscovering: boolean;
+  onCrawl?: () => Promise<void>;
+  isCrawling?: boolean;
   discoveredData: DiscoveredTarget | null;
   onLaunch: () => Promise<void>;
   isRunning: boolean;
@@ -52,6 +54,8 @@ export function Composer({
   setMaxSteps,
   onDiscover,
   isDiscovering,
+  onCrawl,
+  isCrawling,
   discoveredData,
   onLaunch,
   isRunning,
@@ -156,7 +160,8 @@ export function Composer({
             id="composer-btn-discover"
             type="button"
             onClick={onDiscover}
-            disabled={isDiscovering || isRunning}
+            disabled={isDiscovering || isCrawling || isRunning}
+            title="Fast inspection & architecture discovery"
             className="px-3 py-2 bg-[#111827] hover:bg-[#162033] border border-[#1e2a40] text-slate-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
           >
             {isDiscovering ? (
@@ -171,11 +176,31 @@ export function Composer({
               </>
             )}
           </button>
+          <button
+            id="composer-btn-crawl"
+            type="button"
+            onClick={onCrawl}
+            disabled={isCrawling || isDiscovering || isRunning}
+            title="Deep crawl target website to map all real internal links and forms"
+            className="px-3 py-2 bg-[#19152e] hover:bg-[#251f45] border border-purple-700/60 text-purple-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer shadow-[0_0_12px_rgba(168,85,247,0.15)]"
+          >
+            {isCrawling ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
+                Crawling...
+              </>
+            ) : (
+              <>
+                <Globe className="w-3.5 h-3.5 text-purple-400" />
+                Crawl Site
+              </>
+            )}
+          </button>
         </div>
 
         {/* Quick Domain Triggers */}
         <div className="flex flex-wrap gap-1.5">
-          {["https://api.example.com", "http://localhost:3000", "http://127.0.0.1:8080"].map((url) => (
+          {["https://myvapi.com", "https://api.example.com", "http://localhost:3000", "http://127.0.0.1:8080"].map((url) => (
             <button
               key={url}
               type="button"
