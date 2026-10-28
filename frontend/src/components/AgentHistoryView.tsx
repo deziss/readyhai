@@ -23,6 +23,13 @@ import {
   ShieldAlert,
   Sliders,
   CheckCircle,
+  Eye,
+  FileText,
+  FileCode,
+  ExternalLink,
+  Shield,
+  Download,
+  X,
 } from "lucide-react";
 import type {
   AgentRunFull,
@@ -45,6 +52,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [expandedCaseId, setExpandedCaseId] = useState<string | null>(null);
   const [scenarioFilter, setScenarioFilter] = useState<string>("ALL");
+  const [showReportModal, setShowReportModal] = useState(false);
 
   // Signoff state
   const [operatorName, setOperatorName] = useState("SecOps Lead");
@@ -392,6 +400,18 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
                           </span>
                         )}
                         <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedRunId(run.id);
+                            setShowReportModal(true);
+                          }}
+                          className="px-2 py-0.5 rounded bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-800/60 text-cyan-300 text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                          title="View Executive HTML Report"
+                        >
+                          <Eye className="w-2.5 h-2.5" />
+                          Report
+                        </button>
+                        <button
                           onClick={(e) => handleDelete(run.id, e)}
                           className="text-slate-600 hover:text-red-400 transition-colors p-1 cursor-pointer"
                           title="Delete run"
@@ -461,76 +481,83 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
                       </span>
                     </div>
                   </div>
+                </div>
+              </div>
 
-                  <div className="shrink-0 flex flex-col items-start md:items-end gap-2.5">
-                    <div className="flex items-center gap-3">
-                      <div className="text-right">
-                        <div className="text-[11px] font-mono text-slate-400">Gate Verdict</div>
-                        {getGateVerdictBadge(selectedRun.evidence_ledger?.gate_verdict)}
-                      </div>
-                      <div className="text-right pl-3 border-l border-[#1a2943]">
-                        <div className="text-[11px] font-mono text-slate-400">Readiness Score</div>
-                        <div className="text-xl font-bold font-mono text-cyan-300">
-                          {selectedRun.evidence_ledger?.overall_readiness ?? 85}/100
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Load into Studio Button */}
-                    {onLoadRunInStudio && (
-                      <button
-                        onClick={() => onLoadRunInStudio(selectedRun)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14223b] hover:bg-cyan-950 hover:border-cyan-600/60 border border-[#233a63] text-cyan-300 text-xs font-mono font-medium transition-all cursor-pointer shadow-sm"
-                      >
-                        <Play className="w-3.5 h-3.5" />
-                        Load Session into Studio
-                      </button>
-                    )}
-                  </div>
+              {/* GENERATED REPORTS & EXECUTIVE ARTIFACTS ACTION BAR */}
+              <div className="p-3.5 rounded-xl bg-[#090f1d] border border-cyan-800/50 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-cyan-400" />
+                  <span className="text-xs font-mono font-bold text-slate-200 uppercase tracking-wider">
+                    Executive Reports & Compliance Artifacts:
+                  </span>
                 </div>
 
-                {/* SIGN OFF STATUS BAR */}
-                <div className="mt-5 pt-3.5 border-t border-[#182640] flex flex-wrap items-center justify-between gap-3 bg-[#0a1222]/80 -mx-5 -mb-5 px-5 py-3">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck className="w-4 h-4 text-cyan-400" />
-                    <span className="text-xs font-bold text-slate-200 tracking-wide uppercase font-mono">
-                      Evidence Ledger Sign-off:
-                    </span>
-                    <span className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold uppercase ${
-                      selectedRun.approval_status === 'approved'
-                        ? 'bg-emerald-950 text-emerald-400 border border-emerald-600/50'
-                        : selectedRun.approval_status === 'rejected'
-                        ? 'bg-red-950 text-red-400 border border-red-600/50'
-                        : 'bg-amber-950 text-amber-400 border border-amber-600/50'
-                    }`}>
-                      {selectedRun.approval_status || 'PENDING'}
-                    </span>
-                    {selectedRun.approved_by && (
-                      <span className="text-xs font-mono text-slate-400">
-                        by {selectedRun.approved_by}
-                      </span>
-                    )}
-                  </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* View HTML Report in Embedded Modal */}
+                  <button
+                    onClick={() => setShowReportModal(true)}
+                    className="px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-mono text-xs font-semibold flex items-center gap-1.5 shadow-[0_0_12px_rgba(6,182,212,0.3)] transition-all cursor-pointer"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    View Executive Report (HTML)
+                  </button>
 
-                  {/* Quick Action if pending */}
-                  {selectedRun.approval_status !== "approved" && (
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleSignOff("approve")}
-                        disabled={isSigning}
-                        className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer shadow-sm transition-colors"
-                      >
-                        Approve Gate
-                      </button>
-                      <button
-                        onClick={() => handleSignOff("reject")}
-                        disabled={isSigning}
-                        className="px-3 py-1 rounded bg-red-950 hover:bg-red-900 border border-red-700/60 text-red-300 text-xs font-medium cursor-pointer transition-colors"
-                      >
-                        Reject
-                      </button>
-                    </div>
-                  )}
+                  {/* Open in New Tab */}
+                  <a
+                    href={`/api/agent/runs/${selectedRun.id}/report/html`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-cyan-300 font-mono text-xs flex items-center gap-1.5 transition-colors"
+                    title="Open HTML report in full browser tab"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    Open Tab
+                  </a>
+
+                  {/* Download Markdown Report */}
+                  <a
+                    href={`/api/agent/runs/${selectedRun.id}/report/markdown`}
+                    download
+                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-purple-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors"
+                    title="Download Markdown summary for Pull Requests"
+                  >
+                    <FileCode className="w-3.5 h-3.5 text-purple-400" />
+                    Markdown (PR)
+                  </a>
+
+                  {/* Download SARIF Report */}
+                  <a
+                    href={`/api/agent/runs/${selectedRun.id}/report/sarif`}
+                    download
+                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-amber-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors"
+                    title="Download OASIS SARIF v2.1.0 for GitHub/GitLab Security tab"
+                  >
+                    <Shield className="w-3.5 h-3.5 text-amber-400" />
+                    SARIF
+                  </a>
+
+                  {/* Download JSON Report */}
+                  <a
+                    href={`/api/agent/runs/${selectedRun.id}/report/json`}
+                    download
+                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-emerald-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors"
+                    title="Download Complete Execution Data (JSON)"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-emerald-400" />
+                    JSON
+                  </a>
+
+                  {/* Download JUnit XML Report */}
+                  <a
+                    href={`/api/agent/runs/${selectedRun.id}/report/junit`}
+                    download
+                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-sky-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors"
+                    title="Download JUnit XML for CI/CD test results"
+                  >
+                    <Terminal className="w-3.5 h-3.5 text-sky-400" />
+                    JUnit
+                  </a>
                 </div>
               </div>
 
@@ -974,6 +1001,59 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
           ) : null}
         </div>
       </div>
+      {/* EMBEDDED HTML REPORT FULLSCREEN MODAL */}
+      {showReportModal && selectedRun && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0b101b] border border-[#1e2f4a] rounded-xl w-full max-w-5xl h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-[#1b2b46] flex items-center justify-between bg-[#0e172a]">
+              <div className="flex items-center gap-2.5">
+                <FileText className="w-4 h-4 text-cyan-400" />
+                <span className="text-sm font-bold text-white font-mono">
+                  ReadyHai Executive QA & Security Gate Report (HTML)
+                </span>
+                <span className="text-xs font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
+                  {selectedRun.id}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={`/api/agent/runs/${selectedRun.id}/report/html`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-2.5 py-1 rounded bg-[#16233a] hover:bg-[#1f304f] border border-[#273d63] text-cyan-300 text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Open report in new browser tab"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  New Tab
+                </a>
+                <a
+                  href={`/api/agent/runs/${selectedRun.id}/report/markdown`}
+                  download
+                  className="px-2.5 py-1 rounded bg-[#16233a] hover:bg-[#1f304f] border border-[#273d63] text-purple-300 text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Download Markdown summary"
+                >
+                  <FileCode className="w-3.5 h-3.5" />
+                  Markdown
+                </a>
+                <button
+                  onClick={() => setShowReportModal(false)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#16233a] transition-colors cursor-pointer"
+                  title="Close report modal"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 w-full h-full bg-[#070b14] relative">
+              <iframe
+                src={`/api/agent/runs/${selectedRun.id}/report/html`}
+                title="ReadyHai Executive QA Report"
+                className="w-full h-full border-0"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

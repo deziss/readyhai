@@ -17,6 +17,11 @@ import {
   ExternalLink,
   Shield,
   Layers,
+  Eye,
+  FileText,
+  FileCode,
+  X,
+  Search,
 } from "lucide-react";
 import type {
   TestCaseResult,
@@ -63,6 +68,9 @@ export function SideCanvas({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [retestingId, setRetestingId] = useState<string | null>(null);
   const [testingPath, setTestingPath] = useState<string | null>(null);
+  const [reportModalRunId, setReportModalRunId] = useState<string | null>(null);
+  const [historySearch, setHistorySearch] = useState<string>("");
+  const [historyVerdict, setHistoryVerdict] = useState<string>("ALL");
 
   function copyCurl(curlText: string, id: string) {
     navigator.clipboard.writeText(curlText);
@@ -644,16 +652,16 @@ export function SideCanvas({
         </div>
       )}
 
-      {/* Tab 5: Runs History */}
+      {/* Tab 5: Runs History & Reports */}
       {activeTab === "history" && (
         <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-3">
           <div className="flex items-center justify-between pb-2 border-b border-[#162033]">
             <div className="flex items-center gap-2">
               <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">
-                Global Scans & Tests History
+                Global Scans & Reports History
               </span>
               <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/40 text-cyan-300 font-bold">
-                PERSISTENT ARCHIVE
+                AUDIT ARCHIVE
               </span>
             </div>
             <span className="text-[11px] font-mono text-slate-500">
@@ -661,14 +669,60 @@ export function SideCanvas({
             </span>
           </div>
 
+          {/* Search & Filter Bar */}
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                placeholder="Filter by target or run ID..."
+                className="w-full bg-[#0a0f1d] border border-[#1b2b46] rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 font-mono focus:outline-none focus:border-cyan-500/60"
+              />
+            </div>
+            <select
+              value={historyVerdict}
+              onChange={(e) => setHistoryVerdict(e.target.value)}
+              className="bg-[#0a0f1d] border border-[#1b2b46] rounded-lg px-2.5 py-1.5 text-xs text-slate-300 font-mono focus:outline-none focus:border-cyan-500/60"
+            >
+              <option value="ALL">All Verdicts</option>
+              <option value="GO">GO</option>
+              <option value="CONDITIONAL_GO">Conditional</option>
+              <option value="NO_GO">NO-GO</option>
+              <option value="SCANNED">Scanned</option>
+            </select>
+          </div>
+
           <div className="flex flex-col gap-2.5">
-            {runsHistory.filter((r: any) => !r.target?.includes("agent-prod.nuhire.in")).length === 0 ? (
+            {runsHistory
+              .filter((r: any) => {
+                if (historySearch.trim()) {
+                  const q = historySearch.toLowerCase();
+                  const matchT = r.target?.toLowerCase().includes(q);
+                  const matchId = (r.id || r.run_id || "").toLowerCase().includes(q);
+                  if (!matchT && !matchId) return false;
+                }
+                const v = r.evidence_ledger?.gate_verdict || r.gate_verdict || r.verdict;
+                if (historyVerdict !== "ALL" && v !== historyVerdict) return false;
+                return true;
+              }).length === 0 ? (
               <div className="p-8 text-center text-slate-500 text-xs font-mono">
-                No past runs logged yet. Execute a discovery scan or click Launch Swarm to record runs.
+                No matching runs found in audit history.
               </div>
             ) : (
               runsHistory
-                .filter((r: any) => !r.target?.includes("agent-prod.nuhire.in"))
+                .filter((r: any) => {
+                  if (historySearch.trim()) {
+                    const q = historySearch.toLowerCase();
+                    const matchT = r.target?.toLowerCase().includes(q);
+                    const matchId = (r.id || r.run_id || "").toLowerCase().includes(q);
+                    if (!matchT && !matchId) return false;
+                  }
+                  const v = r.evidence_ledger?.gate_verdict || r.gate_verdict || r.verdict;
+                  if (historyVerdict !== "ALL" && v !== historyVerdict) return false;
+                  return true;
+                })
                 .map((run: any, idx: number) => {
                   const runId = run.id || run.run_id || `run-${idx}`;
                   const isScan =
@@ -679,12 +733,13 @@ export function SideCanvas({
                   const verdict =
                     run.evidence_ledger?.gate_verdict || run.gate_verdict || run.verdict || (isScan ? "SCANNED" : "GO");
                   const score =
-                    run.evidence_ledger?.overall_readiness || run.readiness_score || (isScan ? 100 : 95);
+                    run.evidence_ledger?.overall_readiness || run.readiness_score || (isScan ? 100 : 92);
                   const routesCount = run.discovered_routes?.length || 0;
                   const casesCount =
                     run.executed_results?.length || run.planned_cases?.length || run.test_cases?.length || 0;
                   const defectsCount = run.triaged_defects?.length || run.defects_count || 0;
                   const timeStr = run.started_at ? new Date(run.started_at).toLocaleString() : "Recently";
+                  const archStr = run.app_architecture || (run.is_spa ? "SPA" : "Standard MPA");
 
                   return (
                     <div
@@ -696,33 +751,62 @@ export function SideCanvas({
                       className="p-3.5 bg-[#07090e] hover:bg-[#0e1524] border border-[#1a2436] hover:border-cyan-500/50 rounded-lg flex flex-col gap-2 cursor-pointer transition-all shadow-sm group"
                     >
                       <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
                           <span
-                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold tracking-wider ${
+                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold tracking-wider shrink-0 ${
                               isScan
                                 ? "bg-cyan-950/80 text-cyan-300 border border-cyan-700/60"
                                 : "bg-purple-950/80 text-purple-300 border border-purple-700/60"
                             }`}
                           >
-                            {isScan ? "SCAN" : "TEST RUN"}
+                            {isScan ? "SCAN" : "AGENT SWARM"}
                           </span>
-                          <span className="text-xs font-mono font-bold text-cyan-400 group-hover:text-cyan-300 transition-colors">
+                          <span className="text-xs font-mono font-bold text-cyan-400 group-hover:text-cyan-300 transition-colors shrink-0">
                             {runId}
                           </span>
-                          <span className="text-xs text-slate-200 font-medium truncate max-w-[220px]">
+                          <span className="text-xs text-slate-200 font-medium truncate max-w-[200px]" title={run.target}>
                             {run.target}
                           </span>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5 shrink-0">
                           <span
                             className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
                               verdict === "GO" || verdict === "SCANNED"
                                 ? "bg-emerald-950/80 text-emerald-300 border-emerald-700/60"
+                                : verdict === "CONDITIONAL_GO"
+                                ? "bg-amber-950/80 text-amber-300 border-amber-700/60"
                                 : "bg-rose-950/80 text-rose-300 border-rose-700/60"
                             }`}
                           >
                             {verdict}
                           </span>
+
+                          {/* Quick Report Viewer Button */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setReportModalRunId(runId);
+                            }}
+                            className="px-2 py-0.5 rounded bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-700/60 text-cyan-300 text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                            title="View Executive HTML Report"
+                          >
+                            <Eye className="w-2.5 h-2.5" />
+                            Report
+                          </button>
+
+                          {/* Quick Download Markdown */}
+                          <a
+                            href={`/api/agent/runs/${runId}/report/markdown`}
+                            download
+                            onClick={(e) => e.stopPropagation()}
+                            className="px-2 py-0.5 rounded bg-[#111c2e] hover:bg-[#1a2b47] border border-[#233758] text-purple-300 text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Download Markdown summary"
+                          >
+                            <FileCode className="w-2.5 h-2.5" />
+                            MD
+                          </a>
+
                           {onDeleteRun && (
                             <button
                               type="button"
@@ -750,7 +834,7 @@ export function SideCanvas({
                             </span>
                           )}
                           <span>
-                            Cases: <strong className="text-slate-300">{casesCount}</strong>
+                            Tests: <strong className="text-slate-300">{casesCount}</strong>
                           </span>
                           <span>
                             Defects:{" "}
@@ -770,6 +854,61 @@ export function SideCanvas({
                   );
                 })
             )}
+          </div>
+        </div>
+      )}
+
+      {/* EMBEDDED REPORT MODAL IN SIDE CANVAS */}
+      {reportModalRunId && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0b101b] border border-[#1e2f4a] rounded-xl w-full max-w-5xl h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="px-5 py-3.5 border-b border-[#1b2b46] flex items-center justify-between bg-[#0e172a]">
+              <div className="flex items-center gap-2.5">
+                <FileText className="w-4 h-4 text-cyan-400" />
+                <span className="text-sm font-bold text-white font-mono">
+                  ReadyHai Executive QA & Security Gate Report (HTML)
+                </span>
+                <span className="text-xs font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
+                  {reportModalRunId}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={`/api/agent/runs/${reportModalRunId}/report/html`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-2.5 py-1 rounded bg-[#16233a] hover:bg-[#1f304f] border border-[#273d63] text-cyan-300 text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Open report in new tab"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  New Tab
+                </a>
+                <a
+                  href={`/api/agent/runs/${reportModalRunId}/report/markdown`}
+                  download
+                  className="px-2.5 py-1 rounded bg-[#16233a] hover:bg-[#1f304f] border border-[#273d63] text-purple-300 text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
+                  title="Download Markdown report"
+                >
+                  <FileCode className="w-3.5 h-3.5" />
+                  Markdown
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setReportModalRunId(null)}
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#16233a] transition-colors cursor-pointer"
+                  title="Close report modal"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 w-full h-full bg-[#070b14] relative">
+              <iframe
+                src={`/api/agent/runs/${reportModalRunId}/report/html`}
+                title="ReadyHai Executive QA Report"
+                className="w-full h-full border-0"
+              />
+            </div>
           </div>
         </div>
       )}
