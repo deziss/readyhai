@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Shield, Globe, Activity, Bot, ShieldCheck, Cpu } from "lucide-react";
 
-export type SaaSViewMode = "studio" | "agent_history" | "scans_history";
+export type SaaSViewMode = "studio" | "agent_history" | "scans_history" | "network_lab";
 
 interface HeaderProps {
   currentTarget: string;
@@ -66,7 +66,7 @@ export function Header({
       </div>
 
       {/* Central Hierarchical View Switcher (SaaS Standard) */}
-      <nav className="flex items-center p-1 rounded-xl bg-[#0d1424] border border-[#1d2b44] shadow-inner">
+      <nav className="flex items-center p-1 rounded-xl bg-[#0d1424] border border-[#1d2b44] shadow-inner gap-1">
         <button
           id="nav-tab-studio"
           onClick={() => onViewChange("studio")}
@@ -114,6 +114,19 @@ export function Header({
               {scansCount}
             </span>
           )}
+        </button>
+
+        <button
+          id="nav-tab-network-lab"
+          onClick={() => onViewChange("network_lab")}
+          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-mono font-medium transition-all cursor-pointer ${
+            activeView === "network_lab"
+              ? "bg-gradient-to-r from-cyan-950/90 to-[#12233f] text-cyan-300 border border-cyan-600/60 shadow-[0_0_10px_rgba(6,182,212,0.2)] font-semibold"
+              : "text-slate-400 hover:text-slate-200 hover:bg-[#111b2e]"
+          }`}
+        >
+          <Activity className="w-3.5 h-3.5 text-cyan-400" />
+          <span>Regressive Network Lab</span>
         </button>
       </nav>
 

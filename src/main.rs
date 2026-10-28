@@ -12,6 +12,7 @@ mod host;
 mod llm;
 mod logs;
 mod mcp;
+pub mod network;
 mod model;
 mod policy;
 mod qa;

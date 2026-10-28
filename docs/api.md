@@ -142,6 +142,78 @@ curl -s -X POST http://127.0.0.1:8080/api/agent/retest \
 
 ---
 
+
+### Regressive Network Lab API (`/api/network/*`)
+
+Continuous regression testing tool designed to catch intermittent and flaky network failures where an app URL "sometimes opens and sometimes fails".
+
+#### 1. Regressive Continuous Test (`POST /api/network/regress`)
+Runs $N$ iterations (up to 100) against the target URL. When `separate_sessions` is `true`, each iteration executes in an isolated HTTP client with zero connection pooling (`pool_max_idle_per_host(0)`), forcing clean DNS resolution, fresh TCP 3-way handshake, and new TLS negotiation.
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/network/regress \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "http://127.0.0.1:8080/health",
+    "iterations": 10,
+    "concurrency": 1,
+    "separate_sessions": true,
+    "throttle_preset": "unthrottled",
+    "injected_latency_ms": 0,
+    "timeout_ms": 5000,
+    "method": "GET"
+  }'
+```
+
+**Response**:
+```json
+{
+  "target": "http://127.0.0.1:8080/health",
+  "iterations_requested": 10,
+  "iterations_completed": 10,
+  "successful_iterations": 10,
+  "failed_iterations": 0,
+  "availability_pct": 100.0,
+  "min_latency_ms": 1.2,
+  "max_latency_ms": 4.5,
+  "avg_latency_ms": 2.1,
+  "p50_latency_ms": 1.8,
+  "p90_latency_ms": 3.6,
+  "p99_latency_ms": 4.5,
+  "jitter_ms": 0.8,
+  "status_distribution": { "200": 10 },
+  "agent_diagnosis": {
+    "flakiness_detected": false,
+    "severity": "STABLE",
+    "root_cause_category": "STABLE_EXCELLENT",
+    "root_cause_explanation": "All 10 iterations succeeded across isolated sessions with low jitter.",
+    "how_agent_found_it": [
+      "Step 1: Generated 10 isolated TCP client instances with zero connection reuse",
+      "Step 2: Probed DNS, TCP 3-way handshake, and HTTP response timing",
+      "Step 3: Confirmed 100% availability with 0.8ms jitter"
+    ],
+    "reproduction_curl": "curl -s -o /dev/null -w "DNS: %{time_namelookup}s | Connect: %{time_connect}s | TTFB: %{time_starttransfer}s | Total: %{time_total}s | Status: %{http_code}\\n" "http://127.0.0.1:8080/health"",
+    "remediation_actions": ["Zero remediation needed. Service responds deterministically under cold sessions."]
+  },
+  "iteration_results": [...]
+}
+```
+
+#### 2. Instrumented cURL Execution (`POST /api/network/curl`)
+Generates reproduction commands and executes real-time cURL probes with millisecond timing breakdowns.
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/network/curl \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "http://127.0.0.1:8080/health",
+    "method": "GET",
+    "timeout_ms": 5000
+  }'
+```
+
+---
+
 ### Create a run
 
 Body fields (JSON): `target` (required), `profile` (`quick|standard|deep`, default quick), `openapi`, `os` (`linux|macos|windows`), `device`. Other `scan` options (`policy`, `config`, `baseline`, `no_tools`, `key`, `format`) are **not** accepted over REST; the server injects its own `scope` (`READYHAI_SCOPE`), `plugins` (`READYHAI_PLUGINS`) and allowed roots.

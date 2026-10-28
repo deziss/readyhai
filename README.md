@@ -191,6 +191,14 @@ The enterprise Next.js SaaS interface features top-level hierarchical navigation
      - GitHub Security & VS Code SARIF 2.1.0 (`readyhai-report.sarif`)
      - Structured JSON (`readyhai-report.json`)
      - CI/CD Gate JUnit XML (`readyhai-report.junit.xml`)
+4. **Regressive Network Lab (Flakiness & Intermittent Failure Diagnostics)**:
+   - **Continuous Regressive Testing**: Multi-iteration stress runner ($N$ repetitions) configured with *Separate Private Sessions* (`pool_max_idle_per_host(0)`, zero connection pooling) to catch flapping endpoints, socket leaks, and proxy connection drops.
+   - **Network Throttling Simulation**: Presets for Unthrottled, Fast 3G (+75ms RTT), Slow 3G (+250ms RTT), Flaky Jitter/Packet Drop simulation, and custom latency injection.
+   - **Explainable AI Root-Cause Diagnostic**:
+     - "How the Agent Found the Issue" automated diagnostic engine tracing DNS resolution $\to$ TCP 3-way handshake $\to$ TLS negotiation $\to$ TTFB $\to$ Gateway status.
+     - Root-cause classification for Timeout/SYN drop, 502/504 upstream gateway flapping, Connection Resets (`ECONNRESET`), and Extreme Jitter.
+     - Prescriptive remediation checklists with copyable reproduction cURLs.
+   - **Integrated cURL Runner**: Sub-millisecond stage timing breakdowns (`time_namelookup`, `time_connect`, `time_appconnect`, `time_starttransfer`, `time_total`) with instantaneous terminal output.
 
 
 ### REST API & Web Dashboard
