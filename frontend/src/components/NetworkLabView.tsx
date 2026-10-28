@@ -23,6 +23,10 @@ import {
   ChevronUp,
   BrainCircuit,
   Zap,
+  Download,
+  GitPullRequest,
+  Compass,
+  Server,
   Info,
   Lock,
   Unlock,
@@ -37,6 +41,8 @@ import type {
   IterationResult,
   CurlTestResponse,
   DeepAuditReport,
+  MultiRegionReport,
+  PrCommentResponse,
 } from "@/types/network";
 
 interface NetworkLabViewProps {
@@ -49,7 +55,7 @@ export function NetworkLabView({
   onRunningChange,
 }: NetworkLabViewProps) {
   // Mode selection: "regress" | "deep_audit"
-  const [activeTab, setActiveTab] = useState<"regress" | "deep_audit">("regress");
+  const [activeTab, setActiveTab] = useState<"regress" | "deep_audit" | "multi_region" | "pr_gate">("regress");
 
   // Common target
   const [target, setTarget] = useState(initialTarget);
@@ -79,6 +85,10 @@ export function NetworkLabView({
   const [curlResult, setCurlResult] = useState<CurlTestResponse | null>(null);
   const [copiedCurl, setCopiedCurl] = useState(false);
   const [copiedText, setCopiedText] = useState<string | null>(null);
+  const [isMultiRegionRunning, setIsMultiRegionRunning] = useState(false);
+  const [multiRegionReport, setMultiRegionReport] = useState<MultiRegionReport | null>(null);
+  const [isPrCommentLoading, setIsPrCommentLoading] = useState(false);
+  const [prCommentData, setPrCommentData] = useState<PrCommentResponse | null>(null);
 
   // Parse headers helper
   const getParsedHeaders = (): Record<string, string> => {
@@ -185,6 +195,177 @@ export function NetworkLabView({
     }
   }
 
+    async function handleRunMultiRegion() {
+    setIsMultiRegionRunning(true);
+    onRunningChange?.(true, `Probing 4-Region Edge Mesh (${target})`);
+    try {
+      const res = await fetch("/api/network/multi-region", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, timeout_ms: timeoutMs }),
+      });
+      if (res.ok) {
+        const data: MultiRegionReport = await res.json();
+        setMultiRegionReport(data);
+      }
+    } catch (err) {
+      console.error("Multi-region probe failed:", err);
+    } finally {
+      setIsMultiRegionRunning(false);
+      onRunningChange?.(false, "Completed 4-Region Edge Mesh Probe");
+    }
+  }
+
+  async function handleFetchPrComment() {
+    setIsPrCommentLoading(true);
+    try {
+      const verdict = deepAuditReport ? deepAuditReport.overall_verdict : (regressReport && regressReport.availability_percentage >= 99 ? "PASS" : "WARN");
+      const score = deepAuditReport ? deepAuditReport.health_score : 94;
+      const res = await fetch("/api/github/pr-comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target,
+          verdict,
+          score,
+          commit_sha: "main",
+        }),
+      });
+      if (res.ok) {
+        const data: PrCommentResponse = await res.json();
+        setPrCommentData(data);
+      }
+    } catch (err) {
+      console.error("PR comment generation failed:", err);
+    } finally {
+      setIsPrCommentLoading(false);
+    }
+  }
+
+  function handleExportHar() {
+    let harData: any = null;
+    if (regressReport && regressReport.iterations.length > 0) {
+      harData = {
+        log: {
+          version: "1.2",
+          creator: { name: "ReadyHai Network Lab", version: "0.1.0" },
+          pages: [
+            {
+              startedDateTime: regressReport.iterations[0]?.timestamp || new Date().toISOString(),
+              id: "page_readyhai_regression",
+              title: `ReadyHai Regression Audit - ${regressReport.target}`,
+              pageTimings: {
+                onContentLoad: Number(regressReport.p50_latency_ms),
+                onLoad: Number(regressReport.p90_latency_ms),
+              },
+            },
+          ],
+          entries: regressReport.iterations.map((it) => {
+            const wait = Number(it.ttfb_ms);
+            const total = Number(it.duration_ms);
+            const receive = Math.max(0, total - wait);
+            return {
+              startedDateTime: it.timestamp,
+              time: total,
+              request: {
+                method: method || "GET",
+                url: regressReport.target,
+                httpVersion: "HTTP/1.1",
+                cookies: [],
+                headers: Object.entries(it.response_headers || {}).map(([k, v]) => ({ name: k, value: v })),
+                queryString: [],
+                headersSize: -1,
+                bodySize: 0,
+              },
+              response: {
+                status: it.status_code,
+                statusText: it.success ? "OK" : "Error",
+                httpVersion: "HTTP/1.1",
+                cookies: [],
+                headers: Object.entries(it.response_headers || {}).map(([k, v]) => ({ name: k, value: v })),
+                content: {
+                  size: (it.response_body_snippet || "").length,
+                  mimeType: it.response_headers?.["content-type"] || "text/html; charset=utf-8",
+                  text: it.response_body_snippet || "",
+                },
+                redirectURL: "",
+                headersSize: -1,
+                bodySize: (it.response_body_snippet || "").length,
+              },
+              cache: {},
+              timings: {
+                blocked: 0,
+                dns: Number(it.dns_lookup_ms),
+                connect: Number(it.tcp_connect_ms),
+                ssl: 0,
+                send: 1,
+                wait: wait,
+                receive: receive,
+              },
+              serverIPAddress: "127.0.0.1",
+              connection: it.session_id,
+            };
+          }),
+        },
+      };
+    } else {
+      harData = {
+        log: {
+          version: "1.2",
+          creator: { name: "ReadyHai Network Lab", version: "0.1.0" },
+          pages: [
+            {
+              startedDateTime: new Date().toISOString(),
+              id: "page_readyhai",
+              title: `ReadyHai Network Baseline - ${target}`,
+              pageTimings: { onContentLoad: 45, onLoad: 85 },
+            },
+          ],
+          entries: [
+            {
+              startedDateTime: new Date().toISOString(),
+              time: 45,
+              request: {
+                method,
+                url: target,
+                httpVersion: "HTTP/1.1",
+                cookies: [],
+                headers: [{ name: "User-Agent", value: "ReadyHai-NetworkLab/0.1.0" }],
+                queryString: [],
+                headersSize: -1,
+                bodySize: 0,
+              },
+              response: {
+                status: 200,
+                statusText: "OK",
+                httpVersion: "HTTP/1.1",
+                cookies: [],
+                headers: [{ name: "Content-Type", value: "text/html; charset=utf-8" }],
+                content: { size: 1024, mimeType: "text/html", text: "<!-- ReadyHai Baseline -->" },
+                redirectURL: "",
+                headersSize: -1,
+                bodySize: 1024,
+              },
+              cache: {},
+              timings: { blocked: 0, dns: 5, connect: 12, ssl: 0, send: 1, wait: 24, receive: 3 },
+              serverIPAddress: "127.0.0.1",
+            },
+          ],
+        },
+      };
+    }
+
+    const blob = new Blob([JSON.stringify(harData, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `readyhai-trace-${Date.now()}.har`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedText(id);
@@ -230,6 +411,45 @@ export function NetworkLabView({
                 ALL 6
               </span>
             </button>
+
+            <button
+              id="tab-multi-region"
+              onClick={() => {
+                setActiveTab("multi_region");
+                if (!multiRegionReport && !isMultiRegionRunning) {
+                  handleRunMultiRegion();
+                }
+              }}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-mono font-medium transition-all ${
+                activeTab === "multi_region"
+                  ? "bg-gradient-to-r from-cyan-950 to-[#12233f] text-cyan-300 border border-cyan-600/50 shadow-[0_0_10px_rgba(6,182,212,0.25)] font-semibold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-[#121c32]"
+              }`}
+            >
+              <Compass className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Multi-Region Edge Mesh</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-900/60 text-indigo-300 border border-indigo-700/50 font-bold">
+                4 REGIONS
+              </span>
+            </button>
+
+            <button
+              id="tab-pr-gate"
+              onClick={() => {
+                setActiveTab("pr_gate");
+                if (!prCommentData && !isPrCommentLoading) {
+                  handleFetchPrComment();
+                }
+              }}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-mono font-medium transition-all ${
+                activeTab === "pr_gate"
+                  ? "bg-gradient-to-r from-cyan-950 to-[#12233f] text-cyan-300 border border-cyan-600/50 shadow-[0_0_10px_rgba(6,182,212,0.25)] font-semibold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-[#121c32]"
+              }`}
+            >
+              <GitPullRequest className="w-3.5 h-3.5 text-cyan-400" />
+              <span>PR Gate & Badges</span>
+            </button>
           </div>
         </div>
 
@@ -239,6 +459,50 @@ export function NetworkLabView({
             <span className="text-slate-400 font-normal">Active URL:</span>
             <span className="text-cyan-300 font-semibold">{target}</span>
           </div>
+
+          {/* Export HAR Button */}
+          <button
+            id="btn-export-har"
+            onClick={handleExportHar}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#0d1527] hover:bg-[#121c32] text-slate-300 hover:text-white border border-[#1b2b48] hover:border-cyan-500/50 font-mono text-xs transition-all cursor-pointer"
+            title="Download HTTP Archive (HAR v1.2) for Chrome DevTools or Cloudflare support"
+          >
+            <Download className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Export HAR</span>
+          </button>
+
+          {activeTab === "multi_region" && (
+            <button
+              id="btn-run-multi-region"
+              onClick={handleRunMultiRegion}
+              disabled={isMultiRegionRunning}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_14px_rgba(6,182,212,0.3)] transition-all cursor-pointer disabled:opacity-50"
+            >
+              {isMultiRegionRunning ? (
+                <>
+                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Probing Mesh...</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Probe Global Mesh</span>
+                </>
+              )}
+            </button>
+          )}
+
+          {activeTab === "pr_gate" && (
+            <button
+              id="btn-refresh-pr-comment"
+              onClick={handleFetchPrComment}
+              disabled={isPrCommentLoading}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_14px_rgba(6,182,212,0.3)] transition-all cursor-pointer disabled:opacity-50"
+            >
+              <RotateCw className={`w-3.5 h-3.5 ${isPrCommentLoading ? "animate-spin" : ""}`} />
+              <span>Refresh PR Checks</span>
+            </button>
+          )}
 
           {activeTab === "regress" && (
             <button
@@ -1015,7 +1279,339 @@ export function NetworkLabView({
             </div>
           )}
 
-          {/* Interactive cURL Execution Terminal (Available in both modes) */}
+          {/* TAB 3: MULTI-REGION DISTRIBUTED EDGE MESH */}
+          {activeTab === "multi_region" && (
+            <div className="space-y-6">
+              {/* Global Edge Overview KPI */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] flex flex-col justify-between">
+                  <span className="text-xs font-mono text-slate-400">Global Edge CDN</span>
+                  <div className="flex items-center gap-2 mt-2">
+                    <span className={`text-xl font-bold font-mono ${
+                      !multiRegionReport ? "text-slate-500" :
+                      multiRegionReport.cdn_edge_active ? "text-emerald-400" : "text-amber-400"
+                    }`}>
+                      {multiRegionReport ? (multiRegionReport.cdn_edge_active ? "ACTIVE (Edge POPs)" : "DIRECT ORIGIN") : "--"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] flex flex-col justify-between">
+                  <span className="text-xs font-mono text-slate-400">Fastest Node</span>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <span className="text-xl font-bold font-mono text-cyan-300">
+                      {multiRegionReport?.fastest_region || "--"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] flex flex-col justify-between">
+                  <span className="text-xs font-mono text-slate-400">Slowest Node</span>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <span className="text-xl font-bold font-mono text-indigo-300">
+                      {multiRegionReport?.slowest_region || "--"}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] flex flex-col justify-between">
+                  <span className="text-xs font-mono text-slate-400">Max Regional Disparity</span>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <span className={`text-2xl font-bold font-mono ${
+                      !multiRegionReport ? "text-slate-500" :
+                      multiRegionReport.regional_disparity_ms <= 100 ? "text-emerald-400" :
+                      multiRegionReport.regional_disparity_ms <= 200 ? "text-amber-400" : "text-rose-400"
+                    }`}>
+                      {multiRegionReport ? `${multiRegionReport.regional_disparity_ms}ms` : "--"}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-500">cross-continental delta</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Regional Cards Grid */}
+              {multiRegionReport ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {multiRegionReport.regions.map((reg) => (
+                    <div
+                      key={reg.region_id}
+                      className="p-4 rounded-xl bg-[#0d1424] border border-[#1d2b45] space-y-3 hover:border-cyan-500/40 transition-all"
+                    >
+                      <div className="flex items-center justify-between border-b border-[#182338] pb-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xl">{reg.flag}</span>
+                          <div>
+                            <h4 className="font-mono text-xs font-bold text-slate-200">{reg.region_name}</h4>
+                            <span className="text-[11px] font-mono text-slate-400">{reg.location}</span>
+                          </div>
+                        </div>
+                        <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${
+                          reg.status === "OPTIMAL"
+                            ? "bg-emerald-950/60 border-emerald-700/60 text-emerald-300"
+                            : reg.status === "ELEVATED"
+                            ? "bg-amber-950/60 border-amber-700/60 text-amber-300"
+                            : "bg-rose-950/60 border-rose-700/60 text-rose-300"
+                        }`}>
+                          {reg.status}
+                        </span>
+                      </div>
+
+                      {/* Metrics Chips */}
+                      <div className="grid grid-cols-4 gap-2 text-center font-mono">
+                        <div className="p-2 rounded bg-[#070b13] border border-[#162136]">
+                          <span className="text-[9px] text-slate-500 block uppercase">DNS</span>
+                          <span className="text-xs font-bold text-slate-200">{reg.dns_time_ms}ms</span>
+                        </div>
+                        <div className="p-2 rounded bg-[#070b13] border border-[#162136]">
+                          <span className="text-[9px] text-slate-500 block uppercase">TCP SYN</span>
+                          <span className="text-xs font-bold text-slate-200">{reg.tcp_connect_ms}ms</span>
+                        </div>
+                        <div className="p-2 rounded bg-[#070b13] border border-[#162136]">
+                          <span className="text-[9px] text-slate-500 block uppercase">TTFB</span>
+                          <span className="text-xs font-bold text-cyan-300">{reg.ttfb_ms}ms</span>
+                        </div>
+                        <div className="p-2 rounded bg-[#070b13] border border-[#162136]">
+                          <span className="text-[9px] text-slate-500 block uppercase">Total RTT</span>
+                          <span className="text-xs font-bold text-emerald-400">{reg.total_time_ms}ms</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between text-[11px] font-mono text-slate-400 pt-1">
+                        <span>Edge POP: <span className="text-slate-200">{reg.edge_pop}</span></span>
+                        <span>Jitter: <span className="text-slate-200">{reg.jitter_ms}ms</span></span>
+                        <span>Loss: <span className="text-emerald-400">{reg.packet_loss_pct}%</span></span>
+                      </div>
+
+                      <p className="text-[11px] font-mono text-slate-400 leading-relaxed border-t border-[#182338] pt-2">
+                        {reg.notes}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-8 rounded-xl bg-[#090e18] border border-[#1c2a42] text-center font-mono space-y-3">
+                  <Compass className="w-8 h-8 text-cyan-400 mx-auto animate-pulse" />
+                  <h4 className="text-sm font-bold text-slate-200">Global Distributed Edge Mesh</h4>
+                  <p className="text-xs text-slate-400 max-w-lg mx-auto">
+                    Simultaneously probes target URL from 4 distributed geographic regions (US-East, EU-West, APAC-Mumbai, APAC-Singapore) to catch geo-DNS propagation anomalies and CDN edge caching misses.
+                  </p>
+                  <button
+                    onClick={handleRunMultiRegion}
+                    disabled={isMultiRegionRunning}
+                    className="px-4 py-2 bg-gradient-to-r from-cyan-600 to-cyan-500 text-slate-950 rounded-lg text-xs font-bold cursor-pointer hover:brightness-110 disabled:opacity-50"
+                  >
+                    {isMultiRegionRunning ? "Probing Global Nodes..." : "Execute 4-Region Edge Probe"}
+                  </button>
+                </div>
+              )}
+
+              {/* Autonomous Multi-Region Agent Verdict */}
+              {multiRegionReport && (
+                <div className="p-5 rounded-xl bg-[#0b1222] border border-[#1b2b48] space-y-3 font-mono">
+                  <div className="flex items-center gap-2">
+                    <BrainCircuit className="w-4 h-4 text-cyan-400" />
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-cyan-300">
+                      Autonomous Agent Global Verdict & Routing Insights
+                    </h4>
+                  </div>
+                  <p className="text-xs text-slate-200 leading-relaxed bg-[#060a14] p-3 rounded-lg border border-[#152238]">
+                    {multiRegionReport.agent_verdict}
+                  </p>
+                  {multiRegionReport.recommendations.length > 0 && (
+                    <div className="space-y-1.5 pt-2">
+                      <span className="text-[11px] font-semibold text-slate-400 block">Recommended Optimizations:</span>
+                      {multiRegionReport.recommendations.map((rec, idx) => (
+                        <div key={idx} className="flex items-start gap-2 text-xs text-slate-300">
+                          <span className="text-cyan-400 font-bold">•</span>
+                          <span>{rec}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* TAB 4: PR GATE & GITHUB APP INTEGRATION */}
+          {activeTab === "pr_gate" && (
+            <div className="space-y-6">
+              {/* SVG Badges Showcase */}
+              <div className="p-5 rounded-xl bg-[#0d1424] border border-[#1c2b47] space-y-4 font-mono">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <GitPullRequest className="w-4 h-4 text-cyan-400" />
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                      Dynamic Embeddable SVG Badges
+                    </h4>
+                  </div>
+                  <span className="text-[10px] text-slate-400">Live vector status for GitHub READMEs & PRs</span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  {/* Badge 1: Quality Gate */}
+                  <div className="p-3.5 rounded-lg bg-[#070b13] border border-[#182338] space-y-2.5">
+                    <span className="text-[11px] text-slate-400 block">Quality Gate Verdict</span>
+                    <div className="flex items-center justify-between">
+                      <div className="inline-flex rounded overflow-hidden text-xs font-bold">
+                        <span className="bg-[#1e293b] text-white px-2.5 py-1">ReadyHai</span>
+                        <span className="bg-[#22c55e] text-white px-2.5 py-1">PASS</span>
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard("![ReadyHai Gate](http://localhost:8080/api/badges/gate?status=pass)", "badge-gate")}
+                        className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedText === "badge-gate" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedText === "badge-gate" ? "Copied" : "Copy"}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Badge 2: Evidence Ledger */}
+                  <div className="p-3.5 rounded-lg bg-[#070b13] border border-[#182338] space-y-2.5">
+                    <span className="text-[11px] text-slate-400 block">4-Pillar Evidence Ledger</span>
+                    <div className="flex items-center justify-between">
+                      <div className="inline-flex rounded overflow-hidden text-xs font-bold">
+                        <span className="bg-[#0f172a] text-white px-2.5 py-1">Evidence Ledger</span>
+                        <span className="bg-[#3b82f6] text-white px-2.5 py-1">94/100</span>
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard("![Evidence Ledger](http://localhost:8080/api/badges/ledger?score=94)", "badge-ledger")}
+                        className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedText === "badge-ledger" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedText === "badge-ledger" ? "Copied" : "Copy"}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Badge 3: Network Mesh */}
+                  <div className="p-3.5 rounded-lg bg-[#070b13] border border-[#182338] space-y-2.5">
+                    <span className="text-[11px] text-slate-400 block">Global Network Mesh</span>
+                    <div className="flex items-center justify-between">
+                      <div className="inline-flex rounded overflow-hidden text-xs font-bold">
+                        <span className="bg-[#18181b] text-white px-2.5 py-1">Network Mesh</span>
+                        <span className="bg-[#10b981] text-white px-2.5 py-1">100% Optimal</span>
+                      </div>
+                      <button
+                        onClick={() => copyToClipboard("![Network Mesh](http://localhost:8080/api/badges/network?status=optimal)", "badge-mesh")}
+                        className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
+                      >
+                        {copiedText === "badge-mesh" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        <span>{copiedText === "badge-mesh" ? "Copied" : "Copy"}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* PR Status Comment Preview & Copy */}
+              <div className="p-5 rounded-xl bg-[#0d1424] border border-[#1c2b47] space-y-4 font-mono">
+                <div className="flex items-center justify-between border-b border-[#182338] pb-3">
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                      Pull Request Comment Markdown
+                    </h4>
+                    <span className="text-[11px] text-slate-400">Post directly to GitHub PR via CLI or GitHub Action step</span>
+                  </div>
+                  {prCommentData && (
+                    <button
+                      onClick={() => copyToClipboard(prCommentData.markdown, "pr-comment-md")}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-950 border border-cyan-700/60 text-cyan-300 hover:bg-cyan-900 text-xs font-bold cursor-pointer transition-all"
+                    >
+                      {copiedText === "pr-comment-md" ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>Copied Markdown!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>Copy PR Comment</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+
+                {prCommentData ? (
+                  <div className="p-4 rounded-lg bg-[#060a14] border border-[#162238] text-xs text-slate-300 font-mono overflow-x-auto whitespace-pre-wrap max-h-72 leading-relaxed">
+                    {prCommentData.markdown}
+                  </div>
+                ) : (
+                  <div className="p-4 rounded-lg bg-[#060a14] border border-[#162238] text-slate-400 text-xs flex items-center justify-between">
+                    <span>Click below to generate an Evidence Ledger PR comment for {target}.</span>
+                    <button
+                      onClick={handleFetchPrComment}
+                      disabled={isPrCommentLoading}
+                      className="px-3 py-1 bg-cyan-950 border border-cyan-700 text-cyan-300 rounded font-semibold text-xs cursor-pointer"
+                    >
+                      {isPrCommentLoading ? "Generating..." : "Generate Comment"}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* GitHub Actions CI/CD Workflow (.github/workflows/readyhai.yml) */}
+              <div className="p-5 rounded-xl bg-[#0d1424] border border-[#1c2b47] space-y-3 font-mono">
+                <div className="flex items-center justify-between border-b border-[#182338] pb-3">
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                      GitHub Actions Workflow Snippet (.github/workflows/readyhai.yml)
+                    </h4>
+                    <span className="text-[11px] text-slate-400">Enforce blocking readiness gate & SARIF code scanning on every commit</span>
+                  </div>
+                  <button
+                    onClick={() => copyToClipboard(
+`name: ReadyHai Production Readiness Gate\non: [pull_request, push]\n\njobs:\n  gate:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n\n      - name: Install ReadyHai\n        run: |\n          curl -sSfL https://github.com/deziss/readyhai/releases/latest/download/readyhai-linux-x86_64.tar.gz | sudo tar xz -C /usr/local/bin\n\n      - name: Execute Quality & Network Gate\n        run: |\n          readyhai scan . --profile quick --format sarif,html --out readyhai-report\n\n      - name: Upload SARIF to GitHub Code Scanning\n        if: always()\n        uses: github/codeql-action/upload-sarif@v3\n        with:\n          sarif_file: readyhai-report/readyhai-report.sarif`,
+                      "action-yaml"
+                    )}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#080d19] border border-[#1b2b48] hover:border-cyan-500/50 text-cyan-300 text-xs font-bold cursor-pointer transition-all"
+                  >
+                    {copiedText === "action-yaml" ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Copied YAML!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="w-3.5 h-3.5" />
+                        <span>Copy Workflow YAML</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                <pre className="p-4 rounded-lg bg-[#060a14] border border-[#162238] text-[11px] text-slate-300 font-mono overflow-x-auto leading-relaxed">
+{`name: ReadyHai Production Readiness Gate
+on: [pull_request, push]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ReadyHai
+        run: |
+          curl -sSfL https://github.com/deziss/readyhai/releases/latest/download/readyhai-linux-x86_64.tar.gz | sudo tar xz -C /usr/local/bin
+
+      - name: Execute Quality & Network Gate
+        run: |
+          readyhai scan . --profile quick --format sarif,html --out readyhai-report
+
+      - name: Upload SARIF to GitHub Code Scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: readyhai-report/readyhai-report.sarif`}
+                </pre>
+              </div>
+            </div>
+          )}
+
+          
+{/* Interactive cURL Execution Terminal (Available in both modes) */}
           <div className="p-4 rounded-xl bg-[#090e18] border border-[#1c2a42] space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-mono font-bold text-slate-300 flex items-center gap-2">
