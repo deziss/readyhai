@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Activity,
   Globe,
@@ -79,6 +79,17 @@ export function NetworkLabView({
   // Deep Audit Results
   const [isDeepAuditRunning, setIsDeepAuditRunning] = useState(false);
   const [deepAuditReport, setDeepAuditReport] = useState<DeepAuditReport | null>(null);
+  const [deepAuditError, setDeepAuditError] = useState<string | null>(null);
+
+  // Restore cached deep audit result if available for target
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem(`readyhai_deep_audit_${target}`);
+      if (cached && !deepAuditReport) {
+        setDeepAuditReport(JSON.parse(cached));
+      }
+    } catch (_) {}
+  }, [target]);
 
   // cURL Runner
   const [isCurlRunning, setIsCurlRunning] = useState(false);
@@ -148,6 +159,7 @@ export function NetworkLabView({
   // Run 6-Pillar Deep Audit
   async function handleRunDeepAudit() {
     setIsDeepAuditRunning(true);
+    setDeepAuditError(null);
     onRunningChange?.(true, "6-Pillar Deep Network & Protocol Audit");
     try {
       const res = await fetch("/api/network/deep-audit", {
@@ -159,9 +171,16 @@ export function NetworkLabView({
       if (res.ok) {
         const data: DeepAuditReport = await res.json();
         setDeepAuditReport(data);
+        try {
+          localStorage.setItem(`readyhai_deep_audit_${target}`, JSON.stringify(data));
+        } catch (_) {}
+      } else {
+        const errText = await res.text();
+        setDeepAuditError(`Deep audit probe failed (${res.status}): ${errText || "Request failed"}`);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Deep audit failed:", err);
+      setDeepAuditError(`Deep audit request failed: ${err?.message || "Failed to reach backend service"}`);
     } finally {
       setIsDeepAuditRunning(false);
       onRunningChange?.(false, "Completed 6-Pillar Deep Protocol Audit");
@@ -1001,8 +1020,68 @@ export function NetworkLabView({
           {/* TAB 2: 6-PILLAR DEEP PROTOCOL & NETWORK AUDIT */}
           {activeTab === "deep_audit" && (
             <div className="space-y-6">
-              {/* Executive Health Banner */}
-              {deepAuditReport ? (
+              {/* Executive Health Banner, Live Progress Cockpit, or Launch CTA */}
+              {isDeepAuditRunning ? (
+                <div className="p-7 rounded-xl bg-[#080e1c] border border-cyan-500/50 text-center space-y-4 shadow-[0_0_25px_rgba(6,182,212,0.18)]">
+                  <div className="relative w-14 h-14 mx-auto flex items-center justify-center">
+                    <div className="absolute inset-0 rounded-full border-2 border-cyan-500/40 animate-ping" />
+                    <RotateCw className="w-7 h-7 text-cyan-400 animate-spin" />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-base font-bold text-white flex items-center justify-center gap-2 flex-wrap">
+                      <span>Probing All 6 Deep Network &amp; Protocol Pillars...</span>
+                      <span className="text-xs font-mono font-normal text-cyan-300 bg-cyan-950/90 px-2 py-0.5 rounded border border-cyan-800">
+                        {target}
+                      </span>
+                    </h3>
+                    <p className="text-xs text-slate-400 max-w-lg mx-auto">
+                      Executing parallel protocol sweeps: IPv4/IPv6 Happy Eyeballs, Sub-Resource Cascade, HTTP/2 ALPN, TLS 1.3 Chain, CORS Preflight, and Path MTU Black Holes (~4-8 seconds).
+                    </p>
+                  </div>
+
+                  {/* 6-Pillar Stepper Visualizer */}
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-w-xl mx-auto pt-2 text-left font-mono text-[11px]">
+                    <div className="p-2 rounded bg-[#0b1426] border border-cyan-800/60 flex items-center gap-2 text-cyan-300">
+                      <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping shrink-0" />
+                      <span>1. IPv4 / IPv6 Eyeballs</span>
+                    </div>
+                    <div className="p-2 rounded bg-[#0b1426] border border-cyan-800/60 flex items-center gap-2 text-cyan-300">
+                      <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping shrink-0" />
+                      <span>2. Sub-Resource Cascade</span>
+                    </div>
+                    <div className="p-2 rounded bg-[#0b1426] border border-cyan-800/60 flex items-center gap-2 text-cyan-300">
+                      <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping shrink-0" />
+                      <span>3. HTTP/2 &amp; 3 Matrix</span>
+                    </div>
+                    <div className="p-2 rounded bg-[#0b1426] border border-cyan-800/60 flex items-center gap-2 text-cyan-300">
+                      <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping shrink-0" />
+                      <span>4. TLS 1.3 Chain Check</span>
+                    </div>
+                    <div className="p-2 rounded bg-[#0b1426] border border-cyan-800/60 flex items-center gap-2 text-cyan-300">
+                      <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping shrink-0" />
+                      <span>5. CORS Preflight Check</span>
+                    </div>
+                    <div className="p-2 rounded bg-[#0b1426] border border-cyan-800/60 flex items-center gap-2 text-cyan-300">
+                      <div className="w-2 h-2 rounded-full bg-cyan-400 animate-ping shrink-0" />
+                      <span>6. MTU Size Sweep</span>
+                    </div>
+                  </div>
+                </div>
+              ) : deepAuditError ? (
+                <div className="p-6 rounded-xl bg-rose-950/30 border border-rose-600/50 space-y-3">
+                  <div className="flex items-center gap-2 text-rose-300">
+                    <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0" />
+                    <h3 className="text-sm font-bold">Deep Network Audit Failed</h3>
+                  </div>
+                  <p className="text-xs font-mono text-rose-200">{deepAuditError}</p>
+                  <button
+                    onClick={handleRunDeepAudit}
+                    className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-mono text-xs font-bold transition-all cursor-pointer"
+                  >
+                    Retry 6-Pillar Audit
+                  </button>
+                </div>
+              ) : deepAuditReport ? (
                 <div className={`p-5 rounded-xl border flex items-center justify-between gap-6 ${
                   deepAuditReport.overall_verdict === "PASS"
                     ? "bg-emerald-950/20 border-emerald-500/50"
@@ -1050,7 +1129,7 @@ export function NetworkLabView({
                     disabled={isDeepAuditRunning}
                     className="px-5 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-mono font-bold cursor-pointer transition-all"
                   >
-                    {isDeepAuditRunning ? "Running Deep Audit..." : "Launch 6-Pillar Audit"}
+                    Launch 6-Pillar Audit
                   </button>
                 </div>
               )}

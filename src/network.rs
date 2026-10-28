@@ -1248,7 +1248,7 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
 }
 
 fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
-    let timeout_s = (timeout_ms / 1000).max(1);
+    let timeout_s = (timeout_ms / 1000).clamp(1, 2);
     let mut protocols = Vec::new();
 
     // 1. Probe HTTP/1.1
@@ -1259,7 +1259,7 @@ fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
         .arg("-w").arg("%{http_version}:%{http_code}")
         .arg("--http1.1")
         .arg("--connect-timeout").arg(timeout_s.to_string())
-        .arg("--max-time").arg((timeout_s * 2).to_string())
+        .arg("--max-time").arg(timeout_s.to_string())
         .arg(target)
         .output();
     let dur_11 = t0.elapsed().as_millis();
@@ -1291,7 +1291,7 @@ fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
         .arg("-w").arg("%{http_version}:%{http_code}")
         .arg("--http2")
         .arg("--connect-timeout").arg(timeout_s.to_string())
-        .arg("--max-time").arg((timeout_s * 2).to_string())
+        .arg("--max-time").arg(timeout_s.to_string())
         .arg(target)
         .output();
     let dur_2 = t0.elapsed().as_millis();
@@ -1514,8 +1514,9 @@ fn audit_cors_preflight(target: &str, timeout_ms: u64) -> CorsAudit {
 }
 
 fn audit_mtu_sweep(target: &str, timeout_ms: u64) -> MtuSweepAudit {
+    let sweep_timeout = Duration::from_millis(timeout_ms.clamp(800, 2000));
     let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
+        .timeout(sweep_timeout)
         .danger_accept_invalid_certs(true)
         .build()
         .unwrap_or_default();
