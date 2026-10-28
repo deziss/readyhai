@@ -281,6 +281,9 @@ export default function Home() {
       setDiscoveredData({
         target: run.target,
         is_spa: run.discovered_routes.some((r: any) => r.is_spa_shell),
+        app_architecture: run.app_architecture,
+        framework: run.framework,
+        detected_tech: run.detected_tech,
         count: run.discovered_routes.length,
         routes: run.discovered_routes,
       });
@@ -465,7 +468,8 @@ export default function Home() {
               discoveredRoutes={discoveredData?.routes || []}
               threats={threats}
               evidenceLedger={evidenceLedger}
-              isSpa={discoveredData?.is_spa ?? true}
+              isSpa={discoveredData?.is_spa ?? false}
+              appArchitecture={discoveredData?.app_architecture}
               target={target}
               onRetestCase={handleRetestCase}
               runsHistory={runsHistory}

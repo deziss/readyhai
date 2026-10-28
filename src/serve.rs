@@ -534,6 +534,9 @@ async fn agent_discover(Query(q): Query<DiscoverQuery>) -> Response {
             Json(json!({
                 "target": report.target,
                 "is_spa": is_spa,
+                "app_architecture": report.app_architecture,
+                "framework": report.framework,
+                "detected_tech": report.detected_tech,
                 "routes": report.discovered_routes,
                 "count": report.discovered_routes.len(),
                 "run_id": report.id,
@@ -556,6 +559,9 @@ async fn agent_discover_post(Json(b): Json<DiscoverBody>) -> Response {
             Json(json!({
                 "target": report.target,
                 "is_spa": is_spa,
+                "app_architecture": report.app_architecture,
+                "framework": report.framework,
+                "detected_tech": report.detected_tech,
                 "routes": report.discovered_routes,
                 "count": report.discovered_routes.len(),
                 "run_id": report.id,
