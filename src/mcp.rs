@@ -148,7 +148,14 @@ pub fn precheck(opts: &ScanOpts) -> Result<()> {
     if let Some(h) = &t.host {
         dests.push(format!("ssh://{}", h.host));
     }
-    if let Some(g) = t.raw.strip_prefix("git:") {
+    let git_target = if let Some(g) = t.raw.strip_prefix("git:") {
+        Some(g)
+    } else if t.kind == crate::model::TargetKind::Repo && (t.raw.starts_with("https://") || t.raw.starts_with("http://")) {
+        Some(t.raw.as_str())
+    } else {
+        None
+    };
+    if let Some(g) = git_target {
         // git@host:org/repo → ssh://host
         let g = match g.strip_prefix("git@") {
             Some(rest) => format!("ssh://{}", rest.split(':').next().unwrap_or("")),

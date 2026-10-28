@@ -141,9 +141,6 @@ pub fn parse_target(raw: &str, openapi: Option<String>) -> Result<Target> {
         }
         t.kind = TargetKind::Image;
         t.image = Some(img.to_string());
-    } else if raw.starts_with("http://") || raw.starts_with("https://") {
-        t.kind = TargetKind::Web;
-        t.url = Some(raw.to_string());
     } else if let Some(rest) = raw.strip_prefix("ssh://") {
         t.kind = TargetKind::Host;
         t.host = Some(parse_ssh(rest)?);
@@ -156,8 +153,17 @@ pub fn parse_target(raw: &str, openapi: Option<String>) -> Result<Target> {
         }
         t.kind = TargetKind::Android;
         t.apk = Some(p.canonicalize()?);
-    } else if raw.starts_with("git:") {
+    } else if raw.starts_with("git:")
+        || raw.ends_with(".git")
+        || raw.starts_with("https://github.com/")
+        || raw.starts_with("http://github.com/")
+        || raw.starts_with("https://gitlab.com/")
+        || raw.starts_with("http://gitlab.com/")
+    {
         t.kind = TargetKind::Repo;
+    } else if raw.starts_with("http://") || raw.starts_with("https://") {
+        t.kind = TargetKind::Web;
+        t.url = Some(raw.to_string());
     } else {
         let p = Path::new(raw);
         if !p.is_dir() {
@@ -302,7 +308,7 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
             if !s.dropped_symlinks.is_empty() {
                 notes.push(format!("{} symlink(s) dropped from snapshot", s.dropped_symlinks.len()));
             }
-            if target.raw.starts_with("git:") {
+            if dir.join("clone").exists() {
                 let _ = std::fs::remove_dir_all(dir.join("clone"));
             }
             snap = Some(s);
