@@ -8,6 +8,7 @@ import { SideCanvas } from "@/components/SideCanvas";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { ScansHistoryView } from "@/components/ScansHistoryView";
 import { AgentHistoryView } from "@/components/AgentHistoryView";
+import { NetworkLabView } from "@/components/NetworkLabView";
 import type {
   TestCaseResult,
   ThreatFinding,
@@ -418,6 +419,10 @@ export default function Home() {
             setActiveView("studio");
           }}
         />
+      )}
+
+      {activeView === "network_lab" && (
+        <NetworkLabView initialTarget={target} />
       )}
     </div>
   );

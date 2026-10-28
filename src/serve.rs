@@ -107,6 +107,8 @@ pub fn serve(bind: &str) -> Result<()> {
             .route("/api/scans", get(api_scans_list))
             .route("/api/scans/{id}", get(api_scan_get).delete(api_scan_delete))
             .route("/api/scans/{id}/report/{fmt}", get(api_scan_report))
+            .route("/api/network/regress", post(network_regress))
+            .route("/api/network/curl", post(network_curl))
             .route("/health", get(|| async { Json(json!({"status": "ok", "version": engine::VERSION})) }))
             .route("/checks", get(list_checks))
             .route("/runs", post(create_run).get(list_runs))
@@ -611,6 +613,35 @@ async fn agent_retest(Json(body): Json<RetestPayload>) -> Response {
     match res {
         Ok(Some(r)) => Json(r).into_response(),
         Ok(None) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": "No execution result"}))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+
+async fn network_regress(Json(req): Json<crate::network::RegressRequest>) -> Response {
+    if req.target.contains("agent-prod.nuhire.in") {
+        return err(StatusCode::FORBIDDEN, "target forbidden");
+    }
+    let res = tokio::task::spawn_blocking(move || {
+        crate::network::run_regress_test(&req)
+    }).await;
+
+    match res {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn network_curl(Json(req): Json<crate::network::CurlTestRequest>) -> Response {
+    if req.target.contains("agent-prod.nuhire.in") {
+        return err(StatusCode::FORBIDDEN, "target forbidden");
+    }
+    let res = tokio::task::spawn_blocking(move || {
+        crate::network::execute_curl_test(&req)
+    }).await;
+
+    match res {
+        Ok(resp) => Json(resp).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }
