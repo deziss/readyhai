@@ -37,6 +37,9 @@ interface SideCanvasProps {
   runsHistory: any[];
   onLoadRun: (run: any) => void;
   onDeleteRun?: (runId: string) => Promise<void>;
+  onCrawlSite?: () => Promise<void>;
+  isCrawling?: boolean;
+  onTestEndpoint?: (path: string, method?: string) => Promise<void>;
 }
 
 export function SideCanvas({
@@ -51,11 +54,15 @@ export function SideCanvas({
   runsHistory,
   onLoadRun,
   onDeleteRun,
+  onCrawlSite,
+  isCrawling = false,
+  onTestEndpoint,
 }: SideCanvasProps) {
   const [activeTab, setActiveTab] = useState<"scenarios" | "routes" | "ledger" | "triage" | "history">("scenarios");
   const [expandedRowId, setExpandedRowId] = useState<string | null>(testCases[0]?.id || null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [retestingId, setRetestingId] = useState<string | null>(null);
+  const [testingPath, setTestingPath] = useState<string | null>(null);
 
   function copyCurl(curlText: string, id: string) {
     navigator.clipboard.writeText(curlText);
@@ -399,9 +406,30 @@ export function SideCanvas({
                 {appArchitecture || (isSpa ? "SPA Architecture (Next.js/React)" : "Standard Web / API")}
               </span>
             </div>
-            <span className="text-[11px] font-mono text-slate-500">
-              {discoveredRoutes.length} routes probed
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-mono text-slate-500">
+                {discoveredRoutes.length} real routes
+              </span>
+              {onCrawlSite && (
+                <button
+                  type="button"
+                  onClick={onCrawlSite}
+                  disabled={isCrawling}
+                  className="px-2.5 py-1 rounded bg-purple-950/80 hover:bg-purple-900 border border-purple-700/80 text-purple-300 text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isCrawling ? (
+                    <>
+                      <RotateCw className="w-3 h-3 animate-spin text-purple-400" />
+                      Crawling...
+                    </>
+                  ) : (
+                    <>
+                      🕷️ Deep Crawl Site
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
           </div>
 
           <div className="border border-[#1a2436] rounded-lg overflow-hidden bg-[#07090e]/60">
@@ -409,17 +437,32 @@ export function SideCanvas({
               <thead>
                 <tr className="border-b border-[#1a2436] bg-[#090d16] text-slate-400 text-[11px]">
                   <th className="p-3">Method</th>
-                  <th className="p-3">Route Path</th>
+                  <th className="p-3">Real Route & Page Title</th>
                   <th className="p-3">Status</th>
                   <th className="p-3">Content-Type</th>
                   <th className="p-3">Classification</th>
+                  <th className="p-3 text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#162033]">
                 {discoveredRoutes.map((route, idx) => (
                   <tr key={idx} className="hover:bg-[#0e1524]/50 transition-colors">
                     <td className="p-3 text-cyan-400 font-bold">{route.method}</td>
-                    <td className="p-3 text-slate-200">{route.path}</td>
+                    <td className="p-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-slate-200 font-mono font-medium">{route.path}</span>
+                        {route.has_form && (
+                          <span className="px-1.5 py-0.2 rounded bg-amber-950/80 text-amber-300 border border-amber-800/60 text-[9px] font-mono font-bold">
+                            📝 Form
+                          </span>
+                        )}
+                      </div>
+                      {route.title && (
+                        <div className="text-[11px] text-slate-400 truncate max-w-[280px] font-sans mt-0.5">
+                          {route.title}
+                        </div>
+                      )}
+                    </td>
                     <td className="p-3">
                       <span
                         className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
@@ -433,7 +476,7 @@ export function SideCanvas({
                         {route.status_code}
                       </span>
                     </td>
-                    <td className="p-3 text-slate-400 text-[11px] truncate max-w-[150px]">
+                    <td className="p-3 text-slate-400 text-[11px] truncate max-w-[130px]">
                       {route.content_type || "text/plain"}
                     </td>
                     <td className="p-3">
@@ -449,6 +492,31 @@ export function SideCanvas({
                         <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">
                           Route Endpoint
                         </span>
+                      )}
+                    </td>
+                    <td className="p-3 text-right">
+                      {onTestEndpoint && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            setTestingPath(route.path);
+                            await onTestEndpoint(route.path, route.method);
+                            setTestingPath(null);
+                          }}
+                          disabled={testingPath === route.path}
+                          className="px-2 py-0.5 rounded bg-cyan-950/70 hover:bg-cyan-900 border border-cyan-700/60 text-cyan-300 text-[10px] font-mono inline-flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
+                        >
+                          {testingPath === route.path ? (
+                            <>
+                              <RotateCw className="w-2.5 h-2.5 animate-spin text-cyan-400" />
+                              Testing
+                            </>
+                          ) : (
+                            <>
+                              ⚡ Test URL
+                            </>
+                          )}
+                        </button>
                       )}
                     </td>
                   </tr>

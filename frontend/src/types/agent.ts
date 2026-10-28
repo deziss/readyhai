@@ -7,6 +7,8 @@ export interface DiscoveredRoute {
   content_type: string;
   is_spa_shell: boolean;
   is_api: boolean;
+  title?: string;
+  has_form?: boolean;
 }
 
 export interface DiscoveredTarget {
