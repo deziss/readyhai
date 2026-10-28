@@ -34,6 +34,24 @@ pub struct AgentRunRequest {
     pub custom_instructions: Option<String>,
     #[serde(default)]
     pub dry_run: bool,
+    #[serde(default = "default_true")]
+    pub thinking: bool,
+    #[serde(default = "default_model_tier")]
+    pub model_tier: String,
+    #[serde(default = "default_reasoning_tokens")]
+    pub thinking_budget_tokens: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_model_tier() -> String {
+    "high".to_string()
+}
+
+fn default_reasoning_tokens() -> u32 {
+    8192
 }
 
 fn default_profile() -> String {
@@ -154,6 +172,12 @@ pub struct AgentRunReport {
     pub approval_notes: Option<String>,
     pub approved_at: Option<String>,
     pub error: Option<String>,
+    #[serde(default = "default_true")]
+    pub thinking: bool,
+    #[serde(default = "default_model_tier")]
+    pub model_tier: String,
+    #[serde(default = "default_reasoning_tokens")]
+    pub thinking_budget_tokens: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,6 +341,9 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
         approval_notes: None,
         approved_at: None,
         error: None,
+        thinking: false,
+        model_tier: "medium".to_string(),
+        thinking_budget_tokens: 4096,
     }
 }
 
@@ -484,6 +511,9 @@ pub fn run_discovery_scan(target: &str, spec_url: Option<&str>) -> Result<AgentR
         approval_notes: None,
         approved_at: None,
         error: None,
+        thinking: true,
+        model_tier: "high".to_string(),
+        thinking_budget_tokens: 8192,
     };
 
     save_agent_run(&report)?;
@@ -1107,6 +1137,24 @@ pub fn run_agentic_loop(req: &AgentRunRequest, run_id: &str) -> Result<AgentRunR
 
     log_step(&mut steps, "Supervisor", "Session Init", &format!("Initializing autonomous multi-agent session for target: {}", req.target), "running");
 
+    if req.thinking {
+        let (cot_label, detail) = match req.model_tier.as_str() {
+            "low" => ("Low (Quick 1k CoT)", "1,024 reasoning tokens allocated for fast heuristic validation."),
+            "medium" => ("Medium (Standard 4k CoT)", "4,096 reasoning tokens allocated for balanced boundary probing."),
+            "high" => ("High (Deep 8k CoT)", "8,192 reasoning tokens allocated for rigorous OWASP boundary scanning."),
+            "max" => ("Max (Exhaustive 16k CoT)", "16,384 reasoning tokens allocated for exhaustive state mutation."),
+            "max_pro" => ("Max Pro (Frontier 32k CoT)", "32,768 reasoning tokens allocated for multi-agent adversarial synthesis & canary injections."),
+            _ => ("High (Deep 8k CoT)", "8,192 reasoning tokens allocated for deep analysis."),
+        };
+        log_step(
+            &mut steps,
+            "Supervisor",
+            "Extended Chain-of-Thought",
+            &format!("Thinking activated: Tier [{}] — {}", cot_label, detail),
+            "completed"
+        );
+    }
+
     // 1. Check Model Connectivity
     let is_connected = probe(&cfg);
     if is_connected {
@@ -1164,6 +1212,9 @@ pub fn run_agentic_loop(req: &AgentRunRequest, run_id: &str) -> Result<AgentRunR
         approval_notes: None,
         approved_at: None,
         error: None,
+        thinking: req.thinking,
+        model_tier: req.model_tier.clone(),
+        thinking_budget_tokens: req.thinking_budget_tokens,
     };
 
     save_agent_run(&report)?;

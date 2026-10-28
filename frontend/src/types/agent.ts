@@ -1,3 +1,5 @@
+export type ModelTier = "low" | "medium" | "high" | "max" | "max_pro";
+
 export interface DiscoveredRoute {
   path: string;
   method: string;
@@ -115,6 +117,9 @@ export interface AgentRunFull {
   completed_at?: string;
   profile: string;
   provider: string;
+  thinking?: boolean;
+  model_tier?: ModelTier | string;
+  thinking_budget_tokens?: number;
   steps: AgentStep[];
   discovered_routes: DiscoveredRoute[];
   planned_cases: PlannedCase[];

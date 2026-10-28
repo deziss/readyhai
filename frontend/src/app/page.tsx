@@ -11,6 +11,7 @@ import { AgentHistoryView } from "@/components/AgentHistoryView";
 import { NetworkLabView } from "@/components/NetworkLabView";
 import { FloatingTaskWidget, ActiveTaskItem } from "@/components/FloatingTaskWidget";
 import type {
+  ModelTier,
   TestCaseResult,
   ThreatFinding,
   EvidenceLedger,
@@ -28,6 +29,9 @@ export default function Home() {
   const [directives, setDirectives] = useState("Strict QA and verify resilience, contracts, and authz");
   const [profile, setProfile] = useState("discovery-scan");
   const [maxSteps, setMaxSteps] = useState(15);
+  const [thinking, setThinking] = useState(true);
+  const [modelTier, setModelTier] = useState<ModelTier>("high");
+  const [thinkingBudget, setThinkingBudget] = useState(8192);
 
   // Discovered Routes
   const [discoveredData, setDiscoveredData] = useState<DiscoveredTarget | null>(null);
@@ -127,6 +131,9 @@ export default function Home() {
         directives,
         profile,
         max_steps: maxSteps,
+        thinking,
+        model_tier: modelTier,
+        thinking_budget_tokens: thinkingBudget,
       };
 
       setTimeout(() => {
@@ -431,6 +438,12 @@ export default function Home() {
               discoveredData={discoveredData}
               onLaunch={handleLaunch}
               isRunning={isRunning}
+              thinking={thinking}
+              setThinking={setThinking}
+              modelTier={modelTier}
+              setModelTier={setModelTier}
+              thinkingBudget={thinkingBudget}
+              setThinkingBudget={setThinkingBudget}
             />
 
             <ToolCallList stages={stages} currentRunningIndex={0} />
