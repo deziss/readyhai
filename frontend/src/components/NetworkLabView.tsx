@@ -80,6 +80,7 @@ export function NetworkLabView({
   const [isDeepAuditRunning, setIsDeepAuditRunning] = useState(false);
   const [deepAuditReport, setDeepAuditReport] = useState<DeepAuditReport | null>(null);
   const [deepAuditError, setDeepAuditError] = useState<string | null>(null);
+  const [showRemediation, setShowRemediation] = useState(false);
 
   // Restore cached deep audit result if available for target
   useEffect(() => {
@@ -407,7 +408,7 @@ export function NetworkLabView({
               }`}
             >
               <Activity className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Continuous Regressive Stress Lab</span>
+              <span>Regressive Lab</span>
             </button>
 
             <button
@@ -425,10 +426,7 @@ export function NetworkLabView({
               }`}
             >
               <Network className="w-3.5 h-3.5 text-cyan-400" />
-              <span>6-Pillar Deep Protocol & Network Audit</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-cyan-900/60 text-cyan-300 border border-cyan-700/50 font-bold">
-                ALL 6
-              </span>
+              <span>6-Pillar Protocol Audit</span>
             </button>
 
             <button
@@ -446,10 +444,7 @@ export function NetworkLabView({
               }`}
             >
               <Compass className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Multi-Region Edge Mesh</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-900/60 text-indigo-300 border border-indigo-700/50 font-bold">
-                4 REGIONS
-              </span>
+              <span>Multi-Region Mesh</span>
             </button>
 
             <button
@@ -467,7 +462,7 @@ export function NetworkLabView({
               }`}
             >
               <GitPullRequest className="w-3.5 h-3.5 text-cyan-400" />
-              <span>PR Gate & Badges</span>
+              <span>PR Status Gate</span>
             </button>
           </div>
         </div>
@@ -504,39 +499,6 @@ export function NetworkLabView({
             <span>Export HAR</span>
           </button>
 
-          {activeTab === "multi_region" && (
-            <button
-              id="btn-run-multi-region"
-              onClick={handleRunMultiRegion}
-              disabled={isMultiRegionRunning}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_14px_rgba(6,182,212,0.3)] transition-all cursor-pointer disabled:opacity-50"
-            >
-              {isMultiRegionRunning ? (
-                <>
-                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Probing Mesh...</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Probe Global Mesh</span>
-                </>
-              )}
-            </button>
-          )}
-
-          {activeTab === "pr_gate" && (
-            <button
-              id="btn-refresh-pr-comment"
-              onClick={handleFetchPrComment}
-              disabled={isPrCommentLoading}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_14px_rgba(6,182,212,0.3)] transition-all cursor-pointer disabled:opacity-50"
-            >
-              <RotateCw className={`w-3.5 h-3.5 ${isPrCommentLoading ? "animate-spin" : ""}`} />
-              <span>Refresh PR Checks</span>
-            </button>
-          )}
-
           {activeTab === "regress" && (
             <button
               id="btn-run-regress"
@@ -557,34 +519,14 @@ export function NetworkLabView({
               )}
             </button>
           )}
-
-          {activeTab === "deep_audit" && (
-            <button
-              id="btn-run-deep-audit"
-              onClick={handleRunDeepAudit}
-              disabled={isDeepAuditRunning}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_14px_rgba(6,182,212,0.3)] transition-all cursor-pointer disabled:opacity-50"
-            >
-              {isDeepAuditRunning ? (
-                <>
-                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
-                  <span>Auditing 6 Pillars...</span>
-                </>
-              ) : (
-                <>
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>Run Complete Deep Audit</span>
-                </>
-              )}
-            </button>
-          )}
         </div>
       </div>
 
       {/* Main Content Area */}
-      <div className="flex-1 overflow-hidden grid grid-cols-1 xl:grid-cols-12 min-h-0">
-        {/* Left Config Sidebar (4 cols) */}
-        <aside className="xl:col-span-4 border-r border-[#182338] bg-[#090d18] p-4 overflow-y-auto space-y-4">
+      <div className={`flex-1 overflow-hidden min-h-0 ${activeTab === "regress" ? "grid grid-cols-1 xl:grid-cols-12" : "flex flex-col bg-[#06080e]"}`}>
+        {/* Left Config Sidebar (Only shown for Regressive Lab) */}
+        {activeTab === "regress" && (
+          <aside className="xl:col-span-4 border-r border-[#182338] bg-[#090d18] p-4 overflow-y-auto space-y-4">
           <div className="space-y-1">
             <h2 className="text-sm font-semibold text-white flex items-center gap-2">
               <Sliders className="w-4 h-4 text-cyan-400" />
@@ -765,9 +707,11 @@ export function NetworkLabView({
             </p>
           </div>
         </aside>
+        )}
 
-        {/* Right Pane (8 cols): Either Regressive Dashboard OR 6-Pillar Deep Audit */}
-        <main className="xl:col-span-8 p-6 overflow-y-auto space-y-6">
+        {/* Main Content Viewport */}
+        <main className={`${activeTab === "regress" ? "xl:col-span-8 p-6" : "flex-1 p-6"} overflow-y-auto`}>
+          <div className={activeTab === "regress" ? "space-y-6" : "max-w-6xl mx-auto w-full space-y-6"}>
           {/* TAB 1: CONTINUOUS REGRESSIVE TESTING */}
           {activeTab === "regress" && (
             <>
@@ -1020,6 +964,39 @@ export function NetworkLabView({
           {/* TAB 2: 6-PILLAR DEEP PROTOCOL & NETWORK AUDIT */}
           {activeTab === "deep_audit" && (
             <div className="space-y-6">
+              {/* Contextual Target & Action Bar */}
+              <div className="flex items-center gap-3 p-2.5 rounded-xl bg-[#090e1a] border border-[#1b2b48] shadow-sm">
+                <div className="relative flex-1">
+                  <Globe className="w-4 h-4 text-cyan-400 absolute left-3 top-2.5" />
+                  <input
+                    id="input-deep-audit-target"
+                    type="text"
+                    value={target}
+                    onChange={(e) => setTarget(e.target.value)}
+                    placeholder="https://app.example.com"
+                    className="w-full pl-9 pr-3 py-1.5 bg-[#050811] border border-[#1d2b45] rounded-lg text-xs font-mono text-cyan-300 focus:outline-none focus:border-cyan-500"
+                  />
+                </div>
+
+                <button
+                  id="btn-run-deep-audit"
+                  onClick={handleRunDeepAudit}
+                  disabled={isDeepAuditRunning}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold transition-all disabled:opacity-50 cursor-pointer shadow-[0_0_12px_rgba(6,182,212,0.25)] shrink-0"
+                >
+                  {isDeepAuditRunning ? (
+                    <>
+                      <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Auditing 6 Pillars...</span>
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Run Complete Deep Audit</span>
+                    </>
+                  )}
+                </button>
+              </div>
               {/* Executive Health Banner, Live Progress Cockpit, or Launch CTA */}
               {isDeepAuditRunning ? (
                 <div className="p-7 rounded-xl bg-[#080e1c] border border-cyan-500/50 text-center space-y-4 shadow-[0_0_25px_rgba(6,182,212,0.18)]">
@@ -1082,40 +1059,84 @@ export function NetworkLabView({
                   </button>
                 </div>
               ) : deepAuditReport ? (
-                <div className={`p-5 rounded-xl border flex items-center justify-between gap-6 ${
+                <div className={`p-5 rounded-xl border ${
                   deepAuditReport.overall_verdict === "PASS"
-                    ? "bg-emerald-950/20 border-emerald-500/50"
+                    ? "bg-emerald-950/20 border-emerald-500/40"
                     : deepAuditReport.overall_verdict === "WARN"
-                    ? "bg-amber-950/20 border-amber-500/50"
-                    : "bg-rose-950/20 border-rose-500/50"
-                }`}>
-                  <div className="space-y-1.5">
-                    <div className="flex items-center gap-2.5">
-                      <span className={`px-2.5 py-0.5 rounded text-xs font-mono font-bold uppercase tracking-wider ${
-                        deepAuditReport.overall_verdict === "PASS" ? "bg-emerald-900/60 text-emerald-300" :
-                        deepAuditReport.overall_verdict === "WARN" ? "bg-amber-900/60 text-amber-300" : "bg-rose-900/60 text-rose-300"
+                    ? "bg-amber-950/20 border-amber-500/40"
+                    : "bg-rose-950/20 border-rose-500/40"
+                } space-y-4`}>
+                  {/* Top Row: Verdict, Evaluated Target & Health Score */}
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2.5 flex-wrap">
+                        <span className={`px-2.5 py-0.5 rounded text-xs font-mono font-bold tracking-wider ${
+                          deepAuditReport.overall_verdict === "PASS" ? "bg-emerald-900/60 text-emerald-300 border border-emerald-700/50" :
+                          deepAuditReport.overall_verdict === "WARN" ? "bg-amber-900/60 text-amber-300 border border-amber-700/50" :
+                          "bg-rose-900/60 text-rose-300 border border-rose-700/50"
+                        }`}>
+                          VERDICT: {deepAuditReport.overall_verdict}
+                        </span>
+                        <span className="text-xs font-mono text-slate-400 truncate max-w-sm">
+                          Evaluated {deepAuditReport.target}
+                        </span>
+                      </div>
+                      <p className="text-sm font-semibold text-white leading-relaxed">
+                        {deepAuditReport.executive_summary}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-col items-center justify-center p-3 px-5 rounded-xl bg-[#080d19] border border-[#1b2b48] shrink-0">
+                      <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider">Health Score</span>
+                      <span className={`text-3xl font-extrabold font-mono ${
+                        deepAuditReport.health_score >= 90 ? "text-emerald-400" :
+                        deepAuditReport.health_score >= 70 ? "text-amber-400" : "text-rose-400"
                       }`}>
-                        VERDICT: {deepAuditReport.overall_verdict}
-                      </span>
-                      <span className="text-xs font-mono text-slate-400">
-                        Evaluated {deepAuditReport.target}
+                        {deepAuditReport.health_score}
+                        <span className="text-sm text-slate-500 font-normal">/100</span>
                       </span>
                     </div>
-                    <p className="text-sm font-semibold text-white">
-                      {deepAuditReport.executive_summary}
-                    </p>
                   </div>
 
-                  <div className="flex flex-col items-center justify-center p-3 px-5 rounded-xl bg-[#0b101c] border border-[#1c2944] shrink-0">
-                    <span className="text-[10px] font-mono text-slate-400 uppercase">Health Score</span>
-                    <span className={`text-3xl font-extrabold font-mono ${
-                      deepAuditReport.health_score >= 90 ? "text-emerald-400" :
-                      deepAuditReport.health_score >= 70 ? "text-amber-400" : "text-rose-400"
-                    }`}>
-                      {deepAuditReport.health_score}
-                      <span className="text-sm text-slate-500 font-normal">/100</span>
-                    </span>
-                  </div>
+                  {/* Identified Flakiness Vectors (Clean Chips) */}
+                  {deepAuditReport.identified_risks.length > 0 && (
+                    <div className="pt-3 border-t border-[#1b2b48] space-y-2">
+                      <div className="flex items-center gap-2 text-rose-400 font-mono text-xs font-semibold">
+                        <ShieldAlert className="w-3.5 h-3.5" />
+                        <span>Identified Flakiness &amp; Network Vectors ({deepAuditReport.identified_risks.length}):</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {deepAuditReport.identified_risks.map((risk, idx) => (
+                          <div key={idx} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/40 border border-rose-800/50 text-xs font-mono text-rose-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
+                            <span>{risk}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Expandable Prescriptive Remediation */}
+                  {deepAuditReport.remediation_checklist.length > 0 && (
+                    <div className="pt-3 border-t border-[#1b2b48]">
+                      <button
+                        type="button"
+                        onClick={() => setShowRemediation(!showRemediation)}
+                        className="flex items-center gap-2 text-xs font-mono font-medium text-slate-300 hover:text-cyan-300 transition-colors cursor-pointer"
+                      >
+                        {showRemediation ? <ChevronUp className="w-3.5 h-3.5 text-cyan-400" /> : <ChevronDown className="w-3.5 h-3.5 text-cyan-400" />}
+                        <span>{showRemediation ? "Hide" : "Show"} Prescriptive Remediation ({deepAuditReport.remediation_checklist.length} actions)</span>
+                      </button>
+
+                      {showRemediation && (
+                        <ol className="mt-2.5 space-y-1.5 pl-4 list-decimal text-xs font-mono text-slate-300 bg-[#060a14] p-3 rounded-lg border border-[#162238]">
+                          {deepAuditReport.remediation_checklist.map((rem, idx) => (
+                            <li key={idx} className="leading-relaxed">{rem}</li>
+                          ))}
+                        </ol>
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="p-8 rounded-xl bg-[#0c1222] border border-[#1c2a44] text-center space-y-3">
@@ -1134,35 +1155,9 @@ export function NetworkLabView({
                 </div>
               )}
 
-              {/* Identified Risks & Remediation */}
-              {deepAuditReport && deepAuditReport.identified_risks.length > 0 && (
-                <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-600/40 space-y-3">
-                  <div className="flex items-center gap-2 text-rose-300 font-mono text-xs font-bold">
-                    <ShieldAlert className="w-4 h-4 text-rose-400" />
-                    <span>Identified Flakiness & Network Vectors ({deepAuditReport.identified_risks.length})</span>
-                  </div>
-                  <ul className="space-y-1.5 pl-5 list-disc text-xs font-mono text-rose-200">
-                    {deepAuditReport.identified_risks.map((risk, idx) => (
-                      <li key={idx}>{risk}</li>
-                    ))}
-                  </ul>
-
-                  {deepAuditReport.remediation_checklist.length > 0 && (
-                    <div className="pt-3 border-t border-rose-900/40">
-                      <span className="text-[11px] font-mono font-bold text-slate-300">Prescriptive Remediation:</span>
-                      <ul className="space-y-1 pl-4 list-decimal text-xs font-mono text-slate-300 mt-1">
-                        {deepAuditReport.remediation_checklist.map((rem, idx) => (
-                          <li key={idx}>{rem}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
-
               {/* The 6 Pillars Grid */}
               {deepAuditReport && (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                   {/* Pillar 1: Dual-Stack IPv4 vs IPv6 */}
                   <div className="p-4 rounded-xl bg-[#0c1220] border border-[#1b2942] space-y-3">
                     <div className="flex items-center justify-between">
@@ -1375,6 +1370,32 @@ export function NetworkLabView({
           {/* TAB 3: MULTI-REGION DISTRIBUTED EDGE MESH */}
           {activeTab === "multi_region" && (
             <div className="space-y-6">
+              {/* Contextual Target Bar */}
+              <div className="flex items-center justify-between gap-4 p-2.5 rounded-xl bg-[#090d18] border border-[#1b2b48]">
+                <div className="flex items-center gap-2 text-xs font-mono">
+                  <Globe className="w-3.5 h-3.5 text-cyan-400" />
+                  <span className="text-slate-400">Target URL:</span>
+                  <span className="text-cyan-300 font-semibold">{target}</span>
+                </div>
+                <button
+                  id="btn-run-multi-region"
+                  onClick={handleRunMultiRegion}
+                  disabled={isMultiRegionRunning}
+                  className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_12px_rgba(6,182,212,0.25)] transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {isMultiRegionRunning ? (
+                    <>
+                      <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Probing Global Mesh...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>Probe 4-Region Edge Mesh</span>
+                    </>
+                  )}
+                </button>
+              </div>
               {/* Global Edge Overview KPI */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] flex flex-col justify-between">
@@ -1529,6 +1550,23 @@ export function NetworkLabView({
           {/* TAB 4: PR GATE & GITHUB APP INTEGRATION */}
           {activeTab === "pr_gate" && (
             <div className="space-y-6">
+              {/* Contextual Target Bar */}
+              <div className="flex items-center justify-between gap-4 p-2.5 rounded-xl bg-[#090d18] border border-[#1b2b48]">
+                <div className="flex items-center gap-2 text-xs font-mono">
+                  <Globe className="w-3.5 h-3.5 text-cyan-400" />
+                  <span className="text-slate-400">Target URL:</span>
+                  <span className="text-cyan-300 font-semibold">{target}</span>
+                </div>
+                <button
+                  id="btn-refresh-pr-comment"
+                  onClick={handleFetchPrComment}
+                  disabled={isPrCommentLoading}
+                  className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_12px_rgba(6,182,212,0.25)] transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <RotateCw className={`w-3.5 h-3.5 ${isPrCommentLoading ? "animate-spin" : ""}`} />
+                  <span>Refresh PR Checks</span>
+                </button>
+              </div>
               {/* SVG Badges Showcase */}
               <div className="p-5 rounded-xl bg-[#0d1424] border border-[#1c2b47] space-y-4 font-mono">
                 <div className="flex items-center justify-between">
@@ -1704,8 +1742,9 @@ jobs:
           )}
 
           
-{/* Interactive cURL Execution Terminal (Available in both modes) */}
-          <div className="p-4 rounded-xl bg-[#090e18] border border-[#1c2a42] space-y-3">
+{/* Interactive cURL Execution Terminal (Available on Regress or when active) */}
+          {(activeTab === "regress" || curlResult) && (
+            <div className="p-4 rounded-xl bg-[#090e18] border border-[#1c2a42] space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-mono font-bold text-slate-300 flex items-center gap-2">
                 <Terminal className="w-4 h-4 text-cyan-400" />
@@ -1782,6 +1821,8 @@ jobs:
                 </button>
               </div>
             )}
+          </div>
+          )}
           </div>
         </main>
       </div>
