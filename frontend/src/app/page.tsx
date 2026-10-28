@@ -614,6 +614,7 @@ export default function Home() {
         <AgentHistoryView
           onLoadRunInStudio={handleLoadIntoStudio}
           onRetestCase={handleRetestCase}
+          onBackToStudio={() => setActiveView("studio")}
         />
       </div>
 
