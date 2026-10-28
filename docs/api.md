@@ -23,6 +23,10 @@ export T=your-token-here-16+chars; H="Authorization: Bearer $T"
 | POST | `/api/agent/run` | no | Trigger autonomous multi-agent QA run; returns complete `AgentRunReport` |
 | GET | `/api/agent/runs` | no | List all historical agent runs with scores, verdict, test counts |
 | GET | `/api/agent/runs/{id}` | no | Retrieve detailed report and execution traces for a specific agent run |
+| GET | `/api/scans` | no | List static codebase, repo, and container image scans with verdicts and report flags |
+| GET | `/api/scans/{id}` | no | Retrieve complete scan report, findings, and check execution grid |
+| GET | `/api/scans/{id}/report/{fmt}` | no | Stream generated report (`html`, `sarif`, `json`, `junit`) |
+| DELETE | `/api/scans/{id}` | no | Delete a scan session from history |
 | GET | `/checks` | yes | Array of `{id,title,kinds,min_profile,tool,intrusive}` (includes plugins from `READYHAI_PLUGINS`) |
 | POST | `/runs` | yes | Queue a scan; `202 {"id","state":"queued"}` |
 | GET | `/runs` | yes | Last 50 runs, newest first: `{id,state,target,verdict}` |

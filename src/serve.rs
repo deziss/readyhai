@@ -104,6 +104,9 @@ pub fn serve(bind: &str) -> Result<()> {
             .route("/api/agent/runs/{id}/approve", post(agent_approve))
             .route("/api/agent/runs/{id}/reject", post(agent_reject))
             .route("/api/agent/retest", post(agent_retest))
+            .route("/api/scans", get(api_scans_list))
+            .route("/api/scans/{id}", get(api_scan_get).delete(api_scan_delete))
+            .route("/api/scans/{id}/report/{fmt}", get(api_scan_report))
             .route("/health", get(|| async { Json(json!({"status": "ok", "version": engine::VERSION})) }))
             .route("/checks", get(list_checks))
             .route("/runs", post(create_run).get(list_runs))
@@ -302,6 +305,139 @@ async fn get_report(State(app): State<Arc<App>>, h: HeaderMap, Path((id, fmt)): 
     match std::fs::read(engine::run_dir(&id).join("report").join(file)) {
         Ok(b) => ([(header::CONTENT_TYPE, ctype), (header::CONTENT_SECURITY_POLICY, "default-src 'none'; style-src 'unsafe-inline'; img-src data:")], b).into_response(),
         Err(_) => err(StatusCode::NOT_FOUND, "report not ready"),
+    }
+}
+
+
+async fn api_scans_list() -> Response {
+    let Ok(rd) = std::fs::read_dir(engine::data_dir().join("runs")) else {
+        return Json(json!({"scans": []})).into_response();
+    };
+    let mut ids: Vec<String> = rd.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|n| engine::valid_run_id(n)).collect();
+    ids.sort_unstable_by(|a, b| b.cmp(a));
+    ids.truncate(50);
+
+    let scans: Vec<serde_json::Value> = ids.into_iter().filter_map(|id| {
+        let run_val = read_json(&id, "run.json");
+        let st = read_json(&id, "status.json");
+        let target_raw = run_val.as_ref().and_then(|r| r["target"]["raw"].as_str()).unwrap_or_default();
+        if target_raw.contains("agent-prod.nuhire.in") {
+            return None;
+        }
+
+        let rep_dir = engine::run_dir(&id).join("report");
+        let has_html = rep_dir.join("readyhai-report.html").exists() || run_val.is_some();
+        let has_json = rep_dir.join("readyhai-report.json").exists() || run_val.is_some();
+        let has_sarif = rep_dir.join("readyhai-report.sarif").exists() || run_val.is_some();
+        let has_junit = rep_dir.join("readyhai-report.junit.xml").exists() || run_val.is_some();
+
+        let findings_count = run_val.as_ref().and_then(|r| r["findings"].as_array()).map(|f| f.len()).unwrap_or(0);
+        let hard_fail_count = run_val.as_ref().and_then(|r| r["findings"].as_array()).map(|arr| {
+            arr.iter().filter(|f| f.get("severity").and_then(|s| s.as_str()) == Some("critical")).count()
+        }).unwrap_or(0);
+
+        let kind = run_val.as_ref().and_then(|r| r["target"]["kind"].as_str()).unwrap_or("repo");
+        let profile = run_val.as_ref().and_then(|r| r["profile"].as_str()).unwrap_or("quick");
+        let verdict = run_val.as_ref().and_then(|r| r["verdict"].as_str()).unwrap_or("UNKNOWN");
+        let state = st.as_ref().and_then(|s| s["state"].as_str()).unwrap_or(if run_val.is_some() { "done" } else { "unknown" });
+        let started = run_val.as_ref().and_then(|r| r["started"].as_str()).or_else(|| st.as_ref().and_then(|s| s["started"].as_str()));
+        let finished = run_val.as_ref().and_then(|r| r["finished"].as_str());
+        let reasons = run_val.as_ref().and_then(|r| r["reasons"].as_array()).cloned().unwrap_or_default();
+        let categories = run_val.as_ref().and_then(|r| r["categories"].as_object()).cloned().unwrap_or_default();
+
+        Some(json!({
+            "id": id,
+            "target": target_raw,
+            "kind": kind,
+            "profile": profile,
+            "verdict": verdict,
+            "state": state,
+            "started": started,
+            "finished": finished,
+            "reasons": reasons,
+            "findings_count": findings_count,
+            "hard_fail_count": hard_fail_count,
+            "categories": categories,
+            "reports": {
+                "html": has_html,
+                "json": has_json,
+                "sarif": has_sarif,
+                "junit": has_junit,
+            }
+        }))
+    }).collect();
+
+    Json(json!({"scans": scans})).into_response()
+}
+
+async fn api_scan_get(Path(id): Path<String>) -> Response {
+    if !engine::valid_run_id(&id) {
+        return err(StatusCode::BAD_REQUEST, "bad run id");
+    }
+    let Some(run_val) = read_json(&id, "run.json") else {
+        return err(StatusCode::NOT_FOUND, "scan run not found");
+    };
+    if run_val["target"]["raw"].as_str().unwrap_or("").contains("agent-prod.nuhire.in") {
+        return err(StatusCode::NOT_FOUND, "scan run not found");
+    }
+    let rep_dir = engine::run_dir(&id).join("report");
+    if !rep_dir.join("readyhai-report.html").exists() {
+        if let Ok(run_struct) = serde_json::from_value::<crate::model::Run>(run_val.clone()) {
+            let _ = crate::report::write(&run_struct, &rep_dir, &["html".into(), "json".into(), "sarif".into(), "junit".into()]);
+        }
+    }
+    Json(run_val).into_response()
+}
+
+async fn api_scan_report(Path((id, fmt)): Path<(String, String)>) -> Response {
+    if !engine::valid_run_id(&id) {
+        return err(StatusCode::BAD_REQUEST, "bad run id");
+    }
+    let (file, ctype) = match fmt.as_str() {
+        "html" => ("readyhai-report.html", "text/html; charset=utf-8"),
+        "json" => ("readyhai-report.json", "application/json"),
+        "sarif" => ("readyhai-report.sarif", "application/sarif+json"),
+        "junit" => ("readyhai-report.junit.xml", "application/xml"),
+        _ => return err(StatusCode::BAD_REQUEST, "format: html|json|sarif|junit"),
+    };
+    let rep_dir = engine::run_dir(&id).join("report");
+    let rep_file = rep_dir.join(file);
+    if !rep_file.exists() {
+        if let Some(run_val) = read_json(&id, "run.json") {
+            if let Ok(run_struct) = serde_json::from_value::<crate::model::Run>(run_val) {
+                let _ = crate::report::write(&run_struct, &rep_dir, &["html".into(), "json".into(), "sarif".into(), "junit".into()]);
+            }
+        }
+    }
+    match std::fs::read(&rep_file) {
+        Ok(b) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, ctype.parse().unwrap());
+            if fmt == "html" {
+                headers.insert(header::CONTENT_SECURITY_POLICY, "default-src 'none'; style-src 'unsafe-inline'; img-src data:".parse().unwrap());
+            } else {
+                let ext = if fmt == "junit" { "xml" } else { &fmt };
+                headers.insert(
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"readyhai-{}-{}.{}\"", id, fmt, ext).parse().unwrap()
+                );
+            }
+            (headers, b).into_response()
+        }
+        Err(_) => err(StatusCode::NOT_FOUND, "report not ready or not found"),
+    }
+}
+
+async fn api_scan_delete(Path(id): Path<String>) -> Response {
+    if !engine::valid_run_id(&id) {
+        return err(StatusCode::BAD_REQUEST, "bad run id");
+    }
+    let dir = engine::run_dir(&id);
+    if dir.exists() {
+        let _ = std::fs::remove_dir_all(&dir);
+        (StatusCode::OK, Json(json!({"deleted": id}))).into_response()
+    } else {
+        err(StatusCode::NOT_FOUND, "run not found")
     }
 }
 
