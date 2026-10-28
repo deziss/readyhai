@@ -28,32 +28,33 @@ export interface IterationResult {
 }
 
 export interface AgentDiagnosis {
+  flakiness_detected: boolean;
+  root_cause_type: "STABLE" | "TIMEOUT" | "CONNECTION_RESET" | "5XX_FLAPPING" | "HIGH_JITTER" | string;
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "STABLE" | string;
+  title: string;
   summary: string;
-  root_cause_type: "STABLE" | "TIMEOUT" | "CONNECTION_RESET" | "5XX_FLAPPING" | "HIGH_JITTER" | "INTERMITTENT_DEGRADATION" | string;
   how_agent_found_it: string[];
-  technical_breakdown: string;
-  remediation_steps: string[];
+  technical_breakdown: string[];
+  reproduction_curl: string;
+  remediation_checklist: string[];
 }
 
 export interface RegressReport {
   target: string;
-  method: string;
-  iterations_requested: number;
-  iterations_completed: number;
-  successful_count: number;
-  failed_count: number;
-  success_rate_pct: number;
-  flakiness_verdict: "STABLE" | "FLAKY" | "CRITICAL_OUTAGE" | string;
-  p50_ms: number;
-  p90_ms: number;
-  p99_ms: number;
-  avg_ms: number;
-  min_ms: number;
-  max_ms: number;
+  total_iterations: number;
+  successful_iterations: number;
+  failed_iterations: number;
+  availability_percentage: number;
+  avg_latency_ms: number;
+  p50_latency_ms: number;
+  p90_latency_ms: number;
+  p99_latency_ms: number;
+  min_latency_ms: number;
+  max_latency_ms: number;
   jitter_ms: number;
-  status_counts: Record<string, number>;
-  results: IterationResult[];
-  agent_diagnosis: AgentDiagnosis;
+  status_distribution: Record<string, number>;
+  diagnosis: AgentDiagnosis;
+  iterations: IterationResult[];
 }
 
 export interface CurlTestRequest {
@@ -75,4 +76,118 @@ export interface CurlTestResponse {
   appconnect_s: number;
   starttransfer_s: number;
   total_s: number;
+}
+
+// ============================================================================
+// 6-Pillar Deep Network & Protocol Diagnostics Types
+// ============================================================================
+
+export interface DualStackAudit {
+  has_ipv4: boolean;
+  has_ipv6: boolean;
+  ipv4_addresses: string[];
+  ipv6_addresses: string[];
+  ipv4_latency_ms?: number | null;
+  ipv6_latency_ms?: number | null;
+  ipv6_status: "HEALTHY" | "NOT_CONFIGURED" | "BROKEN_OR_BLACKHOLE" | string;
+  happy_eyeballs_risk: boolean;
+  diagnosis: string;
+}
+
+export interface SubresourceItem {
+  url: string;
+  tag_type: "script" | "stylesheet" | "preload" | "image" | string;
+  status_code: number;
+  ttfb_ms: number;
+  content_type: string;
+  size_bytes: number;
+  is_spa_fallback_error: boolean;
+  is_broken: boolean;
+  error?: string | null;
+}
+
+export interface SubresourceAudit {
+  total_discovered: number;
+  successful_count: number;
+  broken_count: number;
+  spa_fallback_mismatches: number;
+  total_size_kb: number;
+  max_asset_ttfb_ms: number;
+  items: SubresourceItem[];
+  diagnosis: string;
+}
+
+export interface ProtocolItem {
+  protocol: string;
+  supported: boolean;
+  negotiation_time_ms: number;
+  status_code: number;
+  notes: string;
+}
+
+export interface ProtocolMatrixAudit {
+  active_protocol: string;
+  http2_supported: boolean;
+  http3_advertised: boolean;
+  alt_svc_header?: string | null;
+  protocols: ProtocolItem[];
+  diagnosis: string;
+}
+
+export interface TlsChainAudit {
+  is_https: boolean;
+  tls_version: string;
+  cipher: string;
+  cert_issuer: string;
+  cert_subject: string;
+  cert_sans: string[];
+  not_after: string;
+  days_remaining: number;
+  is_self_signed: boolean;
+  is_intermediate_missing: boolean;
+  ocsp_stapled: boolean;
+  diagnosis: string;
+}
+
+export interface CorsAudit {
+  preflight_status_code: number;
+  preflight_passed: boolean;
+  allow_origin?: string | null;
+  allow_methods?: string | null;
+  allow_headers?: string | null;
+  allow_credentials?: string | null;
+  has_wildcard_with_creds: boolean;
+  diagnosis: string;
+}
+
+export interface MtuSweepItem {
+  payload_bytes: number;
+  label: string;
+  status_code: number;
+  duration_ms: number;
+  success: boolean;
+  error?: string | null;
+}
+
+export interface MtuSweepAudit {
+  black_hole_detected: boolean;
+  maximum_safe_bytes: number;
+  sweep_results: MtuSweepItem[];
+  diagnosis: string;
+}
+
+export interface DeepAuditReport {
+  target: string;
+  timestamp: string;
+  overall_verdict: "PASS" | "WARN" | "FAIL" | string;
+  health_score: number;
+  executive_summary: string;
+  identified_risks: string[];
+  dual_stack: DualStackAudit;
+  subresources: SubresourceAudit;
+  protocol_matrix: ProtocolMatrixAudit;
+  tls_chain: TlsChainAudit;
+  cors_preflight: CorsAudit;
+  mtu_sweep: MtuSweepAudit;
+  remediation_checklist: string[];
 }

@@ -9,6 +9,7 @@ import { ApprovalCard } from "@/components/ApprovalCard";
 import { ScansHistoryView } from "@/components/ScansHistoryView";
 import { AgentHistoryView } from "@/components/AgentHistoryView";
 import { NetworkLabView } from "@/components/NetworkLabView";
+import { FloatingTaskWidget, ActiveTaskItem } from "@/components/FloatingTaskWidget";
 import type {
   TestCaseResult,
   ThreatFinding,
@@ -47,6 +48,7 @@ export default function Home() {
   const [evidenceLedger, setEvidenceLedger] = useState<EvidenceLedger | null>(null);
   const [runsHistory, setRunsHistory] = useState<any[]>([]);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
+  const [activeTasks, setActiveTasks] = useState<ActiveTaskItem[]>([]);
 
   // Fetch counts and history
   const fetchCountsAndHistory = async () => {
@@ -99,6 +101,18 @@ export default function Home() {
 
   async function handleLaunch() {
     setIsRunning(true);
+    setActiveTasks((prev) => [
+      ...prev.filter((t) => t.id !== "agent_swarm"),
+      {
+        id: "agent_swarm",
+        title: "Autonomous Agent QA Swarm",
+        target,
+        view: "studio",
+        status: "running",
+        detail: "Adversarial Synthesis & OWASP Triage",
+        startTime: Date.now(),
+      },
+    ]);
     setStages([
       { id: "discovery", label: "Supervisor & Recon", subtext: "Connecting to model & initial health probes", status: "running" },
       { id: "planner", label: "Discovery Engine", subtext: "Probing root and discovering candidate paths", status: "standby" },
@@ -144,10 +158,24 @@ export default function Home() {
       }
 
       setStages((prev) => prev.map((s) => ({ ...s, status: "succeeded" })));
+      setActiveTasks((prev) =>
+        prev.map((t) =>
+          t.id === "agent_swarm"
+            ? { ...t, status: "completed", detail: "Completed - Evidence Ledger Ready" }
+            : t
+        )
+      );
       fetchCountsAndHistory();
     } catch (err) {
       console.error("Agent run failed:", err);
       setStages((prev) => prev.map((s) => ({ ...s, status: "succeeded" })));
+      setActiveTasks((prev) =>
+        prev.map((t) =>
+          t.id === "agent_swarm"
+            ? { ...t, status: "completed", detail: "Finished with warnings" }
+            : t
+        )
+      );
     } finally {
       setIsRunning(false);
     }
@@ -319,6 +347,36 @@ export default function Home() {
     }
   }
 
+
+  function handleNetworkRunningChange(running: boolean, detail: string) {
+    if (running) {
+      setActiveTasks((prev) => [
+        ...prev.filter((t) => t.id !== "network_test"),
+        {
+          id: "network_test",
+          title: "Regressive Network Lab",
+          target,
+          view: "network_lab",
+          status: "running",
+          detail,
+          startTime: Date.now(),
+        },
+      ]);
+    } else {
+      setActiveTasks((prev) =>
+        prev.map((t) =>
+          t.id === "network_test"
+            ? { ...t, status: "completed", detail }
+            : t
+        )
+      );
+    }
+  }
+
+  function handleDismissTask(id: string) {
+    setActiveTasks((prev) => prev.filter((t) => t.id !== id));
+  }
+
   async function handleSignOff(status: "approved" | "rejected", operator: string, notes: string) {
     if (!currentRunId) return;
     try {
@@ -352,8 +410,8 @@ export default function Home() {
         agentRunsCount={agentRunsCount}
       />
 
-      {/* Main SaaS View Area */}
-      {activeView === "studio" && (
+      {/* 1. Agent Studio (Persistent Background Mount) */}
+      <div className={`flex-1 min-h-0 overflow-hidden ${activeView === "studio" ? "flex flex-col" : "hidden"}`}>
         <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 min-h-0 overflow-hidden max-w-[1920px] w-full mx-auto">
           {/* Left Pane: Command Center & Tool Timeline (5 cols) */}
           <div className="lg:col-span-5 flex flex-col gap-3.5 h-full overflow-y-auto pr-1">
@@ -403,27 +461,41 @@ export default function Home() {
             />
           </div>
         </main>
-      )}
+      </div>
 
-      {activeView === "agent_history" && (
+      {/* 2. Agent QA Swarms History (Persistent Background Mount) */}
+      <div className={`flex-1 min-h-0 overflow-hidden ${activeView === "agent_history" ? "flex flex-col" : "hidden"}`}>
         <AgentHistoryView
           onLoadRunInStudio={handleLoadIntoStudio}
           onRetestCase={handleRetestCase}
         />
-      )}
+      </div>
 
-      {activeView === "scans_history" && (
+      {/* 3. Codebase & Security Scans History (Persistent Background Mount) */}
+      <div className={`flex-1 min-h-0 overflow-hidden ${activeView === "scans_history" ? "flex flex-col" : "hidden"}`}>
         <ScansHistoryView
           onSelectTarget={(t) => {
             setTarget(t);
             setActiveView("studio");
           }}
         />
-      )}
+      </div>
 
-      {activeView === "network_lab" && (
-        <NetworkLabView initialTarget={target} />
-      )}
+      {/* 4. Regressive Network Lab (Persistent Background Mount) */}
+      <div className={`flex-1 min-h-0 overflow-hidden ${activeView === "network_lab" ? "flex flex-col" : "hidden"}`}>
+        <NetworkLabView
+          initialTarget={target}
+          onRunningChange={handleNetworkRunningChange}
+        />
+      </div>
+
+      {/* 5. Global Floating Task Status Window */}
+      <FloatingTaskWidget
+        tasks={activeTasks}
+        currentView={activeView}
+        onJumpToView={(view) => setActiveView(view)}
+        onDismiss={handleDismissTask}
+      />
     </div>
   );
 }

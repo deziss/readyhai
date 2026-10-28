@@ -24,89 +24,96 @@ import {
   BrainCircuit,
   Zap,
   Info,
+  Lock,
+  Unlock,
+  Network,
+  FileCode,
+  Flame,
+  ShieldCheck,
 } from "lucide-react";
 import type {
   RegressRequest,
   RegressReport,
   IterationResult,
   CurlTestResponse,
+  DeepAuditReport,
 } from "@/types/network";
 
 interface NetworkLabViewProps {
   initialTarget?: string;
+  onRunningChange?: (running: boolean, detail: string) => void;
 }
 
-export function NetworkLabView({ initialTarget = "http://readyhai:8080" }: NetworkLabViewProps) {
-  // Test configuration
+export function NetworkLabView({
+  initialTarget = "http://readyhai:8080",
+  onRunningChange,
+}: NetworkLabViewProps) {
+  // Mode selection: "regress" | "deep_audit"
+  const [activeTab, setActiveTab] = useState<"regress" | "deep_audit">("regress");
+
+  // Common target
   const [target, setTarget] = useState(initialTarget);
+  const [timeoutMs, setTimeoutMs] = useState(5000);
+
+  // Regressive test configuration
   const [method, setMethod] = useState("GET");
   const [iterations, setIterations] = useState(10);
-  const [timeoutMs, setTimeoutMs] = useState(5000);
-  const [throttleProfile, setThrottleProfile] = useState<string>("unthrottled");
+  const [throttleProfile, setThrottleProfile] = useState("unthrottled");
+  const [customLatency, setCustomLatency] = useState(120);
   const [separateSessions, setSeparateSessions] = useState(true);
-  const [delayBetweenMs, setDelayBetweenMs] = useState(50);
+  const [delayBetweenMs, setDelayBetweenMs] = useState(25);
   const [customHeaders, setCustomHeaders] = useState("");
   const [customPayload, setCustomPayload] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // Execution state
-  const [isRunning, setIsRunning] = useState(false);
-  const [progressMsg, setProgressMsg] = useState("");
-  const [report, setReport] = useState<RegressReport | null>(null);
+  // Regressive Results
+  const [isRegressRunning, setIsRegressRunning] = useState(false);
+  const [regressReport, setRegressReport] = useState<RegressReport | null>(null);
   const [selectedIteration, setSelectedIteration] = useState<IterationResult | null>(null);
 
-  // cURL test state
+  // Deep Audit Results
+  const [isDeepAuditRunning, setIsDeepAuditRunning] = useState(false);
+  const [deepAuditReport, setDeepAuditReport] = useState<DeepAuditReport | null>(null);
+
+  // cURL Runner
   const [isCurlRunning, setIsCurlRunning] = useState(false);
   const [curlResult, setCurlResult] = useState<CurlTestResponse | null>(null);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [filterMode, setFilterMode] = useState<"ALL" | "FAILED" | "PASSED">("ALL");
+  const [copiedCurl, setCopiedCurl] = useState(false);
+  const [copiedText, setCopiedText] = useState<string | null>(null);
 
-  const handleCopy = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
-  const parseHeaders = (): Record<string, string> => {
-    const map: Record<string, string> = {};
-    if (!customHeaders.trim()) return map;
-    try {
-      if (customHeaders.trim().startsWith("{")) {
-        return JSON.parse(customHeaders);
+  // Parse headers helper
+  const getParsedHeaders = (): Record<string, string> => {
+    const res: Record<string, string> = {};
+    if (!customHeaders.trim()) return res;
+    for (const line of customHeaders.split("\n")) {
+      const idx = line.indexOf(":");
+      if (idx !== -1) {
+        const k = line.substring(0, idx).trim();
+        const v = line.substring(idx + 1).trim();
+        if (k) res[k] = v;
       }
-      for (const line of customHeaders.split("\n")) {
-        const idx = line.indexOf(":");
-        if (idx > 0) {
-          const k = line.slice(0, idx).trim();
-          const v = line.slice(idx + 1).trim();
-          if (k) map[k] = v;
-        }
-      }
-    } catch {
-      // ignore parse err
     }
-    return map;
+    return res;
   };
 
-  const handleRunRegress = async () => {
-    if (!target.trim()) return;
-    setIsRunning(true);
-    setProgressMsg(`Spawning ${iterations} isolated private sessions...`);
+  // Run continuous regress test
+  async function handleRunRegress() {
+    setIsRegressRunning(true);
     setCurlResult(null);
-
-    const payload: RegressRequest = {
-      target: target.trim(),
-      method,
-      headers: parseHeaders(),
-      payload: customPayload.trim() || null,
-      iterations,
-      timeout_ms: timeoutMs,
-      throttle_profile: throttleProfile,
-      separate_sessions: separateSessions,
-      delay_between_ms: delayBetweenMs,
-    };
-
+    onRunningChange?.(true, `Regressive Network Test (${iterations}x iterations)`);
     try {
+      const payload: RegressRequest = {
+        target,
+        method,
+        headers: getParsedHeaders(),
+        payload: customPayload.trim() ? customPayload.trim() : null,
+        iterations,
+        timeout_ms: timeoutMs,
+        throttle_profile: throttleProfile,
+        simulated_latency_ms: throttleProfile === "custom" ? customLatency : 0,
+        separate_sessions: separateSessions,
+        delay_between_ms: delayBetweenMs,
+      };
+
       const res = await fetch("/api/network/regress", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -115,675 +122,979 @@ export function NetworkLabView({ initialTarget = "http://readyhai:8080" }: Netwo
 
       if (res.ok) {
         const data: RegressReport = await res.json();
-        setReport(data);
-        if (data.results.length > 0) {
-          setSelectedIteration(data.results[0]);
+        setRegressReport(data);
+        if (data.iterations && data.iterations.length > 0) {
+          setSelectedIteration(data.iterations[0]);
         }
-      } else {
-        const err = await res.json().catch(() => ({ error: "Request failed" }));
-        alert(`Regressive test error: ${err.error || res.statusText}`);
       }
-    } catch (e: any) {
-      alert(`Network execution error: ${e.message}`);
+    } catch (err) {
+      console.error("Regress test failed:", err);
     } finally {
-      setIsRunning(false);
-      setProgressMsg("");
+      setIsRegressRunning(false);
+      onRunningChange?.(false, `Completed ${iterations}x regressive test`);
     }
-  };
+  }
 
-  const handleRunCurl = async (overrideTarget?: string) => {
-    const tgt = overrideTarget || target;
-    if (!tgt.trim()) return;
+  // Run 6-Pillar Deep Audit
+  async function handleRunDeepAudit() {
+    setIsDeepAuditRunning(true);
+    onRunningChange?.(true, "6-Pillar Deep Network & Protocol Audit");
+    try {
+      const res = await fetch("/api/network/deep-audit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, timeout_ms: timeoutMs }),
+      });
+
+      if (res.ok) {
+        const data: DeepAuditReport = await res.json();
+        setDeepAuditReport(data);
+      }
+    } catch (err) {
+      console.error("Deep audit failed:", err);
+    } finally {
+      setIsDeepAuditRunning(false);
+      onRunningChange?.(false, "Completed 6-Pillar Deep Protocol Audit");
+    }
+  }
+
+  // Run cURL test
+  async function handleRunCurl() {
     setIsCurlRunning(true);
     try {
       const res = await fetch("/api/network/curl", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          target: tgt.trim(),
+          target,
           method,
-          headers: parseHeaders(),
-          payload: customPayload.trim() || null,
+          headers: getParsedHeaders(),
+          payload: customPayload.trim() ? customPayload.trim() : null,
           timeout_ms: timeoutMs,
         }),
       });
+
       if (res.ok) {
         const data: CurlTestResponse = await res.json();
         setCurlResult(data);
       }
-    } catch (e: any) {
-      console.error("cURL test error:", e);
+    } catch (err) {
+      console.error("Curl test failed:", err);
     } finally {
       setIsCurlRunning(false);
     }
+  }
+
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedText(id);
+    setTimeout(() => setCopiedText(null), 2000);
   };
 
-  const filteredResults = report?.results.filter((r) => {
-    if (filterMode === "PASSED") return r.success;
-    if (filterMode === "FAILED") return !r.success;
-    return true;
-  }) || [];
-
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-[#06080e] overflow-hidden">
-      {/* Top Breadcrumb Bar */}
-      <div className="h-11 px-6 border-b border-[#161f30] bg-[#0a0f1b] flex items-center justify-between text-xs text-slate-400 shrink-0">
-        <div className="flex items-center gap-2 font-mono">
-          <Activity className="w-4 h-4 text-cyan-400" />
-          <span className="text-slate-200 font-semibold">Regressive Network Lab</span>
-          <span className="text-slate-600">/</span>
-          <span>Continuous Multi-Session Flakiness & Throttle Diagnostics</span>
+    <div className="flex-1 flex flex-col h-full overflow-hidden bg-[#070b13] text-slate-200">
+      {/* Sub-Header Navigation Tabs */}
+      <div className="border-b border-[#182338] bg-[#090e1a]/90 backdrop-blur px-6 py-2.5 flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 p-1 bg-[#0d1527] rounded-xl border border-[#1b2b48]">
+            <button
+              id="tab-regress-stress"
+              onClick={() => setActiveTab("regress")}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-mono font-medium transition-all ${
+                activeTab === "regress"
+                  ? "bg-gradient-to-r from-cyan-950 to-[#12233f] text-cyan-300 border border-cyan-600/50 shadow-[0_0_10px_rgba(6,182,212,0.25)] font-semibold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-[#121c32]"
+              }`}
+            >
+              <Activity className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Continuous Regressive Stress Lab</span>
+            </button>
+
+            <button
+              id="tab-deep-audit"
+              onClick={() => {
+                setActiveTab("deep_audit");
+                if (!deepAuditReport && !isDeepAuditRunning) {
+                  handleRunDeepAudit();
+                }
+              }}
+              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-mono font-medium transition-all ${
+                activeTab === "deep_audit"
+                  ? "bg-gradient-to-r from-cyan-950 to-[#12233f] text-cyan-300 border border-cyan-600/50 shadow-[0_0_10px_rgba(6,182,212,0.25)] font-semibold"
+                  : "text-slate-400 hover:text-slate-200 hover:bg-[#121c32]"
+              }`}
+            >
+              <Network className="w-3.5 h-3.5 text-cyan-400" />
+              <span>6-Pillar Deep Protocol & Network Audit</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-cyan-900/60 text-cyan-300 border border-cyan-700/50 font-bold">
+                ALL 6
+              </span>
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-cyan-950/70 border border-cyan-800/40 text-cyan-300">
-            Isolated Sockets Mode
-          </span>
+
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-[#0d1527] border border-[#1d2b45] text-xs font-mono">
+            <Globe className="w-3.5 h-3.5 text-cyan-400" />
+            <span className="text-slate-400 font-normal">Active URL:</span>
+            <span className="text-cyan-300 font-semibold">{target}</span>
+          </div>
+
+          {activeTab === "regress" && (
+            <button
+              id="btn-run-regress"
+              onClick={handleRunRegress}
+              disabled={isRegressRunning}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_14px_rgba(6,182,212,0.3)] transition-all cursor-pointer disabled:opacity-50"
+            >
+              {isRegressRunning ? (
+                <>
+                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Probing ({iterations}x)...</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Run Regressive Test</span>
+                </>
+              )}
+            </button>
+          )}
+
+          {activeTab === "deep_audit" && (
+            <button
+              id="btn-run-deep-audit"
+              onClick={handleRunDeepAudit}
+              disabled={isDeepAuditRunning}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_14px_rgba(6,182,212,0.3)] transition-all cursor-pointer disabled:opacity-50"
+            >
+              {isDeepAuditRunning ? (
+                <>
+                  <RotateCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Auditing 6 Pillars...</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>Run Complete Deep Audit</span>
+                </>
+              )}
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Main Dual-Column Layout */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 min-h-0 overflow-hidden">
-        {/* LEFT COLUMN: Test Configuration & Controls (5 cols) */}
-        <div className="lg:col-span-5 border-r border-[#161f30] bg-[#080d17] p-5 overflow-y-auto space-y-4 min-h-0">
-          <div>
-            <h3 className="text-sm font-bold text-white font-mono flex items-center gap-2">
+      {/* Main Content Area */}
+      <div className="flex-1 overflow-hidden grid grid-cols-1 xl:grid-cols-12 min-h-0">
+        {/* Left Config Sidebar (4 cols) */}
+        <aside className="xl:col-span-4 border-r border-[#182338] bg-[#090d18] p-4 overflow-y-auto space-y-4">
+          <div className="space-y-1">
+            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
               <Sliders className="w-4 h-4 text-cyan-400" />
-              Regressive Test Configuration
-            </h3>
-            <p className="text-xs text-slate-400 mt-0.5 font-mono">
-              Execute repeated requests across clean private sessions to expose intermittent connection drops, DNS lag, and gateway flapping.
+              <span>Target & Parameters</span>
+            </h2>
+            <p className="text-xs text-slate-400">
+              Configure app endpoint, socket isolation, and simulated network environments.
             </p>
           </div>
 
-          {/* Target URL */}
-          <div className="space-y-1.5 font-mono text-xs">
-            <label className="text-slate-300 font-semibold flex items-center justify-between">
-              <span>Target URL:</span>
-              <div className="flex items-center gap-1.5 text-[10px]">
-                <button
-                  type="button"
-                  onClick={() => setTarget("http://readyhai:8080/health")}
-                  className="text-cyan-400 hover:underline cursor-pointer"
-                >
-                  /health
-                </button>
-                <span className="text-slate-600">·</span>
-                <button
-                  type="button"
-                  onClick={() => setTarget("http://readyhai:8080/api/agent/status")}
-                  className="text-cyan-400 hover:underline cursor-pointer"
-                >
-                  /api/status
-                </button>
-              </div>
-            </label>
-            <div className="flex items-center gap-2">
-              <select
-                value={method}
-                onChange={(e) => setMethod(e.target.value)}
-                className="bg-[#0e1626] border border-[#1c283f] rounded-lg px-2.5 py-2 text-xs font-bold text-cyan-300 focus:outline-none focus:border-cyan-500/60 cursor-pointer"
-              >
-                <option value="GET">GET</option>
-                <option value="POST">POST</option>
-                <option value="HEAD">HEAD</option>
-                <option value="PUT">PUT</option>
-                <option value="DELETE">DELETE</option>
-              </select>
+          {/* Target App URL */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-mono font-medium text-slate-300">Target App URL</label>
+            <div className="relative">
+              <Globe className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
               <input
+                id="input-target-url"
                 type="text"
                 value={target}
                 onChange={(e) => setTarget(e.target.value)}
-                placeholder="https://example.com/api/endpoint"
-                className="flex-1 bg-[#0e1626] border border-[#1c283f] rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/60 font-mono"
+                placeholder="http://127.0.0.1:8080 or https://app.example.com"
+                className="w-full pl-9 pr-3 py-2 bg-[#0d1424] border border-[#1e2c47] rounded-lg text-xs font-mono text-cyan-300 focus:outline-none focus:border-cyan-500"
               />
             </div>
           </div>
 
-          {/* Regressive Iterations & Presets */}
-          <div className="space-y-1.5 font-mono text-xs">
-            <div className="flex items-center justify-between">
-              <label className="text-slate-300 font-semibold">Continuous Regressive Iterations:</label>
-              <span className="text-cyan-300 font-bold">{iterations} runs</span>
+          {/* HTTP Method & Iterations */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="text-xs font-mono font-medium text-slate-300">Method</label>
+              <select
+                id="select-method"
+                value={method}
+                onChange={(e) => setMethod(e.target.value)}
+                className="w-full px-3 py-2 bg-[#0d1424] border border-[#1e2c47] rounded-lg text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+              >
+                <option value="GET">GET</option>
+                <option value="POST">POST</option>
+                <option value="PUT">PUT</option>
+                <option value="DELETE">DELETE</option>
+                <option value="HEAD">HEAD</option>
+              </select>
             </div>
-            <div className="flex items-center gap-2">
-              {[5, 10, 25, 50].map((num) => (
-                <button
-                  key={num}
-                  type="button"
-                  onClick={() => setIterations(num)}
-                  className={`flex-1 py-1.5 rounded-lg border text-xs font-mono font-semibold transition-all cursor-pointer ${
-                    iterations === num
-                      ? "bg-cyan-950/80 text-cyan-300 border-cyan-600/60 shadow-sm"
-                      : "bg-[#0e1626] text-slate-400 border-[#1c283f] hover:text-white"
-                  }`}
-                >
-                  {num}x
-                </button>
-              ))}
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-mono font-medium text-slate-300">Iterations (N)</label>
+              <select
+                id="select-iterations"
+                value={iterations}
+                onChange={(e) => setIterations(Number(e.target.value))}
+                className="w-full px-3 py-2 bg-[#0d1424] border border-[#1e2c47] rounded-lg text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+              >
+                <option value={5}>5 Repetitions</option>
+                <option value={10}>10 Repetitions</option>
+                <option value={25}>25 Repetitions</option>
+                <option value={50}>50 Repetitions</option>
+                <option value={100}>100 Repetitions</option>
+              </select>
             </div>
-            <input
-              type="range"
-              min="1"
-              max="100"
-              value={iterations}
-              onChange={(e) => setIterations(Number(e.target.value))}
-              className="w-full accent-cyan-400 cursor-pointer mt-1"
-            />
           </div>
 
-          {/* Private Sessions Isolation Toggle */}
-          <div className="p-3.5 rounded-xl bg-[#0c1424] border border-[#1b2b46] space-y-1 font-mono text-xs">
+          {/* Private Session Isolation Switch */}
+          <div className="p-3 bg-[#0d1526] rounded-xl border border-[#1e2d49] space-y-2">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-slate-200 font-semibold">
-                <ShieldAlert className="w-4 h-4 text-cyan-400" />
-                <span>Separate Private Sessions</span>
+              <div className="flex items-center gap-2">
+                <WifiOff className="w-4 h-4 text-cyan-400" />
+                <span className="text-xs font-semibold text-slate-200">Separate Private Sessions</span>
               </div>
               <input
+                id="toggle-separate-sessions"
                 type="checkbox"
                 checked={separateSessions}
                 onChange={(e) => setSeparateSessions(e.target.checked)}
-                className="accent-cyan-400 w-4 h-4 cursor-pointer"
+                className="w-4 h-4 accent-cyan-500 cursor-pointer"
               />
             </div>
-            <p className="text-[11px] text-slate-400 pt-0.5">
-              Enforces a clean connection per iteration without socket pooling. Tests cold connection negotiation, fresh DNS, and TLS handshakes to catch transient 502/timeout flapping.
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Forces zero connection pooling (<code className="text-cyan-300 font-mono">pool_max_idle_per_host(0)</code>).
+              Every single iteration forces fresh DNS resolution and TCP/TLS handshake to catch socket starvation.
             </p>
           </div>
 
-          {/* Network Throttling Profiles */}
-          <div className="space-y-1.5 font-mono text-xs">
-            <label className="text-slate-300 font-semibold flex items-center gap-1.5">
-              <Wifi className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Network Throttling Profile:</span>
+          {/* Network Throttling Presets */}
+          <div className="space-y-2">
+            <label className="text-xs font-mono font-medium text-slate-300 flex items-center justify-between">
+              <span>Network Throttling Simulation</span>
+              <span className="text-[10px] text-cyan-400 font-semibold uppercase">{throttleProfile}</span>
             </label>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-2 text-xs font-mono">
               {[
-                { id: "unthrottled", name: "Unthrottled", desc: "Direct low latency" },
-                { id: "fast_3g", name: "Mobile / 4G", desc: "+75ms latency" },
-                { id: "slow_3g", name: "Slow 3G", desc: "+250ms latency" },
-                { id: "flaky", name: "Flaky Simulation", desc: "Jitter + 400ms drops" },
+                { id: "unthrottled", label: "Unthrottled", desc: "Native network speed" },
+                { id: "fast_3g", label: "Fast 3G", desc: "+75ms mobile RTT" },
+                { id: "slow_3g", label: "Slow 3G", desc: "+250ms high latency" },
+                { id: "flaky", label: "Flaky Network", desc: "Jitter & packet drops" },
               ].map((p) => (
                 <button
                   key={p.id}
-                  type="button"
+                  id={`throttle-${p.id}`}
                   onClick={() => setThrottleProfile(p.id)}
-                  className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer ${
+                  className={`p-2.5 rounded-lg border text-left transition-all ${
                     throttleProfile === p.id
-                      ? "bg-cyan-950/80 text-cyan-300 border-cyan-600/60 shadow-sm"
-                      : "bg-[#0e1626] text-slate-400 border-[#1c283f] hover:text-slate-200"
+                      ? "bg-cyan-950/60 border-cyan-500/70 text-cyan-300 shadow-[0_0_8px_rgba(6,182,212,0.2)]"
+                      : "bg-[#0d1424] border-[#1d2b45] text-slate-400 hover:text-slate-200 hover:border-slate-700"
                   }`}
                 >
-                  <div className="text-xs font-bold">{p.name}</div>
-                  <div className="text-[10px] text-slate-500 font-normal mt-0.5">{p.desc}</div>
+                  <div className="font-semibold text-[11px]">{p.label}</div>
+                  <div className="text-[10px] text-slate-500 truncate">{p.desc}</div>
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Timeout & Delay Controls */}
-          <div className="grid grid-cols-2 gap-3 font-mono text-xs">
-            <div>
-              <label className="text-slate-400 block mb-1">Timeout Budget:</label>
-              <select
+          {/* Timeout & Delay Sliders */}
+          <div className="space-y-3 pt-1">
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs font-mono text-slate-400">
+                <span>Per-Attempt Timeout:</span>
+                <span className="text-cyan-300 font-semibold">{timeoutMs}ms</span>
+              </div>
+              <input
+                type="range"
+                min="1000"
+                max="15000"
+                step="500"
                 value={timeoutMs}
                 onChange={(e) => setTimeoutMs(Number(e.target.value))}
-                className="w-full bg-[#0e1626] border border-[#1c283f] rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500/60 cursor-pointer"
-              >
-                <option value={1000}>1,000 ms (1s)</option>
-                <option value={3000}>3,000 ms (3s)</option>
-                <option value={5000}>5,000 ms (5s)</option>
-                <option value={10000}>10,000 ms (10s)</option>
-              </select>
+                className="w-full accent-cyan-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+              />
             </div>
-            <div>
-              <label className="text-slate-400 block mb-1">Delay Between:</label>
-              <select
+
+            <div className="space-y-1">
+              <div className="flex justify-between text-xs font-mono text-slate-400">
+                <span>Delay Between Requests:</span>
+                <span className="text-cyan-300 font-semibold">{delayBetweenMs}ms</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="500"
+                step="25"
                 value={delayBetweenMs}
                 onChange={(e) => setDelayBetweenMs(Number(e.target.value))}
-                className="w-full bg-[#0e1626] border border-[#1c283f] rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500/60 cursor-pointer"
+                className="w-full accent-cyan-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+              />
+            </div>
+          </div>
+
+          {/* Custom Headers */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-mono font-medium text-slate-300">Custom Headers (Key: Value)</label>
+            <textarea
+              value={customHeaders}
+              onChange={(e) => setCustomHeaders(e.target.value)}
+              placeholder={"Authorization: Bearer my-token\nX-Custom-Tenant: prod-1"}
+              rows={2}
+              className="w-full p-2.5 bg-[#0d1424] border border-[#1e2c47] rounded-lg text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
+            />
+          </div>
+
+          {/* Quick cURL Runner Card */}
+          <div className="p-3 bg-[#0c1220] rounded-xl border border-[#1c2a44] space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-mono font-semibold text-slate-300 flex items-center gap-1.5">
+                <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Instant cURL Probe</span>
+              </span>
+              <button
+                id="btn-run-curl"
+                onClick={handleRunCurl}
+                disabled={isCurlRunning}
+                className="px-2.5 py-1 rounded bg-cyan-950 border border-cyan-600/50 hover:bg-cyan-900/50 text-[11px] font-mono text-cyan-300 font-semibold transition-all cursor-pointer disabled:opacity-50"
               >
-                <option value={0}>0 ms (Burst)</option>
-                <option value={50}>50 ms</option>
-                <option value={100}>100 ms</option>
-                <option value={300}>300 ms</option>
-              </select>
+                {isCurlRunning ? "Running..." : "Run cURL Test"}
+              </button>
             </div>
+            <p className="text-[10px] text-slate-500 font-mono">
+              Executes sub-millisecond stage breakdown (DNS, TCP, TLS, TTFB, Total).
+            </p>
           </div>
+        </aside>
 
-          {/* Advanced Headers & Payload Accordion */}
-          <div className="border border-[#162238] rounded-lg overflow-hidden font-mono text-xs">
-            <button
-              type="button"
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="w-full p-2.5 bg-[#0a101d] flex items-center justify-between text-slate-400 hover:text-slate-200 cursor-pointer"
-            >
-              <span>Custom Headers & Payload</span>
-              {showAdvanced ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-            </button>
-            {showAdvanced && (
-              <div className="p-3 bg-[#080d17] space-y-3 border-t border-[#162238]">
-                <div>
-                  <label className="text-slate-400 block mb-1">Custom Headers (Header: Value):</label>
-                  <textarea
-                    rows={2}
-                    value={customHeaders}
-                    onChange={(e) => setCustomHeaders(e.target.value)}
-                    placeholder="Authorization: Bearer token&#10;X-Custom-Header: value"
-                    className="w-full bg-[#0e1626] border border-[#1c283f] rounded-md p-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500/60"
-                  />
-                </div>
-                {["POST", "PUT"].includes(method) && (
-                  <div>
-                    <label className="text-slate-400 block mb-1">JSON Payload Body:</label>
-                    <textarea
-                      rows={2}
-                      value={customPayload}
-                      onChange={(e) => setCustomPayload(e.target.value)}
-                      placeholder='{"key": "value"}'
-                      className="w-full bg-[#0e1626] border border-[#1c283f] rounded-md p-2 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500/60"
-                    />
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-
-          {/* Action Buttons */}
-          <div className="pt-2 flex flex-col gap-2.5 font-mono">
-            <button
-              type="button"
-              onClick={handleRunRegress}
-              disabled={isRunning || isCurlRunning}
-              className="w-full py-2.5 rounded-xl bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white font-bold text-xs tracking-wide shadow-lg shadow-cyan-950/40 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-            >
-              {isRunning ? (
-                <>
-                  <RotateCw className="w-4 h-4 animate-spin" />
-                  Testing Regressively...
-                </>
-              ) : (
-                <>
-                  <Play className="w-4 h-4 fill-white" />
-                  Start Regressive Multi-Session Test
-                </>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleRunCurl()}
-              disabled={isRunning || isCurlRunning}
-              className="w-full py-2 rounded-xl bg-[#101b2d] hover:bg-[#15233b] border border-[#1d2d48] text-cyan-300 font-semibold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
-            >
-              {isCurlRunning ? (
-                <>
-                  <RotateCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-                  Executing cURL...
-                </>
-              ) : (
-                <>
-                  <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-                  Run Instant cURL Test
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* RIGHT COLUMN: Results, Flakiness Analysis & Agent Diagnostics (7 cols) */}
-        <div className="lg:col-span-7 bg-[#070b14] p-6 overflow-y-auto min-h-0 space-y-5">
-          {isRunning && (
-            <div className="p-8 rounded-xl bg-[#0c1424] border border-[#1b2b46] text-center space-y-3 font-mono">
-              <RotateCw className="w-8 h-8 animate-spin mx-auto text-cyan-400" />
-              <h3 className="text-sm font-bold text-white">Running Regressive Network Test</h3>
-              <p className="text-xs text-slate-400">{progressMsg}</p>
-              <div className="w-48 h-1.5 bg-slate-800 rounded-full mx-auto overflow-hidden">
-                <div className="h-full bg-cyan-400 animate-pulse w-3/4"></div>
-              </div>
-            </div>
-          )}
-
-          {/* cURL Test Terminal Inspector (When executed) */}
-          {curlResult && (
-            <div className="rounded-xl bg-[#080d17] border border-[#1d2f4d] shadow-lg overflow-hidden font-mono">
-              <div className="p-3 bg-[#0d1627] border-b border-[#1d2f4d] flex items-center justify-between text-xs">
-                <div className="flex items-center gap-2 text-cyan-300 font-bold">
-                  <Terminal className="w-4 h-4 text-cyan-400" />
-                  <span>cURL Command Execution Output</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${curlResult.exit_code === 0 ? 'bg-emerald-950 text-emerald-400 border border-emerald-600/50' : 'bg-red-950 text-red-400 border border-red-600/50'}`}>
-                    EXIT: {curlResult.exit_code}
-                  </span>
-                  <button
-                    onClick={() => handleCopy(curlResult.command, "curl-cmd")}
-                    className="text-slate-400 hover:text-cyan-300 cursor-pointer flex items-center gap-1"
-                  >
-                    {copiedId === "curl-cmd" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-slate-400" />}
-                    Copy cURL
-                  </button>
-                </div>
-              </div>
-
-              {/* cURL Timing Variables Breakdown */}
-              <div className="p-3 bg-[#0a111f] border-b border-[#17253d] grid grid-cols-2 sm:grid-cols-5 gap-2 text-[11px]">
-                <div className="p-2 rounded bg-[#0e172a] border border-[#1a2b47]">
-                  <span className="text-slate-500 block">DNS Lookup:</span>
-                  <span className="text-cyan-300 font-bold">{(curlResult.dns_lookup_s * 1000).toFixed(1)} ms</span>
-                </div>
-                <div className="p-2 rounded bg-[#0e172a] border border-[#1a2b47]">
-                  <span className="text-slate-500 block">TCP Connect:</span>
-                  <span className="text-cyan-300 font-bold">{(curlResult.connect_s * 1000).toFixed(1)} ms</span>
-                </div>
-                <div className="p-2 rounded bg-[#0e172a] border border-[#1a2b47]">
-                  <span className="text-slate-500 block">TLS Handshake:</span>
-                  <span className="text-cyan-300 font-bold">{(curlResult.appconnect_s * 1000).toFixed(1)} ms</span>
-                </div>
-                <div className="p-2 rounded bg-[#0e172a] border border-[#1a2b47]">
-                  <span className="text-slate-500 block">TTFB:</span>
-                  <span className="text-cyan-300 font-bold">{(curlResult.starttransfer_s * 1000).toFixed(1)} ms</span>
-                </div>
-                <div className="p-2 rounded bg-[#0e172a] border border-[#1a2b47]">
-                  <span className="text-slate-500 block">Total Transfer:</span>
-                  <span className="text-emerald-400 font-bold">{(curlResult.total_s * 1000).toFixed(1)} ms</span>
-                </div>
-              </div>
-
-              {/* Terminal Pre */}
-              <pre className="p-4 text-xs text-slate-200 overflow-x-auto max-h-56 select-text whitespace-pre-wrap">
-                {curlResult.stdout || curlResult.stderr || "No output returned"}
-              </pre>
-            </div>
-          )}
-
-          {!report && !isRunning && !curlResult && (
-            <div className="p-12 text-center text-slate-500 font-mono space-y-3">
-              <Activity className="w-12 h-12 mx-auto text-slate-700 stroke-[1.5]" />
-              <h3 className="text-base font-bold text-slate-300">Ready to Regressively Test Target</h3>
-              <p className="text-xs text-slate-400 max-w-md mx-auto">
-                Configure your target URL and iteration count on the left, then click <strong>&quot;Start Regressive Multi-Session Test&quot;</strong> to detect transient connection drops, port flapping, and network latency anomalies.
-              </p>
-            </div>
-          )}
-
-          {/* REPORT SUMMARY & DIAGNOSTICS */}
-          {report && (
-            <div className="space-y-5">
-              {/* Top Hero KPI Banner */}
-              <div className="p-5 rounded-xl bg-gradient-to-br from-[#0c1527] to-[#080d19] border border-[#1b2a45] shadow-lg font-mono">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800/50 uppercase font-bold">
-                        {report.iterations_completed} Sessions Completed
-                      </span>
-                      <span className="text-xs text-slate-400 truncate max-w-sm" title={report.target}>
-                        {report.target}
-                      </span>
-                    </div>
-                    <div className="text-xl font-bold text-white mt-1">
-                      {report.success_rate_pct.toFixed(1)}% Success Rate
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-400">Verdict:</span>
-                    <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-bold uppercase ${
-                      report.flakiness_verdict === 'STABLE'
-                        ? 'bg-emerald-950 text-emerald-400 border border-emerald-500/50'
-                        : report.flakiness_verdict === 'FLAKY'
-                        ? 'bg-amber-950 text-amber-400 border border-amber-500/50'
-                        : 'bg-red-950 text-red-400 border border-red-500/50'
+        {/* Right Pane (8 cols): Either Regressive Dashboard OR 6-Pillar Deep Audit */}
+        <main className="xl:col-span-8 p-6 overflow-y-auto space-y-6">
+          {/* TAB 1: CONTINUOUS REGRESSIVE TESTING */}
+          {activeTab === "regress" && (
+            <>
+              {/* Hero KPI Cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] flex flex-col justify-between">
+                  <span className="text-xs font-mono text-slate-400">Availability</span>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <span className={`text-2xl font-bold font-mono ${
+                      !regressReport ? "text-slate-500" :
+                      regressReport.availability_percentage >= 99 ? "text-emerald-400" :
+                      regressReport.availability_percentage >= 80 ? "text-amber-400" : "text-rose-400"
                     }`}>
-                      {report.flakiness_verdict === 'STABLE' && <CheckCircle2 className="w-3.5 h-3.5" />}
-                      {report.flakiness_verdict === 'FLAKY' && <AlertTriangle className="w-3.5 h-3.5" />}
-                      {report.flakiness_verdict === 'CRITICAL_OUTAGE' && <XCircle className="w-3.5 h-3.5" />}
-                      {report.flakiness_verdict}
+                      {regressReport ? `${regressReport.availability_percentage.toFixed(1)}%` : "--"}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-500">
+                      {regressReport ? `${regressReport.successful_iterations}/${regressReport.total_iterations}` : "0/0"}
                     </span>
                   </div>
                 </div>
 
-                {/* Metrics Grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 pt-3 border-t border-[#182640] text-xs">
-                  <div className="p-2.5 rounded bg-[#090e1a] border border-[#16243a]">
-                    <span className="text-slate-500 block">Median (P50):</span>
-                    <span className="text-cyan-300 font-bold text-base">{report.p50_ms} ms</span>
-                  </div>
-                  <div className="p-2.5 rounded bg-[#090e1a] border border-[#16243a]">
-                    <span className="text-slate-500 block">Tail (P99):</span>
-                    <span className="text-purple-300 font-bold text-base">{report.p99_ms} ms</span>
-                  </div>
-                  <div className="p-2.5 rounded bg-[#090e1a] border border-[#16243a]">
-                    <span className="text-slate-500 block">Jitter Variance:</span>
-                    <span className={`font-bold text-base ${report.jitter_ms > 150 ? 'text-amber-400' : 'text-emerald-400'}`}>
-                      ±{report.jitter_ms} ms
+                <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] flex flex-col justify-between">
+                  <span className="text-xs font-mono text-slate-400">P50 Latency (Median)</span>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <span className="text-2xl font-bold font-mono text-cyan-300">
+                      {regressReport ? `${regressReport.p50_latency_ms}ms` : "--"}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-500">
+                      avg {regressReport?.avg_latency_ms || 0}ms
                     </span>
                   </div>
-                  <div className="p-2.5 rounded bg-[#090e1a] border border-[#16243a]">
-                    <span className="text-slate-500 block">Failures / Drops:</span>
-                    <span className={`font-bold text-base ${report.failed_count > 0 ? 'text-red-400' : 'text-slate-300'}`}>
-                      {report.failed_count} / {report.iterations_completed}
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] flex flex-col justify-between">
+                  <span className="text-xs font-mono text-slate-400">P99 Latency (Tail)</span>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <span className="text-2xl font-bold font-mono text-indigo-300">
+                      {regressReport ? `${regressReport.p99_latency_ms}ms` : "--"}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-500">
+                      max {regressReport?.max_latency_ms || 0}ms
+                    </span>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] flex flex-col justify-between">
+                  <span className="text-xs font-mono text-slate-400">Network Jitter</span>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <span className={`text-2xl font-bold font-mono ${
+                      !regressReport ? "text-slate-500" :
+                      regressReport.jitter_ms < 100 ? "text-emerald-400" :
+                      regressReport.jitter_ms < 300 ? "text-amber-400" : "text-rose-400"
+                    }`}>
+                      {regressReport ? `${regressReport.jitter_ms}ms` : "--"}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-500">
+                      {regressReport?.jitter_ms && regressReport.jitter_ms > 200 ? "High Variance" : "Low Variance"}
                     </span>
                   </div>
                 </div>
               </div>
 
-              {/* HOW THE AGENT FOUND THE ISSUE (CORE DELIVERABLE) */}
-              <div className="p-5 rounded-xl bg-[#090f1d] border border-cyan-800/40 shadow-lg font-mono space-y-3 relative overflow-hidden">
-                <div className="flex items-center justify-between gap-2 border-b border-[#182845] pb-3">
-                  <div className="flex items-center gap-2">
-                    <BrainCircuit className="w-5 h-5 text-cyan-400" />
-                    <h4 className="text-sm font-bold text-white uppercase tracking-wider">
-                      How The Agent Identified The Issue
-                    </h4>
-                  </div>
-                  <span className="px-2.5 py-0.5 rounded text-[10px] font-bold uppercase bg-[#132238] text-cyan-300 border border-[#203658]">
-                    Root Cause: {report.agent_diagnosis.root_cause_type}
-                  </span>
-                </div>
-
-                {/* Summary */}
-                <div className="p-3 rounded-lg bg-[#0e172a] border border-[#1a2c49] text-xs text-slate-200">
-                  <span className="text-cyan-400 font-bold">Agent Diagnostic Summary: </span>
-                  {report.agent_diagnosis.summary}
-                </div>
-
-                {/* Step-by-Step Diagnostic Reasoning Chain */}
-                <div className="space-y-2">
-                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">
-                    Agent Investigation & Reasoning Trace:
-                  </span>
-                  <div className="space-y-1.5">
-                    {report.agent_diagnosis.how_agent_found_it.map((step, idx) => (
-                      <div key={idx} className="flex items-start gap-2.5 text-xs text-slate-300 bg-[#060a13] p-2 rounded border border-[#152238]">
-                        <span className="w-5 h-5 rounded-full bg-cyan-950 border border-cyan-700/60 text-cyan-300 text-[10px] font-bold flex items-center justify-center shrink-0">
-                          {idx + 1}
-                        </span>
-                        <span className="flex-1 leading-relaxed">{step}</span>
+              {/* Agent Root Cause Diagnosis Card */}
+              {regressReport && (
+                <div className={`p-5 rounded-xl border ${
+                  regressReport.diagnosis.severity === "CRITICAL"
+                    ? "bg-rose-950/20 border-rose-600/50"
+                    : regressReport.diagnosis.severity === "HIGH"
+                    ? "bg-amber-950/20 border-amber-600/50"
+                    : "bg-cyan-950/20 border-cyan-600/40"
+                } space-y-4`}>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-lg bg-[#0e1628] border border-[#1e2d48]">
+                        <BrainCircuit className="w-5 h-5 text-cyan-400" />
                       </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Technical Breakdown */}
-                <div className="p-3 rounded-lg bg-[#060a13] border border-[#152238] space-y-1 text-xs">
-                  <span className="text-[11px] font-bold text-purple-300 uppercase tracking-wide">
-                    Technical Root Cause Analysis:
-                  </span>
-                  <p className="text-slate-300 leading-relaxed">
-                    {report.agent_diagnosis.technical_breakdown}
-                  </p>
-                </div>
-
-                {/* Remediation Prescription */}
-                <div className="p-3 rounded-lg bg-emerald-950/20 border border-emerald-800/40 space-y-1.5 text-xs">
-                  <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wide flex items-center gap-1.5">
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    Recommended Remediation Prescription:
-                  </span>
-                  <ul className="space-y-1 text-slate-300 list-disc list-inside text-[11px]">
-                    {report.agent_diagnosis.remediation_steps.map((rem, idx) => (
-                      <li key={idx}>{rem}</li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-
-              {/* Visual Latency Waterfall Strip */}
-              <div className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] font-mono space-y-2">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="text-slate-300 font-bold">Session Latency Waterfall</span>
-                  <span className="text-slate-500 text-[11px]">Click a bar to inspect session</span>
-                </div>
-                <div className="flex items-end gap-1.5 h-20 pt-2 border-b border-[#182640]">
-                  {report.results.map((r) => {
-                    const maxD = Math.max(...report.results.map((x) => x.duration_ms), 1);
-                    const pct = Math.max(12, Math.min(100, (r.duration_ms / maxD) * 100));
-                    const isSelected = selectedIteration?.iteration === r.iteration;
-
-                    return (
-                      <button
-                        key={r.iteration}
-                        type="button"
-                        onClick={() => setSelectedIteration(r)}
-                        className={`flex-1 rounded-t transition-all cursor-pointer relative group ${
-                          !r.success
-                            ? 'bg-red-500'
-                            : r.duration_ms > report.p90_ms
-                            ? 'bg-amber-400'
-                            : 'bg-cyan-500'
-                        } ${isSelected ? 'ring-2 ring-white' : 'opacity-80 hover:opacity-100'}`}
-                        style={{ height: `${pct}%` }}
-                        title={`Run #${r.iteration}: ${r.duration_ms}ms (${r.status_code || 'Dropped'})`}
-                      >
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1">
-                  <span>Run #1</span>
-                  <span>Run #{report.iterations_completed}</span>
-                </div>
-              </div>
-
-              {/* Iterations Results Table */}
-              <div className="rounded-xl bg-[#0c1424] border border-[#1b2b46] overflow-hidden font-mono text-xs shadow-sm">
-                <div className="p-3 bg-[#0f192d] border-b border-[#1b2b46] flex items-center justify-between">
-                  <span className="font-bold text-slate-200">Iteration Session Logs</span>
-                  <div className="flex items-center gap-1 text-[11px]">
-                    {(['ALL', 'FAILED', 'PASSED'] as const).map((m) => (
-                      <button
-                        key={m}
-                        type="button"
-                        onClick={() => setFilterMode(m)}
-                        className={`px-2 py-0.5 rounded cursor-pointer ${
-                          filterMode === m ? 'bg-cyan-950 text-cyan-300 border border-cyan-800/50' : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        {m}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="divide-y divide-[#152238] max-h-72 overflow-y-auto">
-                  {filteredResults.map((res) => {
-                    const isSelected = selectedIteration?.iteration === res.iteration;
-                    return (
-                      <div
-                        key={res.iteration}
-                        onClick={() => setSelectedIteration(res)}
-                        className={`p-3 flex items-center justify-between gap-3 cursor-pointer transition-colors ${
-                          isSelected ? 'bg-[#121f36]' : 'hover:bg-[#0e172a]'
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <span className="font-bold text-slate-400 w-8">#{res.iteration}</span>
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            res.success ? 'bg-emerald-950 text-emerald-400 border border-emerald-600/50' : 'bg-red-950 text-red-400 border border-red-600/50'
-                          }`}>
-                            {res.status_code > 0 ? `HTTP ${res.status_code}` : 'DROPPED'}
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-mono uppercase px-2 py-0.5 rounded bg-cyan-900/60 text-cyan-300 font-bold tracking-wider">
+                            {regressReport.diagnosis.root_cause_type}
                           </span>
-                          <span className="text-slate-300 text-xs truncate max-w-xs">
-                            {res.error_message || "Completed OK"}
+                          <span className={`text-xs font-mono uppercase px-2 py-0.5 rounded font-bold ${
+                            regressReport.diagnosis.severity === "CRITICAL" ? "bg-rose-900/60 text-rose-300" :
+                            regressReport.diagnosis.severity === "HIGH" ? "bg-amber-900/60 text-amber-300" : "bg-emerald-900/60 text-emerald-300"
+                          }`}>
+                            {regressReport.diagnosis.severity}
                           </span>
                         </div>
+                        <h3 className="text-base font-bold text-white mt-1">
+                          {regressReport.diagnosis.title}
+                        </h3>
+                      </div>
+                    </div>
 
-                        <div className="flex items-center gap-4 shrink-0 text-right">
-                          <span className="text-slate-400 text-xs">{res.duration_ms} ms</span>
+                    <div className="text-right font-mono text-xs text-slate-400">
+                      Target: <span className="text-cyan-300">{regressReport.target}</span>
+                    </div>
+                  </div>
+
+                  <p className="text-xs text-slate-300 leading-relaxed font-mono">
+                    {regressReport.diagnosis.summary}
+                  </p>
+
+                  {/* How The Agent Identified The Issue */}
+                  <div className="space-y-2 pt-2 border-t border-[#1e2b46]">
+                    <div className="text-xs font-mono font-semibold text-cyan-300 flex items-center gap-2">
+                      <Zap className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>How The Agent Identified The Issue:</span>
+                    </div>
+                    <ul className="space-y-1.5 pl-5 list-disc text-xs text-slate-300 font-mono">
+                      {regressReport.diagnosis.how_agent_found_it.map((step, idx) => (
+                        <li key={idx} className="leading-relaxed">{step}</li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {/* Technical Breakdown */}
+                  <div className="space-y-2 pt-2 border-t border-[#1e2b46]">
+                    <div className="text-xs font-mono font-semibold text-indigo-300 flex items-center gap-2">
+                      <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+                      <span>Technical Root Cause Breakdown:</span>
+                    </div>
+                    <ul className="space-y-1.5 pl-5 list-disc text-xs text-slate-300 font-mono">
+                      {regressReport.diagnosis.technical_breakdown.map((item, idx) => (
+                        <li key={idx} className="leading-relaxed">{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+
+                  {/* Prescriptive Remediation Checklist */}
+                  <div className="p-3.5 rounded-lg bg-[#0a1120] border border-[#1b2a45] space-y-2">
+                    <span className="text-xs font-mono font-bold text-emerald-400 flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Prescriptive Remediation Actions:</span>
+                    </span>
+                    <ul className="space-y-1 text-xs font-mono text-slate-300 pl-4 list-decimal">
+                      {regressReport.diagnosis.remediation_checklist.map((act, idx) => (
+                        <li key={idx}>{act}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
+              {/* Latency Waterfall Bar Chart */}
+              {regressReport && regressReport.iterations.length > 0 && (
+                <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-mono font-semibold text-slate-300 flex items-center gap-2">
+                      <Activity className="w-4 h-4 text-cyan-400" />
+                      <span>Session Latency & Handshake Distribution ({regressReport.iterations.length} attempts)</span>
+                    </span>
+                    <span className="text-xs font-mono text-slate-500">
+                      Hover to view session timing breakdown
+                    </span>
+                  </div>
+
+                  <div className="flex items-end gap-1.5 h-28 pt-4 px-2 overflow-x-auto">
+                    {regressReport.iterations.map((it) => {
+                      const maxMs = Math.max(...regressReport.iterations.map((i) => Number(i.duration_ms)), 100);
+                      const heightPct = Math.min(100, Math.max(10, (Number(it.duration_ms) / maxMs) * 100));
+                      const isSelected = selectedIteration?.iteration === it.iteration;
+
+                      return (
+                        <button
+                          key={it.iteration}
+                          onClick={() => setSelectedIteration(it)}
+                          className={`flex-1 min-w-[20px] max-w-[40px] rounded-t flex flex-col justify-end transition-all relative group cursor-pointer ${
+                            it.success
+                              ? isSelected ? "bg-cyan-400 shadow-[0_0_10px_rgba(6,182,212,0.5)]" : "bg-cyan-600/70 hover:bg-cyan-500"
+                              : "bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]"
+                          }`}
+                          style={{ height: `${heightPct}%` }}
+                        >
+                          <div className="opacity-0 group-hover:opacity-100 absolute bottom-full mb-2 left-1/2 -translate-x-1/2 p-2 bg-slate-900 border border-slate-700 rounded-lg text-[10px] font-mono text-white whitespace-nowrap z-30 pointer-events-none shadow-xl">
+                            <div>Iter #{it.iteration} ({it.status_code || "ERR"})</div>
+                            <div>DNS: {it.dns_lookup_ms}ms</div>
+                            <div>TCP: {it.tcp_connect_ms}ms</div>
+                            <div>TTFB: {it.ttfb_ms}ms</div>
+                            <div className="text-cyan-300 font-bold">Total: {it.duration_ms}ms</div>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Iteration Session Log & Details */}
+              {regressReport && regressReport.iterations.length > 0 && (
+                <div className="p-4 rounded-xl bg-[#0d1424] border border-[#1c2b47] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-mono font-semibold text-slate-300 flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-cyan-400" />
+                      <span>Cold Session Log ({regressReport.iterations.length} Iterations)</span>
+                    </span>
+                    <span className="text-xs font-mono text-slate-500">
+                      Isolated Private Sockets
+                    </span>
+                  </div>
+
+                  <div className="max-h-64 overflow-y-auto divide-y divide-[#182339] border border-[#182339] rounded-lg">
+                    {regressReport.iterations.map((it) => (
+                      <div
+                        key={it.iteration}
+                        onClick={() => setSelectedIteration(it)}
+                        className={`p-3 flex items-center justify-between text-xs font-mono cursor-pointer transition-colors ${
+                          selectedIteration?.iteration === it.iteration ? "bg-cyan-950/40" : "hover:bg-[#10192e]"
+                        }`}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            it.success ? "bg-emerald-950 text-emerald-400 border border-emerald-800/50" : "bg-rose-950 text-rose-400 border border-rose-800/50"
+                          }`}>
+                            {it.status_code || "ERR"}
+                          </span>
+                          <span className="text-slate-300 font-semibold">Iteration #{it.iteration}</span>
+                          <span className="text-slate-500 text-[11px]">{it.session_id}</span>
+                        </div>
+
+                        <div className="flex items-center gap-4 text-slate-400">
+                          <span>DNS: <strong className="text-slate-200">{it.dns_lookup_ms}ms</strong></span>
+                          <span>TCP: <strong className="text-slate-200">{it.tcp_connect_ms}ms</strong></span>
+                          <span>TTFB: <strong className="text-slate-200">{it.ttfb_ms}ms</strong></span>
+                          <span className="text-cyan-300 font-bold">{it.duration_ms}ms</span>
+
                           <button
-                            type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              handleCopy(res.curl_command, `curl-${res.iteration}`);
+                              copyToClipboard(it.curl_command, `curl-${it.iteration}`);
                             }}
-                            className="text-slate-500 hover:text-cyan-300 p-1 cursor-pointer"
+                            className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-cyan-300"
                             title="Copy reproduction cURL"
                           >
-                            {copiedId === `curl-${res.iteration}` ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                            {copiedText === `curl-${it.iteration}` ? (
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                            ) : (
+                              <Copy className="w-3.5 h-3.5" />
+                            )}
                           </button>
                         </div>
                       </div>
-                    );
-                  })}
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
+            </>
+          )}
 
-              {/* Selected Iteration Inspector */}
-              {selectedIteration && (
-                <div className="p-4 rounded-xl bg-[#090e1a] border border-[#192b47] font-mono text-xs space-y-3">
-                  <div className="flex items-center justify-between border-b border-[#16233a] pb-2">
-                    <span className="font-bold text-slate-200">
-                      Session Inspector: Iteration #{selectedIteration.iteration} ({selectedIteration.session_id})
+          {/* TAB 2: 6-PILLAR DEEP PROTOCOL & NETWORK AUDIT */}
+          {activeTab === "deep_audit" && (
+            <div className="space-y-6">
+              {/* Executive Health Banner */}
+              {deepAuditReport ? (
+                <div className={`p-5 rounded-xl border flex items-center justify-between gap-6 ${
+                  deepAuditReport.overall_verdict === "PASS"
+                    ? "bg-emerald-950/20 border-emerald-500/50"
+                    : deepAuditReport.overall_verdict === "WARN"
+                    ? "bg-amber-950/20 border-amber-500/50"
+                    : "bg-rose-950/20 border-rose-500/50"
+                }`}>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-2.5">
+                      <span className={`px-2.5 py-0.5 rounded text-xs font-mono font-bold uppercase tracking-wider ${
+                        deepAuditReport.overall_verdict === "PASS" ? "bg-emerald-900/60 text-emerald-300" :
+                        deepAuditReport.overall_verdict === "WARN" ? "bg-amber-900/60 text-amber-300" : "bg-rose-900/60 text-rose-300"
+                      }`}>
+                        VERDICT: {deepAuditReport.overall_verdict}
+                      </span>
+                      <span className="text-xs font-mono text-slate-400">
+                        Evaluated {deepAuditReport.target}
+                      </span>
+                    </div>
+                    <p className="text-sm font-semibold text-white">
+                      {deepAuditReport.executive_summary}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-col items-center justify-center p-3 px-5 rounded-xl bg-[#0b101c] border border-[#1c2944] shrink-0">
+                    <span className="text-[10px] font-mono text-slate-400 uppercase">Health Score</span>
+                    <span className={`text-3xl font-extrabold font-mono ${
+                      deepAuditReport.health_score >= 90 ? "text-emerald-400" :
+                      deepAuditReport.health_score >= 70 ? "text-amber-400" : "text-rose-400"
+                    }`}>
+                      {deepAuditReport.health_score}
+                      <span className="text-sm text-slate-500 font-normal">/100</span>
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => handleCopy(selectedIteration.curl_command, "inspect-curl")}
-                      className="flex items-center gap-1.5 text-cyan-400 hover:text-cyan-300 cursor-pointer"
-                    >
-                      {copiedId === "inspect-curl" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                      Copy cURL
-                    </button>
                   </div>
+                </div>
+              ) : (
+                <div className="p-8 rounded-xl bg-[#0c1222] border border-[#1c2a44] text-center space-y-3">
+                  <Network className="w-10 h-10 text-cyan-400 mx-auto animate-pulse" />
+                  <h3 className="text-base font-bold text-white">Ready to Audit All 6 Deep Network Pillars</h3>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    Inspects IPv4 vs IPv6 Happy Eyeballs, Sub-Resource Cascade (MIME / SPA fallbacks), HTTP/1.1 vs HTTP/2 vs HTTP/3, TLS Certificate Chain, CORS Preflight, and MTU Black Holes.
+                  </p>
+                  <button
+                    onClick={handleRunDeepAudit}
+                    disabled={isDeepAuditRunning}
+                    className="px-5 py-2 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 text-xs font-mono font-bold cursor-pointer transition-all"
+                  >
+                    {isDeepAuditRunning ? "Running Deep Audit..." : "Launch 6-Pillar Audit"}
+                  </button>
+                </div>
+              )}
 
-                  {/* Timing Breakdown Badges */}
-                  <div className="grid grid-cols-3 gap-2 text-[11px]">
-                    <div className="p-2 rounded bg-[#060a12] border border-[#162238]">
-                      <span className="text-slate-500 block">DNS Lookup:</span>
-                      <span className="text-cyan-300 font-bold">{selectedIteration.dns_lookup_ms} ms</span>
-                    </div>
-                    <div className="p-2 rounded bg-[#060a12] border border-[#162238]">
-                      <span className="text-slate-500 block">TCP Connect:</span>
-                      <span className="text-cyan-300 font-bold">{selectedIteration.tcp_connect_ms} ms</span>
-                    </div>
-                    <div className="p-2 rounded bg-[#060a12] border border-[#162238]">
-                      <span className="text-slate-500 block">TTFB:</span>
-                      <span className="text-cyan-300 font-bold">{selectedIteration.ttfb_ms} ms</span>
-                    </div>
+              {/* Identified Risks & Remediation */}
+              {deepAuditReport && deepAuditReport.identified_risks.length > 0 && (
+                <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-600/40 space-y-3">
+                  <div className="flex items-center gap-2 text-rose-300 font-mono text-xs font-bold">
+                    <ShieldAlert className="w-4 h-4 text-rose-400" />
+                    <span>Identified Flakiness & Network Vectors ({deepAuditReport.identified_risks.length})</span>
                   </div>
+                  <ul className="space-y-1.5 pl-5 list-disc text-xs font-mono text-rose-200">
+                    {deepAuditReport.identified_risks.map((risk, idx) => (
+                      <li key={idx}>{risk}</li>
+                    ))}
+                  </ul>
 
-                  {/* cURL String */}
-                  <div>
-                    <span className="text-slate-500 block mb-1 font-bold">Reproduction cURL:</span>
-                    <pre className="p-2.5 rounded bg-[#060a12] border border-[#162238] text-cyan-300/90 overflow-x-auto">
-                      {selectedIteration.curl_command}
-                    </pre>
-                  </div>
-
-                  {/* Response Body Snippet */}
-                  {selectedIteration.response_body_snippet && (
-                    <div>
-                      <span className="text-slate-500 block mb-1 font-bold">Response Body Snippet:</span>
-                      <pre className="p-2.5 rounded bg-[#060a12] border border-[#162238] text-slate-300 overflow-x-auto max-h-32">
-                        {selectedIteration.response_body_snippet}
-                      </pre>
+                  {deepAuditReport.remediation_checklist.length > 0 && (
+                    <div className="pt-3 border-t border-rose-900/40">
+                      <span className="text-[11px] font-mono font-bold text-slate-300">Prescriptive Remediation:</span>
+                      <ul className="space-y-1 pl-4 list-decimal text-xs font-mono text-slate-300 mt-1">
+                        {deepAuditReport.remediation_checklist.map((rem, idx) => (
+                          <li key={idx}>{rem}</li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                 </div>
               )}
+
+              {/* The 6 Pillars Grid */}
+              {deepAuditReport && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Pillar 1: Dual-Stack IPv4 vs IPv6 */}
+                  <div className="p-4 rounded-xl bg-[#0c1220] border border-[#1b2942] space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono font-bold text-cyan-300 flex items-center gap-2">
+                        <Globe className="w-4 h-4 text-cyan-400" />
+                        <span>1. Dual-Stack & Happy Eyeballs</span>
+                      </span>
+                      <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
+                        deepAuditReport.dual_stack.happy_eyeballs_risk ? "bg-rose-950 text-rose-300 border border-rose-800" :
+                        deepAuditReport.dual_stack.has_ipv4 ? "bg-emerald-950 text-emerald-300 border border-emerald-800" : "bg-slate-800 text-slate-400"
+                      }`}>
+                        {deepAuditReport.dual_stack.ipv6_status}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5 text-xs font-mono text-slate-300">
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">IPv4 Address:</span>
+                        <span className="text-slate-200 font-semibold">{deepAuditReport.dual_stack.ipv4_addresses[0] || "None"}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">IPv4 Latency:</span>
+                        <span className="text-emerald-400">{deepAuditReport.dual_stack.ipv4_latency_ms ?? "--"}ms</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">IPv6 AAAA Record:</span>
+                        <span className={deepAuditReport.dual_stack.has_ipv6 ? "text-cyan-300" : "text-slate-500"}>
+                          {deepAuditReport.dual_stack.has_ipv6 ? deepAuditReport.dual_stack.ipv6_addresses[0] : "None published"}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono leading-relaxed pt-2 border-t border-slate-800">
+                      {deepAuditReport.dual_stack.diagnosis}
+                    </p>
+                  </div>
+
+                  {/* Pillar 2: Sub-Resource Cascade & SPA Mismatch */}
+                  <div className="p-4 rounded-xl bg-[#0c1220] border border-[#1b2942] space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono font-bold text-cyan-300 flex items-center gap-2">
+                        <FileCode className="w-4 h-4 text-cyan-400" />
+                        <span>2. Sub-Resource Cascade (SPA/Assets)</span>
+                      </span>
+                      <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
+                        deepAuditReport.subresources.spa_fallback_mismatches > 0 ? "bg-rose-950 text-rose-300 border border-rose-800" :
+                        deepAuditReport.subresources.broken_count > 0 ? "bg-amber-950 text-amber-300 border border-amber-800" :
+                        "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                      }`}>
+                        {deepAuditReport.subresources.successful_count}/{deepAuditReport.subresources.total_discovered} OK
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5 text-xs font-mono text-slate-300">
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Total Assets Probed:</span>
+                        <span className="text-slate-200">{deepAuditReport.subresources.total_discovered} files ({deepAuditReport.subresources.total_size_kb.toFixed(1)} KB)</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Broken Assets (4xx/5xx):</span>
+                        <span className={deepAuditReport.subresources.broken_count > 0 ? "text-rose-400 font-bold" : "text-emerald-400"}>
+                          {deepAuditReport.subresources.broken_count}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">SPA Fallback Mismatch (JS=HTML):</span>
+                        <span className={deepAuditReport.subresources.spa_fallback_mismatches > 0 ? "text-rose-400 font-bold" : "text-emerald-400"}>
+                          {deepAuditReport.subresources.spa_fallback_mismatches}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono leading-relaxed pt-2 border-t border-slate-800">
+                      {deepAuditReport.subresources.diagnosis}
+                    </p>
+                  </div>
+
+                  {/* Pillar 3: HTTP Protocol Matrix */}
+                  <div className="p-4 rounded-xl bg-[#0c1220] border border-[#1b2942] space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono font-bold text-cyan-300 flex items-center gap-2">
+                        <Layers className="w-4 h-4 text-cyan-400" />
+                        <span>3. HTTP Protocol Matrix</span>
+                      </span>
+                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
+                        {deepAuditReport.protocol_matrix.active_protocol}
+                      </span>
+                    </div>
+
+                    <div className="space-y-2 text-xs font-mono">
+                      {deepAuditReport.protocol_matrix.protocols.map((p, idx) => (
+                        <div key={idx} className="flex items-center justify-between p-2 rounded bg-[#0f172a] border border-[#1d2b45]">
+                          <span className="font-semibold text-slate-200">{p.protocol}</span>
+                          <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold ${
+                            p.supported ? "bg-emerald-950 text-emerald-300" : "bg-slate-800 text-slate-400"
+                          }`}>
+                            {p.supported ? `Supported (${p.negotiation_time_ms}ms)` : "Unavailable"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono leading-relaxed pt-2 border-t border-slate-800">
+                      {deepAuditReport.protocol_matrix.diagnosis}
+                    </p>
+                  </div>
+
+                  {/* Pillar 4: TLS & Certificate Chain */}
+                  <div className="p-4 rounded-xl bg-[#0c1220] border border-[#1b2942] space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono font-bold text-cyan-300 flex items-center gap-2">
+                        {deepAuditReport.tls_chain.is_https ? (
+                          <Lock className="w-4 h-4 text-emerald-400" />
+                        ) : (
+                          <Unlock className="w-4 h-4 text-amber-400" />
+                        )}
+                        <span>4. TLS & Certificate Chain</span>
+                      </span>
+                      <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                        {deepAuditReport.tls_chain.tls_version}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5 text-xs font-mono text-slate-300">
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Cipher Suite:</span>
+                        <span className="text-slate-200 truncate max-w-[200px]">{deepAuditReport.tls_chain.cipher}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Issuer:</span>
+                        <span className="text-slate-200">{deepAuditReport.tls_chain.cert_issuer}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Intermediate Chain:</span>
+                        <span className={deepAuditReport.tls_chain.is_intermediate_missing ? "text-rose-400 font-bold" : "text-emerald-400"}>
+                          {deepAuditReport.tls_chain.is_intermediate_missing ? "Incomplete Bundle" : "Complete"}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono leading-relaxed pt-2 border-t border-slate-800">
+                      {deepAuditReport.tls_chain.diagnosis}
+                    </p>
+                  </div>
+
+                  {/* Pillar 5: CORS Preflight Inspector */}
+                  <div className="p-4 rounded-xl bg-[#0c1220] border border-[#1b2942] space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono font-bold text-cyan-300 flex items-center gap-2">
+                        <ShieldAlert className="w-4 h-4 text-cyan-400" />
+                        <span>5. CORS Preflight Boundary (OPTIONS)</span>
+                      </span>
+                      <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
+                        deepAuditReport.cors_preflight.preflight_passed ? "bg-emerald-950 text-emerald-300 border border-emerald-800" : "bg-rose-950 text-rose-300 border border-rose-800"
+                      }`}>
+                        HTTP {deepAuditReport.cors_preflight.preflight_status_code}
+                      </span>
+                    </div>
+
+                    <div className="space-y-1.5 text-xs font-mono text-slate-300">
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Allow-Origin:</span>
+                        <span className="text-cyan-300 font-semibold">{deepAuditReport.cors_preflight.allow_origin || "None"}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Allow-Methods:</span>
+                        <span className="text-slate-300">{deepAuditReport.cors_preflight.allow_methods || "None"}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-slate-500">Preflight Accepted:</span>
+                        <span className={deepAuditReport.cors_preflight.preflight_passed ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
+                          {deepAuditReport.cors_preflight.preflight_passed ? "Yes (200/204)" : "No (Blocked)"}
+                        </span>
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono leading-relaxed pt-2 border-t border-slate-800">
+                      {deepAuditReport.cors_preflight.diagnosis}
+                    </p>
+                  </div>
+
+                  {/* Pillar 6: MTU & Packet Size Sweep */}
+                  <div className="p-4 rounded-xl bg-[#0c1220] border border-[#1b2942] space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-mono font-bold text-cyan-300 flex items-center gap-2">
+                        <Flame className="w-4 h-4 text-cyan-400" />
+                        <span>6. MTU & Packet Black Hole Sweeper</span>
+                      </span>
+                      <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded ${
+                        deepAuditReport.mtu_sweep.black_hole_detected ? "bg-rose-950 text-rose-300 border border-rose-800" : "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                      }`}>
+                        Max Safe: {deepAuditReport.mtu_sweep.maximum_safe_bytes}B
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-4 gap-2 text-center text-xs font-mono">
+                      {deepAuditReport.mtu_sweep.sweep_results.map((m, idx) => (
+                        <div key={idx} className={`p-2 rounded border ${
+                          m.success ? "bg-emerald-950/40 border-emerald-800 text-emerald-300" : "bg-rose-950/40 border-rose-800 text-rose-300"
+                        }`}>
+                          <div className="font-bold text-[11px]">{m.payload_bytes}B</div>
+                          <div className="text-[9px] text-slate-400">{m.duration_ms}ms</div>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-slate-400 font-mono leading-relaxed pt-2 border-t border-slate-800">
+                      {deepAuditReport.mtu_sweep.diagnosis}
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           )}
-        </div>
+
+          {/* Interactive cURL Execution Terminal (Available in both modes) */}
+          <div className="p-4 rounded-xl bg-[#090e18] border border-[#1c2a42] space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-mono font-bold text-slate-300 flex items-center gap-2">
+                <Terminal className="w-4 h-4 text-cyan-400" />
+                <span>Interactive cURL Diagnostic Terminal</span>
+              </span>
+
+              {curlResult && (
+                <button
+                  onClick={() => copyToClipboard(curlResult.command, "curl-command")}
+                  className="flex items-center gap-1.5 text-xs font-mono text-cyan-400 hover:text-cyan-300"
+                >
+                  {copiedText === "curl-command" ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Copy cURL</span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+
+            {curlResult ? (
+              <div className="space-y-3 font-mono text-xs">
+                {/* Generated cURL command */}
+                <div className="p-3 bg-[#060912] rounded-lg border border-[#162136] text-cyan-300 break-all select-all">
+                  {curlResult.command}
+                </div>
+
+                {/* Sub-millisecond timing chips */}
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                  <div className="p-2 rounded bg-[#0d1424] border border-[#1d2b45] text-center">
+                    <span className="text-[10px] text-slate-500 block">DNS Lookup</span>
+                    <span className="font-bold text-slate-200">{(curlResult.dns_lookup_s * 1000).toFixed(1)}ms</span>
+                  </div>
+                  <div className="p-2 rounded bg-[#0d1424] border border-[#1d2b45] text-center">
+                    <span className="text-[10px] text-slate-500 block">TCP Connect</span>
+                    <span className="font-bold text-slate-200">{(curlResult.connect_s * 1000).toFixed(1)}ms</span>
+                  </div>
+                  <div className="p-2 rounded bg-[#0d1424] border border-[#1d2b45] text-center">
+                    <span className="text-[10px] text-slate-500 block">TLS / AppConnect</span>
+                    <span className="font-bold text-slate-200">{(curlResult.appconnect_s * 1000).toFixed(1)}ms</span>
+                  </div>
+                  <div className="p-2 rounded bg-[#0d1424] border border-[#1d2b45] text-center">
+                    <span className="text-[10px] text-slate-500 block">TTFB</span>
+                    <span className="font-bold text-cyan-300">{(curlResult.starttransfer_s * 1000).toFixed(1)}ms</span>
+                  </div>
+                  <div className="p-2 rounded bg-[#0d1424] border border-[#1d2b45] text-center">
+                    <span className="text-[10px] text-slate-500 block">Total RTT</span>
+                    <span className="font-bold text-emerald-400">{(curlResult.total_s * 1000).toFixed(1)}ms</span>
+                  </div>
+                </div>
+
+                {/* Output text */}
+                {curlResult.stdout && (
+                  <div className="p-3 bg-[#060912] rounded-lg border border-[#162136] text-slate-300 max-h-40 overflow-y-auto whitespace-pre-wrap">
+                    {curlResult.stdout}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="p-4 rounded-lg bg-[#060912] border border-[#162136] text-slate-500 font-mono text-xs flex items-center justify-between">
+                <span>Click &quot;Run cURL Test&quot; in the left sidebar to execute real-time timing probes against {target}.</span>
+                <button
+                  onClick={handleRunCurl}
+                  disabled={isCurlRunning}
+                  className="px-3 py-1 bg-cyan-950 border border-cyan-700/50 hover:bg-cyan-900 text-cyan-300 rounded font-semibold text-xs cursor-pointer"
+                >
+                  {isCurlRunning ? "Executing..." : "Run Probe"}
+                </button>
+              </div>
+            )}
+          </div>
+        </main>
       </div>
     </div>
   );
