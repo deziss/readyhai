@@ -115,6 +115,9 @@ export interface AgentRunData {
   test_cases: TestCaseResult[];
   threats: ThreatFinding[];
   evidence_ledger: EvidenceLedger;
+  requester_ip?: string;
+  requester_ip_type?: string;
+  allowlist_guidance?: string;
 }
 
 export interface AgentRunFull {
@@ -141,4 +144,17 @@ export interface AgentRunFull {
   approved_by?: string;
   approval_notes?: string;
   approved_at?: string;
+  requester_ip?: string;
+  requester_ip_type?: string;
+  allowlist_guidance?: string;
+}
+
+export interface RequesterIpResponse {
+  egress_public_ip: string;
+  ip_type: string;
+  is_private: boolean;
+  allowlist_guidance: string;
+  detected_via: string;
+  detected_at: string;
+  client_inbound_ip: string;
 }

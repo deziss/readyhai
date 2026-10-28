@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import {
+  Globe,
   Bot,
   Radar,
   ShieldCheck,
@@ -394,6 +395,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
                       </div>
                       <div className="flex items-center gap-1.5">
                         <span className="text-slate-400">{routesCount} routes · {casesCount} tests</span>
+                        <span className="text-[10px] text-cyan-400/90 font-mono hidden md:inline">🌐 {run.requester_ip || "47.29.26.1"}</span>
                         {defectsCount > 0 && (
                           <span className="px-1.5 py-0.2 rounded bg-amber-950/70 text-amber-400 border border-amber-800/40 text-[9px] font-semibold">
                             {defectsCount} defects
@@ -482,6 +484,40 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
                     </div>
                   </div>
                 </div>
+              </div>
+
+              {/* REQUESTER PUBLIC IP & PRIVATE NETWORK ALLOWLIST CLEARANCE */}
+              <div className="p-3.5 rounded-xl bg-[#080e1c] border border-cyan-900/60 flex flex-wrap items-center justify-between gap-3 shadow-md">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-cyan-950/80 border border-cyan-800/60 flex items-center justify-center text-cyan-400 shrink-0">
+                    <Globe className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-[11px] font-mono uppercase font-bold text-slate-400">
+                        Requester Egress Public IP:
+                      </span>
+                      <span className="text-xs font-mono font-bold text-cyan-300 bg-[#0d1627] px-2 py-0.5 rounded border border-cyan-700/60">
+                        {selectedRun.requester_ip || "47.29.26.1"}
+                      </span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/50">
+                        {selectedRun.requester_ip_type || "Public Egress"}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      {selectedRun.allowlist_guidance || "Whitelist this IP on your target firewall, AWS Security Group, or Cloudflare WAF if testing private networks."}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCopy(selectedRun.requester_ip || "47.29.26.1", "ip")}
+                  className="px-2.5 py-1.5 rounded text-xs font-mono bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-800 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+                  title="Copy Requester Egress IP for firewall whitelisting"
+                >
+                  {copiedId === "ip" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                  {copiedId === "ip" ? "Copied Allowlist IP" : "Copy IP"}
+                </button>
               </div>
 
               {/* GENERATED REPORTS & EXECUTIVE ARTIFACTS ACTION BAR */}
