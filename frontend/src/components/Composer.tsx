@@ -2,6 +2,9 @@
 
 import { useState, useEffect } from "react";
 import {
+  ArrowRight,
+  FileText,
+  Bot,
   Zap,
   ShieldAlert,
   FileCode,
@@ -41,6 +44,7 @@ interface ComposerProps {
   setModelTier: (tier: ModelTier) => void;
   thinkingBudget: number;
   setThinkingBudget: (b: number) => void;
+  onOpenAgentHistory?: () => void;
 }
 
 export function Composer({
@@ -67,6 +71,7 @@ export function Composer({
   setModelTier,
   thinkingBudget,
   setThinkingBudget,
+  onOpenAgentHistory,
 }: ComposerProps) {
   const [activeMode, setActiveMode] = useState<"autonomous" | "adversarial" | "contract">("autonomous");
   const [requesterIpInfo, setRequesterIpInfo] = useState<{
@@ -104,6 +109,29 @@ export function Composer({
 
   return (
     <div className="bg-[#0b101a] border border-[#1a2436] rounded-xl p-4 shadow-xl flex flex-col gap-4">
+      {/* Top Command Bar & QA Reports Shortcut */}
+      <div className="flex items-center justify-between pb-1 border-b border-[#162033]">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+          <span className="text-xs font-mono font-bold text-slate-200 uppercase tracking-wider">
+            Agent Command Center
+          </span>
+        </div>
+        {onOpenAgentHistory && (
+          <button
+            id="btn-goto-qa-reports-top"
+            type="button"
+            onClick={onOpenAgentHistory}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#0e1726] hover:bg-[#132238] border border-cyan-800/50 hover:border-cyan-500 text-cyan-300 text-[11px] font-mono font-semibold transition-all cursor-pointer shadow-sm group shrink-0"
+            title="Open QA Agent Reports & Swarm History"
+          >
+            <Bot className="w-3.5 h-3.5 text-cyan-400 group-hover:scale-110 transition-transform" />
+            <span>QA Agent Reports</span>
+            <ArrowRight className="w-3 h-3 text-cyan-400 group-hover:translate-x-0.5 transition-transform" />
+          </button>
+        )}
+      </div>
+
       {/* Mode Selector Header */}
       <div className="grid grid-cols-3 gap-1 p-1 bg-[#06080e] rounded-lg border border-[#162033]">
         <button

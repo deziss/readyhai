@@ -571,6 +571,7 @@ export default function Home() {
               setModelTier={setModelTier}
               thinkingBudget={thinkingBudget}
               setThinkingBudget={setThinkingBudget}
+              onOpenAgentHistory={() => setActiveView("agent_history")}
             />
 
             <ToolCallList stages={stages} currentRunningIndex={0} />
@@ -602,6 +603,7 @@ export default function Home() {
               onCrawlSite={handleCrawl}
               isCrawling={isCrawling}
               onTestEndpoint={handleTestEndpoint}
+              onOpenAgentHistory={() => setActiveView("agent_history")}
             />
           </div>
         </main>
