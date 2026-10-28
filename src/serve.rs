@@ -2,6 +2,7 @@
 //! <data>/runs/<id>/ (status.json while queued/running, run.json when done).
 use crate::engine::{self, ScanOpts};
 use crate::report;
+use crate::model::Profile;
 use anyhow::Result;
 use axum::Router;
 use axum::extract::{Path, State, Query};
@@ -106,7 +107,7 @@ pub fn serve(bind: &str) -> Result<()> {
             .route("/api/agent/runs/{id}/reject", post(agent_reject))
             .route("/api/agent/runs/{id}/report/{fmt}", get(agent_run_report))
             .route("/api/agent/retest", post(agent_retest))
-            .route("/api/scans", get(api_scans_list))
+            .route("/api/scans", get(api_scans_list).post(api_scans_create))
             .route("/api/scans/{id}", get(api_scan_get).delete(api_scan_delete))
             .route("/api/scans/{id}/report/{fmt}", get(api_scan_report))
             .route("/api/agent/requester-ip", get(get_requester_ip))
@@ -362,6 +363,64 @@ async fn get_report(State(app): State<Arc<App>>, h: HeaderMap, Path((id, fmt)): 
 }
 
 
+
+#[derive(serde::Deserialize)]
+struct TriggerScanReq {
+    target: String,
+    #[serde(default = "default_profile_str")]
+    profile: String,
+}
+fn default_profile_str() -> String {
+    "quick".into()
+}
+
+async fn api_scans_create(
+    State(app): State<Arc<App>>,
+    Json(req): Json<TriggerScanReq>,
+) -> Response {
+    let target = req.target.trim().to_string();
+    if target.is_empty() {
+        return err(StatusCode::BAD_REQUEST, "Target repository or directory cannot be empty");
+    }
+    let profile = match req.profile.to_lowercase().as_str() {
+        "standard" => Profile::Standard,
+        "deep" => Profile::Deep,
+        _ => Profile::Quick,
+    };
+    let opts = ScanOpts {
+        target: target.clone(),
+        profile: Some(profile),
+        openapi: None,
+        policy: None,
+        scope: None,
+        config: None,
+        baseline: None,
+        no_tools: false,
+        os: None,
+        key: None,
+        device: None,
+        repo: None,
+        roles: None,
+        journeys: None,
+        qa: false,
+        server: false,
+        allowed_roots: vec![],
+        plugins: app.plugins.clone(),
+    };
+    let id = engine::new_run_id();
+    write_queued(&id, &target);
+    if app.tx.try_send((id.clone(), opts)).is_err() {
+        write_status(&id, "error", Some("queue full"));
+        return err(StatusCode::SERVICE_UNAVAILABLE, "queue full");
+    }
+    (StatusCode::ACCEPTED, Json(json!({
+        "id": id,
+        "state": "queued",
+        "target": target,
+        "profile": req.profile
+    }))).into_response()
+}
+
 async fn api_scans_list() -> Response {
     let Ok(rd) = std::fs::read_dir(engine::data_dir().join("runs")) else {
         return Json(json!({"scans": []})).into_response();
@@ -373,7 +432,7 @@ async fn api_scans_list() -> Response {
     let scans: Vec<serde_json::Value> = ids.into_iter().filter_map(|id| {
         let run_val = read_json(&id, "run.json");
         let st = read_json(&id, "status.json");
-        let target_raw = run_val.as_ref().and_then(|r| r["target"]["raw"].as_str()).unwrap_or_default();
+        let target_raw = run_val.as_ref().and_then(|r| r["target"]["raw"].as_str()).or_else(|| st.as_ref().and_then(|s| s["target"].as_str())).unwrap_or_default();
         if target_raw.contains("agent-prod.nuhire.in") {
             return None;
         }
@@ -427,7 +486,25 @@ async fn api_scan_get(Path(id): Path<String>) -> Response {
     if !engine::valid_run_id(&id) {
         return err(StatusCode::BAD_REQUEST, "bad run id");
     }
+    let st = read_json(&id, "status.json");
     let Some(run_val) = read_json(&id, "run.json") else {
+        if let Some(status) = st {
+            let target = status["target"].as_str().unwrap_or_default();
+            return Json(json!({
+                "id": id,
+                "version": engine::VERSION,
+                "target": { "kind": "repo", "raw": target, "path": "" },
+                "profile": "quick",
+                "started": engine::now(),
+                "finished": null,
+                "verdict": if status["state"].as_str() == Some("error") { "FAIL" } else { "RUNNING" },
+                "state": status["state"],
+                "reasons": if status["state"].as_str() == Some("error") { vec![status["error"].as_str().unwrap_or("scan error").to_string()] } else { vec!["Scan in progress...".to_string()] },
+                "findings": [],
+                "checks": [],
+                "categories": []
+            })).into_response();
+        }
         return err(StatusCode::NOT_FOUND, "scan run not found");
     };
     if run_val["target"]["raw"].as_str().unwrap_or("").contains("agent-prod.nuhire.in") {

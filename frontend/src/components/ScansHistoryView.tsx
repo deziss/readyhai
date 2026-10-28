@@ -2,6 +2,9 @@
 
 import { useState, useEffect, useMemo } from "react";
 import {
+  Play,
+  Globe,
+  Plus,
   ShieldCheck,
   AlertTriangle,
   XCircle,
@@ -44,6 +47,64 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
   const [findingSearch, setFindingSearch] = useState("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [showHtmlModal, setShowHtmlModal] = useState(false);
+  const [showScanModal, setShowScanModal] = useState(false);
+  const [newScanTarget, setNewScanTarget] = useState("");
+  const [newScanProfile, setNewScanProfile] = useState<"quick" | "standard" | "deep">("quick");
+  const [isSubmittingScan, setIsSubmittingScan] = useState(false);
+  const [scanSubmitError, setScanSubmitError] = useState<string | null>(null);
+
+  // Auto-refresh when any scan is queued or running
+  useEffect(() => {
+    const hasPending = scans.some((s) => s.state === "queued" || s.state === "running");
+    if (!hasPending) return;
+    const interval = setInterval(() => {
+      fetchScans();
+      if (selectedScanId) {
+        fetch(`/api/scans/${selectedScanId}`)
+          .then((r) => r.ok && r.json())
+          .then((data) => data && setSelectedScanDetail(data))
+          .catch(() => {});
+      }
+    }, 2500);
+    return () => clearInterval(interval);
+  }, [scans, selectedScanId]);
+
+  const handleLaunchScan = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const trimmed = newScanTarget.trim();
+    if (!trimmed) {
+      setScanSubmitError("Please enter a repository URL or path (e.g. https://github.com/org/repo)");
+      return;
+    }
+    setIsSubmittingScan(true);
+    setScanSubmitError(null);
+    try {
+      const res = await fetch("/api/scans", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          target: trimmed,
+          profile: newScanProfile,
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP ${res.status}: Failed to start scan`);
+      }
+      const data = await res.json();
+      setShowScanModal(false);
+      setNewScanTarget("");
+      await fetchScans();
+      if (data.id) {
+        setSelectedScanId(data.id);
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setScanSubmitError(msg);
+    } finally {
+      setIsSubmittingScan(false);
+    }
+  };
 
   // Fetch scans list
   const fetchScans = async () => {
@@ -237,14 +298,24 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
             {scans.length} Sessions Recorded
           </span>
         </div>
-        <button
-          onClick={fetchScans}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#10192a] hover:bg-[#16233b] border border-[#1e2d48] text-slate-300 transition-colors cursor-pointer"
-          title="Refresh scans"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoadingList ? "animate-spin text-cyan-400" : ""}`} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            id="btn-open-scan-modal"
+            onClick={() => setShowScanModal(true)}
+            className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_12px_rgba(6,182,212,0.3)] transition-all cursor-pointer"
+          >
+            <Play className="w-3.5 h-3.5 fill-current" />
+            <span>Scan Repository</span>
+          </button>
+          <button
+            onClick={fetchScans}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#10192a] hover:bg-[#16233b] border border-[#1e2d48] text-slate-300 transition-colors cursor-pointer text-xs font-mono"
+            title="Refresh scans"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingList ? "animate-spin text-cyan-400" : ""}`} />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
       {/* Master-Detail Split Container */}
@@ -253,6 +324,16 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
         <div className="w-80 lg:w-96 border-r border-[#161f30] bg-[#080d17] flex flex-col shrink-0 min-h-0">
           {/* Filters & Search Header */}
           <div className="p-3 border-b border-[#161f30] space-y-2.5 shrink-0 bg-[#080d17]">
+            {/* Quick Launch Button */}
+            <button
+              id="btn-quick-new-scan"
+              onClick={() => setShowScanModal(true)}
+              className="w-full py-1.5 px-3 rounded-lg bg-[#0e182a] hover:bg-[#13223c] border border-cyan-800/40 hover:border-cyan-500/60 text-cyan-300 font-mono text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+            >
+              <Plus className="w-3.5 h-3.5 text-cyan-400" />
+              <span>New Repository Scan</span>
+            </button>
+
             {/* Search */}
             <div className="relative">
               <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-500" />
@@ -353,7 +434,13 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
                         </div>
                       </div>
                       <div className="shrink-0 flex flex-col items-end gap-1">
-                        {getVerdictBadge(scan.verdict)}
+                        {scan.state === "queued" || scan.state === "running" ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-cyan-950 text-cyan-300 border border-cyan-700/60 animate-pulse">
+                          <RefreshCw className="w-2.5 h-2.5 animate-spin" /> {scan.state.toUpperCase()}
+                        </span>
+                      ) : (
+                        getVerdictBadge(scan.verdict)
+                      )}
                         <span className="text-[10px] font-mono text-slate-400 mt-0.5">
                           {scan.findings_count} findings
                         </span>
@@ -829,6 +916,141 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
           </div>
         </div>
       )}
+
+      {/* Launch New Scan Modal */}
+      {showScanModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-[#090e1a] border border-[#1b2b48] rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-5 border-b border-[#182338] flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-cyan-950/80 border border-cyan-700/60 flex items-center justify-center">
+                  <GitBranch className="w-4 h-4 text-cyan-400" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white font-mono">Scan Codebase / Repository</h3>
+                  <p className="text-[11px] text-slate-400 font-mono">SAST, Secret Leakage, CI Checks &amp; Vulnerability Audit</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowScanModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800/50 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleLaunchScan} className="p-5 space-y-4 font-mono text-xs">
+              <div className="space-y-1.5">
+                <label className="text-slate-300 font-semibold flex items-center gap-1.5">
+                  <span>Target Git Repository URL or Path</span>
+                  <span className="text-cyan-400">*</span>
+                </label>
+                <div className="relative">
+                  <Globe className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+                  <input
+                    id="input-scan-target"
+                    type="text"
+                    value={newScanTarget}
+                    onChange={(e) => {
+                      setNewScanTarget(e.target.value);
+                      setScanSubmitError(null);
+                    }}
+                    placeholder="https://github.com/deziss/prism or https://github.com/org/repo"
+                    className="w-full pl-9 pr-3 py-2 bg-[#050811] border border-[#1b2b48] rounded-lg text-cyan-300 focus:outline-none focus:border-cyan-500 text-xs font-mono"
+                    autoFocus
+                  />
+                </div>
+                <div className="flex items-center gap-2 pt-1 text-[11px] text-slate-400 flex-wrap">
+                  <span>Quick suggestions:</span>
+                  <button
+                    type="button"
+                    onClick={() => setNewScanTarget("https://github.com/deziss/prism")}
+                    className="text-cyan-400 hover:underline cursor-pointer"
+                  >
+                    deziss/prism
+                  </button>
+                  <span>•</span>
+                  <button
+                    type="button"
+                    onClick={() => setNewScanTarget("https://github.com/deziss/readyhai")}
+                    className="text-cyan-400 hover:underline cursor-pointer"
+                  >
+                    deziss/readyhai
+                  </button>
+                  <span>•</span>
+                  <button
+                    type="button"
+                    onClick={() => setNewScanTarget("https://github.com/expressjs/express")}
+                    className="text-cyan-400 hover:underline cursor-pointer"
+                  >
+                    expressjs/express
+                  </button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-slate-300 font-semibold">Scan Profile</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: "quick", label: "Quick", desc: "SAST & CI checks (~2s)" },
+                    { id: "standard", label: "Standard", desc: "Full rules + deps" },
+                    { id: "deep", label: "Deep", desc: "Exhaustive matrix" },
+                  ].map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => setNewScanProfile(p.id as any)}
+                      className={`p-2.5 rounded-lg border text-left cursor-pointer transition-all ${
+                        newScanProfile === p.id
+                          ? "bg-cyan-950/60 border-cyan-500/80 text-cyan-300"
+                          : "bg-[#0b111e] border-[#182338] text-slate-400 hover:border-slate-700"
+                      }`}
+                    >
+                      <div className="font-bold text-xs capitalize">{p.label}</div>
+                      <div className="text-[10px] text-slate-500 mt-0.5">{p.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {scanSubmitError && (
+                <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-800/60 text-rose-300 text-[11px]">
+                  {scanSubmitError}
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#182338]">
+                <button
+                  type="button"
+                  onClick={() => setShowScanModal(false)}
+                  className="px-4 py-2 rounded-lg bg-[#0e1626] hover:bg-[#142036] text-slate-300 border border-[#1b2b48] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  id="btn-submit-scan"
+                  type="submit"
+                  disabled={isSubmittingScan}
+                  className="flex items-center gap-2 px-5 py-2 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-bold transition-all cursor-pointer shadow-[0_0_14px_rgba(6,182,212,0.3)] disabled:opacity-50"
+                >
+                  {isSubmittingScan ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      <span>Cloning &amp; Scanning...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>Start Codebase Scan</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
