@@ -46,7 +46,7 @@ services:
     mem_limit: 512m
 
   socket-proxy:
-    image: tecnativa/docker-socket-proxy:v0.3.0
+    image: tecnativa/docker-socket-proxy:latest
     container_name: readyhai-socket-proxy
     environment:
       CONTAINERS: "1"
@@ -67,6 +67,7 @@ services:
     read_only: true
     tmpfs:
       - /run
+      - /tmp
     mem_limit: 64m
     restart: unless-stopped
 
