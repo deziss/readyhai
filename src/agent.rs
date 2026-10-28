@@ -69,6 +69,29 @@ pub struct DiscoveredRoute {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetTechProfile {
+    pub is_spa: bool,
+    pub app_architecture: String,
+    pub primary_framework: String,
+    pub detected_signals: Vec<String>,
+    pub is_php: bool,
+    pub is_api_only: bool,
+}
+
+impl Default for TargetTechProfile {
+    fn default() -> Self {
+        Self {
+            is_spa: false,
+            app_architecture: "Traditional Web / API".to_string(),
+            primary_framework: "Unknown".to_string(),
+            detected_signals: vec![],
+            is_php: false,
+            is_api_only: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedCase {
     pub id: String,
     pub title: String,
@@ -178,6 +201,12 @@ pub struct AgentRunReport {
     pub model_tier: String,
     #[serde(default = "default_reasoning_tokens")]
     pub thinking_budget_tokens: u32,
+    #[serde(default)]
+    pub app_architecture: Option<String>,
+    #[serde(default)]
+    pub framework: Option<String>,
+    #[serde(default)]
+    pub detected_tech: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +220,8 @@ pub struct AgentRunSummary {
     pub defects_count: usize,
     pub cases_count: usize,
     pub approval_status: Option<String>,
+    #[serde(default)]
+    pub app_architecture: Option<String>,
 }
 
 fn now_iso() -> String {
@@ -344,6 +375,9 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
         thinking: false,
         model_tier: "medium".to_string(),
         thinking_budget_tokens: 4096,
+        app_architecture: None,
+        framework: None,
+        detected_tech: vec![],
     }
 }
 
@@ -393,6 +427,7 @@ pub fn list_agent_runs() -> Vec<AgentRunSummary> {
                 r.planned_cases.len()
             },
             approval_status: r.approval_status.clone(),
+            app_architecture: r.app_architecture.clone(),
         })
         .collect()
 }
@@ -458,14 +493,14 @@ pub fn run_discovery_scan(target: &str, spec_url: Option<&str>) -> Result<AgentR
     }
 
     // 2. Discover routes
-    log_step(&mut steps, "Discovery", "Route Inspection", "Probing root endpoint, detecting SPA shell vs API contracts, crawling candidate routes", "running");
-    let (discovered, is_spa) = discover_routes(target, spec_url);
-    let apis_count = discovered.iter().filter(|r| r.is_api).count();
-    log_step(&mut steps, "Discovery", "Route Inspection", &format!("Discovered {} total routes (APIs: {}, SPA shell: {})", discovered.len(), apis_count, is_spa), "completed");
+    log_step(&mut steps, "Discovery", "Route Inspection", "Probing root endpoint, detecting architecture (PHP/HTML vs SPA vs API), crawling candidate routes", "running");
+    let (discovered, tech_profile) = discover_routes(target, spec_url);
+    let _apis_count = discovered.iter().filter(|r| r.is_api).count();
+    log_step(&mut steps, "Discovery", "Route Inspection", &format!("Detected architecture: {} (Framework: {}, Routes: {})", tech_profile.app_architecture, tech_profile.primary_framework, discovered.len()), "completed");
 
     // 3. Synthesize Planned Test Scenarios for Discovered Routes
-    log_step(&mut steps, "Planner", "Test Synthesis", "Synthesizing baseline adversarial test scenarios for all discovered attack surfaces", "running");
-    let planned_cases = plan_cases(&cfg, &mut budget, target, "discovery-scan", &discovered, is_spa, spec_url, None);
+    log_step(&mut steps, "Planner", "Test Synthesis", &format!("Synthesizing adversarial test scenarios tailored for {}", tech_profile.app_architecture), "running");
+    let planned_cases = plan_cases(&cfg, &mut budget, target, "discovery-scan", &discovered, &tech_profile, spec_url, None);
     log_step(&mut steps, "Planner", "Test Synthesis", &format!("Synthesized {} planned test scenarios ready for autonomous verification", planned_cases.len()), "completed");
 
     // 4. Evidence Ledger for Discovery
@@ -481,7 +516,7 @@ pub fn run_discovery_scan(target: &str, spec_url: Option<&str>) -> Result<AgentR
             ExitCheckItem {
                 criterion: "Attack Surface Discovery".into(),
                 met: true,
-                details: format!("Discovered {} routes (APIs: {}, SPA: {})", discovered.len(), apis_count, is_spa),
+                details: format!("Discovered {} routes ({}, Framework: {})", discovered.len(), tech_profile.app_architecture, tech_profile.primary_framework),
             },
             ExitCheckItem {
                 criterion: "Test Case Synthesis".into(),
@@ -514,6 +549,9 @@ pub fn run_discovery_scan(target: &str, spec_url: Option<&str>) -> Result<AgentR
         thinking: true,
         model_tier: "high".to_string(),
         thinking_budget_tokens: 8192,
+        app_architecture: Some(tech_profile.app_architecture.clone()),
+        framework: Some(tech_profile.primary_framework.clone()),
+        detected_tech: tech_profile.detected_signals.clone(),
     };
 
     save_agent_run(&report)?;
@@ -530,13 +568,192 @@ fn log_step(steps: &mut Vec<AgentStepLog>, agent: &str, action: &str, details: &
     });
 }
 
-// ---------------------------------------------------------------- Discovery Agent
-pub fn discover_routes(target: &str, spec_url: Option<&str>) -> (Vec<DiscoveredRoute>, bool) {
+// ---------------------------------------------------------------- Discovery Agent & Tech Detector
+
+pub fn detect_target_tech(
+    headers: &reqwest::header::HeaderMap,
+    body: &str,
+    status_code: u16,
+    content_type: &str,
+) -> TargetTechProfile {
+    let body_lower = body.to_lowercase();
+    let set_cookie = headers.get("set-cookie").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let x_powered_by = headers.get("x-powered-by").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let expires = headers.get("expires").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let server = headers.get("server").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+
+    let mut signals = Vec::new();
+
+    // 1. Check PHP Signatures
+    let has_phpsessid = set_cookie.contains("PHPSESSID");
+    let has_php_expires = expires.contains("Thu, 19 Nov 1981");
+    let has_php_powered = x_powered_by.to_lowercase().contains("php");
+    let has_php_links = body_lower.contains(".php");
+    let has_wordpress = body_lower.contains("/wp-content/themes/") || body_lower.contains("/wp-content/plugins/") || body_lower.contains("/wp-includes/") || set_cookie.contains("wordpress_");
+    let has_laravel = set_cookie.contains("laravel_session") || set_cookie.contains("XSRF-TOKEN") || body_lower.contains("laravel");
+
+    let is_php = has_phpsessid || has_php_expires || has_php_powered || has_php_links || has_wordpress || has_laravel;
+
+    if has_phpsessid {
+        signals.push("PHPSESSID session cookie active".to_string());
+    }
+    if has_php_expires {
+        signals.push("Standard PHP session_start cache limiter headers detected".to_string());
+    }
+    if has_php_powered {
+        signals.push(format!("X-Powered-By: {}", x_powered_by));
+    }
+    if has_wordpress {
+        signals.push("WordPress theme & plugin assets identified".to_string());
+    }
+    if has_laravel {
+        signals.push("Laravel session / CSRF token cookies detected".to_string());
+    }
+
+    if is_php {
+        let (arch, framework) = if has_wordpress {
+            ("WordPress (PHP/HTML MPA)".to_string(), "WordPress".to_string())
+        } else if has_laravel {
+            ("Laravel (PHP/HTML MPA)".to_string(), "Laravel".to_string())
+        } else {
+            ("PHP & HTML (Server-Side MPA)".to_string(), "PHP".to_string())
+        };
+        return TargetTechProfile {
+            is_spa: false,
+            app_architecture: arch,
+            primary_framework: framework,
+            detected_signals: signals,
+            is_php: true,
+            is_api_only: false,
+        };
+    }
+
+    // 2. Check Python / Django / Flask
+    if set_cookie.contains("csrftoken") || set_cookie.contains("sessionid") || server.to_lowercase().contains("gunicorn") {
+        signals.push("Django / Python session cookie and WSGI headers detected".to_string());
+        return TargetTechProfile {
+            is_spa: false,
+            app_architecture: "Python (Django/HTML MPA)".to_string(),
+            primary_framework: "Django".to_string(),
+            detected_signals: signals,
+            is_php: false,
+            is_api_only: false,
+        };
+    }
+
+    // 3. Check Java / Spring
+    if set_cookie.contains("JSESSIONID") {
+        signals.push("Java / Spring JSESSIONID cookie detected".to_string());
+        return TargetTechProfile {
+            is_spa: false,
+            app_architecture: "Java / Spring (HTML MPA)".to_string(),
+            primary_framework: "Spring".to_string(),
+            detected_signals: signals,
+            is_php: false,
+            is_api_only: false,
+        };
+    }
+
+    // 4. Check TRUE SPA Signatures
+    let has_next = body.contains("__NEXT_DATA__") || body.contains("/_next/static/");
+    let has_nuxt = body.contains("__NUXT__") || body.contains("/_nuxt/") || body.contains("data-v-");
+    let has_angular = body.contains("ng-version") || body.contains("<app-root");
+    let has_react = body.contains("data-reactroot") || body.contains("react-dom");
+    let has_svelte = body.contains("__sveltekit") || body.contains("svelte-");
+    let has_vite = body.contains("/@vite/client") || body.contains("/src/main.tsx");
+
+    if has_next {
+        signals.push("Next.js hydration payload (__NEXT_DATA__) and static chunks detected".to_string());
+        return TargetTechProfile {
+            is_spa: true,
+            app_architecture: "SPA (Next.js/React)".to_string(),
+            primary_framework: "Next.js".to_string(),
+            detected_signals: signals,
+            is_php: false,
+            is_api_only: false,
+        };
+    }
+
+    if has_nuxt {
+        signals.push("Nuxt / Vue client hydration bundle detected".to_string());
+        return TargetTechProfile {
+            is_spa: true,
+            app_architecture: "SPA (Nuxt/Vue)".to_string(),
+            primary_framework: "Nuxt/Vue".to_string(),
+            detected_signals: signals,
+            is_php: false,
+            is_api_only: false,
+        };
+    }
+
+    if has_angular {
+        signals.push("Angular ng-version runtime and <app-root> tag detected".to_string());
+        return TargetTechProfile {
+            is_spa: true,
+            app_architecture: "SPA (Angular)".to_string(),
+            primary_framework: "Angular".to_string(),
+            detected_signals: signals,
+            is_php: false,
+            is_api_only: false,
+        };
+    }
+
+    if has_react || has_vite {
+        signals.push("Client-side React virtual DOM / Vite client bundle detected".to_string());
+        return TargetTechProfile {
+            is_spa: true,
+            app_architecture: "SPA (React)".to_string(),
+            primary_framework: "React".to_string(),
+            detected_signals: signals,
+            is_php: false,
+            is_api_only: false,
+        };
+    }
+
+    if has_svelte {
+        signals.push("SvelteKit client hydration detected".to_string());
+        return TargetTechProfile {
+            is_spa: true,
+            app_architecture: "SPA (SvelteKit)".to_string(),
+            primary_framework: "SvelteKit".to_string(),
+            detected_signals: signals,
+            is_php: false,
+            is_api_only: false,
+        };
+    }
+
+    // 5. Check REST API
+    let is_json = content_type.contains("application/json") || content_type.contains("application/problem+json");
+    if is_json || (status_code == 401 && !content_type.contains("text/html")) {
+        signals.push("JSON Content-Type response without HTML rendering detected".to_string());
+        return TargetTechProfile {
+            is_spa: false,
+            app_architecture: "REST API (JSON)".to_string(),
+            primary_framework: "REST API".to_string(),
+            detected_signals: signals,
+            is_php: false,
+            is_api_only: true,
+        };
+    }
+
+    // 6. Traditional Server-Side HTML Web App
+    signals.push("Server-side rendered HTML5 markup; zero client-side SPA hydration scripts".to_string());
+    TargetTechProfile {
+        is_spa: false,
+        app_architecture: "Traditional Web App (HTML5/SSR)".to_string(),
+        primary_framework: "HTML5".to_string(),
+        detected_signals: signals,
+        is_php: false,
+        is_api_only: false,
+    }
+}
+
+pub fn discover_routes(target: &str, spec_url: Option<&str>) -> (Vec<DiscoveredRoute>, TargetTechProfile) {
     let mut routes = Vec::new();
-    let mut is_spa = false;
+    let default_profile = TargetTechProfile::default();
 
     if !target.starts_with("http://") && !target.starts_with("https://") {
-        return (routes, false);
+        return (routes, default_profile);
     }
 
     let client = reqwest::blocking::Client::builder()
@@ -545,49 +762,104 @@ pub fn discover_routes(target: &str, spec_url: Option<&str>) -> (Vec<DiscoveredR
         .build()
         .ok();
     
-    let Some(cl) = client else { return (routes, false); };
+    let Some(cl) = client else { return (routes, default_profile); };
     let base = target.trim_end_matches('/');
 
-    // 1. Probe root to check SPA vs JSON API
+    let mut tech_profile = default_profile;
+
+    // 1. Probe root to check SPA vs PHP vs JSON API
     if let Ok(resp) = cl.get(base).send() {
         let code = resp.status().as_u16();
-        let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+        let headers = resp.headers().clone();
+        let ct = headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
         let body = resp.text().unwrap_or_default();
-        let body_lower = body.to_lowercase();
-        is_spa = ct.contains("text/html") && (body_lower.contains("<html") || body.contains("__next") || body_lower.contains("<!doctype"));
+        
+        tech_profile = detect_target_tech(&headers, &body, code, &ct);
+
+        let is_root_spa_shell = tech_profile.is_spa;
         routes.push(DiscoveredRoute {
             path: "/".to_string(),
             method: "GET".to_string(),
             status_code: code,
-            content_type: ct,
-            is_spa_shell: is_spa,
-            is_api: !is_spa && code != 404,
+            content_type: ct.clone(),
+            is_spa_shell: is_root_spa_shell,
+            is_api: !is_root_spa_shell && code != 404 && ct.contains("application/json"),
         });
+
+        // If target is HTML (PHP or Traditional Web), extract internal links & forms
+        if ct.contains("text/html") {
+            let mut discovered_paths = std::collections::HashSet::new();
+
+            for line in body.lines() {
+                if let Some(idx) = line.find("href=\"") {
+                    let rest = &line[idx + 6..];
+                    if let Some(end_idx) = rest.find('"') {
+                        let link = &rest[..end_idx];
+                        if (link.starts_with('/') && !link.starts_with("//")) || (link.ends_with(".php") && !link.starts_with("http")) {
+                            let clean = if link.starts_with('/') { link.to_string() } else { format!("/{}", link) };
+                            if !clean.contains('#') && !clean.ends_with(".css") && !clean.ends_with(".png") && !clean.ends_with(".jpg") && !clean.ends_with(".svg") {
+                                discovered_paths.insert(clean);
+                            }
+                        }
+                    }
+                }
+                if let Some(idx) = line.find("<form") {
+                    let rest = &line[idx..];
+                    if let Some(act_idx) = rest.find("action=\"") {
+                        let act_rest = &rest[act_idx + 8..];
+                        if let Some(act_end) = act_rest.find('"') {
+                            let act = &act_rest[..act_end];
+                            if act.starts_with('/') || act.ends_with(".php") {
+                                let clean = if act.starts_with('/') { act.to_string() } else { format!("/{}", act) };
+                                discovered_paths.insert(clean);
+                            }
+                        }
+                    }
+                }
+            }
+
+            for p in discovered_paths.into_iter().take(8) {
+                routes.push(DiscoveredRoute {
+                    path: p,
+                    method: "GET".to_string(),
+                    status_code: 200,
+                    content_type: "text/html; charset=UTF-8".to_string(),
+                    is_spa_shell: false,
+                    is_api: false,
+                });
+            }
+        }
     }
 
-    // 2. Probe candidate common paths & specs
-    let candidate_paths = [
-        "/api/auth/session",
-        "/api/auth/login",
-        "/api/chat",
-        "/api/health",
-        "/health",
-        "/openapi.json",
-        "/api/openapi.json",
-        "/docs",
-        "/swagger.json",
-        "/api/v1/health",
-        "/api/runs",
-    ];
+    // 2. Probe candidate common paths & specs (tailored to architecture)
+    let candidate_paths: Vec<&str> = if tech_profile.is_php {
+        vec!["/login.php", "/admin", "/.env", "/health"]
+    } else {
+        vec![
+            "/api/auth/session",
+            "/api/auth/login",
+            "/api/chat",
+            "/api/health",
+            "/health",
+            "/openapi.json",
+            "/api/openapi.json",
+            "/docs",
+            "/swagger.json",
+            "/api/v1/health",
+            "/api/runs",
+        ]
+    };
 
     for p in candidate_paths {
+        if routes.iter().any(|r| r.path == p) {
+            continue;
+        }
         let url = format!("{base}{p}");
         if let Ok(resp) = cl.get(&url).send() {
             let code = resp.status().as_u16();
             let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
             let body = resp.text().unwrap_or_default();
-            let body_lower = body.to_lowercase();
-            let this_is_spa = ct.contains("text/html") && (body_lower.contains("<html") || body.contains("__next") || body_lower.contains("<!doctype"));
+            let this_is_spa = tech_profile.is_spa && ct.contains("text/html");
             let is_api_resp = ct.contains("application/json") || code == 401 || code == 403;
 
             if (code != 404 && code != 0) || is_api_resp {
@@ -627,8 +899,9 @@ pub fn discover_routes(target: &str, spec_url: Option<&str>) -> (Vec<DiscoveredR
         }
     }
 
-    (routes, is_spa)
+    (routes, tech_profile)
 }
+
 
 // ---------------------------------------------------------------- Planner Agent
 const PLANNER_SYSTEM: &str = "You are a senior Adversarial QA Planner Agent. \
@@ -650,10 +923,87 @@ fn plan_cases(
     target: &str,
     profile: &str,
     discovered: &[DiscoveredRoute],
-    is_spa: bool,
+    tech_profile: &TargetTechProfile,
     spec: Option<&str>,
     instructions: Option<&str>,
 ) -> Vec<PlannedCase> {
+    if tech_profile.is_php {
+        return vec![
+            PlannedCase {
+                id: "TC-001".into(),
+                title: "PHP session cookie security & HttpOnly flag audit".into(),
+                component: "/".into(),
+                method: "GET".into(),
+                technique: "authz".into(),
+                input_hint: "Verify PHPSESSID cookie HttpOnly, Secure, and SameSite attributes".into(),
+                payload: None,
+                expected_behavior: "PHPSESSID cookie has HttpOnly and Secure flags to prevent XSS session theft".into(),
+                expected_status: Some(200),
+                risk_level: "high".into(),
+            },
+            PlannedCase {
+                id: "TC-002".into(),
+                title: "Reflected XSS parameter sanitization probe".into(),
+                component: "/?q=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E".into(),
+                method: "GET".into(),
+                technique: "injection".into(),
+                input_hint: "Inject XSS script vector in URL query parameters".into(),
+                payload: None,
+                expected_behavior: "Payload is HTML entity encoded; no unescaped script tag reflected in HTML response".into(),
+                expected_status: Some(200),
+                risk_level: "high".into(),
+            },
+            PlannedCase {
+                id: "TC-003".into(),
+                title: "Sensitive environment and PHP configuration file disclosure".into(),
+                component: "/.env".into(),
+                method: "GET".into(),
+                technique: "authz".into(),
+                input_hint: "Direct GET request for sensitive framework environment credentials".into(),
+                payload: None,
+                expected_behavior: "HTTP 403 Forbidden or 404 Not Found, zero database passwords or secrets leaked".into(),
+                expected_status: Some(404),
+                risk_level: "critical".into(),
+            },
+            PlannedCase {
+                id: "TC-004".into(),
+                title: "Boundary form payload size tolerance check".into(),
+                component: "/".into(),
+                method: "POST".into(),
+                technique: "boundary".into(),
+                input_hint: "64KB form-urlencoded boundary test in POST body".into(),
+                payload: Some(format!("data={}", "A".repeat(8000))),
+                expected_behavior: "Graceful response without fatal PHP memory exhaustion or buffer overflow".into(),
+                expected_status: Some(200),
+                risk_level: "medium".into(),
+            },
+            PlannedCase {
+                id: "TC-005".into(),
+                title: "HTTP method tampering and source code exposure defense".into(),
+                component: "/".into(),
+                method: "HEAD".into(),
+                technique: "negative".into(),
+                input_hint: "HEAD verb probe to verify web server does not leak raw PHP script source".into(),
+                payload: None,
+                expected_behavior: "HTTP 200 without exposing raw PHP code in headers or content".into(),
+                expected_status: Some(200),
+                risk_level: "medium".into(),
+            },
+            PlannedCase {
+                id: "TC-006".into(),
+                title: "PHP application liveness and Cache-Control policy".into(),
+                component: "/".into(),
+                method: "GET".into(),
+                technique: "state_transition".into(),
+                input_hint: "Verify root page liveness and dynamic session Cache-Control headers".into(),
+                payload: None,
+                expected_behavior: "HTTP 200 OK with valid HTML document and proper session cache controls".into(),
+                expected_status: Some(200),
+                risk_level: "low".into(),
+            },
+        ];
+    }
+    let is_spa = tech_profile.is_spa;
     let api_routes: Vec<_> = discovered.iter()
         .filter(|r| r.is_api || r.status_code == 401 || r.status_code == 403 || r.status_code == 200)
         .map(|r| format!("{} {} (Status: {}, Content-Type: {}, SPA: {})", r.method, r.path, r.status_code, r.content_type, r.is_spa_shell))
@@ -839,14 +1189,43 @@ pub fn execute_cases(cases: &[PlannedCase], target: &str, is_spa_target: bool) -
                 Ok(resp) => {
                     let code = resp.status().as_u16();
                     let elapsed = t0.elapsed().as_millis() as u64;
-                    let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                    let headers = resp.headers().clone();
+                    let ct = headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
                     let body_snippet = resp.text().unwrap_or_default();
                     let clean_body: String = body_snippet.chars().take(300).collect();
-                    let body_lower = clean_body.to_lowercase();
-                    let is_spa_shell = ct.contains("text/html") && (body_lower.contains("<html") || clean_body.contains("__next") || body_lower.contains("<!doctype"));
+                    let _body_lower = clean_body.to_lowercase();
+                    let is_spa_shell = ct.contains("text/html") && is_spa_target && (
+                        clean_body.contains("__NEXT_DATA__") || 
+                        clean_body.contains("/_next/static/") || 
+                        clean_body.contains("__NUXT__") || 
+                        clean_body.contains("ng-version") || 
+                        clean_body.contains("data-reactroot")
+                    );
 
                     // Semantic Assertions:
-                    let (status, fail_reason) = if is_authz {
+                    let (status, fail_reason) = if c.title.contains("PHP session") || (c.component == "/" && c.technique == "authz") {
+                        let cookie_header = headers.get("set-cookie").and_then(|v| v.to_str().ok()).unwrap_or("");
+                        if cookie_header.contains("PHPSESSID") {
+                            let cookie_lower = cookie_header.to_lowercase();
+                            if !cookie_lower.contains("httponly") {
+                                ("WARN", Some("PHPSESSID cookie is missing HttpOnly flag; susceptible to client-side XSS theft".into()))
+                            } else if !cookie_lower.contains("secure") && url.starts_with("https://") {
+                                ("WARN", Some("PHPSESSID cookie is missing Secure attribute over HTTPS".into()))
+                            } else {
+                                ("PASS", None)
+                            }
+                        } else {
+                            ("PASS", None)
+                        }
+                    } else if c.component == "/.env" || c.component == "/phpinfo.php" {
+                        if code == 404 || code == 403 {
+                            ("PASS", None) // Securely blocked
+                        } else if code == 200 && (clean_body.contains("DB_") || clean_body.contains("PHP Version") || clean_body.contains("APP_KEY")) {
+                            ("FAIL", Some("Critical Information Disclosure: Sensitive environment or configuration file exposed publicly (HTTP 200)".into()))
+                        } else {
+                            ("PASS", None)
+                        }
+                    } else if is_authz {
                         if code == 401 || code == 403 {
                             ("PASS", None) // Protected as expected!
                         } else if code == 200 {
@@ -869,8 +1248,8 @@ pub fn execute_cases(cases: &[PlannedCase], target: &str, is_spa_target: bool) -
                             ("PASS", None)
                         }
                     } else if c.technique == "injection" {
-                        if clean_body.contains("CANARY_PROMPT_LEAK") || clean_body.contains("SQL syntax error") {
-                            ("FAIL", Some("Injection canary reflected or SQL syntax error exposed in body".into()))
+                        if clean_body.contains("CANARY_PROMPT_LEAK") || clean_body.contains("SQL syntax error") || clean_body.contains("<script>alert(1)</script>") {
+                            ("FAIL", Some("Injection canary reflected unescaped or SQL error exposed in response body".into()))
                         } else {
                             ("PASS", None)
                         }
@@ -1164,19 +1543,19 @@ pub fn run_agentic_loop(req: &AgentRunRequest, run_id: &str) -> Result<AgentRunR
     }
 
     // 2. Discovery Agent
-    log_step(&mut steps, "Discovery", "Route Inspection", "Probing target root, detecting SPA vs API, and parsing OpenAPI specs", "running");
-    let (discovered, is_spa) = discover_routes(&req.target, req.spec_url.as_deref());
-    let apis_count = discovered.iter().filter(|r| r.is_api).count();
-    log_step(&mut steps, "Discovery", "Route Inspection", &format!("Discovered {} endpoints (APIs: {}, SPA shell: {})", discovered.len(), apis_count, is_spa), "completed");
+    log_step(&mut steps, "Discovery", "Route Inspection", "Probing target root, detecting architecture (PHP/HTML vs SPA vs API), and parsing OpenAPI specs", "running");
+    let (discovered, tech_profile) = discover_routes(&req.target, req.spec_url.as_deref());
+    let _apis_count = discovered.iter().filter(|r| r.is_api).count();
+    log_step(&mut steps, "Discovery", "Route Inspection", &format!("Detected architecture: {} (Framework: {}, Endpoints: {})", tech_profile.app_architecture, tech_profile.primary_framework, discovered.len()), "completed");
 
     // 3. Planner Agent
-    log_step(&mut steps, "Planner", "Test Synthesis", "Synthesizing boundary, negative, authz, and injection scenarios grounded in discovered routes", "running");
-    let planned_cases = plan_cases(&cfg, &mut budget, &req.target, &req.profile, &discovered, is_spa, req.spec_url.as_deref(), req.custom_instructions.as_deref());
+    log_step(&mut steps, "Planner", "Test Synthesis", &format!("Synthesizing adversarial test scenarios tailored for {}", tech_profile.app_architecture), "running");
+    let planned_cases = plan_cases(&cfg, &mut budget, &req.target, &req.profile, &discovered, &tech_profile, req.spec_url.as_deref(), req.custom_instructions.as_deref());
     log_step(&mut steps, "Planner", "Test Synthesis", &format!("Generated {} high-priority grounded test scenarios", planned_cases.len()), "completed");
 
     // 4. Explorer Agent
     log_step(&mut steps, "Explorer", "Execution & Probing", "Dispatching real HTTP requests with accurate payloads and capturing execution traces", "running");
-    let executed = execute_cases(&planned_cases, &req.target, is_spa);
+    let executed = execute_cases(&planned_cases, &req.target, tech_profile.is_spa);
     let passes = executed.iter().filter(|r| r.status == "PASS").count();
     let fails = executed.iter().filter(|r| r.status == "FAIL").count();
     let skipped = executed.iter().filter(|r| r.status == "SKIPPED").count();
@@ -1215,6 +1594,9 @@ pub fn run_agentic_loop(req: &AgentRunRequest, run_id: &str) -> Result<AgentRunR
         thinking: req.thinking,
         model_tier: req.model_tier.clone(),
         thinking_budget_tokens: req.thinking_budget_tokens,
+        app_architecture: Some(tech_profile.app_architecture),
+        framework: Some(tech_profile.primary_framework),
+        detected_tech: tech_profile.detected_signals,
     };
 
     save_agent_run(&report)?;
@@ -1241,7 +1623,8 @@ mod tests {
             }
         ];
 
-        let cases = plan_cases(&cfg, &mut budget, "http://127.0.0.1:8080", "standard", &discovered, false, None, None);
+        let default_tech = TargetTechProfile::default();
+        let cases = plan_cases(&cfg, &mut budget, "http://127.0.0.1:8080", "standard", &discovered, &default_tech, None, None);
         assert!(!cases.is_empty(), "Cases must not be empty");
 
         let executed = execute_cases(&cases, "http://127.0.0.1:8080", false);

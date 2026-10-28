@@ -31,6 +31,7 @@ interface SideCanvasProps {
   threats: ThreatFinding[];
   evidenceLedger: EvidenceLedger | null;
   isSpa: boolean;
+  appArchitecture?: string;
   target: string;
   onRetestCase: (testCase: TestCaseResult) => Promise<void>;
   runsHistory: any[];
@@ -44,6 +45,7 @@ export function SideCanvas({
   threats,
   evidenceLedger,
   isSpa,
+  appArchitecture,
   target,
   onRetestCase,
   runsHistory,
@@ -387,12 +389,14 @@ export function SideCanvas({
               <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">Target Endpoint Discovery</span>
               <span
                 className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
-                  isSpa
+                  appArchitecture?.includes("PHP")
+                    ? "bg-indigo-950 text-indigo-300 border border-indigo-800"
+                    : isSpa
                     ? "bg-purple-950 text-purple-300 border border-purple-800"
                     : "bg-emerald-950 text-emerald-300 border border-emerald-800"
                 }`}
               >
-                {isSpa ? "SPA Architecture (Next.js/React)" : "Standard Web / API"}
+                {appArchitecture || (isSpa ? "SPA Architecture (Next.js/React)" : "Standard Web / API")}
               </span>
             </div>
             <span className="text-[11px] font-mono text-slate-500">

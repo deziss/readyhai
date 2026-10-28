@@ -12,6 +12,9 @@ export interface DiscoveredRoute {
 export interface DiscoveredTarget {
   target: string;
   is_spa: boolean;
+  app_architecture?: string;
+  framework?: string;
+  detected_tech?: string[];
   count: number;
   routes: DiscoveredRoute[];
 }
@@ -103,6 +106,9 @@ export interface AgentRunData {
   spec_url?: string;
   timestamp: string;
   is_spa: boolean;
+  app_architecture?: string;
+  framework?: string;
+  detected_tech?: string[];
   discovered_routes: DiscoveredRoute[];
   test_cases: TestCaseResult[];
   threats: ThreatFinding[];
@@ -120,6 +126,9 @@ export interface AgentRunFull {
   thinking?: boolean;
   model_tier?: ModelTier | string;
   thinking_budget_tokens?: number;
+  app_architecture?: string;
+  framework?: string;
+  detected_tech?: string[];
   steps: AgentStep[];
   discovered_routes: DiscoveredRoute[];
   planned_cases: PlannedCase[];

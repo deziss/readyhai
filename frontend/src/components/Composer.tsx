@@ -132,12 +132,14 @@ export function Composer({
           {discoveredData && (
             <span
               className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold tracking-tight ${
-                discoveredData.is_spa
+                discoveredData.app_architecture?.includes("PHP")
+                  ? "bg-indigo-950/90 text-indigo-300 border border-indigo-600/80 shadow-[0_0_10px_rgba(99,102,241,0.2)]"
+                  : discoveredData.is_spa
                   ? "bg-purple-950/80 text-purple-300 border border-purple-700/60"
                   : "bg-emerald-950/80 text-emerald-300 border border-emerald-700/60"
               }`}
             >
-              {discoveredData.is_spa ? "SPA DETECTED (Next.js/React)" : "REST API"} ({discoveredData.count} routes)
+              {discoveredData.app_architecture || (discoveredData.is_spa ? "SPA (Next.js/React)" : "REST API")} ({discoveredData.count} routes)
             </span>
           )}
         </div>
