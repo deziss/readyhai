@@ -321,6 +321,9 @@ fn run() -> anyhow::Result<u8> {
                 spec_url: None,
                 custom_instructions: None,
                 dry_run: false,
+                thinking: true,
+                model_tier: "high".to_string(),
+                thinking_budget_tokens: 8192,
             };
             let run_id = engine::new_run_id();
             eprintln!("readyhai agent: starting autonomous loop for {target} (run {run_id})...");

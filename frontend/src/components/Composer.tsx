@@ -1,8 +1,19 @@
 "use client";
 
 import { useState } from "react";
-import { Zap, ShieldAlert, FileCode, Search, Loader2, Sparkles, Play, Globe, Check } from "lucide-react";
-import type { DiscoveredTarget } from "@/types/agent";
+import {
+  Zap,
+  ShieldAlert,
+  FileCode,
+  Search,
+  Loader2,
+  Sparkles,
+  Play,
+  Globe,
+  BrainCircuit,
+  Sliders,
+} from "lucide-react";
+import type { DiscoveredTarget, ModelTier } from "@/types/agent";
 
 interface ComposerProps {
   target: string;
@@ -20,6 +31,12 @@ interface ComposerProps {
   discoveredData: DiscoveredTarget | null;
   onLaunch: () => Promise<void>;
   isRunning: boolean;
+  thinking: boolean;
+  setThinking: (t: boolean) => void;
+  modelTier: ModelTier;
+  setModelTier: (tier: ModelTier) => void;
+  thinkingBudget: number;
+  setThinkingBudget: (b: number) => void;
 }
 
 export function Composer({
@@ -38,6 +55,12 @@ export function Composer({
   discoveredData,
   onLaunch,
   isRunning,
+  thinking,
+  setThinking,
+  modelTier,
+  setModelTier,
+  thinkingBudget,
+  setThinkingBudget,
 }: ComposerProps) {
   const [activeMode, setActiveMode] = useState<"autonomous" | "adversarial" | "contract">("autonomous");
 
@@ -48,33 +71,20 @@ export function Composer({
     } else if (mode === "contract") {
       setDirectives("Focus on OpenAPI contract compliance, boundary values, negative JSON parsing, and HTTP status codes.");
     } else {
-      setDirectives("");
+      setDirectives("Strict QA and verify resilience, contracts, and authz");
     }
   }
 
-  function appendDirective(text: string) {
-    setDirectives(directives ? `${directives}; ${text}` : text);
+  function appendDirective(hint: string) {
+    if (!directives.includes(hint)) {
+      setDirectives(directives ? `${directives}; ${hint}` : hint);
+    }
   }
 
   return (
-    <div className="bg-[#0b101a] border border-[#1a2436] rounded-xl p-4 shadow-xl flex flex-col gap-3.5">
-      {/* Title Bar */}
-      <div className="flex items-center justify-between pb-2 border-b border-[#162033]">
-        <div className="flex items-center gap-2">
-          <div className="w-5 h-5 rounded bg-cyan-950/60 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
-            <Sparkles className="w-3 h-3" />
-          </div>
-          <span className="text-xs font-bold tracking-wider uppercase text-slate-200">
-            Agent Command Composer
-          </span>
-        </div>
-        <span className="text-[10px] font-mono text-cyan-400 bg-cyan-950/60 border border-cyan-800/50 px-2 py-0.5 rounded font-semibold">
-          NuHire Reference Mode
-        </span>
-      </div>
-
-      {/* Segmented Mode Switcher */}
-      <div className="grid grid-cols-3 gap-1 p-1 bg-[#07090e] rounded-lg border border-[#162033]">
+    <div className="bg-[#0b101a] border border-[#1a2436] rounded-xl p-4 shadow-xl flex flex-col gap-4">
+      {/* Mode Selector Header */}
+      <div className="grid grid-cols-3 gap-1 p-1 bg-[#06080e] rounded-lg border border-[#162033]">
         <button
           type="button"
           onClick={() => handleModeChange("autonomous")}
@@ -133,6 +143,7 @@ export function Composer({
         </div>
         <div className="flex gap-2">
           <input
+            id="composer-target-url"
             type="text"
             value={target}
             onChange={(e) => setTarget(e.target.value)}
@@ -140,6 +151,7 @@ export function Composer({
             className="flex-1 bg-[#07090e] border border-[#1e2a40] rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors"
           />
           <button
+            id="composer-btn-discover"
             type="button"
             onClick={onDiscover}
             disabled={isDiscovering || isRunning}
@@ -194,7 +206,7 @@ export function Composer({
           Agent Directives & Focus
         </label>
         <textarea
-          rows={3}
+          rows={2}
           value={directives}
           onChange={(e) => setDirectives(e.target.value)}
           placeholder="e.g. Focus on unauthenticated session access, IDOR tenant boundaries, and prompt injection canaries"
@@ -225,11 +237,142 @@ export function Composer({
         </div>
       </div>
 
+      {/* NEW: Agent Thinking & Intelligence Tier Section */}
+      <div className="p-3 bg-[#080d19] rounded-xl border border-[#1a263d] space-y-3 shadow-inner">
+        {/* Thinking Toggle */}
+        <div className="flex items-center justify-between pb-2 border-b border-[#141f33]">
+          <div className="flex items-center gap-2">
+            <div
+              className={`p-1.5 rounded-lg border transition-colors ${
+                thinking
+                  ? "bg-cyan-950/80 border-cyan-500/50 text-cyan-400 shadow-[0_0_8px_rgba(6,182,212,0.3)]"
+                  : "bg-slate-900 border-slate-700 text-slate-500"
+              }`}
+            >
+              <BrainCircuit className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-white tracking-wide">Extended Thinking (CoT)</span>
+                <span
+                  className={`text-[9px] font-mono px-1.5 py-0.2 rounded font-bold uppercase ${
+                    thinking
+                      ? "bg-cyan-900/60 text-cyan-300 border border-cyan-600/50 shadow-[0_0_8px_rgba(6,182,212,0.2)]"
+                      : "bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  {thinking ? "ACTIVE" : "DISABLED"}
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-400 font-sans leading-tight mt-0.5">
+                Autonomous multi-pass reasoning before test synthesis and triage
+              </p>
+            </div>
+          </div>
+
+          <label className="relative inline-flex items-center cursor-pointer">
+            <input
+              id="toggle-thinking"
+              type="checkbox"
+              checked={thinking}
+              onChange={(e) => setThinking(e.target.checked)}
+              className="sr-only peer"
+            />
+            <div className="w-9 h-5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-cyan-600"></div>
+          </label>
+        </div>
+
+        {/* Model Intelligence Tier Buttons (low, medium, high, max, max_pro) */}
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-[11px] font-mono">
+            <span className="text-slate-400 font-semibold uppercase flex items-center gap-1.5">
+              <Sliders className="w-3 h-3 text-cyan-400" />
+              <span>Agent Model Tier</span>
+            </span>
+            <span className="text-cyan-300 font-bold uppercase tracking-wider">
+              {modelTier.replace("_", " ")}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-5 gap-1.5 text-xs font-mono">
+            {[
+              { id: "low", label: "Low", tokens: "1k", desc: "Fast probe & basic reconnaissance" },
+              { id: "medium", label: "Medium", tokens: "4k", desc: "Standard QA & contract fidelity" },
+              { id: "high", label: "High", tokens: "8k", desc: "Deep OWASP & boundary analysis (Recommended)" },
+              { id: "max", label: "Max", tokens: "16k", desc: "Exhaustive mutation & state invariants" },
+              { id: "max_pro", label: "Max Pro", tokens: "32k", desc: "Frontier swarm & adversarial canaries" },
+            ].map((t) => {
+              const isSelected = modelTier === t.id;
+              return (
+                <button
+                  key={t.id}
+                  id={`tier-btn-${t.id}`}
+                  type="button"
+                  onClick={() => {
+                    setModelTier(t.id as ModelTier);
+                    if (t.id === "low") setThinkingBudget(1024);
+                    else if (t.id === "medium") setThinkingBudget(4096);
+                    else if (t.id === "high") setThinkingBudget(8192);
+                    else if (t.id === "max") setThinkingBudget(16384);
+                    else if (t.id === "max_pro") setThinkingBudget(32768);
+                  }}
+                  className={`p-1.5 rounded-lg border text-center transition-all cursor-pointer flex flex-col items-center justify-between gap-1 ${
+                    isSelected
+                      ? "bg-gradient-to-b from-cyan-950 to-[#12223c] border-cyan-500/80 text-cyan-200 shadow-[0_0_10px_rgba(6,182,212,0.25)] ring-1 ring-cyan-500/40"
+                      : "bg-[#0b1220] border-[#18253b] text-slate-400 hover:text-slate-200 hover:border-slate-700"
+                  }`}
+                  title={t.desc}
+                >
+                  <span className="font-bold text-[11px] leading-tight">{t.label}</span>
+                  <span
+                    className={`text-[9px] px-1 py-0.2 rounded font-mono ${
+                      isSelected
+                        ? "bg-cyan-900/60 text-cyan-300 border border-cyan-700/50"
+                        : "bg-slate-800 text-slate-500"
+                    }`}
+                  >
+                    {t.tokens}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Thinking Budget Slider when Thinking is Enabled */}
+        {thinking && (
+          <div className="pt-1 space-y-1">
+            <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
+              <span className="flex items-center gap-1.5">
+                <Sparkles className="w-3 h-3 text-cyan-400" />
+                <span>Reasoning Budget Tokens:</span>
+              </span>
+              <span className="text-cyan-300 font-bold">{thinkingBudget.toLocaleString()} tokens</span>
+            </div>
+            <input
+              type="range"
+              min={1024}
+              max={32768}
+              step={1024}
+              value={thinkingBudget}
+              onChange={(e) => setThinkingBudget(Number(e.target.value))}
+              className="w-full accent-cyan-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
+            />
+            <div className="flex justify-between text-[9px] font-mono text-slate-500">
+              <span>1k (Fast)</span>
+              <span>8k (High / Default)</span>
+              <span>32k (Frontier Max Pro)</span>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Profile & Max Steps */}
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1">
-          <label className="text-[11px] font-mono uppercase font-bold text-slate-400">Profile</label>
+          <label className="text-[11px] font-mono uppercase font-bold text-slate-400">Execution Profile</label>
           <select
+            id="composer-select-profile"
             value={profile}
             onChange={(e) => setProfile(e.target.value)}
             className="bg-[#07090e] border border-[#1e2a40] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 cursor-pointer"
@@ -242,6 +385,7 @@ export function Composer({
         <div className="flex flex-col gap-1">
           <label className="text-[11px] font-mono uppercase font-bold text-slate-400">Max Steps</label>
           <input
+            id="composer-max-steps"
             type="number"
             min={1}
             max={20}
@@ -254,6 +398,7 @@ export function Composer({
 
       {/* Launch Action */}
       <button
+        id="btn-launch-swarm"
         type="button"
         onClick={onLaunch}
         disabled={isRunning}
@@ -262,12 +407,12 @@ export function Composer({
         {isRunning ? (
           <>
             <Loader2 className="w-4 h-4 animate-spin" />
-            Synthesizing & Executing Scenarios...
+            Synthesizing & Executing Scenarios ({modelTier.toUpperCase()})...
           </>
         ) : (
           <>
             <Play className="w-3.5 h-3.5 fill-white" />
-            Launch Multi-Agent Swarm
+            Launch Multi-Agent Swarm ({modelTier.toUpperCase()})
           </>
         )}
       </button>
