@@ -6,3 +6,5 @@ target/
 *.key
 tests/fixtures/vuln-app/.env
 readyhai-report*
+frontend/node_modules
+frontend/.next

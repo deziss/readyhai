@@ -9,6 +9,8 @@ COPY src ./src
 COPY templates ./templates
 COPY tools.lock.toml ./
 COPY policies ./policies
+COPY data ./data
+COPY probe ./probe
 RUN touch src/main.rs && cargo build --release --locked
 
 FROM debian:bookworm-slim
