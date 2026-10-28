@@ -109,6 +109,7 @@ pub fn serve(bind: &str) -> Result<()> {
             .route("/api/scans/{id}/report/{fmt}", get(api_scan_report))
             .route("/api/network/regress", post(network_regress))
             .route("/api/network/curl", post(network_curl))
+            .route("/api/network/deep-audit", post(network_deep_audit))
             .route("/health", get(|| async { Json(json!({"status": "ok", "version": engine::VERSION})) }))
             .route("/checks", get(list_checks))
             .route("/runs", post(create_run).get(list_runs))
@@ -642,6 +643,20 @@ async fn network_curl(Json(req): Json<crate::network::CurlTestRequest>) -> Respo
 
     match res {
         Ok(resp) => Json(resp).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn network_deep_audit(Json(req): Json<crate::network::DeepAuditRequest>) -> Response {
+    if req.target.contains("agent-prod.nuhire.in") {
+        return err(StatusCode::FORBIDDEN, "target forbidden");
+    }
+    let res = tokio::task::spawn_blocking(move || {
+        crate::network::run_deep_audit(&req)
+    }).await;
+
+    match res {
+        Ok(report) => Json(report).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
     }
 }

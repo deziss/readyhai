@@ -15,7 +15,7 @@ RUN touch src/main.rs && cargo build --release --locked
 
 FROM debian:bookworm-slim
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git openssh-client \
+ && apt-get install -y --no-install-recommends ca-certificates git openssh-client curl \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=builder /app/target/release/readyhai /usr/local/bin/readyhai
