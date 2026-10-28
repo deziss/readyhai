@@ -104,6 +104,7 @@ pub fn serve(bind: &str) -> Result<()> {
             .route("/api/agent/runs/{id}", get(agent_run_get).delete(agent_run_delete))
             .route("/api/agent/runs/{id}/approve", post(agent_approve))
             .route("/api/agent/runs/{id}/reject", post(agent_reject))
+            .route("/api/agent/runs/{id}/report/{fmt}", get(agent_run_report))
             .route("/api/agent/retest", post(agent_retest))
             .route("/api/scans", get(api_scans_list))
             .route("/api/scans/{id}", get(api_scan_get).delete(api_scan_delete))
@@ -214,6 +215,46 @@ async fn agent_run_get(Path(id): Path<String>) -> Response {
     match crate::agent::load_agent_run(&id) {
         Ok(rep) => Json(rep).into_response(),
         Err(_) => err(StatusCode::NOT_FOUND, "agent run not found"),
+    }
+}
+
+async fn agent_run_report(Path((id, fmt)): Path<(String, String)>) -> Response {
+    if !engine::valid_run_id(&id) {
+        return err(StatusCode::BAD_REQUEST, "bad run id");
+    }
+    let (file, ctype) = match fmt.as_str() {
+        "html" => ("readyhai-report.html", "text/html; charset=utf-8"),
+        "json" => ("readyhai-report.json", "application/json"),
+        "markdown" | "md" => ("readyhai-report.md", "text/markdown; charset=utf-8"),
+        "sarif" => ("readyhai-report.sarif", "application/sarif+json"),
+        "junit" | "xml" => ("readyhai-report.junit.xml", "application/xml"),
+        _ => return err(StatusCode::BAD_REQUEST, "format: html|json|markdown|sarif|junit"),
+    };
+    let rep_dir = crate::agent::agent_runs_dir().join(&id).join("report");
+    let rep_file = rep_dir.join(file);
+    if !rep_file.exists() {
+        if let Ok(rep) = crate::agent::load_agent_run(&id) {
+            let _ = crate::agent::generate_agent_report_formats(&rep, &rep_dir, &[
+                "html".into(), "markdown".into(), "sarif".into(), "json".into(), "junit".into()
+            ]);
+        }
+    }
+    match std::fs::read(&rep_file) {
+        Ok(b) => {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, ctype.parse().unwrap());
+            if fmt == "html" {
+                headers.insert(header::CONTENT_SECURITY_POLICY, "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'unsafe-inline'".parse().unwrap());
+            } else {
+                let ext = if fmt == "junit" || fmt == "xml" { "xml" } else if fmt == "markdown" || fmt == "md" { "md" } else { &fmt };
+                headers.insert(
+                    header::CONTENT_DISPOSITION,
+                    format!("attachment; filename=\"readyhai-agent-report-{id}.{ext}\"").parse().unwrap(),
+                );
+            }
+            (StatusCode::OK, headers, b).into_response()
+        }
+        Err(_) => err(StatusCode::NOT_FOUND, "report not found"),
     }
 }
 
