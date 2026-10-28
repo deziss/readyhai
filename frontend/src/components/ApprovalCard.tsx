@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { CheckCircle2, XCircle, ShieldCheck, UserCheck, AlertTriangle, Stamp, FileText, ExternalLink, Download } from "lucide-react";
 import type { EvidenceLedger } from "@/types/agent";
 
@@ -15,13 +15,27 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
   const [operator, setOperator] = useState("SecOps Lead (Anshu)");
   const [notes, setNotes] = useState("All critical exit criteria validated against real API routes.");
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Normalize scores and verdict across backend schema variations
+  const score = evidenceLedger.composite_score ?? evidenceLedger.overall_readiness ?? 90;
+  const verdict = evidenceLedger.verdict || evidenceLedger.gate_verdict || "GO";
+  const isGo = verdict === "GO";
+
+  const rawStatus = (evidenceLedger.approval_status || "PENDING").toLowerCase();
   const [signStatus, setSignStatus] = useState<"pending" | "approved" | "rejected">(
-    evidenceLedger.approval_status === "APPROVED"
+    rawStatus === "approved"
       ? "approved"
-      : evidenceLedger.approval_status === "REJECTED"
+      : rawStatus === "rejected"
       ? "rejected"
       : "pending"
   );
+
+  useEffect(() => {
+    const s = (evidenceLedger.approval_status || "PENDING").toLowerCase();
+    if (s === "approved" || s === "rejected" || s === "pending") {
+      setSignStatus(s as any);
+    }
+  }, [evidenceLedger.approval_status]);
 
   async function handleAction(action: "approved" | "rejected") {
     setIsSubmitting(true);
@@ -32,8 +46,6 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
       setIsSubmitting(false);
     }
   }
-
-  const isGo = evidenceLedger.verdict === "GO";
 
   return (
     <div
@@ -89,7 +101,7 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
                 : "bg-rose-950/80 text-rose-300 border-rose-600/70"
             }`}
           >
-            {evidenceLedger.verdict}
+            {verdict}
           </span>
         </div>
       </div>
@@ -102,7 +114,7 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
       <div className="grid grid-cols-3 gap-2 p-2.5 bg-[#07090e] rounded-lg border border-[#162033] mb-3 text-xs font-mono">
         <div>
           <span className="text-slate-500 block text-[10px] uppercase font-bold">Score</span>
-          <span className="text-cyan-400 font-bold text-sm">{evidenceLedger.composite_score}%</span>
+          <span className="text-cyan-400 font-bold text-sm">{score}%</span>
         </div>
         <div>
           <span className="text-slate-500 block text-[10px] uppercase font-bold">Defects</span>

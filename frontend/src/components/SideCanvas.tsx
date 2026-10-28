@@ -543,7 +543,7 @@ export function SideCanvas({
               4-Pillar Quality & Security Evidence Ledger
             </span>
             <span className="text-xs font-mono font-bold text-cyan-400">
-              Composite Score: {evidenceLedger?.composite_score || 95}%
+              Composite Score: {evidenceLedger?.composite_score ?? evidenceLedger?.overall_readiness ?? 95}%
             </span>
           </div>
 
@@ -552,7 +552,7 @@ export function SideCanvas({
               {
                 title: "1. API Contract & Schema Compliance",
                 weight: "25% Weight",
-                score: evidenceLedger?.contract?.score || 96,
+                score: evidenceLedger?.contract?.score ?? evidenceLedger?.value_score ?? 96,
                 evidence:
                   evidenceLedger?.contract?.evidence ||
                   "Verified route contracts, parameter schemas, and negative JSON boundary handling.",
@@ -560,7 +560,7 @@ export function SideCanvas({
               {
                 title: "2. Authorization & Tenant Isolation",
                 weight: "35% Weight",
-                score: evidenceLedger?.authz?.score || 92,
+                score: evidenceLedger?.authz?.score ?? evidenceLedger?.authority_score ?? 92,
                 evidence:
                   evidenceLedger?.authz?.evidence ||
                   "Verified protected routes return 401/403 when unauthenticated. Zero cross-tenant IDOR leakage detected.",
@@ -568,7 +568,7 @@ export function SideCanvas({
               {
                 title: "3. Input Fuzzing & Boundary Resilience",
                 weight: "20% Weight",
-                score: evidenceLedger?.resilience?.score || 98,
+                score: evidenceLedger?.resilience?.score ?? evidenceLedger?.safety_score ?? 98,
                 evidence:
                   evidenceLedger?.resilience?.evidence ||
                   "Tested 100KB boundary limits and malformed webhook payloads. Graceful degradation verified.",
@@ -576,7 +576,7 @@ export function SideCanvas({
               {
                 title: "4. Observability & Leak Detection",
                 weight: "20% Weight",
-                score: evidenceLedger?.observability?.score || 100,
+                score: evidenceLedger?.observability?.score ?? evidenceLedger?.evidence_score ?? 100,
                 evidence:
                   evidenceLedger?.observability?.evidence ||
                   "Verified response headers redact secrets, stack traces, and internal cloud infrastructure metadata.",

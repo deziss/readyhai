@@ -530,6 +530,17 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap">
+                  {onLoadRunInStudio && (
+                    <button
+                      onClick={() => onLoadRunInStudio(selectedRun)}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-600/70 text-emerald-300 font-mono text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shadow-[0_0_10px_rgba(16,185,129,0.2)]"
+                      title="Load this run into Agent Studio"
+                    >
+                      <Terminal className="w-3.5 h-3.5 text-emerald-400" />
+                      Open in Studio
+                    </button>
+                  )}
+
                   {/* View HTML Report in Embedded Modal */}
                   <button
                     onClick={() => setShowReportModal(true)}
@@ -843,7 +854,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
                         </span>
                       </div>
                       <div className="text-2xl font-bold font-mono text-cyan-300">
-                        {selectedRun.evidence_ledger?.contract?.score ?? 92}/100
+                        {selectedRun.evidence_ledger?.contract?.score ?? selectedRun.evidence_ledger?.value_score ?? 92}/100
                       </div>
                       <p className="text-xs font-mono text-slate-400">
                         {selectedRun.evidence_ledger?.contract?.evidence || "OpenAPI contract matches deployed schema. No breaking changes detected."}
@@ -859,7 +870,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
                         </span>
                       </div>
                       <div className="text-2xl font-bold font-mono text-cyan-300">
-                        {selectedRun.evidence_ledger?.authz?.score ?? 88}/100
+                        {selectedRun.evidence_ledger?.authz?.score ?? selectedRun.evidence_ledger?.authority_score ?? 88}/100
                       </div>
                       <p className="text-xs font-mono text-slate-400">
                         {selectedRun.evidence_ledger?.authz?.evidence || "Role-based privilege boundaries verified. Tampered bearer tokens correctly rejected."}
@@ -875,7 +886,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
                         </span>
                       </div>
                       <div className="text-2xl font-bold font-mono text-cyan-300">
-                        {selectedRun.evidence_ledger?.resilience?.score ?? 84}/100
+                        {selectedRun.evidence_ledger?.resilience?.score ?? selectedRun.evidence_ledger?.safety_score ?? 84}/100
                       </div>
                       <p className="text-xs font-mono text-slate-400">
                         {selectedRun.evidence_ledger?.resilience?.evidence || "Graceful 400 Bad Request returned on malformed input without process crash."}
@@ -891,7 +902,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
                         </span>
                       </div>
                       <div className="text-2xl font-bold font-mono text-cyan-300">
-                        {selectedRun.evidence_ledger?.observability?.score ?? 90}/100
+                        {selectedRun.evidence_ledger?.observability?.score ?? selectedRun.evidence_ledger?.evidence_score ?? 90}/100
                       </div>
                       <p className="text-xs font-mono text-slate-400">
                         {selectedRun.evidence_ledger?.observability?.evidence || "Request tracing propagation present. No secrets or stack traces exposed in error bodies."}

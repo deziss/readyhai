@@ -166,6 +166,10 @@ pub struct EvidenceLedger {
     pub gate_verdict: String,   // GO | NO_GO | CONDITIONAL_GO
     pub executive_summary: String,
     pub exit_criteria_checklist: Vec<ExitCheckItem>,
+    #[serde(default)]
+    pub composite_score: Option<u32>,
+    #[serde(default)]
+    pub verdict: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -347,9 +351,13 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
     }).collect();
 
     let is_pass = matches!(r.verdict, crate::model::Verdict::Pass);
+    let v_str: String = if is_pass { "GO".into() } else { "NO_GO".into() };
+    let score_val = if is_pass { 95 } else { 45 };
     let ledger = EvidenceLedger {
-        gate_verdict: if is_pass { "GO".into() } else { "NO_GO".into() },
-        overall_readiness: if is_pass { 95 } else { 45 },
+        gate_verdict: v_str.clone(),
+        overall_readiness: score_val,
+        composite_score: Some(score_val),
+        verdict: Some(v_str),
         value_score: 90,
         authority_score: 90,
         safety_score: if is_pass { 95 } else { 40 },
@@ -418,7 +426,15 @@ pub fn list_agent_full_runs() -> Vec<AgentRunReport> {
                     text = text.replace("http://10.10.110.42:13320/v1", "[internal-ai-endpoint]");
                     text = text.replace("10.10.110.42", "[redacted]");
                 }
-                if let Ok(r) = serde_json::from_str::<AgentRunReport>(&text) {
+                if let Ok(mut r) = serde_json::from_str::<AgentRunReport>(&text) {
+                    if let Some(ref mut el) = r.evidence_ledger {
+                        if el.composite_score.is_none() {
+                            el.composite_score = Some(el.overall_readiness);
+                        }
+                        if el.verdict.is_none() {
+                            el.verdict = Some(el.gate_verdict.clone());
+                        }
+                    }
                     seen_ids.insert(r.id.clone());
                     out.push(r);
                 }
@@ -460,7 +476,15 @@ pub fn load_agent_run(id: &str) -> Result<AgentRunReport> {
     let path = agent_runs_dir().join(id).join("report.json");
     if path.exists() {
         let content = std::fs::read_to_string(path)?;
-        let rep: AgentRunReport = serde_json::from_str(&content)?;
+        let mut rep: AgentRunReport = serde_json::from_str(&content)?;
+        if let Some(ref mut el) = rep.evidence_ledger {
+            if el.composite_score.is_none() {
+                el.composite_score = Some(el.overall_readiness);
+            }
+            if el.verdict.is_none() {
+                el.verdict = Some(el.gate_verdict.clone());
+            }
+        }
         return Ok(rep);
     }
 
@@ -533,6 +557,8 @@ pub fn run_discovery_scan(target: &str, spec_url: Option<&str>) -> Result<AgentR
     let ledger = EvidenceLedger {
         gate_verdict: "SCANNED".to_string(),
         overall_readiness: 100,
+        composite_score: Some(100),
+        verdict: Some("SCANNED".to_string()),
         value_score: 100,
         authority_score: 100,
         safety_score: 100,
@@ -1564,6 +1590,8 @@ fn evaluate_readiness(
                 } else {
                     checklist
                 },
+                composite_score: Some(over as u32),
+                verdict: Some(verd.to_string()),
             };
         }
     }
@@ -1585,6 +1613,8 @@ fn evaluate_readiness(
         evidence_score: computed_evi,
         overall_readiness: computed_overall,
         gate_verdict: computed_verdict.into(),
+        composite_score: Some(computed_overall),
+        verdict: Some(computed_verdict.into()),
         executive_summary: format!(
             "Evidence Ledger computed overall readiness score of {}%. Total test cases: {}, passes: {}, defect clusters: {}. Verdict: {}.",
             computed_overall, total, passes, defects.len(), computed_verdict
