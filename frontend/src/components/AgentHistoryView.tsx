@@ -40,9 +40,10 @@ import type {
 interface AgentHistoryViewProps {
   onLoadRunInStudio?: (run: any) => void;
   onRetestCase?: (testCase: TestCaseResult) => Promise<void>;
+  onBackToStudio?: () => void;
 }
 
-export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHistoryViewProps) {
+export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStudio }: AgentHistoryViewProps) {
   const [runs, setRuns] = useState<AgentRunFull[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<AgentRunFull | null>(null);
@@ -288,14 +289,25 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase }: AgentHisto
             {runs.length} Swarms Executed
           </span>
         </div>
-        <button
-          onClick={fetchRuns}
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#10192a] hover:bg-[#16233b] border border-[#1e2d48] text-slate-300 transition-colors cursor-pointer"
-          title="Refresh agent runs"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin text-cyan-400" : ""}`} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          {onBackToStudio && (
+            <button
+              onClick={onBackToStudio}
+              className="flex items-center gap-1.5 px-3 py-1 rounded-lg bg-[#0d1527] hover:bg-[#121f38] border border-cyan-800/50 text-cyan-300 transition-colors cursor-pointer font-mono text-xs"
+              title="Return to Agent Studio"
+            >
+              <span>← Back to Studio</span>
+            </button>
+          )}
+          <button
+            onClick={fetchRuns}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#10192a] hover:bg-[#16233b] border border-[#1e2d48] text-slate-300 transition-colors cursor-pointer text-xs font-mono"
+            title="Refresh agent runs"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? "animate-spin text-cyan-400" : ""}`} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Master-Detail Split Container */}

@@ -80,23 +80,7 @@ export function Header({
           <span>Agent Studio</span>
         </button>
 
-        <button
-          id="nav-tab-agent-history"
-          onClick={() => onViewChange("agent_history")}
-          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-mono font-medium transition-all cursor-pointer ${
-            activeView === "agent_history"
-              ? "bg-gradient-to-r from-cyan-950/90 to-[#12233f] text-cyan-300 border border-cyan-600/60 shadow-[0_0_10px_rgba(6,182,212,0.2)] font-semibold"
-              : "text-slate-400 hover:text-slate-200 hover:bg-[#111b2e]"
-          }`}
-        >
-          <Bot className="w-3.5 h-3.5 text-cyan-400" />
-          <span>QA Agent Reports</span>
-          {agentRunsCount > 0 && (
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-cyan-900/60 text-cyan-200 border border-cyan-700/40">
-              {agentRunsCount}
-            </span>
-          )}
-        </button>
+
 
         <button
           id="nav-tab-scans-history"
