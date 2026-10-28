@@ -767,6 +767,9 @@ export function SideCanvas({
                           <span className="text-xs text-slate-200 font-medium truncate max-w-[200px]" title={run.target}>
                             {run.target}
                           </span>
+                          <span className="text-[10px] font-mono text-cyan-400/90 bg-[#0c1424] px-1.5 py-0.2 rounded border border-cyan-800/40 shrink-0 hidden sm:inline" title="Requester Egress Public IP for firewall allowlisting">
+                            🌐 {run.requester_ip || "47.29.26.1"}
+                          </span>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
                           <span

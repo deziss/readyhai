@@ -109,6 +109,8 @@ pub fn serve(bind: &str) -> Result<()> {
             .route("/api/scans", get(api_scans_list))
             .route("/api/scans/{id}", get(api_scan_get).delete(api_scan_delete))
             .route("/api/scans/{id}/report/{fmt}", get(api_scan_report))
+            .route("/api/agent/requester-ip", get(get_requester_ip))
+            .route("/api/network/requester-ip", get(get_requester_ip))
             .route("/api/network/regress", post(network_regress))
             .route("/api/network/curl", post(network_curl))
             .route("/api/network/deep-audit", post(network_deep_audit))
@@ -713,6 +715,25 @@ struct RetestPayload {
     is_spa: bool,
     #[serde(default)]
     run_id: Option<String>,
+}
+
+async fn get_requester_ip(headers: axum::http::HeaderMap) -> Response {
+    let info = crate::network::detect_requester_public_ip();
+    let client_ip = headers.get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()).map(|s| s.to_string()))
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+
+    (StatusCode::OK, Json(json!({
+        "egress_public_ip": info.egress_public_ip,
+        "ip_type": info.ip_type,
+        "is_private": info.is_private,
+        "allowlist_guidance": info.allowlist_guidance,
+        "detected_via": info.detected_via,
+        "detected_at": info.detected_at,
+        "client_inbound_ip": client_ip,
+    }))).into_response()
 }
 
 async fn agent_retest(Json(body): Json<RetestPayload>) -> Response {

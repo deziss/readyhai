@@ -18,6 +18,119 @@ use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::process::Command;
 use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+
+static REQUESTER_IP_CACHE: OnceLock<RequesterIpInfo> = OnceLock::new();
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequesterIpInfo {
+    pub egress_public_ip: String,
+    pub ip_type: String, // 'Public Egress (Direct)' | 'Private Intranet (RFC1918)'
+    pub is_private: bool,
+    pub allowlist_guidance: String,
+    pub detected_via: String,
+    pub detected_at: String,
+}
+
+pub fn detect_requester_public_ip() -> RequesterIpInfo {
+    if let Some(cached) = REQUESTER_IP_CACHE.get() {
+        return cached.clone();
+    }
+    let detected = resolve_public_ip();
+    let _ = REQUESTER_IP_CACHE.set(detected.clone());
+    detected
+}
+
+fn resolve_public_ip() -> RequesterIpInfo {
+    let now = crate::engine::now();
+
+    // 1. User manual override via ENV
+    if let Ok(env_ip) = std::env::var("READYHAI_PUBLIC_IP").or_else(|_| std::env::var("READYHAI_EGRESS_IP")) {
+        let trimmed = env_ip.trim();
+        if !trimmed.is_empty() {
+            let is_priv = is_private_ip(trimmed);
+            return RequesterIpInfo {
+                egress_public_ip: trimmed.to_string(),
+                ip_type: if is_priv { "Private Intranet (Manual)" } else { "Public Egress (Manual)" }.to_string(),
+                is_private: is_priv,
+                allowlist_guidance: format!("Add `{}/32` to target firewall allowlist, AWS Security Group, Cloudflare WAF, or iptables.", trimmed),
+                detected_via: "Environment Variable (READYHAI_PUBLIC_IP)".to_string(),
+                detected_at: now,
+            };
+        }
+    }
+
+    // 2. Query external IP check providers with short timeout
+    let providers = [
+        ("api.ipify.org", "https://api.ipify.org"),
+        ("checkip.amazonaws.com", "https://checkip.amazonaws.com"),
+        ("icanhazip.com", "https://icanhazip.com"),
+        ("ifconfig.me", "https://ifconfig.me/ip"),
+    ];
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(2200))
+        .build()
+        .ok();
+
+    if let Some(c) = client {
+        for (name, url) in providers {
+            if let Ok(resp) = c.get(url).send() {
+                if resp.status().is_success() {
+                    if let Ok(text) = resp.text() {
+                        let ip = text.trim();
+                        if (ip.contains('.') || ip.contains(':')) && ip.len() >= 7 && ip.len() <= 45 && !ip.contains('<') {
+                            let is_priv = is_private_ip(ip);
+                            return RequesterIpInfo {
+                                egress_public_ip: ip.to_string(),
+                                ip_type: if is_priv { "Private Network (RFC1918)" } else { "Public Egress (Direct)" }.to_string(),
+                                is_private: is_priv,
+                                allowlist_guidance: format!("Add `{}/32` to your target's firewall, AWS Security Group, Cloudflare WAF, or iptables to allow ReadyHai automated QA probes.", ip),
+                                detected_via: name.to_string(),
+                                detected_at: now,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Fallback: Local outbound socket address for intranet / airgapped environments
+    let local_ip = std::net::UdpSocket::bind("0.0.0.0:0")
+        .ok()
+        .and_then(|s| {
+            s.connect("8.8.8.8:80").ok()?;
+            s.local_addr().ok().map(|a| a.ip().to_string())
+        })
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+
+    let is_priv = is_private_ip(&local_ip);
+    RequesterIpInfo {
+        egress_public_ip: local_ip.clone(),
+        ip_type: if is_priv { "Private Intranet (RFC1918)" } else { "Local Egress" }.to_string(),
+        is_private: is_priv,
+        allowlist_guidance: format!("Add `{}/32` to your local firewall or internal gateway allowlist.", local_ip),
+        detected_via: "Local Network Interface Socket".to_string(),
+        detected_at: now,
+    }
+}
+
+pub fn is_private_ip(ip: &str) -> bool {
+    if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
+        match addr {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_private() || v4.is_link_local()
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+            }
+        }
+    } else {
+        ip.starts_with("10.") || ip.starts_with("192.168.") || ip.starts_with("172.") || ip.starts_with("127.")
+    }
+}
+
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegressRequest {
@@ -96,6 +209,10 @@ pub struct RegressReport {
     pub status_distribution: HashMap<String, usize>,
     pub diagnosis: AgentDiagnosis,
     pub iterations: Vec<IterationResult>,
+    #[serde(default)]
+    pub requester_ip: Option<String>,
+    #[serde(default)]
+    pub allowlist_recommendation: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -151,6 +268,10 @@ pub struct DeepAuditReport {
     pub cors_preflight: CorsAudit,
     pub mtu_sweep: MtuSweepAudit,
     pub remediation_checklist: Vec<String>,
+    #[serde(default)]
+    pub requester_ip: Option<String>,
+    #[serde(default)]
+    pub allowlist_recommendation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -485,6 +606,7 @@ pub fn run_regress_test(req: &RegressRequest) -> RegressReport {
 
     let diagnosis = diagnose(&results, availability_percentage, p50_latency_ms, p99_latency_ms, jitter_ms, req.timeout_ms);
 
+    let ip_info = detect_requester_public_ip();
     RegressReport {
         target: req.target.clone(),
         total_iterations: iterations,
@@ -501,6 +623,8 @@ pub fn run_regress_test(req: &RegressRequest) -> RegressReport {
         status_distribution: status_counts,
         diagnosis,
         iterations: results,
+        requester_ip: Some(ip_info.egress_public_ip.clone()),
+        allowlist_recommendation: Some(ip_info.allowlist_guidance.clone()),
     }
 }
 
@@ -559,6 +683,7 @@ pub fn diagnose(
                     "Increase proxy connect timeout (e.g., `proxy_connect_timeout 10s;` in Nginx).".to_string(),
                     "Implement container keep-warm pings or configure minimum healthy instances to prevent cold shutdowns.".to_string(),
                     "Check server backlog capacity: `sysctl net.core.somaxconn` and socket TIME_WAIT limits.".to_string(),
+                    format!("Private Network Allowlist: Ensure ReadyHai requester public IP `{}` is allowlisted in target firewall/VPC security groups.", detect_requester_public_ip().egress_public_ip),
                 ],
             };
         }
@@ -880,6 +1005,7 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> DeepAuditReport {
         format!("Detected {} network vulnerability/flakiness vector(s). Overall Network Health Score: {}/100.", risks.len(), final_score)
     };
 
+    let ip_info = detect_requester_public_ip();
     DeepAuditReport {
         target: req.target.clone(),
         timestamp,
@@ -894,6 +1020,8 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> DeepAuditReport {
         cors_preflight,
         mtu_sweep,
         remediation_checklist: remedies,
+        requester_ip: Some(ip_info.egress_public_ip.clone()),
+        allowlist_recommendation: Some(ip_info.allowlist_guidance.clone()),
     }
 }
 
@@ -1850,6 +1978,8 @@ mod tests {
                 reproduction_curl: "curl".into(),
                 remediation_checklist: vec![],
             },
+            requester_ip: Some("127.0.0.1".into()),
+            allowlist_recommendation: Some("Add 127.0.0.1/32 to allowlist".into()),
         };
         let har = generate_har_from_regress(&rep);
         assert_eq!(har["log"]["version"], "1.2");

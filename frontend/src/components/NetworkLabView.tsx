@@ -453,11 +453,25 @@ export function NetworkLabView({
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-[#0d1527] border border-[#1d2b45] text-xs font-mono">
             <Globe className="w-3.5 h-3.5 text-cyan-400" />
             <span className="text-slate-400 font-normal">Active URL:</span>
             <span className="text-cyan-300 font-semibold">{target}</span>
+          </div>
+
+          {/* Requester Egress IP Clearance */}
+          <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#0d1527] border border-[#1d2b45] text-xs font-mono" title="Requester public egress IP. Add this IP to target firewall/AWS security group allowlists for private network testing.">
+            <span className="text-slate-400 font-normal">Requester IP:</span>
+            <span className="text-cyan-300 font-bold">{regressReport?.requester_ip || deepAuditReport?.requester_ip || "47.29.26.1"}</span>
+            <button
+              type="button"
+              onClick={() => copyToClipboard(regressReport?.requester_ip || deepAuditReport?.requester_ip || "47.29.26.1", "probe-ip")}
+              className="text-slate-400 hover:text-cyan-300 ml-1 p-0.5 cursor-pointer transition-colors"
+              title="Copy IP for firewall allowlist"
+            >
+              {copiedText === "probe-ip" ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+            </button>
           </div>
 
           {/* Export HAR Button */}

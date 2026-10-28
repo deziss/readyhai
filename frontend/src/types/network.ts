@@ -55,6 +55,8 @@ export interface RegressReport {
   status_distribution: Record<string, number>;
   diagnosis: AgentDiagnosis;
   iterations: IterationResult[];
+  requester_ip?: string;
+  allowlist_recommendation?: string;
 }
 
 export interface CurlTestRequest {
@@ -190,6 +192,8 @@ export interface DeepAuditReport {
   cors_preflight: CorsAudit;
   mtu_sweep: MtuSweepAudit;
   remediation_checklist: string[];
+  requester_ip?: string;
+  allowlist_recommendation?: string;
 }
 
 export interface MultiRegionRequest {
