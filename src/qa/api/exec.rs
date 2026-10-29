@@ -6,10 +6,15 @@ use crate::qa::roles::{AuthKind, Role};
 use anyhow::{Result, bail};
 use reqwest::blocking::Client;
 use serde_json::{Value, json};
-use std::sync::OnceLock;
+use std::io::Read;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+/// Size of the STORED (evidence / leak-scan) copy of a response body.
 pub const MAX_BODY: usize = 8 * 1024;
+/// How much of a response is read so JSON can be parsed from the whole payload. Only the
+/// stored copy is cut to `MAX_BODY`; bodies above this cap are not parsed (`json()` = None).
+pub const MAX_PARSE: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct Exchange {
@@ -19,18 +24,40 @@ pub struct Exchange {
     pub status: u16,
     /// Redacted: set-cookie / authorization / cookie values are masked.
     pub headers: Vec<(String, String)>,
-    /// Truncated to 8KB. NOT redacted (kept for detection); `redacted_body()` for storage.
+    /// Stored copy, truncated to 8KB. NOT redacted (kept for detection); `redacted_body()` for storage.
     pub body: String,
+    /// Full body size in bytes as read (capped at MAX_PARSE + 1).
+    pub body_len: usize,
+    /// JSON parsed from the FULL body (up to MAX_PARSE), not from the truncated copy.
+    pub parsed: Option<Arc<Value>>,
     pub ms: u128,
     pub error: Option<String>,
+    /// The transport error was a timeout (vs reset / refused).
+    pub timed_out: bool,
 }
 
 impl Exchange {
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|x| x.1.as_str())
     }
+    /// Parsed JSON of the whole response. Falls back to the stored copy only when it is complete.
     pub fn json(&self) -> Option<Value> {
+        if let Some(v) = &self.parsed {
+            return Some((**v).clone());
+        }
+        if self.body_len > self.body.len() {
+            return None; // stored copy is a truncation of a body that was not parsed
+        }
         serde_json::from_str(&self.body).ok()
+    }
+    /// Build an exchange from a complete body (tests, replays): same truncation/parse rules as `send`.
+    #[cfg(test)]
+    pub fn with_body(mut self, bytes: &[u8]) -> Self {
+        let (body, len, parsed) = split_body(bytes, true);
+        self.body = body;
+        self.body_len = len;
+        self.parsed = parsed;
+        self
     }
     pub fn is_2xx(&self) -> bool {
         (200..300).contains(&self.status)
@@ -38,6 +65,17 @@ impl Exchange {
     pub fn redacted_body(&self) -> String {
         crate::logs::redact(&self.body)
     }
+}
+
+/// (stored truncated copy, byte length, JSON parsed from the full buffer when it is complete).
+fn split_body(bytes: &[u8], complete: bool) -> (String, usize, Option<Arc<Value>>) {
+    let parsed = if complete && bytes.len() <= MAX_PARSE { serde_json::from_slice::<Value>(bytes).ok().map(Arc::new) } else { None };
+    let mut cut = bytes.len().min(MAX_BODY);
+    // do not split a UTF-8 sequence in the stored copy
+    while cut > 0 && cut < bytes.len() && (bytes[cut] & 0xC0) == 0x80 {
+        cut -= 1;
+    }
+    (String::from_utf8_lossy(&bytes[..cut]).into_owned(), bytes.len(), parsed)
 }
 
 pub fn is_write(method: &str) -> bool {
@@ -84,6 +122,25 @@ pub fn send(
 ) -> Result<Exchange> {
     write_guard(method, qa.nonprod)?;
     qa.throttle()?;
+    send_inner(qa, role, method, url, body, extra)
+}
+
+/// Cleanup DELETEs of data this run created: rate-limited like everything else, but allowed to
+/// exceed the request cap (leaving test data behind because the budget ran out is worse).
+pub fn send_cleanup(qa: &QaCtx, role: Option<&Role>, url: &str) -> Result<Exchange> {
+    write_guard("DELETE", qa.nonprod)?;
+    qa.throttle_uncapped();
+    send_inner(qa, role, "DELETE", url, None, &[])
+}
+
+fn send_inner(
+    qa: &QaCtx,
+    role: Option<&Role>,
+    method: &str,
+    url: &str,
+    body: Option<&Value>,
+    extra: &[(&str, &str)],
+) -> Result<Exchange> {
     let c = client()?;
     let m = reqwest::Method::from_bytes(method.to_ascii_uppercase().as_bytes())?;
     let mut rb = c.request(m, url).header("Accept", "application/json, text/html;q=0.5");
@@ -112,11 +169,19 @@ pub fn send(
                 .iter()
                 .map(|(k, v)| (k.as_str().to_string(), mask_header(k.as_str(), v.to_str().unwrap_or(""))))
                 .collect();
-            let bytes = resp.bytes().map(|b| b.to_vec()).unwrap_or_default();
-            let cut = bytes.len().min(MAX_BODY);
-            ex.body = String::from_utf8_lossy(&bytes[..cut]).into_owned();
+            // Read up to MAX_PARSE (+1 to detect overflow); parse JSON from the whole buffer and
+            // truncate only the stored copy. `resp.bytes()` would be unbounded.
+            let mut buf = Vec::new();
+            let read_ok = resp.take(MAX_PARSE as u64 + 1).read_to_end(&mut buf).is_ok();
+            let (body, len, parsed) = split_body(&buf, read_ok);
+            ex.body = body;
+            ex.body_len = len;
+            ex.parsed = parsed;
         }
-        Err(e) => ex.error = Some(e.to_string()),
+        Err(e) => {
+            ex.timed_out = e.is_timeout();
+            ex.error = Some(e.to_string());
+        }
     }
     ex.ms = t0.elapsed().as_millis();
     Ok(ex)

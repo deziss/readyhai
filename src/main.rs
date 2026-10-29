@@ -139,6 +139,9 @@ enum Cmd {
         /// Maximum autonomous exploration iterations
         #[arg(long, default_value_t = 5)]
         max_steps: usize,
+        /// OpenAPI spec URL: plan cases from real operations instead of probing a few paths
+        #[arg(long)]
+        spec: Option<String>,
     },
     /// REST API + job worker
     Serve {
@@ -283,9 +286,8 @@ fn run() -> anyhow::Result<u8> {
             b.save(&path)?;
             eprintln!("baseline: {} fingerprints → {}", b.fingerprints.len(), path.display());
             if r.qa.is_some() {
-                match qa::perf::accept_baseline(&engine::target_key(&r.target)) {
-                    Ok(()) => eprintln!("baseline: perf baseline promoted from the last run"),
-                    Err(e) => eprintln!("baseline: no perf baseline to promote ({e:#})"),
+                for line in qa::accept_baselines(&engine::target_key(&r.target), &r.id) {
+                    eprintln!("baseline: {line}");
                 }
             }
             Ok(0)
@@ -314,11 +316,11 @@ fn run() -> anyhow::Result<u8> {
             tools::tools_update(&tools::Docker::detect(&engine::data_dir()))?;
             Ok(0)
         }
-        Cmd::Agent { target, max_steps: _ } => {
+        Cmd::Agent { target, max_steps, spec } => {
             let req = agent::AgentRunRequest {
                 target: target.clone(),
                 profile: "standard".to_string(),
-                spec_url: None,
+                spec_url: spec,
                 custom_instructions: None,
                 dry_run: false,
                 thinking: true,
@@ -327,7 +329,7 @@ fn run() -> anyhow::Result<u8> {
             };
             let run_id = engine::new_run_id();
             eprintln!("readyhai agent: starting autonomous loop for {target} (run {run_id})...");
-            let report = agent::run_agentic_loop(&req, &run_id)?;
+            let report = agent::run_agentic_loop_with(&req, &run_id, agent::RunOptions::default().with_max_steps(max_steps))?;
             let verdict = report.evidence_ledger.as_ref().map(|l| l.gate_verdict.as_str()).unwrap_or("UNKNOWN");
             let score = report.evidence_ledger.as_ref().map(|l| l.overall_readiness).unwrap_or(0);
             let summary = report.evidence_ledger.as_ref().map(|l| l.executive_summary.as_str()).unwrap_or("No summary");
@@ -337,7 +339,12 @@ fn run() -> anyhow::Result<u8> {
             println!("Target:       {}", report.target);
             println!("Model:        {} ({})", report.model, report.provider);
             println!("Gate Verdict: {}", verdict);
-            println!("Readiness:    {}%", score);
+            let n = report.executed_results.len();
+            if n < 5 {
+                println!("Readiness:    {}% (low coverage: only {n} case(s) ran — pass --spec for API-driven testing)", score);
+            } else {
+                println!("Readiness:    {}%", score);
+            }
             println!("Summary:      {}", summary);
             println!("Defects:      {}", report.triaged_defects.len());
             println!("Test Cases:   {}", report.executed_results.len());

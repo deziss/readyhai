@@ -169,14 +169,24 @@ fn esc(s: &str) -> String {
     o
 }
 
+/// A finding that fails the JUnit test of its check: new (not baselined, not suppressed) and either
+/// Medium+ or a QA defect (every QA defect is a failed test, whatever its severity).
+fn junit_failure(f: &Finding) -> bool {
+    f.status == FindingStatus::New && (f.severity >= Severity::Medium || f.rule.starts_with("qa."))
+}
+
+fn junit_failure_case(classname: &str, f: &Finding) -> String {
+    format!(
+        "<testcase classname=\"{}\" name=\"{}\"><failure message=\"{}\" type=\"{}\">{}</failure></testcase>\n",
+        esc(classname), esc(&format!("{} {}", f.rule, f.location)), esc(&f.title), f.severity.as_str(), esc(&f.detail))
+}
+
 pub fn junit(run: &Run) -> String {
     let mut x = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuites name=\"readyhai\">\n");
+    // Findings belong to the check that produced them (`f.check` is the check id; the engine fills
+    // it in when a check leaves it empty).
     for c in &run.checks {
-        let bad: Vec<&Finding> = run
-            .findings
-            .iter()
-            .filter(|f| f.check == c.id && f.status == FindingStatus::New && f.severity >= Severity::Medium)
-            .collect();
+        let bad: Vec<&Finding> = run.findings.iter().filter(|f| f.check == c.id && junit_failure(f)).collect();
         let (mut tests, failures, mut errors, mut skipped) = (1usize, bad.len(), 0usize, 0usize);
         let mut cases = String::new();
         match &c.status {
@@ -192,13 +202,20 @@ pub fn junit(run: &Run) -> String {
         }
         for f in &bad {
             tests += 1;
-            cases.push_str(&format!(
-                "<testcase classname=\"{}\" name=\"{}\"><failure message=\"{}\" type=\"{}\">{}</failure></testcase>\n",
-                esc(&c.id), esc(&format!("{} {}", f.rule, f.location)), esc(&f.title), f.severity.as_str(), esc(&f.detail)));
+            cases.push_str(&junit_failure_case(&c.id, f));
         }
         x.push_str(&format!(
             "<testsuite name=\"{}\" tests=\"{tests}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"{skipped}\">\n{cases}</testsuite>\n",
             esc(&c.id)));
+    }
+    // Failing findings whose `check` names no registered check (e.g. a QA defect that carried its
+    // rule id as the check) must not vanish from the report.
+    let orphans: Vec<&Finding> = run.findings.iter().filter(|f| junit_failure(f) && !run.checks.iter().any(|c| c.id == f.check)).collect();
+    if !orphans.is_empty() {
+        let cases: String = orphans.iter().map(|f| junit_failure_case(if f.check.is_empty() { "unattributed" } else { &f.check }, f)).collect();
+        x.push_str(&format!(
+            "<testsuite name=\"unattributed\" tests=\"{n}\" failures=\"{n}\" errors=\"0\" skipped=\"0\">\n{cases}</testsuite>\n",
+            n = orphans.len()));
     }
     x.push_str("</testsuites>\n");
     x
@@ -264,6 +281,46 @@ mod tests {
         assert!(r[0]["partialFingerprints"]["readyhai/v1"].as_str().unwrap().len() > 4);
         assert_eq!(r[1]["locations"][0]["physicalLocation"]["region"]["startLine"], 12);
         assert_eq!(r[1]["suppressions"][0]["kind"], "external");
+    }
+
+    #[test]
+    fn junit_includes_qa_defects_by_check_and_orphans() {
+        let mk = |check: &str, rule: &str, sev: Severity, status: FindingStatus| {
+            let mut f = Finding::new(check, rule, Category::Quality, sev, format!("{rule} title"), "GET /x");
+            f.status = status;
+            f.finalize();
+            f
+        };
+        let mut r = sample();
+        r.checks = ["qa.api.authz", "qa.ui", "web.smoke"]
+            .iter()
+            .map(|id| CheckResult { id: (*id).into(), title: (*id).into(), tool: None, status: CheckStatus::Failed, findings: 1, duration_ms: 1 })
+            .collect();
+        r.findings = vec![
+            mk("qa.api.authz", "qa.api.bola", Severity::Critical, FindingStatus::New),
+            // a LOW QA defect is still a failed test
+            mk("qa.ui", "qa.ui.a11y", Severity::Low, FindingStatus::New),
+            // baselined (existing) QA defect: not a failure
+            mk("qa.ui", "qa.ui.visual_change", Severity::Low, FindingStatus::Existing),
+            // non-QA low finding: not a failure
+            mk("web.smoke", "web.low", Severity::Low, FindingStatus::New),
+            // QA defect whose check is its rule (matches no check): reported, not dropped
+            mk("qa.api.validation_missing", "qa.api.validation_missing", Severity::Medium, FindingStatus::New),
+        ];
+        let x = junit(&r);
+        let suite = |name: &str| {
+            let a = x.find(&format!("<testsuite name=\"{name}\"")).unwrap_or_else(|| panic!("no suite {name}: {x}"));
+            let b = x[a..].find("</testsuite>").unwrap();
+            x[a..a + b].to_string()
+        };
+        assert!(suite("qa.api.authz").contains("failures=\"1\"") && suite("qa.api.authz").contains("qa.api.bola"));
+        let ui = suite("qa.ui");
+        assert!(ui.contains("failures=\"1\"") && ui.contains("qa.ui.a11y") && !ui.contains("visual_change"));
+        assert!(suite("web.smoke").contains("failures=\"0\""));
+        let o = suite("unattributed");
+        assert!(o.contains("qa.api.validation_missing") && o.contains("failures=\"1\""));
+        assert_eq!(x.matches("<failure").count(), 3);
+        assert_eq!(x.matches("<testsuite ").count(), x.matches("</testsuite>").count());
     }
 
     #[test]

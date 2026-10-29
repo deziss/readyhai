@@ -25,7 +25,7 @@ ReadyHai executes and parses things it does not trust. This page lists the threa
 | Symlinks dropped | `snapshot.rs` (`ft.is_symlink()`) | WalkDir does not follow links; links are recorded in `dropped_symlinks` and a run note. |
 | Size cap, skip dirs | `snapshot.rs` `MAX_FILE` (20 MB), `SKIP_DIRS` | `node_modules`, `.venv`, `target`, ... |
 | Tracked secret file reported by path only | `rules.rs::repo_check_fn` | Rule `readiness.repo.tracked_secret_file`, detail "Path only; the file was not read." |
-| Git clone hardening | `engine.rs::git_clone` | `core.hooksPath=/dev/null`, `protocol.file.allow=never`, `core.symlinks=false`, `--depth 1`, `--no-recurse-submodules`, `GIT_TERMINAL_PROMPT=0`; only `https://`, `ssh://`, `git@`. Runs on the host, not in a container. |
+| Git clone hardening | `engine.rs::git_clone_command`, `git_clone` | `core.hooksPath=/dev/null`, `protocol.file.allow=never`, `core.symlinks=false`, `credential.helper=` (empty), `--depth 1`, `--no-recurse-submodules`, `GIT_TERMINAL_PROMPT=0`, `GIT_SSH_COMMAND='ssh -o BatchMode=yes'`; only `https://`, `ssh://`, `git@`. stdin is null, output is captured and capped, and the clone has a wall-clock limit (`READYHAI_GIT_TIMEOUT_SECS`, default 300, range 10 to 3600; never longer than the run deadline). Error text has URL credentials redacted. The URL handed to git is the normalised form of the one the scope check approved. Runs on the host, not in a container. |
 | Compose parsed natively | `rules.rs::compose_check` | `docker compose config` auto-loads `.env`; ReadyHai never calls it. |
 | Gitleaks `--redact`; Checkov `--skip-framework secrets` | `tools.rs` checks | |
 
@@ -41,7 +41,7 @@ Every scanner and plugin runs as `docker run` with this fixed flag set:
 | `--pids-limit 512 --memory <2g default> --cpus 2` | Resource caps; hard timeout per check kills with `docker rm -f` |
 | `--log-driver none` | Container logs are never stored, so secrets in tool output cannot persist in Docker logs |
 | `-e HOME=/tmp` only | **No environment passthrough** from the host |
-| `--label readyhai.run=<id>` and `Docker::reap` | Leftover containers are removed at the end of every run |
+| `--label readyhai.run=<id>` and `Docker::reap` | Leftover containers are removed at the end of every run, when a run misses its deadline, on server shutdown, and at server start for runs that died with the previous server (`tools::reap_dead_runs`) |
 | Mounts: `/src` ro, `/out` rw, `/cache` ro (rw only for `tools update`) | Results are written to `/out/<file>`, never read from stdout (except hadolint's JSON stdout) |
 
 **Create-policy** (`tools.rs::validate_create_policy`) runs over the flag list before every run and rejects: `--privileged`, any host namespace (`--network/--net/--pid/--ipc/--userns/--uts host`, both spellings), `--cap-add`, any `-v/--volume/--mount` whose destination is not `/src`, `/out` or `/cache`, any argument containing `docker.sock`; tool args are also rejected if they mention `docker.sock`. It is covered by unit tests (`policy_rejects_bad_args`). It is a string check over argv, not an inspection of the final container.
@@ -96,7 +96,11 @@ Known gaps: grype/hadolint/dockle/zap outputs are stored unscrubbed (they do not
 | Control | Location |
 |---|---|
 | **Allowed roots**: in server/MCP mode a repo path or APK must be under `READYHAI_ALLOWED_ROOTS` (canonicalized, prefix match; symlink escapes resolved) | `engine.rs::scan`, `mcp.rs::precheck` |
-| **Scope**: in server/MCP mode every network destination must be listed in `scope.toml`: the web URL, an absolute `openapi` URL, the `ssh://` host and the `git:` clone host. Anything not listed is refused before a run directory is created. `engine::scan` re-runs the same precheck. | `mcp.rs::precheck`, `scope.rs::check`, `engine.rs::scan` |
+| **Scope**: in server/MCP mode every network destination must be listed in `scope.toml`: the web URL, an absolute `openapi` URL, the `ssh://` host and the clone host of any remote repository (`https://`, `git:<url>`, `ssh://`, bare `git@host:path`; `ext::` and other helpers are rejected). A local `openapi` file must sit under the allowed roots (it is copied into the run). Anything not listed is refused before a run directory is created. `engine::scan` re-runs the same precheck. | `mcp.rs::precheck`, `scope.rs::check`, `engine.rs::remote_repo_host`, `engine.rs::scan` |
+| **Hosts come from the real URL parser.** The host is `Url::parse(..).host_str()` (http/https only), the same parser reqwest uses, and the request is made to the normalised URL. A hand-rolled splitter disagrees with the client on `http://evil.example\@allowed.example/` (the client connects to `evil.example`); both the guard and the request now see `evil.example`. Hosts are compared lowercase, without IPv6 brackets or a trailing dot. | `scope.rs::parse_web_url`, `url_host`, tests `backslash_in_authority_uses_the_real_host`, `precheck_scopes_every_network_destination` |
+| **Overlapping scope entries**: an exact entry beats a wildcard, and `prod` beats `nonprod` (an `env` that is not literally `nonprod` counts as prod; among wildcards of the same env the longest suffix wins). The result never depends on file order. | `scope.rs::Scope::find` |
+| **One egress guard for every server-initiated HTTP action** (agent run/retest/discover/crawl, the network lab, scans): scope check, then for intrusive actions (writes, attack payloads, load) the nonprod gate. No scope file means everything is refused; there are no hard-coded host exceptions. | `scope.rs::egress_guard`, `serve.rs::guard`, `mcp.rs::precheck` |
+| **Network lab inputs**: http(s) targets only (no credentials in the URL); every number clamped (iterations 100, timeout 15 s, delay/latency 5 s, 120 s run budget, 256 KiB payload, 64 headers); methods whitelisted; header names/values reject CR/LF/NUL; redirects only within the same host, at most 3; sub-resources only from the audited host; curl runs with `-q --proto =http,https --data-raw ... --`, output capped at 1 MiB, hard wall-clock limit; repro commands are single-quoted; concurrent probes capped at 4. | `network.rs` (`parse_target`, `*::sanitize`, `curl_command`), `serve.rs::blocking` |
 | **Redirects** are followed only to the same host (at most 5) | `web.rs::same_host_redirects` |
 | Intrusive checks run only with `--profile deep` and a `nonprod` host | `engine.rs` |
 | `deep` refused over MCP unless `READYHAI_MCP_ALLOW_DEEP=1` | `mcp.rs::mcp_opts` |
@@ -109,15 +113,29 @@ Known gaps: grype/hadolint/dockle/zap outputs are stored unscrubbed (they do not
 
 | Control | Location |
 |---|---|
-| Static bearer token, minimum 16 chars, required to start `serve`; `Authorization: Bearer <token>` | `serve.rs::serve`, `authorized` |
-| Constant-time comparison (XOR fold over equal-length byte strings; length mismatch returns early) | `serve.rs::authorized` |
+| Static bearer token, minimum 16 printable ASCII chars, required to start `serve`; there is **no fallback token** (missing, short, or the old published example token: refuse to start, exit 3) | `serve.rs::serve`, `validate_token` |
+| **One middleware layer** authenticates every route except `GET /health`, including unknown paths (the fallback sits under the layer, so an anonymous caller learns nothing about the route table). Handlers contain no credential checks. A sweep test requests every route with no/wrong/malformed credentials and expects `401`, and fails when a route is added that is not in its table | `serve.rs::require_auth`, `build_router`, test `every_route_returns_401_without_a_valid_bearer_token` |
+| Constant-time comparison: both sides are SHA-256 hashed, then the 32-byte digests are XOR-folded (no length leak) | `serve.rs::bearer_ok` |
+| **Sign-offs record the authenticated principal**, a server-assigned name (`READYHAI_PRINCIPAL`, default `api-token`), never client text; a `user` field in the body is ignored | `serve.rs::agent_approve`, `agent_reject` |
+| `nosniff` on every response; badges and reports carry a CSP | `serve.rs` |
 | Default bind `127.0.0.1:8080`; compose publishes `127.0.0.1:${READYHAI_PORT}` only | `main.rs`, `docker-compose.yml` |
 | `/health` is the only unauthenticated route (returns status and version) | `serve.rs` |
-| No TLS, no rate limiting, no per-user auth: put it behind a reverse proxy if exposed | n/a |
+| One token means one identity: there is no per-user auth. No TLS, no rate limiting: put it behind a reverse proxy if exposed | n/a |
+
+### Reliability controls (DoS and corruption)
+
+| Control | Location |
+|---|---|
+| `status.json` / `run.json` written atomically (temp file + `rename`); the status writer never creates directories, so `DELETE` on a run cannot be undone by the worker; `DELETE` on a running run returns `409` | `engine.rs::write_atomic`, `serve.rs::write_status`, `api_scan_delete` |
+| Per-run wall-clock deadline (`READYHAI_RUN_TIMEOUT_SECS`, default 3600): late checks skipped, running tools capped to it, run fails with no verdict | `engine.rs::scan`, `tools.rs::exec`, `serve.rs::worker` |
+| Timeouts on `docker version` (10 s), `docker save` (15 min), other docker queries (30 s), `openssl` (2 to 10 s), `git clone`; subprocess output is size-capped; children never inherit stdio | `tools.rs::run_capped` |
+| SIGTERM and Ctrl-C shut the server down; the active run is marked `error` and its containers are removed; orphans of dead runs are reaped at start | `serve.rs::serve`, `tools.rs::reap_dead_runs` |
+| Run ids carry 64 random bits | `engine.rs::new_run_id` |
+| Bounded blocking pool for probes (4 concurrent, then `429`), `max_pages` capped at 100, request bodies capped by axum's default 2 MiB | `serve.rs` |
 
 ### MCP restrictions
 
-`mcp.rs` exposes four tools: scan, checks, run summary, findings. It deliberately has **no** baseline-accept, suppression or config tool, so a prompt-injected model cannot turn FAIL into PASS. `deep` is refused by default. Paths and web targets go through the same allowed-roots and scope checks as the API. stdout carries only JSON-RPC; logs go to stderr.
+`mcp.rs` exposes four tools: scan, checks, run summary, findings. It deliberately has **no** baseline-accept, suppression or config tool, so a prompt-injected model cannot turn FAIL into PASS. `deep` is refused by default. Paths and web targets go through the same allowed-roots and scope checks as the API (`mcp::precheck` is shared with `POST /runs` and `POST /api/scans`). stdout carries only JSON-RPC; logs go to stderr. The server takes private copies of the real stdin/stdout for the protocol and points fd 0 at `/dev/null` and fd 1 at stderr (`mcp.rs::isolate_stdio`), so no child process or stray print can write into the stream or consume a request; a subprocess test checks both.
 
 ### Docker socket proxy
 
@@ -138,7 +156,12 @@ Known gaps: grype/hadolint/dockle/zap outputs are stored unscrubbed (they do not
 | 10 | **Denylist is name-based** | A secret in an arbitrarily named file reaches scanners; they run offline with logs off, which limits exfiltration, and gitleaks flags it redacted. Add `[snapshot] deny` globs. |
 | 11 | **Host probes run read-only scripts as the SSH user** | They run with `sudo -n` if available (Linux). Review `probe/*` before pointing at production. |
 | 12 | **No TLS/rate limit on the API; run artifacts not encrypted at rest** | |
-| 13 | **Queue is in memory** | A restart drops queued jobs. |
+| 13 | **Queue is in memory** | A restart drops queued jobs (they are marked `error` at the next start). |
+| 18 | **A scoped host that resolves to a private address is not blocked** | The scope file is a name allow-list. DNS rebinding or an internal record under a scoped name is out of reach of the guard; list only hosts you control. |
+| 19 | **Network lab HTTP probes do not verify certificates** | Intentional (staging hosts with bad certificates must stay diagnosable); the TLS pillar reports certificate problems from a separate openssl handshake. Headers you send (for example `Authorization`) travel over that unverified connection. |
+| 20 | **The agent module's own HTTP client follows redirects** | The egress guard approves the target host before `agent.rs` runs, but its crawler and case executor use reqwest's default redirect policy, so a scoped host can redirect them elsewhere. The network lab, deep audit and scan web checks only follow same-host redirects. |
+| 21 | **Single shared token** | Anyone holding it can do everything the API does, including approve sign-offs; the recorded approver is the credential, not a person. Put per-user auth in the reverse proxy if you need that. |
+| 22 | **`docker save`/`git clone` timeouts kill the client, not grandchildren** | A hung helper process spawned by git or docker may linger until its pipe closes; it cannot write to the API or MCP streams. |
 
 ## Senior-QA and offline additions (increment 2)
 

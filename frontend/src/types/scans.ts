@@ -29,7 +29,7 @@ export interface ScanSummary {
   reasons: string[];
   findings_count: number;
   hard_fail_count: number;
-  categories: Record<string, any>;
+  categories: Record<string, unknown>;
   reports: ScanReportAvailability;
 }
 
@@ -75,7 +75,7 @@ export interface ScanDetail {
   findings: ScanFinding[];
   checks: ScanCheck[];
   categories: ScanCategoryStats[];
-  errors: any[];
+  errors: unknown[];
   notes?: string[];
   version?: string;
   reports?: ScanReportAvailability;

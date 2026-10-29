@@ -9,13 +9,11 @@ import {
   RotateCw,
   Terminal,
   ShieldAlert,
-  AlertTriangle,
   CheckCircle2,
   XCircle,
   Copy,
   Check,
   Clock,
-  Wifi,
   WifiOff,
   Cpu,
   Layers,
@@ -26,8 +24,6 @@ import {
   Download,
   GitPullRequest,
   Compass,
-  Server,
-  Info,
   Lock,
   Unlock,
   Network,
@@ -35,6 +31,7 @@ import {
   Flame,
   ShieldCheck,
 } from "lucide-react";
+import { apiRequest, notify, useApiTokenVersion } from "@/lib/api";
 import type {
   RegressRequest,
   RegressReport,
@@ -47,12 +44,18 @@ import type {
 
 interface NetworkLabViewProps {
   initialTarget?: string;
-  onRunningChange?: (running: boolean, detail: string) => void;
+  /** `failed` is true when the run ended in an error rather than a result. */
+  onRunningChange?: (running: boolean, detail: string, failed?: boolean) => void;
+  /** Score of the currently loaded agent run's evidence ledger, or null when there is no real one. */
+  ledgerScore?: number | null;
 }
+
+const BADGE_BASE = "http://localhost:8080";
 
 export function NetworkLabView({
   initialTarget = "http://readyhai:8080",
   onRunningChange,
+  ledgerScore = null,
 }: NetworkLabViewProps) {
   // Mode selection: "regress" | "deep_audit"
   const [activeTab, setActiveTab] = useState<"regress" | "deep_audit" | "multi_region" | "pr_gate">("regress");
@@ -101,6 +104,23 @@ export function NetworkLabView({
   const [multiRegionReport, setMultiRegionReport] = useState<MultiRegionReport | null>(null);
   const [isPrCommentLoading, setIsPrCommentLoading] = useState(false);
   const [prCommentData, setPrCommentData] = useState<PrCommentResponse | null>(null);
+  // Last failed action (regress / cURL / multi-region / PR comment). Cleared when a new action starts.
+  const [labError, setLabError] = useState<string | null>(null);
+  const [probeIp, setProbeIp] = useState<string | null>(null);
+  const tokenVersion = useApiTokenVersion();
+
+  // Requester egress IP from the backend. No fallback value: if the lookup fails it stays unknown.
+  useEffect(() => {
+    let cancelled = false;
+    apiRequest<{ egress_public_ip?: string }>("/api/network/requester-ip", { label: "Requester IP lookup" }).then((r) => {
+      if (cancelled) return;
+      setProbeIp(r.ok && r.data?.egress_public_ip ? r.data.egress_public_ip : null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [tokenVersion]);
+  const requesterIp = regressReport?.requester_ip || deepAuditReport?.requester_ip || probeIp;
 
   // Parse headers helper
   const getParsedHeaders = (): Record<string, string> => {
@@ -121,8 +141,10 @@ export function NetworkLabView({
   async function handleRunRegress() {
     setIsRegressRunning(true);
     setCurlResult(null);
+    setLabError(null);
     onRunningChange?.(true, `Regressive Network Test (${iterations}x iterations)`);
-    try {
+    let failure: string | null = null;
+    {
       const payload: RegressRequest = {
         target,
         method,
@@ -136,25 +158,27 @@ export function NetworkLabView({
         delay_between_ms: delayBetweenMs,
       };
 
-      const res = await fetch("/api/network/regress", {
+      const r = await apiRequest<RegressReport>("/api/network/regress", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        json: payload,
+        label: "Regressive test",
       });
 
-      if (res.ok) {
-        const data: RegressReport = await res.json();
-        setRegressReport(data);
-        if (data.iterations && data.iterations.length > 0) {
-          setSelectedIteration(data.iterations[0]);
+      if (r.ok && r.data) {
+        setRegressReport(r.data);
+        if (r.data.iterations && r.data.iterations.length > 0) {
+          setSelectedIteration(r.data.iterations[0]);
         }
+      } else {
+        failure = r.ok ? "Regressive test failed: empty response." : r.error;
       }
-    } catch (err) {
-      console.error("Regress test failed:", err);
-    } finally {
-      setIsRegressRunning(false);
-      onRunningChange?.(false, `Completed ${iterations}x regressive test`);
     }
+    if (failure) {
+      setLabError(failure);
+      notify(failure);
+    }
+    setIsRegressRunning(false);
+    onRunningChange?.(false, failure ? "Regressive test failed" : `Completed ${iterations}x regressive test`, !!failure);
   }
 
   // Run 6-Pillar Deep Audit
@@ -162,110 +186,110 @@ export function NetworkLabView({
     setIsDeepAuditRunning(true);
     setDeepAuditError(null);
     onRunningChange?.(true, "6-Pillar Deep Network & Protocol Audit");
-    try {
-      const res = await fetch("/api/network/deep-audit", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target, timeout_ms: timeoutMs }),
-      });
-
-      if (res.ok) {
-        const data: DeepAuditReport = await res.json();
-        setDeepAuditReport(data);
-        try {
-          localStorage.setItem(`readyhai_deep_audit_${target}`, JSON.stringify(data));
-        } catch (_) {}
-      } else {
-        const errText = await res.text();
-        setDeepAuditError(`Deep audit probe failed (${res.status}): ${errText || "Request failed"}`);
+    const r = await apiRequest<DeepAuditReport>("/api/network/deep-audit", {
+      method: "POST",
+      json: { target, timeout_ms: timeoutMs },
+      label: "Deep audit",
+    });
+    let failed = false;
+    if (r.ok && r.data) {
+      setDeepAuditReport(r.data);
+      try {
+        localStorage.setItem(`readyhai_deep_audit_${target}`, JSON.stringify(r.data));
+      } catch {
+        // storage unavailable: the report is still shown, just not cached
       }
-    } catch (err: any) {
-      console.error("Deep audit failed:", err);
-      setDeepAuditError(`Deep audit request failed: ${err?.message || "Failed to reach backend service"}`);
-    } finally {
-      setIsDeepAuditRunning(false);
-      onRunningChange?.(false, "Completed 6-Pillar Deep Protocol Audit");
+    } else {
+      failed = true;
+      setDeepAuditError(r.ok ? "Deep audit failed: empty response." : r.error);
     }
+    setIsDeepAuditRunning(false);
+    onRunningChange?.(false, failed ? "6-Pillar Deep Protocol Audit failed" : "Completed 6-Pillar Deep Protocol Audit", failed);
   }
 
   // Run cURL test
   async function handleRunCurl() {
     setIsCurlRunning(true);
-    try {
-      const res = await fetch("/api/network/curl", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          target,
-          method,
-          headers: getParsedHeaders(),
-          payload: customPayload.trim() ? customPayload.trim() : null,
-          timeout_ms: timeoutMs,
-        }),
-      });
-
-      if (res.ok) {
-        const data: CurlTestResponse = await res.json();
-        setCurlResult(data);
-      }
-    } catch (err) {
-      console.error("Curl test failed:", err);
-    } finally {
-      setIsCurlRunning(false);
+    setLabError(null);
+    const r = await apiRequest<CurlTestResponse>("/api/network/curl", {
+      method: "POST",
+      json: {
+        target,
+        method,
+        headers: getParsedHeaders(),
+        payload: customPayload.trim() ? customPayload.trim() : null,
+        timeout_ms: timeoutMs,
+      },
+      label: "cURL probe",
+    });
+    if (r.ok && r.data) {
+      setCurlResult(r.data);
+    } else {
+      const msg = r.ok ? "cURL probe failed: empty response." : r.error;
+      setLabError(msg);
+      notify(msg);
     }
+    setIsCurlRunning(false);
   }
 
     async function handleRunMultiRegion() {
     setIsMultiRegionRunning(true);
+    setLabError(null);
     onRunningChange?.(true, `Probing 4-Region Edge Mesh (${target})`);
-    try {
-      const res = await fetch("/api/network/multi-region", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target, timeout_ms: timeoutMs }),
-      });
-      if (res.ok) {
-        const data: MultiRegionReport = await res.json();
-        setMultiRegionReport(data);
-      }
-    } catch (err) {
-      console.error("Multi-region probe failed:", err);
-    } finally {
-      setIsMultiRegionRunning(false);
-      onRunningChange?.(false, "Completed 4-Region Edge Mesh Probe");
+    const r = await apiRequest<MultiRegionReport>("/api/network/multi-region", {
+      method: "POST",
+      json: { target, timeout_ms: timeoutMs },
+      label: "Multi-region probe",
+    });
+    let failed = false;
+    if (r.ok && r.data) {
+      setMultiRegionReport(r.data);
+    } else {
+      failed = true;
+      const msg = r.ok ? "Multi-region probe failed: empty response." : r.error;
+      setLabError(msg);
+      notify(msg);
     }
+    setIsMultiRegionRunning(false);
+    onRunningChange?.(false, failed ? "4-Region Edge Mesh Probe failed" : "Completed 4-Region Edge Mesh Probe", failed);
   }
 
   async function handleFetchPrComment() {
-    setIsPrCommentLoading(true);
-    try {
-      const verdict = deepAuditReport ? deepAuditReport.overall_verdict : (regressReport && regressReport.availability_percentage >= 99 ? "PASS" : "WARN");
-      const score = deepAuditReport ? deepAuditReport.health_score : 94;
-      const res = await fetch("/api/github/pr-comment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          target,
-          verdict,
-          score,
-          commit_sha: "main",
-        }),
-      });
-      if (res.ok) {
-        const data: PrCommentResponse = await res.json();
-        setPrCommentData(data);
-      }
-    } catch (err) {
-      console.error("PR comment generation failed:", err);
-    } finally {
-      setIsPrCommentLoading(false);
+    // The PR comment carries a verdict and score, so it needs a measured one: no default PASS / score.
+    if (!deepAuditReport) {
+      setLabError("Run the 6-Pillar Protocol Audit first: the PR comment needs a measured verdict and score.");
+      return;
     }
+    setIsPrCommentLoading(true);
+    setLabError(null);
+    const r = await apiRequest<PrCommentResponse>("/api/github/pr-comment", {
+      method: "POST",
+      json: {
+        target,
+        verdict: deepAuditReport.overall_verdict,
+        score: deepAuditReport.health_score,
+      },
+      label: "PR comment",
+    });
+    if (r.ok && r.data) {
+      setPrCommentData(r.data);
+    } else {
+      const msg = r.ok ? "PR comment failed: empty response." : r.error;
+      setLabError(msg);
+      notify(msg);
+    }
+    setIsPrCommentLoading(false);
   }
 
   function handleExportHar() {
-    let harData: any = null;
-    if (regressReport && regressReport.iterations.length > 0) {
-      harData = {
+    // Export only measured data: with no regressive-test result there is nothing real to export.
+    if (!regressReport || regressReport.iterations.length === 0) {
+      const msg = "Nothing to export: run a regressive test first (the HAR is built from its measured iterations).";
+      setLabError(msg);
+      notify(msg);
+      return;
+    }
+    const harData = {
         log: {
           version: "1.2",
           creator: { name: "ReadyHai Network Lab", version: "0.1.0" },
@@ -305,7 +329,7 @@ export function NetworkLabView({
                 headers: Object.entries(it.response_headers || {}).map(([k, v]) => ({ name: k, value: v })),
                 content: {
                   size: (it.response_body_snippet || "").length,
-                  mimeType: it.response_headers?.["content-type"] || "text/html; charset=utf-8",
+                  mimeType: it.response_headers?.["content-type"] || "",
                   text: it.response_body_snippet || "",
                 },
                 redirectURL: "",
@@ -322,58 +346,11 @@ export function NetworkLabView({
                 wait: wait,
                 receive: receive,
               },
-              serverIPAddress: "127.0.0.1",
               connection: it.session_id,
             };
           }),
         },
-      };
-    } else {
-      harData = {
-        log: {
-          version: "1.2",
-          creator: { name: "ReadyHai Network Lab", version: "0.1.0" },
-          pages: [
-            {
-              startedDateTime: new Date().toISOString(),
-              id: "page_readyhai",
-              title: `ReadyHai Network Baseline - ${target}`,
-              pageTimings: { onContentLoad: 45, onLoad: 85 },
-            },
-          ],
-          entries: [
-            {
-              startedDateTime: new Date().toISOString(),
-              time: 45,
-              request: {
-                method,
-                url: target,
-                httpVersion: "HTTP/1.1",
-                cookies: [],
-                headers: [{ name: "User-Agent", value: "ReadyHai-NetworkLab/0.1.0" }],
-                queryString: [],
-                headersSize: -1,
-                bodySize: 0,
-              },
-              response: {
-                status: 200,
-                statusText: "OK",
-                httpVersion: "HTTP/1.1",
-                cookies: [],
-                headers: [{ name: "Content-Type", value: "text/html; charset=utf-8" }],
-                content: { size: 1024, mimeType: "text/html", text: "<!-- ReadyHai Baseline -->" },
-                redirectURL: "",
-                headersSize: -1,
-                bodySize: 1024,
-              },
-              cache: {},
-              timings: { blocked: 0, dns: 5, connect: 12, ssl: 0, send: 1, wait: 24, receive: 3 },
-              serverIPAddress: "127.0.0.1",
-            },
-          ],
-        },
-      };
-    }
+    };
 
     const blob = new Blob([JSON.stringify(harData, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -385,6 +362,17 @@ export function NetworkLabView({
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
+
+  // Badge values come only from measured results; nothing is defaulted to PASS / a score / "Optimal".
+  const gateStatus = deepAuditReport?.overall_verdict ? deepAuditReport.overall_verdict.toUpperCase() : null;
+  const gateBadgeText = gateStatus ?? "not evaluated";
+  const gateBadgeColor =
+    gateStatus === "PASS" ? "#22c55e" : gateStatus === "WARN" ? "#eab308" : gateStatus ? "#ef4444" : "#475569";
+  const meshTotal = multiRegionReport?.regions.length ?? 0;
+  const meshOptimal = multiRegionReport ? multiRegionReport.regions.filter((r) => r.status === "OPTIMAL").length : 0;
+  const meshBadgeText = meshTotal > 0 ? `${meshOptimal}/${meshTotal} optimal` : null;
+  const meshBadgeColor =
+    meshTotal === 0 ? "#475569" : meshOptimal === meshTotal ? "#10b981" : meshOptimal === 0 ? "#ef4444" : "#eab308";
 
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
@@ -451,7 +439,7 @@ export function NetworkLabView({
               id="tab-pr-gate"
               onClick={() => {
                 setActiveTab("pr_gate");
-                if (!prCommentData && !isPrCommentLoading) {
+                if (deepAuditReport && !prCommentData && !isPrCommentLoading) {
                   handleFetchPrComment();
                 }
               }}
@@ -477,11 +465,12 @@ export function NetworkLabView({
           {/* Requester Egress IP Clearance */}
           <div className="flex items-center gap-1.5 px-3 py-1 rounded-md bg-[#0d1527] border border-[#1d2b45] text-xs font-mono" title="Requester public egress IP. Add this IP to target firewall/AWS security group allowlists for private network testing.">
             <span className="text-slate-400 font-normal">Requester IP:</span>
-            <span className="text-cyan-300 font-bold">{regressReport?.requester_ip || deepAuditReport?.requester_ip || "47.29.26.1"}</span>
+            <span className="text-cyan-300 font-bold">{requesterIp || "unknown"}</span>
             <button
               type="button"
-              onClick={() => copyToClipboard(regressReport?.requester_ip || deepAuditReport?.requester_ip || "47.29.26.1", "probe-ip")}
-              className="text-slate-400 hover:text-cyan-300 ml-1 p-0.5 cursor-pointer transition-colors"
+              disabled={!requesterIp}
+              onClick={() => requesterIp && copyToClipboard(requesterIp, "probe-ip")}
+              className="text-slate-400 hover:text-cyan-300 ml-1 p-0.5 cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               title="Copy IP for firewall allowlist"
             >
               {copiedText === "probe-ip" ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
@@ -712,6 +701,22 @@ export function NetworkLabView({
         {/* Main Content Viewport */}
         <main className={`${activeTab === "regress" ? "xl:col-span-8 p-6" : "flex-1 p-6"} overflow-y-auto`}>
           <div className={activeTab === "regress" ? "space-y-6" : "max-w-6xl mx-auto w-full space-y-6"}>
+          {labError && (
+            <div
+              className="flex items-start justify-between gap-3 p-3 rounded-lg bg-rose-950/40 border border-rose-700/60 text-xs font-mono text-rose-200"
+              role="alert"
+            >
+              <span className="break-words min-w-0">{labError}</span>
+              <button
+                type="button"
+                onClick={() => setLabError(null)}
+                className="text-rose-300 hover:text-white shrink-0 cursor-pointer"
+                title="Dismiss"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+            </div>
+          )}
           {/* TAB 1: CONTINUOUS REGRESSIVE TESTING */}
           {activeTab === "regress" && (
             <>
@@ -1064,7 +1069,9 @@ export function NetworkLabView({
                     ? "bg-emerald-950/20 border-emerald-500/40"
                     : deepAuditReport.overall_verdict === "WARN"
                     ? "bg-amber-950/20 border-amber-500/40"
-                    : "bg-rose-950/20 border-rose-500/40"
+                    : deepAuditReport.overall_verdict === "FAIL"
+                    ? "bg-rose-950/20 border-rose-500/40"
+                    : "bg-slate-900/40 border-slate-700/60"
                 } space-y-4`}>
                   {/* Top Row: Verdict, Evaluated Target & Health Score */}
                   <div className="flex items-start justify-between gap-4">
@@ -1073,9 +1080,10 @@ export function NetworkLabView({
                         <span className={`px-2.5 py-0.5 rounded text-xs font-mono font-bold tracking-wider ${
                           deepAuditReport.overall_verdict === "PASS" ? "bg-emerald-900/60 text-emerald-300 border border-emerald-700/50" :
                           deepAuditReport.overall_verdict === "WARN" ? "bg-amber-900/60 text-amber-300 border border-amber-700/50" :
-                          "bg-rose-900/60 text-rose-300 border border-rose-700/50"
+                          deepAuditReport.overall_verdict === "FAIL" ? "bg-rose-900/60 text-rose-300 border border-rose-700/50" :
+                          "bg-slate-900 text-slate-300 border border-slate-700"
                         }`}>
-                          VERDICT: {deepAuditReport.overall_verdict}
+                          VERDICT: {deepAuditReport.overall_verdict || "not evaluated"}
                         </span>
                         <span className="text-xs font-mono text-slate-400 truncate max-w-sm">
                           Evaluated {deepAuditReport.target}
@@ -1576,62 +1584,74 @@ export function NetworkLabView({
                       Dynamic Embeddable SVG Badges
                     </h4>
                   </div>
-                  <span className="text-[10px] text-slate-400">Live vector status for GitHub READMEs & PRs</span>
+                  <span className="text-[10px] text-slate-400">Built from measured results only; unmeasured badges stay neutral</span>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {/* Badge 1: Quality Gate */}
+                  {/* Badge 1: Quality Gate (from the 6-Pillar audit verdict) */}
                   <div className="p-3.5 rounded-lg bg-[#070b13] border border-[#182338] space-y-2.5">
                     <span className="text-[11px] text-slate-400 block">Quality Gate Verdict</span>
                     <div className="flex items-center justify-between">
                       <div className="inline-flex rounded overflow-hidden text-xs font-bold">
                         <span className="bg-[#1e293b] text-white px-2.5 py-1">ReadyHai</span>
-                        <span className="bg-[#22c55e] text-white px-2.5 py-1">PASS</span>
+                        <span className="text-white px-2.5 py-1" style={{ backgroundColor: gateBadgeColor }}>
+                          {gateBadgeText}
+                        </span>
                       </div>
                       <button
-                        onClick={() => copyToClipboard("![ReadyHai Gate](http://localhost:8080/api/badges/gate?status=pass)", "badge-gate")}
-                        className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
+                        disabled={!gateStatus}
+                        onClick={() => copyToClipboard(`![ReadyHai Gate](${BADGE_BASE}/api/badges/gate?status=${encodeURIComponent((gateStatus || "").toLowerCase())})`, "badge-gate")}
+                        className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {copiedText === "badge-gate" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                         <span>{copiedText === "badge-gate" ? "Copied" : "Copy"}</span>
                       </button>
                     </div>
+                    {!gateStatus && <p className="text-[10px] text-slate-500">Run the 6-Pillar Protocol Audit to get a verdict.</p>}
                   </div>
 
-                  {/* Badge 2: Evidence Ledger */}
+                  {/* Badge 2: Evidence Ledger (from the loaded agent run, if any) */}
                   <div className="p-3.5 rounded-lg bg-[#070b13] border border-[#182338] space-y-2.5">
                     <span className="text-[11px] text-slate-400 block">4-Pillar Evidence Ledger</span>
                     <div className="flex items-center justify-between">
                       <div className="inline-flex rounded overflow-hidden text-xs font-bold">
                         <span className="bg-[#0f172a] text-white px-2.5 py-1">Evidence Ledger</span>
-                        <span className="bg-[#3b82f6] text-white px-2.5 py-1">94/100</span>
+                        <span className="text-white px-2.5 py-1" style={{ backgroundColor: ledgerScore === null ? "#475569" : "#3b82f6" }}>
+                          {ledgerScore === null ? "not evaluated" : `${ledgerScore}/100`}
+                        </span>
                       </div>
                       <button
-                        onClick={() => copyToClipboard("![Evidence Ledger](http://localhost:8080/api/badges/ledger?score=94)", "badge-ledger")}
-                        className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
+                        disabled={ledgerScore === null}
+                        onClick={() => copyToClipboard(`![Evidence Ledger](${BADGE_BASE}/api/badges/ledger?score=${encodeURIComponent(`${ledgerScore}/100`)})`, "badge-ledger")}
+                        className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {copiedText === "badge-ledger" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                         <span>{copiedText === "badge-ledger" ? "Copied" : "Copy"}</span>
                       </button>
                     </div>
+                    {ledgerScore === null && <p className="text-[10px] text-slate-500">Load an evaluated agent run in Agent Studio to get a ledger score.</p>}
                   </div>
 
-                  {/* Badge 3: Network Mesh */}
+                  {/* Badge 3: Network Mesh (from the multi-region probe) */}
                   <div className="p-3.5 rounded-lg bg-[#070b13] border border-[#182338] space-y-2.5">
                     <span className="text-[11px] text-slate-400 block">Global Network Mesh</span>
                     <div className="flex items-center justify-between">
                       <div className="inline-flex rounded overflow-hidden text-xs font-bold">
                         <span className="bg-[#18181b] text-white px-2.5 py-1">Network Mesh</span>
-                        <span className="bg-[#10b981] text-white px-2.5 py-1">100% Optimal</span>
+                        <span className="text-white px-2.5 py-1" style={{ backgroundColor: meshBadgeColor }}>
+                          {meshBadgeText ?? "not evaluated"}
+                        </span>
                       </div>
                       <button
-                        onClick={() => copyToClipboard("![Network Mesh](http://localhost:8080/api/badges/network?status=optimal)", "badge-mesh")}
-                        className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
+                        disabled={!meshBadgeText}
+                        onClick={() => meshBadgeText && copyToClipboard(`![Network Mesh](${BADGE_BASE}/api/badges/network?status=${encodeURIComponent(meshBadgeText)})`, "badge-mesh")}
+                        className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {copiedText === "badge-mesh" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                         <span>{copiedText === "badge-mesh" ? "Copied" : "Copy"}</span>
                       </button>
                     </div>
+                    {!meshBadgeText && <p className="text-[10px] text-slate-500">Run the Multi-Region Mesh probe to get a status.</p>}
                   </div>
                 </div>
               </div>
@@ -1666,16 +1686,26 @@ export function NetworkLabView({
                 </div>
 
                 {prCommentData ? (
-                  <div className="p-4 rounded-lg bg-[#060a14] border border-[#162238] text-xs text-slate-300 font-mono overflow-x-auto whitespace-pre-wrap max-h-72 leading-relaxed">
-                    {prCommentData.markdown}
-                  </div>
+                  <>
+                    <p className="text-[11px] text-amber-300">
+                      Only the verdict and score above come from this audit. The pillar table and overview lines in the
+                      generated comment are the backend&apos;s template text and were not measured here.
+                    </p>
+                    <div className="p-4 rounded-lg bg-[#060a14] border border-[#162238] text-xs text-slate-300 font-mono overflow-x-auto whitespace-pre-wrap max-h-72 leading-relaxed">
+                      {prCommentData.markdown}
+                    </div>
+                  </>
                 ) : (
                   <div className="p-4 rounded-lg bg-[#060a14] border border-[#162238] text-slate-400 text-xs flex items-center justify-between">
-                    <span>Click below to generate an Evidence Ledger PR comment for {target}.</span>
+                    <span>
+                      {deepAuditReport
+                        ? `Click to generate a PR comment for ${target} from the 6-Pillar audit verdict and score.`
+                        : "Run the 6-Pillar Protocol Audit first: the PR comment needs a measured verdict and score."}
+                    </span>
                     <button
                       onClick={handleFetchPrComment}
-                      disabled={isPrCommentLoading}
-                      className="px-3 py-1 bg-cyan-950 border border-cyan-700 text-cyan-300 rounded font-semibold text-xs cursor-pointer"
+                      disabled={isPrCommentLoading || !deepAuditReport}
+                      className="px-3 py-1 bg-cyan-950 border border-cyan-700 text-cyan-300 rounded font-semibold text-xs cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       {isPrCommentLoading ? "Generating..." : "Generate Comment"}
                     </button>

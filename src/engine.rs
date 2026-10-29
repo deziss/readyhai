@@ -11,10 +11,12 @@ use crate::snapshot;
 use crate::tools::Docker;
 use anyhow::{Context, Result, bail};
 use rand::Rng;
+use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
@@ -60,6 +62,11 @@ pub struct ScanOpts {
     pub server: bool,
     #[serde(skip)]
     pub allowed_roots: Vec<PathBuf>,
+    /// Wall-clock deadline for the whole run (server worker). Checks that would start after it
+    /// are skipped, running tools are capped to it, and the run then fails instead of producing
+    /// a verdict from partial results.
+    #[serde(skip)]
+    pub deadline: Option<Instant>,
 }
 
 pub fn data_dir() -> PathBuf {
@@ -80,11 +87,13 @@ pub fn today() -> String {
     now().get(..10).unwrap_or("").to_string()
 }
 
+/// `YYYYMMDD-HHMMSS-<64 random bits as hex>`. The timestamp keeps listings sortable; the random
+/// part keeps ids unguessable (REST run ids are capability-like: 16 bits was enumerable).
 pub fn new_run_id() -> String {
     let t = OffsetDateTime::now_utc();
-    let r: u16 = rand::rng().random();
+    let r: u64 = rand::rng().random();
     format!(
-        "{:04}{:02}{:02}-{:02}{:02}{:02}-{r:04x}",
+        "{:04}{:02}{:02}-{:02}{:02}{:02}-{r:016x}",
         t.year(),
         t.month() as u8,
         t.day(),
@@ -100,6 +109,56 @@ pub fn valid_run_id(id: &str) -> bool {
 
 pub fn run_dir(id: &str) -> PathBuf {
     data_dir().join("runs").join(id)
+}
+
+/// Write `bytes` to `path` atomically: a temp file in the same directory, then rename. Readers
+/// (status polling, report download) never see a half-written file, and a crash leaves either the
+/// old or the new content. Fails (instead of creating directories) when the parent is gone, so a
+/// run that was deleted underneath a worker is not resurrected.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().ok_or_else(|| std::io::Error::other("no parent directory"))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dir.join(format!(".{name}.{:08x}.tmp", rand::rng().random::<u32>()));
+    let res = (|| {
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
+static DEADLINES: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(Default::default);
+
+/// Wall-clock deadline registered for a running scan (see `ScanOpts::deadline`).
+pub fn run_deadline(run_id: &str) -> Option<Instant> {
+    DEADLINES.lock().ok()?.get(run_id).copied()
+}
+
+fn deadline_passed(run_id: &str) -> bool {
+    run_deadline(run_id).is_some_and(|d| Instant::now() >= d)
+}
+
+/// Registers the deadline for the lifetime of a scan, whatever way it exits.
+struct DeadlineGuard(String);
+impl DeadlineGuard {
+    fn new(run_id: &str, at: Option<Instant>) -> Self {
+        if let (Some(at), Ok(mut m)) = (at, DEADLINES.lock()) {
+            m.insert(run_id.to_string(), at);
+        }
+        DeadlineGuard(run_id.to_string())
+    }
+}
+impl Drop for DeadlineGuard {
+    fn drop(&mut self) {
+        if let Ok(mut m) = DEADLINES.lock() {
+            m.remove(&self.0);
+        }
+    }
 }
 
 pub fn load_run(id: &str) -> Result<Run> {
@@ -163,7 +222,9 @@ pub fn parse_target(raw: &str, openapi: Option<String>) -> Result<Target> {
         t.kind = TargetKind::Repo;
     } else if raw.starts_with("http://") || raw.starts_with("https://") {
         t.kind = TargetKind::Web;
-        t.url = Some(raw.to_string());
+        // Use the WHATWG-normalised form everywhere downstream: it is the one the scope check
+        // saw, so no tool can parse the authority differently (backslash/userinfo tricks).
+        t.url = Some(scope::parse_web_url(raw)?.to_string());
     } else {
         let p = Path::new(raw);
         if !p.is_dir() {
@@ -189,27 +250,97 @@ fn parse_ssh(rest: &str) -> Result<HostSpec> {
     Ok(HostSpec { user: user.into(), host: host.into(), port, os: Os::Linux, key: None })
 }
 
-/// Shallow clone with hooks/submodules/file-protocol disabled.
-fn git_clone(url: &str, dest: &Path) -> Result<()> {
+/// Host a `git clone` of this target contacts (`raw` may carry the `git:` prefix). Understands
+/// `https://`, `http://`, `ssh://` and scp-like `[user@]host:path` (`git@host:org/repo.git`).
+/// The charset is strict so nothing that looks like an ssh option can pass as a host.
+pub fn remote_repo_host(raw: &str) -> Result<String> {
+    let url = raw.strip_prefix("git:").unwrap_or(raw).trim();
+    if url.contains(char::is_whitespace) || url.contains('\0') {
+        bail!("not a recognised remote repository URL");
+    }
+    let host = if url.contains("://") {
+        let u = reqwest::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid git URL: {e}"))?;
+        if !matches!(u.scheme(), "https" | "http" | "ssh") {
+            bail!("git targets must be https://, ssh:// or git@host:path URLs");
+        }
+        u.host_str().unwrap_or_default().to_ascii_lowercase()
+    } else {
+        let (userhost, path) = url.split_once(':').ok_or_else(|| anyhow::anyhow!("not a recognised remote repository URL"))?;
+        // `ext::<command>` and `transport::address` helpers are not scp-style paths
+        if path.is_empty() || path.starts_with(':') || userhost.contains('/') {
+            bail!("not a recognised remote repository URL");
+        }
+        userhost.rsplit_once('@').map(|x| x.1).unwrap_or(userhost).to_ascii_lowercase()
+    };
+    let host = host.trim_end_matches('.').to_string();
+    if host.is_empty() || host.starts_with('-') || !host.chars().all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c)) {
+        bail!("unsupported git host '{host}'");
+    }
+    Ok(host)
+}
+
+/// What to hand to `git clone`: URL forms are re-serialised by the same parser that produced
+/// the host the scope check approved.
+fn clone_url(raw: &str) -> Result<String> {
+    let url = raw.strip_prefix("git:").unwrap_or(raw).trim();
+    if url.contains("://") {
+        Ok(reqwest::Url::parse(url).map_err(|e| anyhow::anyhow!("invalid git URL: {e}"))?.to_string())
+    } else {
+        Ok(url.to_string())
+    }
+}
+
+fn git_timeout(run_id: &str) -> Duration {
+    let secs = std::env::var("READYHAI_GIT_TIMEOUT_SECS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(300).clamp(10, 3600);
+    let mut t = Duration::from_secs(secs);
+    if let Some(rd) = run_deadline(run_id) {
+        t = t.min(rd.saturating_duration_since(Instant::now()));
+    }
+    t
+}
+
+fn redact_url_credentials(s: &str) -> String {
+    static RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"(?i)((?:https?|ssh)://)[^/\s@]+@").unwrap());
+    RE.replace_all(s, "${1}***@").into_owned()
+}
+
+/// The clone command: hooks/submodules/file-protocol disabled, no prompts of any kind (terminal,
+/// credential helper, ssh).
+fn git_clone_command(url: &str, dest: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args([
+        "-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=never", "-c", "core.symlinks=false",
+        "-c", "credential.helper=",
+        "clone", "--depth", "1", "--no-recurse-submodules", "--", url,
+    ])
+    .arg(dest)
+    .env("GIT_TERMINAL_PROMPT", "0")
+    .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    cmd
+}
+
+/// Shallow clone with a wall-clock limit and no inherited stdio (stdin null, output captured).
+fn git_clone(url: &str, dest: &Path, timeout: Duration) -> Result<()> {
     if !(url.starts_with("https://") || url.starts_with("ssh://") || url.starts_with("git@")) {
         bail!("git targets must be https://, ssh:// or git@ URLs");
     }
-    let st = Command::new("git")
-        .args([
-            "-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=never", "-c", "core.symlinks=false",
-            "clone", "--depth", "1", "--no-recurse-submodules", "--", url,
-        ])
-        .arg(dest)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .status()?;
-    if !st.success() {
-        bail!("git clone failed");
+    let mut cmd = git_clone_command(url, dest);
+    let out = crate::tools::run_capped(&mut cmd, timeout, 16 * 1024, None).context("running git")?;
+    if out.timed_out {
+        let _ = std::fs::remove_dir_all(dest);
+        bail!("git clone timed out after {}s", timeout.as_secs());
+    }
+    if !out.success() {
+        let err = out.stderr_lossy();
+        let tail: String = err.trim().chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect();
+        bail!("git clone failed: {}", redact_url_credentials(&tail));
     }
     Ok(())
 }
 
 pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
     let started = now();
+    let _deadline = DeadlineGuard::new(run_id, opts.deadline);
     if opts.server {
         crate::mcp::precheck(opts)?;
     }
@@ -277,9 +408,9 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
             let source = match &target.path {
                 Some(p) => p.clone(),
                 None => {
-                    let url = target.raw.trim_start_matches("git:").to_string();
+                    let url = clone_url(&target.raw)?;
                     let clone = dir.join("clone");
-                    git_clone(&url, &clone)?;
+                    git_clone(&url, &clone, git_timeout(run_id))?;
                     target.path = Some(clone.clone());
                     clone
                 }
@@ -317,7 +448,7 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
             std::fs::create_dir_all(&src)?;
             snapshot::set_mode(&src, 0o755);
             if docker.available && !opts.no_tools {
-                docker.export_image(target.image.as_deref().unwrap_or_default(), &src.join("image.tar"))?;
+                docker.export_image(run_id, target.image.as_deref().unwrap_or_default(), &src.join("image.tar"))?;
                 snapshot::set_mode(&src.join("image.tar"), 0o644);
             }
         }
@@ -368,6 +499,8 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
             (CheckStatus::Skipped("--no-tools".into()), vec![])
         } else if c.tool.is_some() && !ctx.docker.available {
             (CheckStatus::Skipped("docker not available".into()), vec![])
+        } else if deadline_passed(run_id) {
+            (CheckStatus::Skipped("run wall-clock deadline exceeded".into()), vec![])
         } else if c.intrusive && (profile != Profile::Deep || !nonprod) {
             (CheckStatus::Skipped("intrusive: needs --profile deep and a nonprod host in scope.toml".into()), vec![])
         } else {
@@ -399,6 +532,9 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
         findings.extend(fs);
     }
     ctx.docker.reap(run_id);
+    if deadline_passed(run_id) {
+        bail!("run exceeded its wall-clock deadline; partial results discarded (no verdict)");
+    }
     let errors = crate::logs::cluster(&ctx.error_lines.lock().map(|v| v.clone()).unwrap_or_default());
 
     // Dedup by fingerprint, then gate.
@@ -436,7 +572,7 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
     };
     let mut run = run;
     if let Some(q) = &ctx.qa {
-        let configured = crate::llm::LlmConfig::from_env().ok();
+        let configured = crate::llm::LlmConfig::from_env().ok().filter(|c| c.base_url().is_ok()); // no base URL = not configured
         // Offline = no internet/registries. A LAN LLM is still allowed; cloud providers are
         // already refused unless READYHAI_LLM_ALLOW_CLOUD is set.
         let cfg = configured.clone().filter(crate::llm::probe);
@@ -455,8 +591,162 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
         }
         run.qa = Some(report);
     }
-    std::fs::write(dir.join("run.json"), serde_json::to_string_pretty(&run)?)?;
+    write_atomic(&dir.join("run.json"), serde_json::to_string_pretty(&run)?.as_bytes())?;
     let _ = crate::report::write(&run, &dir.join("report"), &["html".into(), "json".into(), "sarif".into(), "junit".into()]);
     crate::dashboard::append_index(&run);
     Ok(run)
+}
+
+/// READYHAI_DATA is process-global: every test that points it somewhere holds this lock.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_ids_carry_64_random_bits() {
+        let id = new_run_id();
+        let (ts, rand_part) = id.rsplit_once('-').unwrap();
+        assert_eq!(rand_part.len(), 16, "{id}");
+        assert!(rand_part.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(ts.len(), "20260101-000000".len());
+        assert!(valid_run_id(&id));
+        let ids: std::collections::HashSet<String> = (0..2000).map(|_| new_run_id()).collect();
+        assert_eq!(ids.len(), 2000);
+        // ids from older versions (16 random bits) stay valid for lookups
+        assert!(valid_run_id("20261027-053327-57e2"));
+        assert!(!valid_run_id("../etc") && !valid_run_id("") && !valid_run_id(&"a".repeat(64)));
+    }
+
+    #[test]
+    fn write_atomic_replaces_whole_files_and_never_creates_dirs() {
+        let d = std::env::temp_dir().join(format!("rh-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("status.json");
+        write_atomic(&f, b"one").unwrap();
+        write_atomic(&f, b"two-longer").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "two-longer");
+        let names: Vec<_> = std::fs::read_dir(&d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, vec!["status.json".to_string()], "no temp file may survive");
+        // parent gone (run deleted underneath a worker): fails, does not resurrect
+        let gone = d.join("deleted-run");
+        assert!(write_atomic(&gone.join("status.json"), b"x").is_err());
+        assert!(!gone.exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn remote_repo_hosts_in_every_spelling() {
+        let host = |s: &str| remote_repo_host(s).unwrap();
+        assert_eq!(host("https://GitHub.com/org/x"), "github.com");
+        assert_eq!(host("git:https://git.example.com:8443/org/x.git"), "git.example.com");
+        assert_eq!(host("git@git.example.com:org/x.git"), "git.example.com");
+        assert_eq!(host("git:git@git.example.com:org/x.git"), "git.example.com");
+        assert_eq!(host("deploy@git.example.com:org/x.git"), "git.example.com");
+        assert_eq!(host("ssh://git@git.example.com:2222/org/x.git"), "git.example.com");
+        assert_eq!(host("git:ssh://git@git.example.com/org/x.git"), "git.example.com");
+        // the real host of a backslash URL is the part before the backslash
+        assert_eq!(host("https://evil.example\\@git.example.com/x.git"), "evil.example");
+        for bad in ["git:ext::sh -c id", "file:///srv/x.git", "git@-oProxyCommand=x:org/x.git", "x.git", "git@host", "git@:path", "ftp://h/x.git", "git@ho st:x", "git@[::1]:x.git"] {
+            assert!(remote_repo_host(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn clone_url_is_the_normalised_form_of_what_was_checked() {
+        assert_eq!(clone_url("git:https://evil.example\\@git.example.com/x.git").unwrap(), "https://evil.example/@git.example.com/x.git");
+        assert_eq!(clone_url("git@host:org/x.git").unwrap(), "git@host:org/x.git");
+    }
+
+    #[test]
+    fn web_targets_are_normalised_at_parse_time() {
+        let t = parse_target("https://app.example\\@evil.example/x", None).unwrap();
+        assert_eq!(t.url.as_deref(), Some("https://app.example/@evil.example/x"));
+        assert!(parse_target("http://", None).is_err());
+    }
+
+    #[test]
+    fn git_command_is_non_interactive() {
+        let cmd = git_clone_command("git@h:o/r.git", Path::new("/tmp/x"));
+        let env: HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned())))
+            .collect();
+        assert_eq!(env.get("GIT_SSH_COMMAND").map(String::as_str), Some("ssh -o BatchMode=yes"));
+        assert_eq!(env.get("GIT_TERMINAL_PROMPT").map(String::as_str), Some("0"));
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(args.windows(2).any(|w| w == ["-c", "credential.helper="]));
+        assert!(args.iter().any(|a| a == "--"));
+        assert_eq!(args[args.len() - 2], "git@h:o/r.git");
+    }
+
+    #[test]
+    fn git_clone_times_out_and_does_not_leak_credentials() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        // a server that accepts and never answers: git hangs in the TLS handshake
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut held = vec![];
+            for c in l.incoming().flatten() {
+                held.push(c);
+            }
+        });
+        let dest = std::env::temp_dir().join(format!("rh-clone-{}", std::process::id()));
+        let t0 = Instant::now();
+        let e = git_clone(&format!("https://127.0.0.1:{port}/x.git"), &dest, Duration::from_secs(2)).unwrap_err().to_string();
+        assert!(e.contains("timed out"), "{e}");
+        assert!(t0.elapsed() < Duration::from_secs(10), "{:?}", t0.elapsed());
+        assert!(!dest.exists());
+
+        // refused connection: fails fast, credentials redacted from the message
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let e = git_clone(&format!("https://user:s3cr3tpass@127.0.0.1:{closed}/x.git"), &dest, Duration::from_secs(20)).unwrap_err().to_string();
+        assert!(e.contains("git clone failed"), "{e}");
+        assert!(!e.contains("s3cr3tpass"), "{e}");
+        assert!(git_clone("file:///etc", &dest, Duration::from_secs(1)).is_err());
+        assert_eq!(redact_url_credentials("fatal: https://u:p@h/x and ssh://k@h/y"), "fatal: https://***@h/x and ssh://***@h/y");
+    }
+
+    #[test]
+    fn deadline_registry_follows_the_guard() {
+        let id = "20990101-000000-00000000000000ff";
+        assert!(run_deadline(id).is_none() && !deadline_passed(id));
+        {
+            let _g = DeadlineGuard::new(id, Some(Instant::now() - Duration::from_secs(1)));
+            assert!(deadline_passed(id));
+        }
+        assert!(run_deadline(id).is_none(), "guard must unregister on drop");
+        let _g = DeadlineGuard::new(id, Some(Instant::now() + Duration::from_secs(60)));
+        assert!(!deadline_passed(id) && run_deadline(id).is_some());
+    }
+
+    #[test]
+    fn a_scan_past_its_deadline_fails_instead_of_returning_a_partial_verdict() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = std::env::temp_dir().join(format!("rh-deadline-{}", std::process::id()));
+        let target = d.join("repo");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("README.md"), "hi").unwrap();
+        unsafe { std::env::set_var("READYHAI_DATA", d.join("data")) };
+        let opts = ScanOpts {
+            target: target.to_string_lossy().into_owned(),
+            no_tools: true,
+            deadline: Some(Instant::now() - Duration::from_secs(1)),
+            ..Default::default()
+        };
+        let id = new_run_id();
+        let e = scan(&opts, &id).unwrap_err().to_string();
+        assert!(e.contains("deadline"), "{e}");
+        assert!(!run_dir(&id).join("run.json").exists(), "no run.json for a run that missed its deadline");
+        assert!(run_deadline(&id).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Play,
   Globe,
@@ -27,6 +27,8 @@ import {
   Terminal,
 } from "lucide-react";
 import type { ScanSummary, ScanDetail } from "@/types/scans";
+import { apiRequest, notify, useApiTokenVersion } from "@/lib/api";
+import { ReportButton, ReportFrame } from "./ReportButton";
 
 interface ScansHistoryViewProps {
   onSelectTarget?: (target: string) => void;
@@ -35,9 +37,13 @@ interface ScansHistoryViewProps {
 export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
   const [scans, setScans] = useState<ScanSummary[]>([]);
   const [selectedScanId, setSelectedScanId] = useState<string | null>(null);
-  const [selectedScanDetail, setSelectedScanDetail] = useState<ScanDetail | null>(null);
+  // Detail result is keyed by scan id, so switching scans never shows another scan's data.
+  const [detailResult, setDetailResult] = useState<{ id: string; detail: ScanDetail | null; error: string | null } | null>(
+    null
+  );
   const [isLoadingList, setIsLoadingList] = useState(true);
-  const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const [listError, setListError] = useState<string | null>(null);
+  const tokenVersion = useApiTokenVersion();
   const [searchQuery, setSearchQuery] = useState("");
   const [verdictFilter, setVerdictFilter] = useState<"ALL" | "PASS" | "WARN" | "FAIL">("ALL");
   const [kindFilter, setKindFilter] = useState<string>("ALL");
@@ -53,21 +59,45 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
   const [isSubmittingScan, setIsSubmittingScan] = useState(false);
   const [scanSubmitError, setScanSubmitError] = useState<string | null>(null);
 
-  // Auto-refresh when any scan is queued or running
+  // Fetch scans list
+  const loadScans = useCallback(
+    () =>
+      apiRequest<{ scans?: ScanSummary[] }>("/api/scans", { label: "Loading scans" }).then((r) => {
+        if (r.ok && r.data) {
+          const list: ScanSummary[] = r.data.scans || [];
+          setScans(list);
+          setListError(null);
+          setSelectedScanId((cur) => cur ?? list[0]?.id ?? null);
+        } else {
+          setListError(r.ok ? "Loading scans failed: empty response." : r.error);
+        }
+        setIsLoadingList(false);
+      }),
+    []
+  );
+
+  // Manual refresh (button / after starting a scan): shows the spinner.
+  const fetchScans = () => {
+    setIsLoadingList(true);
+    return loadScans();
+  };
+
+  // Auto-refresh when any scan is queued or running (silent: a 401 raises the token banner)
   useEffect(() => {
     const hasPending = scans.some((s) => s.state === "queued" || s.state === "running");
     if (!hasPending) return;
     const interval = setInterval(() => {
-      fetchScans();
+      loadScans();
       if (selectedScanId) {
-        fetch(`/api/scans/${selectedScanId}`)
-          .then((r) => r.ok && r.json())
-          .then((data) => data && setSelectedScanDetail(data))
-          .catch(() => {});
+        apiRequest<ScanDetail>(`/api/scans/${encodeURIComponent(selectedScanId)}`, { label: "Refreshing scan" }).then(
+          (r) => {
+            if (r.ok && r.data) setDetailResult({ id: selectedScanId, detail: r.data, error: null });
+          }
+        );
       }
     }, 2500);
     return () => clearInterval(interval);
-  }, [scans, selectedScanId]);
+  }, [scans, selectedScanId, loadScans]);
 
   const handleLaunchScan = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -78,101 +108,72 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
     }
     setIsSubmittingScan(true);
     setScanSubmitError(null);
-    try {
-      const res = await fetch("/api/scans", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          target: trimmed,
-          profile: newScanProfile,
-        }),
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || `HTTP ${res.status}: Failed to start scan`);
-      }
-      const data = await res.json();
-      setShowScanModal(false);
-      setNewScanTarget("");
-      await fetchScans();
-      if (data.id) {
-        setSelectedScanId(data.id);
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setScanSubmitError(msg);
-    } finally {
+    const r = await apiRequest<{ id?: string }>("/api/scans", {
+      method: "POST",
+      json: { target: trimmed, profile: newScanProfile },
+      label: "Start scan",
+    });
+    if (!r.ok) {
+      setScanSubmitError(r.error);
       setIsSubmittingScan(false);
+      return;
     }
-  };
-
-  // Fetch scans list
-  const fetchScans = async () => {
-    setIsLoadingList(true);
-    try {
-      const res = await fetch("/api/scans");
-      if (res.ok) {
-        const data = await res.json();
-        const list: ScanSummary[] = data.scans || [];
-        setScans(list);
-        if (list.length > 0 && !selectedScanId) {
-          setSelectedScanId(list[0].id);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to fetch scans:", e);
-    } finally {
-      setIsLoadingList(false);
+    setShowScanModal(false);
+    setNewScanTarget("");
+    await fetchScans();
+    if (r.data?.id) {
+      setSelectedScanId(r.data.id);
     }
+    setIsSubmittingScan(false);
   };
 
   useEffect(() => {
-    fetchScans();
-  }, []);
+    loadScans();
+  }, [loadScans, tokenVersion]);
 
   // Fetch scan detail when selectedScanId changes
   useEffect(() => {
-    if (!selectedScanId) {
-      setSelectedScanDetail(null);
-      return;
-    }
+    if (!selectedScanId) return;
     let isCancelled = false;
-    const fetchDetail = async () => {
-      setIsLoadingDetail(true);
-      try {
-        const res = await fetch(`/api/scans/${selectedScanId}`);
-        if (res.ok) {
-          const data: ScanDetail = await res.json();
-          if (!isCancelled) {
-            setSelectedScanDetail(data);
-          }
-        }
-      } catch (e) {
-        console.error("Failed to fetch scan detail:", e);
-      } finally {
-        if (!isCancelled) setIsLoadingDetail(false);
+    apiRequest<ScanDetail>(`/api/scans/${encodeURIComponent(selectedScanId)}`, {
+      label: "Loading scan detail",
+    }).then((r) => {
+      if (isCancelled) return;
+      if (r.ok && r.data) {
+        setDetailResult({ id: selectedScanId, detail: r.data, error: null });
+      } else {
+        setDetailResult({
+          id: selectedScanId,
+          detail: null,
+          error: r.ok ? "Scan detail was empty." : r.error,
+        });
       }
-    };
-    fetchDetail();
+    });
     return () => {
       isCancelled = true;
     };
-  }, [selectedScanId]);
+  }, [selectedScanId, tokenVersion]);
+
+  const currentDetail = detailResult && detailResult.id === selectedScanId ? detailResult : null;
+  const selectedScanDetail: ScanDetail | null = currentDetail?.detail ?? null;
+  const detailError = currentDetail?.error ?? null;
+  const isLoadingDetail = !!selectedScanId && currentDetail === null;
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm(`Delete scan session ${id}?`)) return;
-    try {
-      const res = await fetch(`/api/scans/${id}`, { method: "DELETE" });
-      if (res.ok) {
-        setScans((prev) => prev.filter((s) => s.id !== id));
-        if (selectedScanId === id) {
-          const remaining = scans.filter((s) => s.id !== id);
-          setSelectedScanId(remaining.length > 0 ? remaining[0].id : null);
-        }
-      }
-    } catch (err) {
-      console.error("Failed to delete scan:", err);
+    const r = await apiRequest<unknown>(`/api/scans/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      label: "Delete scan",
+    });
+    if (!r.ok) {
+      notify(r.error);
+      return;
+    }
+    setScans((prev) => prev.filter((s) => s.id !== id));
+    if (selectedScanId === id) {
+      const remaining = scans.filter((s) => s.id !== id);
+      setSelectedScanId(remaining.length > 0 ? remaining[0].id : null);
     }
   };
 
@@ -389,6 +390,11 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
                 <RefreshCw className="w-5 h-5 animate-spin mx-auto text-cyan-400" />
                 <p>Loading scan sessions...</p>
               </div>
+            ) : listError ? (
+              <div className="p-6 text-center text-xs text-rose-300 font-mono space-y-1" role="alert">
+                <p className="font-medium">Could not load scans</p>
+                <p className="text-[11px] break-words">{listError}</p>
+              </div>
             ) : filteredScans.length === 0 ? (
               <div className="p-6 text-center text-xs text-slate-500">
                 <p className="font-medium text-slate-400">No scan sessions found</p>
@@ -488,6 +494,10 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
             <div className="flex-1 flex items-center justify-center p-8">
               <RefreshCw className="w-6 h-6 animate-spin text-cyan-400" />
             </div>
+          ) : detailError && !selectedScanDetail ? (
+            <div className="flex-1 flex items-center justify-center p-8 text-center text-xs font-mono text-rose-300" role="alert">
+              <p className="max-w-md break-words">{detailError}</p>
+            </div>
           ) : selectedScanDetail ? (
             <div className="p-6 space-y-5 max-w-6xl w-full mx-auto">
               {/* Top Hero Banner */}
@@ -565,45 +575,47 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
                     </button>
 
                     {/* Download SARIF 2.1.0 */}
-                    <a
-                      href={`/api/scans/${selectedScanDetail.id}/report/sarif`}
-                      download={`readyhai-${selectedScanDetail.id}.sarif`}
+                    <ReportButton
+                      path={`/api/scans/${selectedScanDetail.id}/report/sarif`}
+                      mode="download"
+                      filename={`readyhai-${selectedScanDetail.id}.sarif`}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14223b] hover:bg-[#1a2d4f] border border-[#233a63] text-cyan-300 text-xs font-mono font-medium transition-colors cursor-pointer"
                     >
                       <Download className="w-3.5 h-3.5 text-cyan-400" />
                       SARIF 2.1.0
-                    </a>
+                    </ReportButton>
 
                     {/* Download JSON */}
-                    <a
-                      href={`/api/scans/${selectedScanDetail.id}/report/json`}
-                      download={`readyhai-${selectedScanDetail.id}.json`}
+                    <ReportButton
+                      path={`/api/scans/${selectedScanDetail.id}/report/json`}
+                      mode="download"
+                      filename={`readyhai-${selectedScanDetail.id}.json`}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14223b] hover:bg-[#1a2d4f] border border-[#233a63] text-slate-200 text-xs font-mono font-medium transition-colors cursor-pointer"
                     >
                       <Download className="w-3.5 h-3.5 text-slate-400" />
                       JSON
-                    </a>
+                    </ReportButton>
 
                     {/* Download JUnit XML */}
-                    <a
-                      href={`/api/scans/${selectedScanDetail.id}/report/junit`}
-                      download={`readyhai-${selectedScanDetail.id}.junit.xml`}
+                    <ReportButton
+                      path={`/api/scans/${selectedScanDetail.id}/report/junit`}
+                      mode="download"
+                      filename={`readyhai-${selectedScanDetail.id}.junit.xml`}
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14223b] hover:bg-[#1a2d4f] border border-[#233a63] text-slate-200 text-xs font-mono font-medium transition-colors cursor-pointer"
                     >
                       <Download className="w-3.5 h-3.5 text-slate-400" />
                       JUnit XML
-                    </a>
+                    </ReportButton>
 
                     {/* Direct Tab Link */}
-                    <a
-                      href={`/api/scans/${selectedScanDetail.id}/report/html`}
-                      target="_blank"
-                      rel="noreferrer"
+                    <ReportButton
+                      path={`/api/scans/${selectedScanDetail.id}/report/html`}
+                      mode="tab"
                       className="p-1.5 rounded-lg bg-[#14223b] hover:bg-[#1a2d4f] border border-[#233a63] text-slate-400 hover:text-white transition-colors cursor-pointer"
                       title="Open HTML Report in new tab"
                     >
                       <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
+                    </ReportButton>
                   </div>
                 </div>
               </div>
@@ -885,15 +897,14 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
                 <span className="text-xs text-cyan-300 font-semibold">#{selectedScanDetail.id}</span>
               </div>
               <div className="flex items-center gap-3">
-                <a
-                  href={`/api/scans/${selectedScanDetail.id}/report/html`}
-                  target="_blank"
-                  rel="noreferrer"
+                <ReportButton
+                  path={`/api/scans/${selectedScanDetail.id}/report/html`}
+                  mode="tab"
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14223b] hover:bg-[#1a2d4f] border border-[#233a63] text-xs font-mono text-cyan-300 transition-colors cursor-pointer"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   Open in New Tab
-                </a>
+                </ReportButton>
                 <button
                   onClick={() => setShowHtmlModal(false)}
                   className="p-1.5 rounded-lg bg-[#14223b] hover:bg-red-950 hover:text-red-400 text-slate-400 border border-[#233a63] transition-colors cursor-pointer"
@@ -906,11 +917,10 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
 
             {/* IFrame Container */}
             <div className="flex-1 bg-white relative">
-              <iframe
-                src={`/api/scans/${selectedScanDetail.id}/report/html`}
+              <ReportFrame
+                path={`/api/scans/${selectedScanDetail.id}/report/html`}
                 title="ReadyHai HTML Report"
                 className="w-full h-full border-0"
-                sandbox="allow-same-origin allow-scripts"
               />
             </div>
           </div>
@@ -999,7 +1009,7 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
                     <button
                       key={p.id}
                       type="button"
-                      onClick={() => setNewScanProfile(p.id as any)}
+                      onClick={() => setNewScanProfile(p.id as "quick" | "standard" | "deep")}
                       className={`p-2.5 rounded-lg border text-left cursor-pointer transition-all ${
                         newScanProfile === p.id
                           ? "bg-cyan-950/60 border-cyan-500/80 text-cyan-300"

@@ -1,21 +1,17 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Globe,
   Bot,
   Radar,
   ShieldCheck,
-  AlertTriangle,
-  XCircle,
-  CheckCircle2,
   Search,
   RefreshCw,
   Trash2,
   Copy,
   Check,
   Clock,
-  Play,
   RotateCw,
   Terminal,
   ChevronDown,
@@ -29,25 +25,42 @@ import {
   FileCode,
   ExternalLink,
   Shield,
-  Download,
   X,
 } from "lucide-react";
 import type {
-  AgentRunFull,
+  AgentRunRecord,
   TestCaseResult,
 } from "@/types/agent";
+import { apiRequest, notify, useApiTokenVersion } from "@/lib/api";
+import {
+  buildLedger,
+  getPillars,
+  isGateVerdict,
+  ledgerScore,
+  ledgerVerdict,
+  normalizeVerdict,
+  numOrNull,
+  runCases,
+  runDefectCount,
+} from "@/lib/runs";
+import { ReportButton, ReportFrame } from "./ReportButton";
+import { VerdictBadge } from "./VerdictBadge";
 
 interface AgentHistoryViewProps {
-  onLoadRunInStudio?: (run: any) => void;
+  onLoadRunInStudio?: (run: AgentRunRecord) => void;
   onRetestCase?: (testCase: TestCaseResult) => Promise<void>;
   onBackToStudio?: () => void;
 }
 
 export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStudio }: AgentHistoryViewProps) {
-  const [runs, setRuns] = useState<AgentRunFull[]>([]);
+  const [runs, setRuns] = useState<AgentRunRecord[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const [selectedRun, setSelectedRun] = useState<AgentRunFull | null>(null);
+  const [fetchedRun, setFetchedRun] = useState<AgentRunRecord | null>(null);
+  const [signedOff, setSignedOff] = useState<Record<string, AgentRunRecord>>({});
   const [isLoading, setIsLoading] = useState(true);
+  const [listError, setListError] = useState<string | null>(null);
+  const [detailFailure, setDetailFailure] = useState<{ id: string; message: string } | null>(null);
+  const tokenVersion = useApiTokenVersion();
   const [searchQuery, setSearchQuery] = useState("");
   const [verdictFilter, setVerdictFilter] = useState<string>("ALL");
   const [activeTab, setActiveTab] = useState<"scenarios" | "routes" | "ledger" | "threats" | "steps">("scenarios");
@@ -56,66 +69,88 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
   const [scenarioFilter, setScenarioFilter] = useState<string>("ALL");
   const [showReportModal, setShowReportModal] = useState(false);
 
-  // Signoff state
-  const [operatorName, setOperatorName] = useState("SecOps Lead");
-  const [approvalNotes, setApprovalNotes] = useState("Production gate verified and cleared");
+  // Signoff state (no pre-filled operator or attestation text: a sign-off must be written by a person)
+  const [operatorName, setOperatorName] = useState("");
+  const [approvalNotes, setApprovalNotes] = useState("");
   const [isSigning, setIsSigning] = useState(false);
+  const [signOffError, setSignOffError] = useState<string | null>(null);
 
-  const fetchRuns = async () => {
-    setIsLoading(true);
-    try {
-      const res = await fetch("/api/agent/runs");
-      if (res.ok) {
-        const data = await res.json();
-        const list: AgentRunFull[] = Array.isArray(data) ? data : data.runs || [];
-        setRuns(list);
-        if (list.length > 0 && !selectedRunId) {
-          setSelectedRunId(list[0].id);
+  const loadRuns = useCallback(
+    () =>
+      apiRequest<AgentRunRecord[] | { runs?: AgentRunRecord[] }>("/api/agent/runs", {
+        label: "Loading agent runs",
+      }).then((r) => {
+        if (r.ok && r.data) {
+          const list: AgentRunRecord[] = Array.isArray(r.data) ? r.data : r.data.runs || [];
+          setRuns(list);
+          setListError(null);
+          setSelectedRunId((cur) => cur ?? list[0]?.id ?? null);
+        } else {
+          setListError(r.ok ? "Loading agent runs failed: empty response." : r.error);
         }
-      }
-    } catch (e) {
-      console.error("Failed to fetch agent runs:", e);
-    } finally {
-      setIsLoading(false);
-    }
+        setIsLoading(false);
+      }),
+    []
+  );
+
+  // Manual refresh (button / after a sign-off): shows the spinner.
+  const fetchRuns = () => {
+    setIsLoading(true);
+    return loadRuns();
   };
 
   useEffect(() => {
-    fetchRuns();
-  }, []);
+    loadRuns();
+  }, [loadRuns, tokenVersion]);
 
+  // Fetch the full run when it is not in the list. A sign-off confirmed by the backend is
+  // layered on top, so the view only ever shows backend-confirmed approval state.
   useEffect(() => {
-    if (!selectedRunId) {
-      setSelectedRun(null);
-      return;
-    }
-    const found = runs.find((r) => r.id === selectedRunId);
-    if (found) {
-      setSelectedRun(found);
-    } else {
-      fetch(`/api/agent/runs/${selectedRunId}`)
-        .then((r) => (r.ok ? r.json() : null))
-        .then((d) => {
-          if (d) setSelectedRun(d);
-        })
-        .catch(console.error);
-    }
+    if (!selectedRunId) return;
+    if (runs.some((r) => r.id === selectedRunId)) return;
+    let cancelled = false;
+    apiRequest<AgentRunRecord>(`/api/agent/runs/${encodeURIComponent(selectedRunId)}`, {
+      label: `Loading run ${selectedRunId}`,
+    }).then((r) => {
+      if (cancelled) return;
+      if (r.ok && r.data) {
+        setFetchedRun(r.data);
+        setDetailFailure(null);
+      } else {
+        setFetchedRun(null);
+        setDetailFailure({ id: selectedRunId, message: r.ok ? "Run details were empty." : r.error });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedRunId, runs]);
+
+  const baseRun: AgentRunRecord | null = selectedRunId
+    ? runs.find((r) => r.id === selectedRunId) ?? (fetchedRun?.id === selectedRunId ? fetchedRun : null)
+    : null;
+  const selectedRun: AgentRunRecord | null = useMemo(
+    () => (baseRun && baseRun.id && signedOff[baseRun.id] ? { ...baseRun, ...signedOff[baseRun.id] } : baseRun),
+    [baseRun, signedOff]
+  );
+  const selectedId = selectedRun?.id ?? "";
+  const detailError = detailFailure && detailFailure.id === selectedRunId ? detailFailure.message : null;
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm(`Delete agent swarm run ${id}?`)) return;
-    try {
-      const res = await fetch(`/api/agent/runs/${id}`, { method: "DELETE" });
-      if (res.ok) {
-        setRuns((prev) => prev.filter((r) => r.id !== id));
-        if (selectedRunId === id) {
-          const remaining = runs.filter((r) => r.id !== id);
-          setSelectedRunId(remaining.length > 0 ? remaining[0].id : null);
-        }
-      }
-    } catch (err) {
-      console.error("Failed to delete agent run:", err);
+    const r = await apiRequest<unknown>(`/api/agent/runs/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      label: "Delete run",
+    });
+    if (!r.ok) {
+      notify(r.error);
+      return;
+    }
+    setRuns((prev) => prev.filter((x) => x.id !== id));
+    if (selectedRunId === id) {
+      const remaining = runs.filter((x) => x.id !== id);
+      setSelectedRunId(remaining.length > 0 ? remaining[0].id ?? null : null);
     }
   };
 
@@ -126,120 +161,60 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
   };
 
   const handleSignOff = async (action: "approve" | "reject") => {
-    if (!selectedRun) return;
+    if (!selectedRun?.id) return;
+    const runId = selectedRun.id;
     setIsSigning(true);
-    try {
-      const res = await fetch(`/api/agent/runs/${selectedRun.id}/${action}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user: operatorName, notes: approvalNotes }),
-      });
-      if (res.ok) {
-        setSelectedRun((prev) =>
-          prev
-            ? {
-                ...prev,
-                approval_status: action === "approve" ? "approved" : "rejected",
-                approved_by: operatorName,
-                approval_notes: approvalNotes,
-                approved_at: new Date().toISOString(),
-              }
-            : null
-        );
-        fetchRuns();
-      }
-    } catch (e) {
-      console.error("Signoff failed:", e);
-    } finally {
+    setSignOffError(null);
+    // Only the backend's confirmed response changes the displayed approval state.
+    const r = await apiRequest<AgentRunRecord>(`/api/agent/runs/${encodeURIComponent(runId)}/${action}`, {
+      method: "POST",
+      json: { user: operatorName.trim(), notes: approvalNotes.trim() },
+      label: action === "approve" ? "Approve" : "Reject",
+    });
+    if (!r.ok) {
+      setSignOffError(r.error);
       setIsSigning(false);
+      return;
     }
+    const confirmed = r.data;
+    setSignedOff((prev) => ({
+      ...prev,
+      [runId]: {
+        approval_status: confirmed?.approval_status || (action === "approve" ? "approved" : "rejected"),
+        approved_by: confirmed?.approved_by || operatorName.trim(),
+        approval_notes: confirmed?.approval_notes ?? approvalNotes.trim(),
+      },
+    }));
+    fetchRuns();
+    setIsSigning(false);
   };
 
   const filteredRuns = useMemo(() => {
     return runs.filter((r) => {
-      const verdict = r.evidence_ledger?.gate_verdict || "UNKNOWN";
+      const verdict = ledgerVerdict(r.evidence_ledger) ?? normalizeVerdict(r.gate_verdict);
       if (verdictFilter !== "ALL" && verdict !== verdictFilter) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
-        const matchTarget = r.target.toLowerCase().includes(q);
-        const matchId = r.id.toLowerCase().includes(q);
+        const matchTarget = (r.target ?? "").toLowerCase().includes(q);
+        const matchId = (r.id ?? "").toLowerCase().includes(q);
         if (!matchTarget && !matchId) return false;
       }
       return true;
     });
   }, [runs, verdictFilter, searchQuery]);
 
-  // Normalize test cases from executed results or planned cases
-  const allCases: TestCaseResult[] = useMemo(() => {
-    if (!selectedRun) return [];
-    if (selectedRun.executed_results && selectedRun.executed_results.length > 0) {
-      return selectedRun.executed_results.map((c: any) => ({
-        id: c.case_id || c.id,
-        title: c.title,
-        component: c.component,
-        technique: c.technique,
-        method: c.method || "GET",
-        status: (c.status || "PASS") as any,
-        latency_ms: c.latency_ms || 25,
-        curl: c.curl_reproduction || c.curl || "",
-        request_payload: c.request_payload,
-        response_status: c.response_status,
-        response_content_type: c.response_content_type,
-        response_body: c.response_body_snippet || c.response_body,
-        assertion_details: c.assertion_details,
-      }));
-    }
-    if (selectedRun.planned_cases && selectedRun.planned_cases.length > 0) {
-      return selectedRun.planned_cases.map((c) => ({
-        id: c.id,
-        title: c.title,
-        component: c.component,
-        technique: c.technique,
-        method: c.method,
-        status: "PLANNED" as any,
-        latency_ms: 0,
-        curl: `curl -X ${c.method} "${selectedRun.target}${c.component}"`,
-        request_payload: c.payload,
-        response_status: c.expected_status,
-        assertion_details: c.expected_behavior,
-      }));
-    }
-    return [];
-  }, [selectedRun]);
+  // Normalize test cases from executed results or planned cases (no invented status or latency)
+  const allCases: TestCaseResult[] = useMemo(() => (selectedRun ? runCases(selectedRun) : []), [selectedRun]);
 
   const filteredCases = useMemo(() => {
     if (scenarioFilter === "ALL") return allCases;
     return allCases.filter((c) => c.status === scenarioFilter);
   }, [allCases, scenarioFilter]);
 
-  const getGateVerdictBadge = (verdict?: string) => {
-    switch (verdict) {
-      case "GO":
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-950/90 text-emerald-400 border border-emerald-500/50">
-            <CheckCircle2 className="w-3 h-3" /> GO
-          </span>
-        );
-      case "CONDITIONAL_GO":
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-950/90 text-amber-400 border border-amber-500/50">
-            <AlertTriangle className="w-3 h-3" /> CONDITIONAL GO
-          </span>
-        );
-      case "NO_GO":
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-950/90 text-red-400 border border-red-500/50">
-            <XCircle className="w-3 h-3" /> NO GO
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-900 text-slate-400 border border-slate-700">
-            {verdict || "EVALUATING"}
-          </span>
-        );
-    }
-  };
+  // Gate verdict for the selected run, as reported by the backend (null = not evaluated)
+  const selectedLedger = selectedRun ? buildLedger(selectedRun) : null;
+  const selectedVerdict = ledgerVerdict(selectedLedger);
+  const selectedPillars = getPillars(selectedLedger);
 
   const getCaseStatusBadge = (status: string) => {
     switch (status) {
@@ -352,6 +327,11 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                 <RefreshCw className="w-5 h-5 animate-spin mx-auto text-cyan-400" />
                 <p>Loading agent sessions...</p>
               </div>
+            ) : listError ? (
+              <div className="p-6 text-center text-xs text-rose-300 font-mono space-y-1" role="alert">
+                <p className="font-medium">Could not load agent runs</p>
+                <p className="text-[11px] break-words">{listError}</p>
+              </div>
             ) : filteredRuns.length === 0 ? (
               <div className="p-6 text-center text-xs text-slate-500">
                 <p className="font-medium text-slate-400">No agent runs found</p>
@@ -361,16 +341,18 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
               filteredRuns.map((run) => {
                 const isSelected = selectedRunId === run.id;
                 const dateStr = run.started_at ? new Date(run.started_at).toLocaleString() : "Unknown";
-                const readiness = run.evidence_ledger?.overall_readiness ?? 85;
-                const gate = run.evidence_ledger?.gate_verdict;
+                // Backend-reported values only; a run without them shows "not evaluated".
+                const gate = ledgerVerdict(run.evidence_ledger) ?? normalizeVerdict(run.gate_verdict);
+                const rawReadiness = ledgerScore(run.evidence_ledger) ?? numOrNull(run.readiness_score);
+                const readiness = gate === "SCANNED" ? null : rawReadiness;
                 const routesCount = run.discovered_routes?.length || 0;
-                const casesCount = run.executed_results?.length || run.planned_cases?.length || 0;
-                const defectsCount = run.triaged_defects?.length || 0;
+                const casesCount = run.executed_results?.length || run.planned_cases?.length || run.cases_count || 0;
+                const defectsCount = runDefectCount(run) ?? 0;
 
                 return (
                   <div
                     key={run.id}
-                    onClick={() => setSelectedRunId(run.id)}
+                    onClick={() => setSelectedRunId(run.id ?? null)}
                     className={`p-3.5 cursor-pointer transition-all border-l-2 ${
                       isSelected
                         ? "bg-[#101b2f] border-l-cyan-400 shadow-[inset_0_0_12px_rgba(6,182,212,0.1)]"
@@ -386,16 +368,16 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                           </h4>
                         </div>
                         <div className="flex items-center gap-2 mt-1.5">
-                          <span className="text-[10px] font-mono text-slate-500">#{run.id.slice(-8)}</span>
+                          <span className="text-[10px] font-mono text-slate-500">#{(run.id ?? "").slice(-8)}</span>
                           <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#131e33] text-cyan-300 border border-[#1e2e4c]">
-                            {run.profile || "adversarial-qa"}
+                            {run.profile || "profile unknown"}
                           </span>
                         </div>
                       </div>
                       <div className="shrink-0 flex flex-col items-end gap-1">
-                        {getGateVerdictBadge(gate)}
+                        <VerdictBadge verdict={gate} />
                         <span className="text-[11px] font-mono font-bold text-slate-200 mt-0.5">
-                          {readiness}/100
+                          {readiness === null ? <span className="text-slate-500 font-normal">not evaluated</span> : `${readiness}/100`}
                         </span>
                       </div>
                     </div>
@@ -407,7 +389,9 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                       </div>
                       <div className="flex items-center gap-1.5">
                         <span className="text-slate-400">{routesCount} routes · {casesCount} tests</span>
-                        <span className="text-[10px] text-cyan-400/90 font-mono hidden md:inline">🌐 {run.requester_ip || "47.29.26.1"}</span>
+                        {run.requester_ip && (
+                          <span className="text-[10px] text-cyan-400/90 font-mono hidden md:inline">🌐 {run.requester_ip}</span>
+                        )}
                         {defectsCount > 0 && (
                           <span className="px-1.5 py-0.2 rounded bg-amber-950/70 text-amber-400 border border-amber-800/40 text-[9px] font-semibold">
                             {defectsCount} defects
@@ -416,7 +400,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            setSelectedRunId(run.id);
+                            setSelectedRunId(run.id ?? null);
                             setShowReportModal(true);
                           }}
                           className="px-2 py-0.5 rounded bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-800/60 text-cyan-300 text-[10px] font-mono flex items-center gap-1 transition-colors cursor-pointer"
@@ -426,7 +410,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                           Report
                         </button>
                         <button
-                          onClick={(e) => handleDelete(run.id, e)}
+                          onClick={(e) => handleDelete(run.id ?? "", e)}
                           className="text-slate-600 hover:text-red-400 transition-colors p-1 cursor-pointer"
                           title="Delete run"
                         >
@@ -451,7 +435,17 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                 Choose a session on the left to inspect multi-agent test execution, reproduction cURLs, discovered attack surfaces, and sign off the gate evidence ledger.
               </p>
             </div>
-          ) : selectedRun ? (
+          ) : !selectedRun ? (
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-xs font-mono">
+              {detailError ? (
+                <p className="text-rose-300 max-w-md break-words" role="alert">{detailError}</p>
+              ) : (
+                <p className="text-slate-500 flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4 animate-spin text-cyan-400" /> Loading run details...
+                </p>
+              )}
+            </div>
+          ) : (
             <div className="p-6 space-y-5 max-w-6xl w-full mx-auto">
               {/* Hero Banner */}
               <div className="p-5 rounded-xl bg-gradient-to-br from-[#0c1527] to-[#080d19] border border-[#1b2a45] shadow-lg relative overflow-hidden">
@@ -462,13 +456,14 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                         4-Agent QA Swarm
                       </span>
                       <span className="text-xs font-mono px-2 py-0.5 rounded bg-[#142036] border border-[#213454] text-slate-300 font-medium">
-                        profile: {selectedRun.profile}
+                        profile: {selectedRun.profile || "unknown"}
                       </span>
+                      <VerdictBadge verdict={selectedVerdict} />
                       <span className="text-xs font-mono text-slate-500">
                         ID: {selectedRun.id}
                       </span>
                       <button
-                        onClick={() => handleCopy(selectedRun.id, "id")}
+                        onClick={() => handleCopy(selectedId, "id")}
                         className="text-slate-500 hover:text-cyan-300 cursor-pointer p-0.5"
                         title="Copy Session ID"
                       >
@@ -479,7 +474,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                     <h2 className="text-lg font-bold text-white font-mono break-all flex items-center gap-2">
                       {selectedRun.target}
                       <button
-                        onClick={() => handleCopy(selectedRun.target, "target")}
+                        onClick={() => handleCopy(selectedRun.target ?? "", "target")}
                         className="text-slate-500 hover:text-cyan-300 cursor-pointer"
                         title="Copy target URL"
                       >
@@ -491,7 +486,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                       <span>Started: {selectedRun.started_at ? new Date(selectedRun.started_at).toLocaleString() : "-"}</span>
                       <span className="flex items-center gap-1.5 text-slate-300">
                         <Cpu className="w-3.5 h-3.5 text-cyan-400" />
-                        qwen3.8-flash-next · {selectedRun.provider}
+                        {selectedRun.model || "model not reported"} · {selectedRun.provider || "provider not reported"}
                       </span>
                     </div>
                   </div>
@@ -510,21 +505,27 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                         Requester Egress Public IP:
                       </span>
                       <span className="text-xs font-mono font-bold text-cyan-300 bg-[#0d1627] px-2 py-0.5 rounded border border-cyan-700/60">
-                        {selectedRun.requester_ip || "47.29.26.1"}
+                        {selectedRun.requester_ip || "unknown"}
                       </span>
-                      <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/50">
-                        {selectedRun.requester_ip_type || "Public Egress"}
-                      </span>
+                      {selectedRun.requester_ip_type && (
+                        <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/50">
+                          {selectedRun.requester_ip_type}
+                        </span>
+                      )}
                     </div>
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      {selectedRun.allowlist_guidance || "Whitelist this IP on your target firewall, AWS Security Group, or Cloudflare WAF if testing private networks."}
+                      {selectedRun.requester_ip
+                        ? selectedRun.allowlist_guidance ||
+                          "Whitelist this IP on your target firewall, AWS Security Group, or Cloudflare WAF if testing private networks."
+                        : "No requester IP was recorded for this run."}
                     </p>
                   </div>
                 </div>
                 <button
                   type="button"
-                  onClick={() => handleCopy(selectedRun.requester_ip || "47.29.26.1", "ip")}
-                  className="px-2.5 py-1.5 rounded text-xs font-mono bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-800 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0"
+                  disabled={!selectedRun.requester_ip}
+                  onClick={() => handleCopy(selectedRun.requester_ip ?? "", "ip")}
+                  className="px-2.5 py-1.5 rounded text-xs font-mono bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-800 transition-colors flex items-center gap-1.5 cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                   title="Copy Requester Egress IP for firewall whitelisting"
                 >
                   {copiedId === "ip" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -563,60 +564,63 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                   </button>
 
                   {/* Open in New Tab */}
-                  <a
-                    href={`/api/agent/runs/${selectedRun.id}/report/html`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-cyan-300 font-mono text-xs flex items-center gap-1.5 transition-colors"
+                  <ReportButton
+                    path={`/api/agent/runs/${selectedId}/report/html`}
+                    mode="tab"
+                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-cyan-300 font-mono text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
                     title="Open HTML report in full browser tab"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                     Open Tab
-                  </a>
+                  </ReportButton>
 
                   {/* Download Markdown Report */}
-                  <a
-                    href={`/api/agent/runs/${selectedRun.id}/report/markdown`}
-                    download
-                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-purple-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors"
+                  <ReportButton
+                    path={`/api/agent/runs/${selectedId}/report/markdown`}
+                    mode="download"
+                    filename={`readyhai-agent-report-${selectedId}.md`}
+                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-purple-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
                     title="Download Markdown summary for Pull Requests"
                   >
                     <FileCode className="w-3.5 h-3.5 text-purple-400" />
                     Markdown (PR)
-                  </a>
+                  </ReportButton>
 
                   {/* Download SARIF Report */}
-                  <a
-                    href={`/api/agent/runs/${selectedRun.id}/report/sarif`}
-                    download
-                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-amber-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors"
+                  <ReportButton
+                    path={`/api/agent/runs/${selectedId}/report/sarif`}
+                    mode="download"
+                    filename={`readyhai-agent-report-${selectedId}.sarif`}
+                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-amber-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
                     title="Download OASIS SARIF v2.1.0 for GitHub/GitLab Security tab"
                   >
                     <Shield className="w-3.5 h-3.5 text-amber-400" />
                     SARIF
-                  </a>
+                  </ReportButton>
 
                   {/* Download JSON Report */}
-                  <a
-                    href={`/api/agent/runs/${selectedRun.id}/report/json`}
-                    download
-                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-emerald-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors"
+                  <ReportButton
+                    path={`/api/agent/runs/${selectedId}/report/json`}
+                    mode="download"
+                    filename={`readyhai-agent-report-${selectedId}.json`}
+                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-emerald-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
                     title="Download Complete Execution Data (JSON)"
                   >
                     <FileText className="w-3.5 h-3.5 text-emerald-400" />
                     JSON
-                  </a>
+                  </ReportButton>
 
                   {/* Download JUnit XML Report */}
-                  <a
-                    href={`/api/agent/runs/${selectedRun.id}/report/junit`}
-                    download
-                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-sky-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors"
+                  <ReportButton
+                    path={`/api/agent/runs/${selectedId}/report/junit`}
+                    mode="download"
+                    filename={`readyhai-agent-report-${selectedId}.junit.xml`}
+                    className="px-2.5 py-1.5 rounded-lg bg-[#111c2e] hover:bg-[#17263d] border border-[#213553] text-sky-300 hover:text-white font-mono text-xs flex items-center gap-1.5 transition-colors cursor-pointer"
                     title="Download JUnit XML for CI/CD test results"
                   >
                     <Terminal className="w-3.5 h-3.5 text-sky-400" />
                     JUnit
-                  </a>
+                  </ReportButton>
                 </div>
               </div>
 
@@ -645,9 +649,9 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                 <div className="p-3.5 rounded-xl bg-[#0c1424] border border-[#1b2a45] shadow-sm">
                   <div className="text-[11px] font-mono text-slate-400 uppercase">OWASP Defects</div>
                   <div className={`text-2xl font-bold font-mono mt-1 ${
-                    (selectedRun.triaged_defects?.length || 0) > 0 ? 'text-amber-400' : 'text-emerald-400'
+                    (runDefectCount(selectedRun) ?? 0) > 0 ? 'text-amber-400' : isGateVerdict(selectedVerdict) ? 'text-emerald-400' : 'text-slate-300'
                   }`}>
-                    {selectedRun.triaged_defects?.length || 0}
+                    {runDefectCount(selectedRun) ?? "n/a"}
                   </div>
                   <div className="text-[10px] text-slate-500 font-mono mt-0.5">Triaged vulnerabilities</div>
                 </div>
@@ -726,7 +730,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                   {/* Scenario status filters */}
                   <div className="flex items-center gap-1 bg-[#0a101d] p-1.5 rounded-lg border border-[#162238] font-mono text-xs">
                     <span className="text-slate-500 px-2">Status:</span>
-                    {(['ALL', 'PASS', 'FAIL', 'WARN', 'PLANNED'] as const).map((s) => (
+                    {(['ALL', 'PASS', 'FAIL', 'WARN', 'BLOCKED', 'SKIPPED', 'PLANNED'] as const).map((s) => (
                       <button
                         key={s}
                         onClick={() => setScenarioFilter(s)}
@@ -781,7 +785,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                               </div>
 
                               <div className="flex items-center gap-3 shrink-0">
-                                {tc.latency_ms > 0 && (
+                                {tc.latency_ms != null && tc.latency_ms > 0 && (
                                   <span className="text-[11px] font-mono text-slate-500 hidden sm:inline">
                                     {tc.latency_ms}ms
                                   </span>
@@ -856,114 +860,135 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
               {/* TAB 2: EVIDENCE LEDGER (4 PILLARS) */}
               {activeTab === "ledger" && (
                 <div className="space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {/* Contract Pillar */}
-                    <div className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-mono font-bold text-slate-200 uppercase">1. Contract Fidelity</span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-600/50 uppercase">
-                          {selectedRun.evidence_ledger?.contract?.status || "PASS"}
-                        </span>
-                      </div>
-                      <div className="text-2xl font-bold font-mono text-cyan-300">
-                        {selectedRun.evidence_ledger?.contract?.score ?? selectedRun.evidence_ledger?.value_score ?? 92}/100
-                      </div>
-                      <p className="text-xs font-mono text-slate-400">
-                        {selectedRun.evidence_ledger?.contract?.evidence || "OpenAPI contract matches deployed schema. No breaking changes detected."}
-                      </p>
+                  <div className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <VerdictBadge verdict={selectedVerdict} />
+                      <span className="text-xs font-mono text-slate-400">
+                        Composite score:{" "}
+                        {ledgerScore(selectedLedger) === null || selectedVerdict === "SCANNED" ? (
+                          <span className="text-slate-500">not evaluated</span>
+                        ) : (
+                          <span className="text-cyan-300 font-bold">{ledgerScore(selectedLedger)}/100</span>
+                        )}
+                      </span>
                     </div>
-
-                    {/* AuthZ Pillar */}
-                    <div className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-mono font-bold text-slate-200 uppercase">2. AuthZ Boundary</span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-600/50 uppercase">
-                          {selectedRun.evidence_ledger?.authz?.status || "PASS"}
-                        </span>
-                      </div>
-                      <div className="text-2xl font-bold font-mono text-cyan-300">
-                        {selectedRun.evidence_ledger?.authz?.score ?? selectedRun.evidence_ledger?.authority_score ?? 88}/100
-                      </div>
-                      <p className="text-xs font-mono text-slate-400">
-                        {selectedRun.evidence_ledger?.authz?.evidence || "Role-based privilege boundaries verified. Tampered bearer tokens correctly rejected."}
+                    {selectedLedger?.executive_summary && (
+                      <p className="text-xs text-slate-300 w-full leading-relaxed">{selectedLedger.executive_summary}</p>
+                    )}
+                    {!selectedLedger && (
+                      <p className="text-xs text-slate-500 w-full font-mono">
+                        This run has no evidence ledger: it was not evaluated.
                       </p>
-                    </div>
-
-                    {/* Resilience Pillar */}
-                    <div className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-mono font-bold text-slate-200 uppercase">3. Failure Resilience</span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-600/50 uppercase">
-                          {selectedRun.evidence_ledger?.resilience?.status || "PASS"}
-                        </span>
-                      </div>
-                      <div className="text-2xl font-bold font-mono text-cyan-300">
-                        {selectedRun.evidence_ledger?.resilience?.score ?? selectedRun.evidence_ledger?.safety_score ?? 84}/100
-                      </div>
-                      <p className="text-xs font-mono text-slate-400">
-                        {selectedRun.evidence_ledger?.resilience?.evidence || "Graceful 400 Bad Request returned on malformed input without process crash."}
-                      </p>
-                    </div>
-
-                    {/* Observability Pillar */}
-                    <div className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-mono font-bold text-slate-200 uppercase">4. Observability</span>
-                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950 text-emerald-400 border border-emerald-600/50 uppercase">
-                          {selectedRun.evidence_ledger?.observability?.status || "PASS"}
-                        </span>
-                      </div>
-                      <div className="text-2xl font-bold font-mono text-cyan-300">
-                        {selectedRun.evidence_ledger?.observability?.score ?? selectedRun.evidence_ledger?.evidence_score ?? 90}/100
-                      </div>
-                      <p className="text-xs font-mono text-slate-400">
-                        {selectedRun.evidence_ledger?.observability?.evidence || "Request tracing propagation present. No secrets or stack traces exposed in error bodies."}
-                      </p>
-                    </div>
+                    )}
                   </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {selectedPillars.map((pillar, idx) => (
+                      <div key={pillar.key} className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-mono font-bold text-slate-200 uppercase">
+                            {idx + 1}. {pillar.short}
+                          </span>
+                          {pillar.status && (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-900 text-slate-300 border border-slate-700 uppercase">
+                              {pillar.status}
+                            </span>
+                          )}
+                        </div>
+                        {pillar.score === null ? (
+                          <div className="text-sm font-mono text-slate-500">not evaluated</div>
+                        ) : (
+                          <div className="text-2xl font-bold font-mono text-cyan-300">{pillar.score}/100</div>
+                        )}
+                        <p className="text-xs font-mono text-slate-400">
+                          {pillar.evidence ?? "No evidence text was reported for this pillar."}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {selectedLedger?.exit_criteria_checklist && selectedLedger.exit_criteria_checklist.length > 0 && (
+                    <div className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] space-y-1.5">
+                      <span className="text-xs font-mono font-bold text-slate-200 uppercase">Exit criteria</span>
+                      {selectedLedger.exit_criteria_checklist.map((c, i) => (
+                        <div key={i} className="flex items-start gap-2 text-[11px] font-mono">
+                          <span className={c.met ? "text-emerald-400" : "text-rose-400"}>{c.met ? "met" : "NOT MET"}</span>
+                          <span className="text-slate-200">{c.criterion}</span>
+                          {c.details && <span className="text-slate-500">- {c.details}</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {/* Sign-off Form */}
                   <div className="p-5 rounded-xl bg-[#0c1424] border border-[#1b2b46] space-y-3">
                     <h4 className="text-xs font-mono font-bold text-white uppercase flex items-center gap-2">
-                      <CheckCircle className="w-4 h-4 text-emerald-400" />
+                      <CheckCircle className="w-4 h-4 text-cyan-400" />
                       Production Gate Sign-off Certificate
                     </h4>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
-                      <div>
-                        <label className="text-slate-400 block mb-1">Operator / Role:</label>
-                        <input
-                          type="text"
-                          value={operatorName}
-                          onChange={(e) => setOperatorName(e.target.value)}
-                          className="w-full px-3 py-1.5 rounded bg-[#090e1a] border border-[#1d2d46] text-slate-200 focus:outline-none focus:border-cyan-500/60"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-slate-400 block mb-1">Audit Notes:</label>
-                        <input
-                          type="text"
-                          value={approvalNotes}
-                          onChange={(e) => setApprovalNotes(e.target.value)}
-                          className="w-full px-3 py-1.5 rounded bg-[#090e1a] border border-[#1d2d46] text-slate-200 focus:outline-none focus:border-cyan-500/60"
-                        />
-                      </div>
-                    </div>
-                    <div className="pt-2 flex items-center justify-end gap-2.5">
-                      <button
-                        onClick={() => handleSignOff("reject")}
-                        disabled={isSigning}
-                        className="px-4 py-1.5 rounded bg-red-950/80 hover:bg-red-900 border border-red-700/60 text-red-300 text-xs font-mono font-semibold cursor-pointer transition-colors"
-                      >
-                        Reject Gate
-                      </button>
-                      <button
-                        onClick={() => handleSignOff("approve")}
-                        disabled={isSigning}
-                        className="px-5 py-1.5 rounded bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-mono font-semibold shadow-md cursor-pointer transition-all"
-                      >
-                        Approve Production Gate
-                      </button>
-                    </div>
+                    {(() => {
+                      const status = (selectedRun.approval_status || "").toLowerCase();
+                      if (status === "approved" || status === "rejected") {
+                        return (
+                          <div className="p-3 bg-[#090e1a] rounded-lg border border-[#162033] text-xs font-mono text-slate-300">
+                            {status === "approved" ? "Approved" : "Rejected"} by{" "}
+                            <strong className="text-cyan-300">{selectedRun.approved_by || "unknown operator"}</strong>
+                            {selectedRun.approval_notes ? ` · ${selectedRun.approval_notes}` : ""}
+                          </div>
+                        );
+                      }
+                      return (
+                        <>
+                          {!isGateVerdict(selectedVerdict) && (
+                            <p className="text-[11px] font-mono text-amber-300">
+                              The backend reported no gate verdict for this run, so it cannot be approved.
+                            </p>
+                          )}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
+                            <div>
+                              <label className="text-slate-400 block mb-1">Operator / Role (required):</label>
+                              <input
+                                type="text"
+                                value={operatorName}
+                                onChange={(e) => setOperatorName(e.target.value)}
+                                className="w-full px-3 py-1.5 rounded bg-[#090e1a] border border-[#1d2d46] text-slate-200 focus:outline-none focus:border-cyan-500/60"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-slate-400 block mb-1">Audit Notes:</label>
+                              <input
+                                type="text"
+                                value={approvalNotes}
+                                onChange={(e) => setApprovalNotes(e.target.value)}
+                                className="w-full px-3 py-1.5 rounded bg-[#090e1a] border border-[#1d2d46] text-slate-200 focus:outline-none focus:border-cyan-500/60"
+                              />
+                            </div>
+                          </div>
+                          {signOffError && (
+                            <p className="text-xs font-mono text-rose-300 break-words" role="alert">
+                              {signOffError}
+                            </p>
+                          )}
+                          <div className="pt-2 flex items-center justify-end gap-2.5">
+                            <button
+                              onClick={() => handleSignOff("reject")}
+                              disabled={isSigning || !operatorName.trim()}
+                              className="px-4 py-1.5 rounded bg-red-950/80 hover:bg-red-900 border border-red-700/60 text-red-300 text-xs font-mono font-semibold cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              Reject Gate
+                            </button>
+                            <button
+                              onClick={() => handleSignOff("approve")}
+                              disabled={isSigning || !operatorName.trim() || !isGateVerdict(selectedVerdict)}
+                              title={isGateVerdict(selectedVerdict) ? undefined : "No backend gate verdict: approval is unavailable"}
+                              className="px-5 py-1.5 rounded bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-mono font-semibold shadow-md cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                            >
+                              Approve Production Gate
+                            </button>
+                          </div>
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -985,11 +1010,11 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                         <span className="text-slate-200 font-medium truncate">{r.path}</span>
                         <div className="flex items-center gap-6 shrink-0">
                           <span className="text-cyan-400 font-semibold w-12 text-right">{r.method}</span>
-                          <span className="text-slate-400 w-12 text-right">{r.status_code || 200}</span>
+                          <span className="text-slate-400 w-12 text-right">{r.status_code ?? "n/a"}</span>
                           <span className={`px-2 py-0.5 rounded text-[10px] uppercase font-semibold ${
                             r.is_api ? 'bg-cyan-950 text-cyan-300 border border-cyan-800/40' : 'bg-purple-950 text-purple-300 border border-purple-800/40'
                           }`}>
-                            {r.is_api ? 'API Contract' : 'SPA Shell'}
+                            {r.is_api ? 'API Route' : r.is_spa_shell ? 'SPA Shell' : 'Route'}
                           </span>
                         </div>
                       </div>
@@ -1003,11 +1028,13 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                 <div className="space-y-3">
                   {(!selectedRun.triaged_defects || selectedRun.triaged_defects.length === 0) ? (
                     <div className="p-8 text-center text-xs text-slate-500 bg-[#0a101d] rounded-lg border border-[#162238] font-mono">
-                      No OWASP defects or vulnerabilities triaged for this session.
+                      {selectedLedger
+                        ? "The backend triaged no defects for this session."
+                        : "This run was not evaluated, so there are no triaged defects to show."}
                     </div>
                   ) : (
                     selectedRun.triaged_defects.map((d, idx) => (
-                      <div key={d.case_id || idx} className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] space-y-2 font-mono text-xs">
+                      <div key={d.case_id || d.id || idx} className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] space-y-2 font-mono text-xs">
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
                             <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-950 text-amber-400 border border-amber-600/50">
@@ -1015,7 +1042,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                             </span>
                             <span className="text-cyan-400 font-semibold">{d.owasp_category}</span>
                           </div>
-                          <span className="text-slate-500 text-[11px]">#{d.case_id}</span>
+                          <span className="text-slate-500 text-[11px]">#{d.case_id || d.id}</span>
                         </div>
                         <h4 className="text-sm font-semibold text-slate-100">{d.title}</h4>
                         {d.evidence_snippet && (
@@ -1023,10 +1050,10 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                             {d.evidence_snippet}
                           </div>
                         )}
-                        {d.remediation_patch_suggestion && (
+                        {(d.remediation_patch_suggestion || d.recommended_fix) && (
                           <div className="p-2 rounded bg-emerald-950/20 border border-emerald-900/40 text-emerald-300">
                             <span className="font-bold">Patch suggestion: </span>
-                            {d.remediation_patch_suggestion}
+                            {d.remediation_patch_suggestion || d.recommended_fix}
                           </div>
                         )}
                       </div>
@@ -1057,7 +1084,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                 </div>
               )}
             </div>
-          ) : null}
+          )}
         </div>
       </div>
       {/* EMBEDDED HTML REPORT FULLSCREEN MODAL */}
@@ -1071,29 +1098,29 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                   ReadyHai Executive QA & Security Gate Report (HTML)
                 </span>
                 <span className="text-xs font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800">
-                  {selectedRun.id}
+                  {selectedId}
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <a
-                  href={`/api/agent/runs/${selectedRun.id}/report/html`}
-                  target="_blank"
-                  rel="noopener noreferrer"
+                <ReportButton
+                  path={`/api/agent/runs/${selectedId}/report/html`}
+                  mode="tab"
                   className="px-2.5 py-1 rounded bg-[#16233a] hover:bg-[#1f304f] border border-[#273d63] text-cyan-300 text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
                   title="Open report in new browser tab"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   New Tab
-                </a>
-                <a
-                  href={`/api/agent/runs/${selectedRun.id}/report/markdown`}
-                  download
+                </ReportButton>
+                <ReportButton
+                  path={`/api/agent/runs/${selectedId}/report/markdown`}
+                  mode="download"
+                  filename={`readyhai-agent-report-${selectedId}.md`}
                   className="px-2.5 py-1 rounded bg-[#16233a] hover:bg-[#1f304f] border border-[#273d63] text-purple-300 text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer"
                   title="Download Markdown summary"
                 >
                   <FileCode className="w-3.5 h-3.5" />
                   Markdown
-                </a>
+                </ReportButton>
                 <button
                   onClick={() => setShowReportModal(false)}
                   className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-[#16233a] transition-colors cursor-pointer"
@@ -1104,8 +1131,8 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
               </div>
             </div>
             <div className="flex-1 w-full h-full bg-[#070b14] relative">
-              <iframe
-                src={`/api/agent/runs/${selectedRun.id}/report/html`}
+              <ReportFrame
+                path={`/api/agent/runs/${selectedId}/report/html`}
                 title="ReadyHai Executive QA Report"
                 className="w-full h-full border-0"
               />

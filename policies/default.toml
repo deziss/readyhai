@@ -17,4 +17,6 @@ hard_fail = [
   "tests.failed",
   "web.5xx",
   "api.server_error",
+  "qa.api.server_error",
+  "qa.api.crash_on_input",
 ]

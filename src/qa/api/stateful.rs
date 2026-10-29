@@ -1,7 +1,7 @@
 //! Stateful CRUD lifecycle (nonprod only): create -> read -> update -> BOLA -> delete.
 use super::exec::{self, Exchange};
 use super::spec::Op;
-use super::{DefectRef, NewDefect, Req, Runner, created_id, not_applicable};
+use super::{DefectRef, NewDefect, Req, Runner, created_id, field, not_applicable, plan_order};
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, CheckStatus, Severity};
 use crate::qa::model::*;
@@ -40,6 +40,11 @@ fn ok_result(r: &Runner, cid: &str, ex: &Exchange, pass: bool, note: &str, defs:
     r.result(cid, st, &format!("HTTP {} {note}", ex.status).trim().to_string(), ex.ms, defs);
 }
 
+/// Does the re-read response carry `newv` in `field`? Looks through `{data:{...}}` wrappers.
+fn persisted(ex: &Exchange, field_name: &str, newv: &Value) -> bool {
+    ex.json().and_then(|j| field(&j, field_name).cloned()).map(|v| &v == newv).unwrap_or(false)
+}
+
 fn mutate(body: &Value, op: &Op) -> Option<(Value, String, Value)> {
     let o = body.as_object()?;
     let props = super::synth::flatten(op.body.as_ref()?);
@@ -50,7 +55,7 @@ fn mutate(body: &Value, op: &Op) -> Option<(Value, String, Value)> {
             if ps.get("format").is_none() && ps.get("enum").is_none() {
                 let max = ps.get("maxLength").and_then(|m| m.as_u64()).unwrap_or(1000) as usize;
                 let mut n = format!("{s}-upd");
-                n.truncate(max);
+                super::synth::truncate_str(&mut n, max.min(super::synth::MAX_STR));
                 if n != s {
                     let mut b = o.clone();
                     b.insert(k.clone(), Value::String(n.clone()));
@@ -63,7 +68,7 @@ fn mutate(body: &Value, op: &Op) -> Option<(Value, String, Value)> {
 }
 
 pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
-    let Some(mut r) = Runner::new(ctx)? else { return Ok(not_applicable()) };
+    let Some(mut r) = Runner::new(ctx, "qa.api.stateful")? else { return Ok(not_applicable()) };
     if !r.qa.nonprod {
         return Ok(CheckOutput::status(CheckStatus::Skipped("read-only: host not nonprod".into())));
     }
@@ -76,7 +81,9 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     };
     let b = roles.iter().filter(|x| x.name != a.name).find(|x| !x.name.to_ascii_lowercase().contains("admin")).copied();
     let mut resources = 0;
-    for post in spec.ops.iter().filter(|o| o.method == "POST" && o.path_params().count() == 0) {
+    // Highest plan risk first (the request budget is shared and may run out).
+    let order = plan_order(qa, &spec);
+    for post in order.iter().map(|p| &p.op).filter(|o| o.method == "POST" && o.path_params().count() == 0) {
         let prefix = format!("{}/{{", post.path.trim_end_matches('/'));
         let find = |m: &str| spec.ops.iter().find(|o| o.method == m && o.path.starts_with(&prefix) && o.path[prefix.len()..].find('/').is_none() && o.path_params().count() == 1);
         let Some(get) = find("GET") else { continue };
@@ -89,9 +96,12 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
         let Some((ex, mut defs)) = step(&mut r, &Step { op: post, cid: ccid.clone(), title: format!("{pk}: create a resource"), role: Some(a), method: "POST", url: purl.clone(), body: body.clone(), expected: "2xx and an id (Location or body)", contract: true }) else { continue };
         let id = created_id(&ex);
         if !ex.is_2xx() || id.is_none() {
-            let why = if !ex.is_2xx() { format!("HTTP {}", ex.status) } else { "no id in Location/body".into() };
-            r.result(&ccid, if ex.is_2xx() { ResultStatus::Fail } else { ResultStatus::Blocked }, &why, ex.ms, &defs);
-            qa.with(|c| c.coverage.set(&pk, "stateful", Cell::Fail));
+            // 5xx / defects from send(): a real failure. A rejected generated body or a response
+            // without an id only means the lifecycle could not run: Blocked, never a silent Fail.
+            let hard = !ex.is_2xx() && (ex.status >= 500 || !defs.is_empty());
+            let why = if !ex.is_2xx() { format!("HTTP {}: lifecycle not run", ex.status) } else { "created, but no id in Location/body: lifecycle not run".into() };
+            r.result(&ccid, if hard { ResultStatus::Fail } else { ResultStatus::Blocked }, &why, ex.ms, &defs);
+            qa.with(|c| c.coverage.set(&pk, "stateful", if hard { Cell::Fail } else { Cell::Untested }));
             continue;
         }
         let id = id.unwrap();
@@ -107,7 +117,7 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
             let mut pass = ex.is_2xx();
             if let (Some(Value::Object(sent)), Some(got)) = (&body, ex.json()) {
                 for (k, v) in sent {
-                    if (v.is_string() || v.is_number()) && got.get(k).map(|g| g != v).unwrap_or(false) {
+                    if (v.is_string() || v.is_number()) && field(&got, k).map(|g| g != v).unwrap_or(false) {
                         pass = false;
                         defs.push(r.defect(NewDefect {
                             rule: "qa.api.persistence_failure", cat: Category::Quality, sev: Severity::Medium, prio: Priority::P2,
@@ -132,7 +142,7 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                     if ex.is_2xx() {
                         let pcid = format!("api.GET.{}.state.persisted", get.path);
                         if let Some((ex2, mut defs)) = step(&mut r, &Step { op: get, cid: pcid.clone(), title: format!("{}: update persisted", get.key()), role: Some(a), method: "GET", url: gurl.clone(), body: None, expected: "updated value visible on re-read", contract: false }) {
-                            let pass = ex2.json().and_then(|j| j.get(&field).cloned()).map(|v| v == newv).unwrap_or(false);
+                            let pass = persisted(&ex2, &field, &newv);
                             if !pass {
                                 defs.push(r.defect(NewDefect {
                                     rule: "qa.api.persistence_failure", cat: Category::Quality, sev: Severity::Medium, prio: Priority::P2,
@@ -232,6 +242,7 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
         }
         qa.with(|c| c.coverage.set(&pk, "stateful", if fail { Cell::Fail } else { Cell::Pass }));
     }
+    r.explain_failures();
     r.run_cleanup();
     qa.with(|c| c.notes.push(format!("stateful: {resources} resource(s) created, tagged '{}'", r.tag)));
     Ok(CheckOutput::findings(std::mem::take(&mut r.findings)))

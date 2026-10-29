@@ -160,4 +160,4 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 18090
     LOGFILE = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("RH_FIXTURE_LOG")
-    ThreadingHTTPServer(("0.0.0.0", port), H).serve_forever()
+    ThreadingHTTPServer((os.environ.get("RH_FIXTURE_BIND", "127.0.0.1"), port), H).serve_forever()

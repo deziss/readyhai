@@ -65,6 +65,10 @@ fn sev_prio(s: Severity) -> Priority {
     if s >= Severity::High { Priority::P2 } else if s == Severity::Medium { Priority::P3 } else { Priority::P4 }
 }
 
+/// Per-item defects are capped; the remainder becomes ONE roll-up defect (stable key) so a huge
+/// repo cannot flood the report, while anything inside the cap still has its own fingerprint.
+const MAX_ITEM_DEFECTS: usize = 100;
+
 struct Def {
     rule: &'static str,
     cat: Category,
@@ -318,6 +322,11 @@ fn is_critical_path(p: &str) -> bool {
 
 const LOW_COVERAGE: f64 = 0.60;
 
+/// 10-point band of a coverage percentage (55.0 -> 50): part of the low-coverage fingerprint.
+fn cov_band(pct: f64) -> u32 {
+    ((pct / 10.0).floor().max(0.0) as u32) * 10
+}
+
 fn coverage(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     let Some(snap) = &ctx.snapshot else { return no_snapshot() };
     let case = "suite.coverage";
@@ -332,6 +341,9 @@ fn coverage(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     let mut defs = vec![];
     let pct = cov.overall * 100.0;
     if cov.overall < LOW_COVERAGE {
+        // The report is the item; the 10-point band is part of the key, so coverage falling into a
+        // lower band is a NEW finding instead of hiding behind the old accepted one.
+        let band = cov_band(pct);
         defs.push(Def {
             rule: "qa.suite.low_coverage",
             cat: Category::Quality,
@@ -342,7 +354,7 @@ fn coverage(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
             expected: format!("line coverage >= {:.0}%", LOW_COVERAGE * 100.0),
             actual: format!("{pct:.1}% over {} file(s) in {src}", cov.files.len()),
             remediation: "Add tests for the uncovered modules, starting with the riskiest ones.".into(),
-            fp_key: "overall".into(),
+            fp_key: format!("overall:{src}:{band}"),
             steps: vec![format!("Open {src} and compare line-rate against the 60% bar")],
         });
     }
@@ -509,19 +521,34 @@ fn routes(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     }
     let missing: Vec<&Route> = res.iter().filter(|(_, t)| !*t).map(|(r, _)| r).collect();
     let mut defs = vec![];
-    if !missing.is_empty() {
-        let list: Vec<String> = missing.iter().map(|r| format!("{} ({}:{})", r.label(), r.file, r.line)).collect();
+    for r in missing.iter().take(MAX_ITEM_DEFECTS) {
         defs.push(Def {
             rule: "qa.suite.untested_routes",
             cat: Category::Quality,
             sev: Severity::Medium,
             area: Area::Suite,
-            title: format!("{} of {} routes are never referenced by a test", missing.len(), rs.len()),
+            title: format!("Route {} is never referenced by a test", r.label()),
+            component: r.label(),
+            expected: "every route is exercised by at least one test".into(),
+            actual: format!("{} ({}:{})", r.label(), r.file, r.line),
+            remediation: "Add tests that call this route (happy path, auth failure and bad input).".into(),
+            fp_key: format!("route:{}", r.label()),
+            steps: vec![format!("grep the test directories for `{}`", r.path)],
+        });
+    }
+    if missing.len() > MAX_ITEM_DEFECTS {
+        let rest: Vec<String> = missing[MAX_ITEM_DEFECTS..].iter().map(|r| r.label()).collect();
+        defs.push(Def {
+            rule: "qa.suite.untested_routes",
+            cat: Category::Quality,
+            sev: Severity::Medium,
+            area: Area::Suite,
+            title: format!("{} more routes are never referenced by a test", rest.len()),
             component: "routes".into(),
             expected: "every route is exercised by at least one test".into(),
-            actual: list.join("\n"),
-            remediation: "Add tests that call these routes (happy path, auth failure and bad input).".into(),
-            fp_key: "untested_routes".into(),
+            actual: rest.join("\n"),
+            remediation: "Add tests that call these routes.".into(),
+            fp_key: "routes:overflow".into(),
             steps: vec!["grep the test directories for each listed path".into()],
         });
     }
@@ -647,6 +674,74 @@ fn scan_smells(file: &str, text: &str, s: &mut Smells) {
     }
 }
 
+/// `file:line rest` -> (file, line, rest).
+fn split_loc(entry: &str) -> (String, String, String) {
+    let (loc, rest) = entry.split_once(' ').unwrap_or((entry, ""));
+    let (file, line) = loc.rsplit_once(':').unwrap_or((loc, ""));
+    (file.to_string(), line.to_string(), rest.to_string())
+}
+
+/// One defect per smell. Identity never uses a line number: a test without assertions is keyed by
+/// file + test name; skipped tests / sleeps by file + their ordinal within the file, so adding one
+/// more of them in a file that already has some is a new fingerprint.
+fn smell_defs(s: &Smells) -> Vec<Def> {
+    let mut defs: Vec<Def> = vec![];
+    let mk = |kind: &str, file: &str, line: &str, name: &str, key: String| {
+        let (title, expected, rem) = match kind {
+            "no_assert" => (format!("Test `{name}` has no assertions ({file})"), "every test asserts something", "Add assertions."),
+            "skipped" => (format!("Skipped test in {file}"), "no test is silently skipped", "Fix or delete the skipped test."),
+            _ => (format!("Sleep of 1s or more in a test ({file})"), "tests do not rely on sleeps", "Replace the sleep with polling or a fake clock."),
+        };
+        Def {
+            rule: "qa.suite.test_smells",
+            cat: Category::Quality,
+            sev: Severity::Low,
+            area: Area::Suite,
+            title,
+            component: file.to_string(),
+            expected: expected.into(),
+            actual: format!("{file}:{line}{}", if name.is_empty() { String::new() } else { format!(" {name}") }),
+            remediation: rem.into(),
+            fp_key: key,
+            steps: vec![format!("Open {file}:{line}")],
+        }
+    };
+    let mut ordinal: std::collections::BTreeMap<(String, &str), usize> = Default::default();
+    for (kind, items) in [("no_assert", &s.no_assert), ("skipped", &s.skipped), ("sleep", &s.sleeps)] {
+        for e in items.iter() {
+            if defs.len() >= MAX_ITEM_DEFECTS {
+                break;
+            }
+            let (file, line, name) = split_loc(e);
+            let key = if kind == "no_assert" {
+                format!("smell:no_assert:{file}:{name}")
+            } else {
+                let n = ordinal.entry((file.clone(), kind)).or_insert(0);
+                *n += 1;
+                format!("smell:{kind}:{file}:{n}")
+            };
+            defs.push(mk(kind, &file, &line, &name, key));
+        }
+    }
+    let total = s.no_assert.len() + s.skipped.len() + s.sleeps.len();
+    if total > defs.len() {
+        defs.push(Def {
+            rule: "qa.suite.test_smells",
+            cat: Category::Quality,
+            sev: Severity::Low,
+            area: Area::Suite,
+            title: format!("{} more test smells", total - defs.len()),
+            component: "tests".into(),
+            expected: "every test asserts, none are silently skipped or rely on sleeps".into(),
+            actual: format!("{} smell(s) beyond the first {MAX_ITEM_DEFECTS}", total - defs.len()),
+            remediation: "Add assertions, delete or fix skipped tests, replace sleeps with polling/fakes.".into(),
+            fp_key: "smell:overflow".into(),
+            steps: vec![],
+        });
+    }
+    defs
+}
+
 fn smells(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     let Some(snap) = &ctx.snapshot else { return no_snapshot() };
     let mut s = Smells::default();
@@ -667,41 +762,8 @@ fn smells(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     if n_tests == 0 {
         return Ok(CheckOutput::status(CheckStatus::NotApplicable("no test files".into())));
     }
-    let mut defs = vec![];
     let total = s.no_assert.len() + s.skipped.len() + s.sleeps.len();
-    if total > 0 {
-        let sect = |name: &str, v: &[String]| {
-            if v.is_empty() {
-                String::new()
-            } else {
-                let shown: Vec<&str> = v.iter().take(15).map(|x| x.as_str()).collect();
-                let more = if v.len() > 15 { format!("\n  [+{} more]", v.len() - 15) } else { String::new() };
-                format!("{name} ({}):\n  {}{more}\n", v.len(), shown.join("\n  "))
-            }
-        };
-        let actual = format!(
-            "{}{}{}",
-            sect("tests without assertions", &s.no_assert),
-            sect("skipped tests", &s.skipped),
-            sect("sleeps >= 1s in tests", &s.sleeps)
-        );
-        defs.push(Def {
-            rule: "qa.suite.test_smells",
-            cat: Category::Quality,
-            sev: Severity::Low,
-            area: Area::Suite,
-            title: format!(
-                "Test smells: {} without assert, {} skipped, {} sleeps",
-                s.no_assert.len(), s.skipped.len(), s.sleeps.len()
-            ),
-            component: "tests".into(),
-            expected: "every test asserts, none are silently skipped or rely on sleeps".into(),
-            actual: actual.trim_end().to_string(),
-            remediation: "Add assertions, delete or fix skipped tests, replace sleeps with polling/fakes.".into(),
-            fp_key: "test_smells".into(),
-            steps: vec!["Open each listed location".into()],
-        });
-    }
+    let defs = smell_defs(&s);
     let st = if defs.is_empty() { ResultStatus::Pass } else { ResultStatus::Fail };
     Ok(out(record(ctx, "qa.suite.smells", Area::Suite, "suite.smells", "Tests are meaningful and stable", "tests", st,
         &format!("{total} smell(s) in {n_tests} test file(s)"), defs)))
@@ -977,6 +1039,20 @@ const ALEMBIC_SCRIPT: &str = "echo '##STEP upgrade head'; alembic upgrade head |
 echo '##STEP downgrade base'; alembic downgrade base || exit 12; \
 echo '##STEP upgrade head (again)'; alembic upgrade head || exit 13";
 
+/// Exit codes that say the TOOLING failed, not the migration: docker run error (125), command
+/// not invokable (126) / not found (127: no alembic in the image), SIGKILL/OOM (137), SIGTERM (143).
+/// They must not be reported as a migration defect.
+fn infra_exit(code: i32) -> Option<&'static str> {
+    Some(match code {
+        125 => "docker could not run the container (exit 125)",
+        126 => "the migration command is not executable in the image (exit 126)",
+        127 => "alembic/sh not found in the image (exit 127): is alembic installed in the [test] image?",
+        137 => "the container was killed (exit 137: OOM or SIGKILL)",
+        143 => "the container was terminated (exit 143)",
+        _ => return None,
+    })
+}
+
 fn step_for_exit(code: i32) -> &'static str {
     match code {
         11 => "alembic upgrade head",
@@ -1175,6 +1251,14 @@ fn migrations(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
         return Ok(out(record(ctx, "qa.release.migrations", Area::Release, case, "Migrations apply, roll back and re-apply",
             &dir, ResultStatus::Pass, "alembic upgrade/downgrade/upgrade succeeded", vec![])));
     }
+    if let Some(why) = infra_exit(res.exit) {
+        // Tooling failure: the migration was never judged. Blocked result, errored check, no defect.
+        untested(ctx, &format!("alembic migrations not verified: {why}"));
+        let tail = res.tail.iter().rev().take(3).cloned().collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ");
+        record(ctx, "qa.release.migrations", Area::Release, case, "Migrations apply, roll back and re-apply", &dir,
+            ResultStatus::Blocked, &format!("{why}; last output: {tail}"), vec![]);
+        return Ok(CheckOutput::status(CheckStatus::Errored(format!("migration run did not complete: {why}"))));
+    }
     let step = if res.exit == 124 { "timeout" } else { step_for_exit(res.exit) };
     let comp = if dir.is_empty() { "alembic".to_string() } else { format!("{dir}/alembic") };
     let def = Def {
@@ -1267,21 +1351,46 @@ fn licenses_eval(ctx: &Ctx, j: &Value, deny: &[String]) -> Vec<Finding> {
         return record(ctx, "qa.release.licenses", Area::Release, "release.licenses", "Dependency licences comply with policy",
             "sbom", ResultStatus::Pass, &format!("{} distinct licence(s); no deny policy", distinct.len()), vec![]);
     }
-    let bad: Vec<String> = all.iter().filter(|(_, l)| deny_matches(deny, l)).map(|(c, l)| format!("{c}: {l}")).collect();
+    let bad: Vec<(String, String)> = all.iter().filter(|(_, l)| deny_matches(deny, l)).cloned().collect();
     let mut defs = vec![];
-    if !bad.is_empty() {
+    // One defect per (package, denied licence); the version is not part of the identity, so a
+    // version bump does not re-open an accepted finding but a NEW package does gate.
+    let mut seen = BTreeSet::new();
+    for (comp, lic) in bad.iter() {
+        let name = comp.rsplit_once('@').filter(|(n, _)| !n.is_empty()).map(|x| x.0).unwrap_or(comp);
+        if !seen.insert((name.to_string(), lic.clone())) {
+            continue;
+        }
+        if defs.len() >= MAX_ITEM_DEFECTS {
+            break;
+        }
         defs.push(Def {
             rule: "qa.release.license",
             cat: Category::SupplyChain,
             sev: Severity::High,
             area: Area::Release,
-            title: format!("{} dependenc{} use a denied licence", bad.len(), if bad.len() == 1 { "y" } else { "ies" }),
+            title: format!("{comp} uses a denied licence ({lic})"),
+            component: name.to_string(),
+            expected: format!("no licence matching deny list ({})", deny.join(", ")),
+            actual: format!("{comp}: {lic}"),
+            remediation: "Replace the dependency, obtain a commercial licence, or adjust the policy with legal sign-off.".into(),
+            fp_key: format!("license:{name}:{lic}"),
+            steps: vec![format!("Inspect licenses[] of {comp} in sbom.cdx.json")],
+        });
+    }
+    if seen.len() > MAX_ITEM_DEFECTS {
+        defs.push(Def {
+            rule: "qa.release.license",
+            cat: Category::SupplyChain,
+            sev: Severity::High,
+            area: Area::Release,
+            title: format!("{} more dependencies use a denied licence", seen.len() - MAX_ITEM_DEFECTS),
             component: "sbom.cdx.json".into(),
             expected: format!("no licence matching deny list ({})", deny.join(", ")),
-            actual: bad.iter().take(30).cloned().collect::<Vec<_>>().join("\n"),
-            remediation: "Replace the dependency, obtain a commercial licence, or adjust the policy with legal sign-off.".into(),
-            fp_key: format!("license:{}", deny.join(",")),
-            steps: vec!["Inspect licenses[] of the listed components in sbom.cdx.json".into()],
+            actual: bad.iter().skip(MAX_ITEM_DEFECTS).take(50).map(|(c, l)| format!("{c}: {l}")).collect::<Vec<_>>().join("\n"),
+            remediation: "Replace the dependencies or adjust the policy with legal sign-off.".into(),
+            fp_key: "license:overflow".into(),
+            steps: vec![],
         });
     }
     let st = if defs.is_empty() { ResultStatus::Pass } else { ResultStatus::Fail };
@@ -1442,14 +1551,51 @@ mod tests {
         assert!(rules.contains(&"qa.suite.low_coverage"), "{rules:?}");
         assert!(cov.findings.iter().any(|f| f.rule == "qa.suite.critical_uncovered" && f.location == "app/auth.py"));
         let r = run_one(&ctx, "qa.suite.routes");
-        let f = r.findings.iter().find(|f| f.rule == "qa.suite.untested_routes").expect("untested routes");
-        assert!(f.detail.contains("/health") && f.detail.contains("/orders/{id}") && f.detail.contains("/admin/stats"));
-        assert!(!f.detail.contains("GET /orders ("));
+        let fs: Vec<&Finding> = r.findings.iter().filter(|f| f.rule == "qa.suite.untested_routes").collect();
+        // one finding PER untested route, each with its own fingerprint
+        assert_eq!(fs.len(), 3, "{:?}", fs.iter().map(|f| &f.title).collect::<Vec<_>>());
+        for want in ["GET /health", "GET /orders/{id}", "/admin/stats"] {
+            assert!(fs.iter().any(|f| f.title.contains(want)), "missing {want}");
+        }
+        assert!(!fs.iter().any(|f| f.title.contains("Route GET /orders is never")));
+        let mut f2: Vec<Finding> = fs.iter().map(|f| (*f).clone()).collect();
+        f2.iter_mut().for_each(|f| f.finalize());
+        assert_eq!(f2.iter().map(|f| f.fingerprint.clone()).collect::<BTreeSet<_>>().len(), 3);
         let m = ctx.qa.as_ref().unwrap().with(|c| c.coverage.clone());
         assert_eq!(m.rows.len(), 4);
         assert_eq!(m.cells.iter().filter(|c| c.2 == Cell::Pass).count(), 1);
         let s = run_one(&ctx, "qa.suite.smells");
-        assert!(s.findings.iter().any(|f| f.rule == "qa.suite.test_smells" && f.title.contains("1 without assert, 1 skipped, 1 sleeps")));
+        let sm: Vec<&Finding> = s.findings.iter().filter(|f| f.rule == "qa.suite.test_smells").collect();
+        assert_eq!(sm.len(), 3, "{:?}", sm.iter().map(|f| &f.title).collect::<Vec<_>>());
+        assert!(sm.iter().any(|f| f.title.contains("test_orders_no_assert") && f.title.contains("no assertions")));
+        assert!(sm.iter().any(|f| f.title.starts_with("Skipped test")));
+        assert!(sm.iter().any(|f| f.title.starts_with("Sleep of 1s")));
+    }
+
+    #[test]
+    fn smell_identity_has_no_line_numbers_and_new_items_are_new() {
+        let one = Smells { no_assert: vec!["t/a.py:10 test_x".into()], skipped: vec!["t/a.py:3".into()], sleeps: vec![] };
+        let moved = Smells { no_assert: vec!["t/a.py:99 test_x".into()], skipped: vec!["t/a.py:40".into()], sleeps: vec![] };
+        let keys = |s: &Smells| smell_defs(s).into_iter().map(|d| d.fp_key).collect::<Vec<_>>();
+        assert_eq!(keys(&one), keys(&moved), "moving code must not change fingerprints");
+        // a second skipped test in the same file is a new item
+        let two = Smells { skipped: vec!["t/a.py:3".into(), "t/a.py:50".into()], ..Default::default() };
+        assert_eq!(keys(&two), vec!["smell:skipped:t/a.py:1", "smell:skipped:t/a.py:2"]);
+        assert!(keys(&one).contains(&"smell:skipped:t/a.py:1".to_string()));
+    }
+
+    #[test]
+    fn coverage_fingerprint_follows_the_band() {
+        assert_eq!(cov_band(55.0), cov_band(51.0));
+        assert_ne!(cov_band(55.0), cov_band(35.0));
+        assert_eq!((cov_band(0.0), cov_band(59.9), cov_band(100.0)), (0, 50, 100));
+        // the fixture (42%) yields the band-40 key
+        let ctx = ctx_for("covband", true);
+        let f = run_one(&ctx, "qa.suite.coverage");
+        let mut low = f.findings.into_iter().find(|f| f.rule == "qa.suite.low_coverage").unwrap();
+        low.finalize();
+        let want = crate::qa::recommend::fingerprint("qa.suite.low_coverage", "overall:coverage.xml:40");
+        assert_eq!(low.fingerprint, want);
     }
 
     #[test]
@@ -1498,5 +1644,30 @@ mod tests {
         assert_eq!(bad.len(), 1);
         assert_eq!(bad[0].rule, "qa.release.license");
         assert!(bad[0].detail.contains("b@2"));
+    }
+
+    #[test]
+    fn license_denials_are_per_package() {
+        let ctx = ctx_for("lic2", true);
+        let deny = parse_deny("AGPL-3.0*");
+        let mk = |pkgs: &[(&str, &str)]| serde_json::json!({"components": pkgs.iter().map(|(n, v)| serde_json::json!({"name": n, "version": v, "licenses":[{"license":{"id":"AGPL-3.0-only"}}]})).collect::<Vec<_>>()});
+        let fp = |fs: Vec<Finding>| fs.into_iter().map(|mut f| { f.finalize(); f.fingerprint }).collect::<BTreeSet<_>>();
+        let a = fp(licenses_eval(&ctx, &mk(&[("b", "2")]), &deny));
+        let bumped = fp(licenses_eval(&ctx, &mk(&[("b", "3")]), &deny));
+        assert_eq!(a, bumped, "a version bump is the same item");
+        let more = fp(licenses_eval(&ctx, &mk(&[("b", "2"), ("c", "1")]), &deny));
+        assert_eq!(more.len(), 2);
+        assert!(a.is_subset(&more) && more.len() > a.len(), "a NEW denied package is a new fingerprint");
+    }
+
+    #[test]
+    fn infra_exit_codes_are_not_migration_failures() {
+        for c in [125, 126, 127, 137, 143] {
+            assert!(infra_exit(c).is_some(), "{c}");
+        }
+        for c in [11, 12, 13, 124, 1] {
+            assert!(infra_exit(c).is_none(), "{c}");
+        }
+        assert_eq!(step_for_exit(11), "alembic upgrade head");
     }
 }

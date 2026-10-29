@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Shield, Globe, Activity, Bot, ShieldCheck, Cpu } from "lucide-react";
+import { Shield, Globe, Activity, ShieldCheck, Cpu } from "lucide-react";
+import { apiRequest, useApiTokenVersion } from "@/lib/api";
+import { ApiTokenSettings } from "./ApiTokenSettings";
 
 export type SaaSViewMode = "studio" | "agent_history" | "scans_history" | "network_lab";
 
@@ -20,32 +22,37 @@ export function Header({
   scansCount = 0,
   agentRunsCount = 0,
 }: HeaderProps) {
+  // null = status unknown (never reached the backend, or the last probe failed).
   const [modelStatus, setModelStatus] = useState<{
-    model: string;
-    status: string;
-    latency_ms: number;
-  }>({
-    model: "qwen3.8-flash-next",
-    status: "online",
-    latency_ms: 18,
-  });
+    model?: string;
+    provider?: string;
+    status?: string;
+    latency_ms?: number;
+  } | null>(null);
+  const tokenVersion = useApiTokenVersion();
 
   useEffect(() => {
+    let cancelled = false;
     async function checkStatus() {
-      try {
-        const res = await fetch("/api/agent/status");
-        if (res.ok) {
-          const data = await res.json();
-          setModelStatus(data);
-        }
-      } catch {
-        // keep fallback online state
-      }
+      const r = await apiRequest<{ model?: string; provider?: string; status?: string; latency_ms?: number }>(
+        "/api/agent/status",
+        { label: "Model status" }
+      );
+      if (cancelled) return;
+      setModelStatus(r.ok ? r.data : null);
     }
     checkStatus();
     const interval = setInterval(checkStatus, 15000);
-    return () => clearInterval(interval);
-  }, []);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [tokenVersion]);
+
+  const isOnline = modelStatus?.status === "online";
+  const statusKnown = !!modelStatus?.status;
+  const dotClass = !statusKnown ? "bg-slate-500" : isOnline ? "bg-emerald-500" : "bg-amber-500";
+  const pingClass = !statusKnown ? "bg-slate-400" : isOnline ? "bg-emerald-400" : "bg-amber-400";
 
   return (
     <header className="h-14 border-b border-[#1a2436] bg-[#090d16]/95 backdrop-blur-md px-6 flex items-center justify-between z-50 shrink-0 gap-4">
@@ -126,20 +133,25 @@ export function Header({
         {/* Model Health Pill */}
         <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-[#0e1524] border border-[#1e2a40] text-xs">
           <span className="relative flex h-2 w-2">
-            <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${modelStatus.status === "online" ? "bg-emerald-400" : "bg-amber-400"}`}></span>
-            <span className={`relative inline-flex rounded-full h-2 w-2 ${modelStatus.status === "online" ? "bg-emerald-500" : "bg-amber-500"}`}></span>
+            {isOnline && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${pingClass}`}></span>}
+            <span className={`relative inline-flex rounded-full h-2 w-2 ${dotClass}`}></span>
           </span>
           <span className="font-mono text-slate-300 text-[11px] font-medium hidden sm:inline">
-            {modelStatus.model} · vllm
+            {modelStatus?.model
+              ? `${modelStatus.model}${modelStatus.provider ? ` · ${modelStatus.provider}` : ""}`
+              : "model status unknown"}
           </span>
           <span className="text-[10px] font-mono text-slate-500 pl-1 border-l border-slate-800">
-            {modelStatus.latency_ms}ms
+            {statusKnown ? `${modelStatus?.status}${typeof modelStatus?.latency_ms === "number" ? ` · ${modelStatus.latency_ms}ms` : ""}` : "unknown"}
           </span>
         </div>
 
-        {/* Gate Ready Pill */}
-        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-950/40 border border-emerald-800/40 text-[11px] font-mono text-emerald-400 font-medium">
-          <Activity className="w-3.5 h-3.5" />
+        {/* API token settings */}
+        <ApiTokenSettings />
+
+        {/* Section label (not a verdict: gate verdicts only come from a run) */}
+        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#0e1524] border border-[#1e2a40] text-[11px] font-mono text-slate-400 font-medium">
+          <Activity className="w-3.5 h-3.5 text-cyan-400" />
           PRODUCTION GATE
         </div>
       </div>

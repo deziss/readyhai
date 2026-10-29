@@ -145,6 +145,11 @@ pub fn score(op: &Op, has_tests: Option<bool>, is_new: bool) -> (u8, Vec<String>
     (impact.min(5) * like.min(5), reasons)
 }
 
+/// Plan risk of an operation known only by its parts (used when the plan has no item for it).
+pub fn risk_of(method: &str, path: &str, secured: bool, has_body: bool) -> u8 {
+    score(&Op { method: method.to_ascii_uppercase(), path: path.to_string(), operation_id: None, secured, has_body }, None, false).0
+}
+
 /// Proportional budgets (min 1, capped per item) summing to about `total`.
 pub fn budgets(risks: &[u8], total: usize) -> Vec<usize> {
     let sum: usize = risks.iter().map(|r| *r as usize).sum::<usize>().max(1);
@@ -191,6 +196,11 @@ fn op_keys(ops: &[Op]) -> Vec<String> {
 }
 
 fn run(ctx: &Ctx) -> Result<CheckOutput> {
+    run_in(ctx, &crate::engine::data_dir())
+}
+
+/// `run` with an explicit data dir (baselines), so tests never touch the real one.
+pub(crate) fn run_in(ctx: &Ctx, data: &std::path::Path) -> Result<CheckOutput> {
     let Some(qa) = ctx.qa.as_ref() else {
         return Ok(CheckOutput::status(CheckStatus::NotApplicable("not a QA run".into())));
     };
@@ -201,10 +211,17 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
     let ops = doc.as_ref().map(ops_from_doc).unwrap_or_default();
     let corpus = test_corpus(ctx);
 
-    // Baseline spec: only written when none exists; `baseline accept` updates it later.
-    let bpath = crate::engine::data_dir().join("baselines").join(format!("{}.spec.json", crate::engine::target_key(&ctx.target)));
+    // Baseline spec: seeded when none exists. This run's operation list is always staged in the
+    // run dir; `baseline accept <run>` promotes it (api::accept_spec_baseline).
+    let bpath = data.join("baselines").join(format!("{}.spec.json", crate::engine::target_key(&ctx.target)));
     let baseline: Option<Vec<String>> =
         std::fs::read_to_string(&bpath).ok().and_then(|t| serde_json::from_str(&t).ok());
+    if !ops.is_empty() {
+        let st = super::api::stage_dir(&ctx.run_dir);
+        if std::fs::create_dir_all(&st).is_ok() {
+            let _ = std::fs::write(st.join("spec-ops.json"), serde_json::to_string_pretty(&op_keys(&ops)).unwrap_or_default());
+        }
+    }
     if baseline.is_none() && !ops.is_empty() {
         if let Some(dir) = bpath.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -261,7 +278,7 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
             });
         }
         if baseline.is_none() && !ops.is_empty() {
-            col.notes.push("Spec baseline recorded for the first time; update it later with `baseline accept`.".into());
+            col.notes.push("Spec baseline recorded for the first time; update it later with `readyhai baseline accept <run>`.".into());
         }
     });
     Ok(CheckOutput::status(if ops.is_empty() {

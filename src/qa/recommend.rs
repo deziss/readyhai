@@ -55,11 +55,32 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         .count();
     let contract = col.defects.iter().filter(open).filter(|d| d.rule == "qa.api.contract_violation").count();
     let roles = qa.roles.names();
-    let authz_run = col
+    // Distinct CONFIGURED roles that executed role-specific authorization cases. Anonymous /
+    // invalid-token cases carry no role, a role whose credential is unset never gets a case, and
+    // a case that was blocked/skipped did not run.
+    let ran: BTreeSet<&str> = col
         .results
         .iter()
-        .filter(|r| r.status != ResultStatus::Blocked && r.status != ResultStatus::Skipped)
-        .filter(|r| col.cases.iter().any(|c| c.id == r.case_id && c.technique == Technique::AuthMatrix))
+        .filter(|r| matches!(r.status, ResultStatus::Pass | ResultStatus::Fail | ResultStatus::Flaky))
+        .map(|r| r.case_id.as_str())
+        .collect();
+    let authz_roles: BTreeSet<String> = col
+        .cases
+        .iter()
+        .filter(|c| ran.contains(c.id.as_str()))
+        .filter(|c| c.technique == Technique::AuthMatrix || c.id.contains(".state.bola."))
+        .filter_map(|c| c.role.clone())
+        .filter(|r| roles.contains(r))
+        .collect();
+    // Failed cases: how many are not explained by any defect, and how many are still open
+    // (a failure behind a suppressed defect is an accepted one).
+    let defect_of = |r: &TestResult| r.defect_id.as_deref().and_then(|id| col.defects.iter().find(|d| d.id == id));
+    let failed_unexplained = col.results.iter().filter(|r| r.status == ResultStatus::Fail && defect_of(r).is_none()).count();
+    let failed_open = col
+        .results
+        .iter()
+        .filter(|r| r.status == ResultStatus::Fail)
+        .filter(|r| defect_of(r).map(|d| d.status != FindingStatus::Suppressed).unwrap_or(true))
         .count();
     let pct = if counts.planned == 0 { 0.0 } else { counts.executed as f64 * 100.0 / counts.planned as f64 };
 
@@ -89,12 +110,24 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
             false,
             format!("{}/{} executed ({pct:.0}%)", counts.executed, counts.planned),
         ),
+        crit(
+            "Every failed case is traced to a defect",
+            failed_unexplained == 0,
+            true,
+            format!("{failed_unexplained} failed case(s) without a recorded defect"),
+        ),
+        crit("No failed test cases", failed_open == 0, false, format!("{failed_open} open failed case(s) of {} failed", counts.failed)),
         crit("No flaky tests", counts.flaky == 0, false, format!("{} flaky", counts.flaky)),
         crit(
             "Authorization tested with ≥2 roles",
-            roles.len() >= 2 && authz_run > 0,
+            authz_roles.len() >= 2,
             false,
-            format!("{} role(s) configured, {authz_run} auth-matrix case(s) executed", roles.len()),
+            format!(
+                "{} distinct role(s) executed role-specific authorization cases ({}); {} configured",
+                authz_roles.len(),
+                authz_roles.iter().cloned().collect::<Vec<_>>().join(", "),
+                roles.len()
+            ),
         ),
         crit("API contract violations = 0", contract == 0, false, format!("{contract} violation(s)")),
     ];
@@ -228,29 +261,40 @@ mod tests {
         }
     }
 
-    fn good_col() -> QaCollector {
-        let mut c = QaCollector::default();
-        c.cases.push(TestCase {
-            id: "c1".into(),
+    fn case(id: &str, tech: Technique, role: Option<&str>) -> TestCase {
+        TestCase {
+            id: id.into(),
             area: Area::Api,
-            technique: Technique::AuthMatrix,
+            technique: tech,
             title: "t".into(),
             priority: Priority::P2,
             component: "GET /a".into(),
-            role: None,
+            role: role.map(String::from),
             steps: vec![],
             expected: String::new(),
             source: CaseSource::Deterministic,
-        });
-        c.results.push(TestResult {
-            case_id: "c1".into(),
-            status: ResultStatus::Pass,
+        }
+    }
+
+    fn result(id: &str, status: ResultStatus, defect: Option<&str>) -> TestResult {
+        TestResult {
+            case_id: id.into(),
+            status,
             actual: String::new(),
             duration_ms: 1,
             attempts: 1,
             evidence: vec![],
-            defect_id: None,
-        });
+            defect_id: defect.map(String::from),
+        }
+    }
+
+    /// Two roles ("a", "b") each executed an auth-matrix case, plus an anonymous one: all pass.
+    fn good_col() -> QaCollector {
+        let mut c = QaCollector::default();
+        for (id, role) in [("anon", None), ("ca", Some("a")), ("cb", Some("b"))] {
+            c.cases.push(case(id, Technique::AuthMatrix, role));
+            c.results.push(result(id, ResultStatus::Pass, None));
+        }
         c
     }
 
@@ -260,6 +304,36 @@ mod tests {
         )
         .unwrap();
         QaCtx::new(r, None, None, true)
+    }
+
+    fn crit<'a>(r: &'a QaReport, name: &str) -> &'a ExitCriterion {
+        r.exit_criteria.iter().find(|c| c.name.starts_with(name)).unwrap_or_else(|| panic!("no criterion {name}"))
+    }
+
+    fn defect(id: &str, sev: Severity, status: FindingStatus) -> Defect {
+        Defect {
+            id: id.into(),
+            rule: "qa.api.contract_violation".into(),
+            category: Category::Quality,
+            severity: sev,
+            priority: Priority::P4,
+            area: Area::Api,
+            title: "t".into(),
+            component: format!("GET /{id}"),
+            environment: String::new(),
+            steps_to_reproduce: vec![],
+            expected: String::new(),
+            actual: String::new(),
+            evidence: vec![],
+            reproduced: (1, 1),
+            cases: vec![],
+            remediation: String::new(),
+            fp_key: id.into(),
+            fingerprint: String::new(),
+            status,
+            regression: false,
+            ai_note: None,
+        }
     }
 
     #[test]
@@ -277,6 +351,95 @@ mod tests {
         // PASS + no roles -> conditional
         let q0 = QaCtx::new(Roles::default(), None, None, false);
         assert_eq!(build(good_col(), &run(Verdict::Pass, vec![]), &q0, "d").recommendation, Recommendation::ConditionalGo);
+    }
+
+    #[test]
+    fn authorization_criterion_counts_distinct_roles_that_ran_role_specific_cases() {
+        let q = qa2();
+        let go = |c: QaCollector| build(c, &run(Verdict::Pass, vec![]), &q, "d");
+        // two roles ran -> met, and the detail names them
+        let r = go(good_col());
+        assert!(crit(&r, "Authorization").met);
+        assert!(crit(&r, "Authorization").detail.starts_with("2 distinct role(s)"));
+        // anonymous + invalid-token cases only (no role on any case): unmet, even with roles configured
+        let mut c = QaCollector::default();
+        for id in ["anon", "invalid"] {
+            c.cases.push(case(id, Technique::AuthMatrix, None));
+            c.results.push(result(id, ResultStatus::Pass, None));
+        }
+        assert!(!crit(&go(c), "Authorization").met);
+        // the SAME role twice is one role
+        let mut c = QaCollector::default();
+        for id in ["x1", "x2", "x3"] {
+            c.cases.push(case(id, Technique::AuthMatrix, Some("a")));
+            c.results.push(result(id, ResultStatus::Pass, None));
+        }
+        let r = go(c);
+        assert!(!crit(&r, "Authorization").met && crit(&r, "Authorization").detail.starts_with("1 distinct role(s)"));
+        // a configured-but-unset role never got a case; a case that was blocked/skipped did not run
+        let mut c = good_col();
+        c.results[2].status = ResultStatus::Blocked;
+        assert!(!crit(&go(c), "Authorization").met, "blocked case does not count");
+        let mut c = good_col();
+        c.results[1].status = ResultStatus::Skipped;
+        assert!(!crit(&go(c), "Authorization").met);
+        // a role that is not in roles.toml is not counted
+        let mut c = good_col();
+        c.cases[2].role = Some("stranger".into());
+        assert!(!crit(&go(c), "Authorization").met);
+        // other techniques do not count; BOLA (cross-role) cases do
+        let mut c = good_col();
+        c.cases[2].technique = Technique::Positive;
+        assert!(!crit(&go(c), "Authorization").met);
+        let mut c = good_col();
+        c.cases[2] = case("api.GET./o/{id}.state.bola.b", Technique::StateTransition, Some("b"));
+        c.results[2].case_id = "api.GET./o/{id}.state.bola.b".into();
+        assert!(crit(&go(c), "Authorization").met);
+        // failed-but-executed cases did run
+        let mut c = good_col();
+        c.results[1].status = ResultStatus::Fail;
+        c.results[1].defect_id = Some("D-1".into());
+        c.defects.push(defect("D-1", Severity::Low, FindingStatus::New));
+        assert!(crit(&go(c), "Authorization").met);
+    }
+
+    #[test]
+    fn failed_cases_must_be_explained_by_a_defect() {
+        let q = qa2();
+        let go = |c: QaCollector| build(c, &run(Verdict::Pass, vec![]), &q, "d");
+        // a failed case with NO defect: blocking, whatever the gate says
+        let mut c = good_col();
+        c.results[1].status = ResultStatus::Fail;
+        let r = go(c);
+        assert_eq!(r.counts.failed, 1);
+        assert!(!crit(&r, "Every failed case").met && crit(&r, "Every failed case").blocking);
+        assert_eq!(r.recommendation, Recommendation::NoGo);
+        assert!(r.conditions.iter().any(|c| c.contains("Every failed case")));
+        // a failed case whose defect id points nowhere is just as unexplained
+        let mut c = good_col();
+        c.results[1].status = ResultStatus::Fail;
+        c.results[1].defect_id = Some("D-404".into());
+        assert_eq!(go(c).recommendation, Recommendation::NoGo);
+        // failed WITH a (low) defect: not blocking, but the non-blocking "no failed cases" is unmet
+        let mut c = good_col();
+        c.results[1].status = ResultStatus::Fail;
+        c.results[1].defect_id = Some("D-1".into());
+        c.defects.push(defect("D-1", Severity::Low, FindingStatus::New));
+        let r = go(c);
+        assert!(crit(&r, "Every failed case").met);
+        assert!(!crit(&r, "No failed test cases").met && !crit(&r, "No failed test cases").blocking);
+        assert_eq!(r.recommendation, Recommendation::ConditionalGo);
+        // the failure behind a SUPPRESSED defect is an accepted one
+        let mut c = good_col();
+        c.results[1].status = ResultStatus::Fail;
+        c.results[1].defect_id = Some("D-1".into());
+        c.defects.push(defect("D-1", Severity::Low, FindingStatus::Suppressed));
+        let r = go(c);
+        assert!(crit(&r, "No failed test cases").met);
+        assert_eq!(r.counts.failed, 1, "the raw count still shows it");
+        // nothing failed: both criteria met -> Go
+        assert!(crit(&go(good_col()), "No failed test cases").met);
+        assert_eq!(go(good_col()).recommendation, Recommendation::Go);
     }
 
     #[test]

@@ -6,6 +6,22 @@ use std::collections::HashMap;
 
 pub const MARKER: &str = "readyhai'\"<rh>{{7*7}}";
 
+/// Upper bound for any string synthesized from a schema (a hostile `maxLength`/`minLength` of
+/// 2^31 must not allocate gigabytes). The explicit deep-profile 1 MB probe is generated apart.
+pub const MAX_STR: usize = 64 * 1024;
+
+/// Truncate to at most `n` bytes without splitting a UTF-8 character (String::truncate panics).
+pub fn truncate_str(s: &mut String, n: usize) {
+    if s.len() <= n {
+        return;
+    }
+    let mut cut = n;
+    while cut > 0 && !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    s.truncate(cut);
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expect {
     /// Valid input: expect 2xx (anything but 5xx is checked; 4xx noted as a failed case).
@@ -94,13 +110,15 @@ fn num(s: &Value, k: &str) -> Option<f64> {
 
 fn clip(mut v: String, s: &Value) -> String {
     if let Some(m) = num(s, "maxLength") {
-        v.truncate(m as usize);
+        truncate_str(&mut v, (m.max(0.0) as usize).min(MAX_STR));
     }
     if let Some(m) = num(s, "minLength") {
-        while v.len() < m as usize {
+        let want = (m.max(0.0) as usize).min(MAX_STR);
+        while v.len() < want {
             v.push('x');
         }
     }
+    truncate_str(&mut v, MAX_STR);
     v
 }
 
@@ -230,7 +248,10 @@ fn violations(p: &Value) -> Vec<(String, Value)> {
     match schema_type(&p) {
         "string" => {
             if let Some(m) = num(&p, "maxLength") {
-                v.push(("maxlen".into(), Value::String("a".repeat(m as usize + 1))));
+                // a violation longer than MAX_STR is not generated (it would be an allocation bomb)
+                if m >= 0.0 && (m as usize) < MAX_STR {
+                    v.push(("maxlen".into(), Value::String("a".repeat(m as usize + 1))));
+                }
             }
             if num(&p, "minLength").unwrap_or(0.0) > 0.0 {
                 v.push(("minlen".into(), Value::String(String::new())));
@@ -416,6 +437,22 @@ mod tests {
         assert!(c.iter().any(|c| c.kind.contains("1mb")));
         let m = c.iter().find(|c| c.kind == "boundary.maxlen.note").unwrap();
         assert_eq!(m.body.as_ref().unwrap()["note"].as_str().unwrap().len(), 101);
+    }
+
+    #[test]
+    fn string_lengths_are_capped() {
+        let s = synth(&json!({"type":"string","minLength":2147483647_u64,"maxLength":4294967295_u64}), "x", "t-", 0);
+        assert_eq!(s.as_str().unwrap().len(), MAX_STR);
+        let v = violations(&json!({"type":"string","maxLength":10_000_000}));
+        assert!(v.is_empty(), "no >64KB violation string is generated");
+        let v = violations(&json!({"type":"string","maxLength":5}));
+        assert_eq!(v[0].1.as_str().unwrap().len(), 6);
+        // non-ASCII names must not panic the truncation
+        let n = synth(&json!({"type":"string","maxLength":3}), "ünï", "é", 0);
+        assert!(n.as_str().unwrap().len() <= 3);
+        let mut t = "aé".to_string();
+        truncate_str(&mut t, 2);
+        assert_eq!(t, "a");
     }
 
     #[test]

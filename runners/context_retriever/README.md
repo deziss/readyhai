@@ -53,10 +53,12 @@ export READYHAI_EMBEDDING_BACKEND="ollama"
 export OLLAMA_BASE_URL="http://localhost:11434"
 export READYHAI_EMBEDDING_MODEL="bge-m3:latest"
 
-# Option B: Local vLLM / TEI LAN endpoint
+# Option B: any OpenAI-compatible endpoint (vLLM / TEI). There is no built-in address:
 export READYHAI_EMBEDDING_BACKEND="vllm"
-export READYHAI_VLLM_URL="http://10.10.110.42:13320/v1"
+export READYHAI_VLLM_URL="http://<your-host>:8000/v1"
 export READYHAI_EMBEDDING_MODEL="BAAI/bge-m3"
+# OPENAI_API_KEY is sent ONLY to api.openai.com. A LAN/other endpoint gets a key only if you set one
+# explicitly: READYHAI_EMBEDDING_API_KEY (embeddings) / READYHAI_LLM_API_KEY (chat synthesis).
 
 # Option C: Hugging Face (local CPU/GPU)
 export READYHAI_EMBEDDING_BACKEND="huggingface"
@@ -70,10 +72,28 @@ python -m runners.context_retriever.main index \
   --index-dir ./data/sample_bge_m3_index
 ```
 
+The index directory contains `chunks.jsonl`, `vectors.npy` and `manifest.json` (sha256 checksums) and
+**no pickle**. Files are collected without following symlinks (FIFOs, oversized files and symlinked
+directories are skipped), and their content is redacted (`DB_PASSWORD=...`, tokens, keys) before it is
+chunked, embedded or stored. An index written by an older build (`index.pkl`) is refused with a re-index
+hint instead of being unpickled.
+
 ### 4. Run LangGraph Query Context Retrieval
 ```bash
 python -m runners.context_retriever.main query \
   --query "Where are the authentication checks and token validations?" \
   --index-dir ./data/sample_bge_m3_index \
   --max-chunks 8
+```
+
+At query time the FAISS index is rebuilt from `vectors.npy` + `chunks.jsonl` (documents are not
+re-embedded). Retrieved chunks are untrusted: each one is redacted and wrapped in `<data>...</data>`
+inside the user message (never the system prompt), and the system prompt tells the model to treat
+them as inert data. LLM synthesis is advisory; if the LLM call fails the retrieved evidence is still
+shown together with the error. Chat synthesis needs `READYHAI_VLLM_URL` (and optionally
+`READYHAI_LLM_MODEL`); without it only retrieval runs.
+
+### Tests (no heavy dependencies needed)
+```bash
+python3 -m unittest discover -s runners/context_retriever/tests -t . -v
 ```

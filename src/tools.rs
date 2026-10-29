@@ -134,13 +134,11 @@ pub fn lock_entries() -> BTreeMap<String, LockEntry> {
 
 /// ID of a local image (`docker image inspect`), None when it is not present.
 pub fn local_image_id(reference: &str) -> Option<String> {
-    let o = Command::new("docker")
-        .args(["image", "inspect", "--format", "{{.Id}}", reference])
-        .stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    if !o.status.success() {
+    let o = run_capped(Command::new("docker").args(["image", "inspect", "--format", "{{.Id}}", reference]), DOCKER_QUICK, 8192, None).ok()?;
+    if !o.success() {
         return None;
     }
-    let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    let t = o.stdout_lossy().trim().to_string();
     if t.is_empty() { None } else { Some(t) }
 }
 
@@ -399,15 +397,24 @@ fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Res
         tail.drain(..cut);
         tail
     });
-    let deadline = Instant::now() + Duration::from_secs(spec.timeout_secs);
+    let mut deadline = Instant::now() + Duration::from_secs(spec.timeout_secs);
+    // The run-wide wall-clock deadline (server worker) caps every tool, not just the next check.
+    let mut run_limited = false;
+    if let Some(rd) = crate::engine::run_deadline(run_id).filter(|rd| *rd < deadline) {
+        deadline = rd;
+        run_limited = true;
+    }
     let status = loop {
         if let Some(s) = child.try_wait()? {
             break s;
         }
         if Instant::now() >= deadline {
-            let _ = Command::new("docker").args(["rm", "-f", &name]).output();
+            let _ = run_capped(Command::new("docker").args(["rm", "-f", &name]), DOCKER_QUICK, 4096, None);
             let _ = child.kill();
             let _ = child.wait();
+            if run_limited {
+                bail!("run wall-clock deadline exceeded");
+            }
             bail!("timeout after {}s", spec.timeout_secs);
         }
         std::thread::sleep(Duration::from_millis(150));
@@ -422,6 +429,103 @@ fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Res
     })
 }
 
+// ---------------------------------------------------------------- bounded subprocesses
+
+/// Result of [`run_capped`].
+#[derive(Debug)]
+pub struct Captured {
+    /// None when the process was killed on timeout.
+    pub status: Option<std::process::ExitStatus>,
+    /// First `cap` bytes of stdout.
+    pub stdout: Vec<u8>,
+    /// Last few KiB of stdout (what `stdout` lost when `truncated`; curl's `-w` trailer lives here).
+    pub stdout_tail: Vec<u8>,
+    /// First `cap` bytes of stderr.
+    pub stderr: Vec<u8>,
+    /// stdout or stderr exceeded `cap` (the rest was drained and discarded).
+    pub truncated: bool,
+    pub timed_out: bool,
+}
+
+impl Captured {
+    pub fn success(&self) -> bool {
+        !self.timed_out && self.status.is_some_and(|s| s.success())
+    }
+    pub fn stdout_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.stdout).into_owned()
+    }
+    pub fn stderr_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.stderr).into_owned()
+    }
+}
+
+const TAIL_KEEP: usize = 4096;
+
+fn drain_capped<R: Read + Send + 'static>(mut r: R, cap: usize) -> std::sync::mpsc::Receiver<(Vec<u8>, Vec<u8>, bool)> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut head, mut tail, mut truncated) = (Vec::new(), Vec::new(), false);
+        let mut buf = [0u8; 8192];
+        while let Ok(n) = r.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            let room = cap.saturating_sub(head.len());
+            head.extend_from_slice(&buf[..n.min(room)]);
+            if n > room {
+                truncated = true;
+            }
+            tail.extend_from_slice(&buf[..n]);
+            if tail.len() > TAIL_KEEP * 2 {
+                let cut = tail.len() - TAIL_KEEP;
+                tail.drain(..cut);
+            }
+        }
+        let cut = tail.len().saturating_sub(TAIL_KEEP);
+        tail.drain(..cut);
+        let _ = tx.send((head, tail, truncated));
+    });
+    rx
+}
+
+/// Run a command with a hard wall-clock limit and bounded output. stdin is null (or `input`),
+/// stdout and stderr are always piped: a child never inherits the parent's stdout, which matters
+/// for the MCP server whose stdout carries only JSON-RPC. On timeout the child is killed.
+pub fn run_capped(cmd: &mut Command, timeout: Duration, cap: usize, input: Option<&[u8]>) -> std::io::Result<Captured> {
+    use std::io::Write;
+    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
+        let data = data.to_vec();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&data);
+        });
+    }
+    let rx_out = drain_capped(child.stdout.take().expect("piped"), cap);
+    let rx_err = drain_capped(child.stderr.take().expect("piped"), cap);
+    let deadline = Instant::now() + timeout;
+    let (status, timed_out) = loop {
+        if let Some(s) = child.try_wait()? {
+            break (Some(s), false);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break (None, true);
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    };
+    // A grandchild may keep the pipe open after the child died: do not wait for it forever.
+    let grace = Duration::from_secs(2);
+    let (stdout, stdout_tail, t1) = rx_out.recv_timeout(grace).unwrap_or_default();
+    let (stderr, _, t2) = rx_err.recv_timeout(grace).unwrap_or_default();
+    Ok(Captured { status, stdout, stdout_tail, stderr, truncated: t1 || t2, timed_out })
+}
+
+const DOCKER_QUICK: Duration = Duration::from_secs(30);
+
+
 fn mkdir_open(p: &Path) {
     let _ = std::fs::create_dir_all(p);
     crate::snapshot::set_mode(p, 0o777);
@@ -429,11 +533,9 @@ fn mkdir_open(p: &Path) {
 
 impl Docker {
     pub fn detect(data_dir: &Path) -> Docker {
-        let available = Command::new("docker")
-            .args(["version", "--format", "{{.Server.Version}}"])
-            .stdin(Stdio::null())
-            .output()
-            .map(|o| o.status.success() && !o.stdout.is_empty())
+        // A wedged daemon must not hang the scan (or the MCP server): 10 s, then "unavailable".
+        let available = run_capped(Command::new("docker").args(["version", "--format", "{{.Server.Version}}"]), Duration::from_secs(10), 4096, None)
+            .map(|o| o.success() && !o.stdout.is_empty())
             .unwrap_or(false);
         let mode = match std::env::var("READYHAI_DATA_VOLUME") {
             Ok(name) if !name.is_empty() => MountMode::Volume { name, data_root: data_dir.to_path_buf() },
@@ -457,29 +559,73 @@ impl Docker {
     }
 
     /// `docker save` the image to a tar file (placed at /src/image.tar by the engine).
-    pub fn export_image(&self, image: &str, dest: &Path) -> Result<()> {
+    pub fn export_image(&self, run_id: &str, image: &str, dest: &Path) -> Result<()> {
         if !self.available {
             bail!("docker not available");
         }
-        let o = Command::new("docker")
-            .arg("save").arg("-o").arg(dest).arg(image)
-            .stdin(Stdio::null()).output().context("docker save")?;
-        if !o.status.success() {
-            bail!("docker save {image}: {}", String::from_utf8_lossy(&o.stderr).trim());
+        // Large images take a while, but never forever: 15 min, or the run deadline if sooner.
+        let mut limit = Duration::from_secs(900);
+        if let Some(rd) = crate::engine::run_deadline(run_id) {
+            limit = limit.min(rd.saturating_duration_since(Instant::now()));
+        }
+        let o = run_capped(Command::new("docker").arg("save").arg("-o").arg(dest).arg(image), limit, 8192, None).context("docker save")?;
+        if o.timed_out {
+            let _ = std::fs::remove_file(dest);
+            bail!("docker save {image}: timed out after {}s", limit.as_secs());
+        }
+        if !o.success() {
+            bail!("docker save {image}: {}", o.stderr_lossy().trim());
         }
         Ok(())
     }
 
     /// Remove leftover containers labelled readyhai.run=<run_id>.
     pub fn reap(&self, run_id: &str) {
-        let Ok(o) = Command::new("docker")
-            .args(["ps", "-aq", "--filter", &format!("label=readyhai.run={run_id}")])
-            .output() else { return };
-        let ids: Vec<String> = String::from_utf8_lossy(&o.stdout).split_whitespace().map(String::from).collect();
-        if !ids.is_empty() {
-            let _ = Command::new("docker").arg("rm").arg("-f").args(&ids).output();
+        reap_run(run_id);
+    }
+}
+
+/// Remove containers labelled `readyhai.run=<run_id>` (end of run, run deadline, shutdown).
+pub fn reap_run(run_id: &str) {
+    reap_label(&format!("label=readyhai.run={run_id}"));
+}
+
+fn reap_label(filter: &str) {
+    let Ok(o) = run_capped(Command::new("docker").args(["ps", "-aq", "--filter", filter]), DOCKER_QUICK, 1 << 16, None) else { return };
+    let ids: Vec<String> = o.stdout_lossy().split_whitespace().map(String::from).collect();
+    if !ids.is_empty() {
+        let _ = run_capped(Command::new("docker").arg("rm").arg("-f").args(&ids), DOCKER_QUICK, 4096, None);
+    }
+}
+
+/// Server startup: containers labelled `readyhai.run=<id>` whose run is dead (`is_dead(id)`) were
+/// orphaned by a crash or restart; remove them. Containers of runs this predicate does not claim
+/// (for example a CLI scan started by someone else) are left alone.
+pub fn reap_dead_runs(is_dead: &dyn Fn(&str) -> bool) -> usize {
+    let Ok(o) = run_capped(
+        Command::new("docker").args(["ps", "-a", "--filter", "label=readyhai.run", "--format", "{{.ID}} {{.Label \"readyhai.run\"}}"]),
+        DOCKER_QUICK,
+        1 << 16,
+        None,
+    ) else {
+        return 0;
+    };
+    if !o.success() {
+        return 0;
+    }
+    let mut ids: Vec<String> = vec![];
+    for line in o.stdout_lossy().lines() {
+        if let Some((cid, run)) = line.split_once(' ')
+            && is_dead(run.trim())
+            && cid.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            ids.push(cid.to_string());
         }
     }
+    if !ids.is_empty() {
+        let _ = run_capped(Command::new("docker").arg("rm").arg("-f").args(&ids), DOCKER_QUICK, 4096, None);
+    }
+    ids.len()
 }
 
 // ---------------------------------------------------------------- helpers
@@ -1151,11 +1297,11 @@ pub fn checks() -> Vec<Check> {
             let Some(image) = ctx.target.image.clone() else {
                 return Ok(CheckOutput::status(CheckStatus::NotApplicable("no image".into())));
             };
-            let o = Command::new("docker").args(["image", "inspect", &image]).stdin(Stdio::null()).output()?;
-            if !o.status.success() {
-                bail!("docker image inspect {image}: {}", String::from_utf8_lossy(&o.stderr).trim());
+            let o = run_capped(Command::new("docker").args(["image", "inspect", &image]), DOCKER_QUICK, 8 << 20, None)?;
+            if !o.success() {
+                bail!("docker image inspect {image}: {}", if o.timed_out { "timed out".to_string() } else { o.stderr_lossy().trim().to_string() });
             }
-            Ok(CheckOutput::findings(parse_image_inspect(&String::from_utf8_lossy(&o.stdout), &image)?))
+            Ok(CheckOutput::findings(parse_image_inspect(&o.stdout_lossy(), &image)?))
         })
         .tool("docker"),
     );
@@ -1385,6 +1531,46 @@ pub fn tools_update(docker: &Docker) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---------------------------------------------------------------- run_capped
+
+    #[test]
+    fn run_capped_kills_on_timeout() {
+        let t0 = Instant::now();
+        let o = run_capped(Command::new("sh").args(["-c", "sleep 30"]), Duration::from_millis(300), 1024, None).unwrap();
+        assert!(o.timed_out && !o.success() && o.status.is_none());
+        assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn run_capped_bounds_output_and_keeps_the_tail() {
+        // ~2 MiB of output with cap 1 KiB: head capped, tail retained, child not blocked
+        let o = run_capped(Command::new("sh").args(["-c", "yes abcdefgh | head -c 2000000; echo END-MARKER"]), Duration::from_secs(20), 1024, None).unwrap();
+        assert!(o.success() && o.truncated);
+        assert_eq!(o.stdout.len(), 1024);
+        assert!(String::from_utf8_lossy(&o.stdout_tail).contains("END-MARKER"));
+    }
+
+    #[test]
+    fn run_capped_stdin_is_null_and_stdout_is_captured() {
+        // `cat` would hang on an inherited terminal/pipe; with null stdin it returns at once
+        let o = run_capped(&mut Command::new("cat"), Duration::from_secs(5), 1024, None).unwrap();
+        assert!(o.success() && o.stdout.is_empty());
+        let o = run_capped(&mut Command::new("cat"), Duration::from_secs(5), 1024, Some(b"piped in")).unwrap();
+        assert_eq!(o.stdout_lossy(), "piped in");
+        let o = run_capped(Command::new("sh").args(["-c", "echo out; echo err >&2; exit 3"]), Duration::from_secs(5), 1024, None).unwrap();
+        assert_eq!((o.stdout_lossy().trim(), o.stderr_lossy().trim(), o.status.and_then(|s| s.code())), ("out", "err", Some(3)));
+        assert!(run_capped(&mut Command::new("/nonexistent/binary"), Duration::from_secs(1), 10, None).is_err());
+    }
+
+    #[test]
+    fn run_capped_does_not_wait_for_a_grandchild_holding_the_pipe() {
+        // the shell exits at once but leaves `sleep` holding stdout open
+        let t0 = Instant::now();
+        let o = run_capped(Command::new("sh").args(["-c", "sleep 20 & echo started"]), Duration::from_secs(10), 1024, None).unwrap();
+        assert!(o.success());
+        assert!(t0.elapsed() < Duration::from_secs(6), "{:?}", t0.elapsed());
+    }
 
     const SECRET: &str = "FAKE-SECRET-VALUE-9f8e7d6c";
     const GITLEAKS: &str = include_str!("../tests/fixtures/tool-outputs/gitleaks.json");

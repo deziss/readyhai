@@ -1,17 +1,33 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { Header, SaaSViewMode } from "@/components/Header";
 import { Composer } from "@/components/Composer";
 import { ToolCallList, StageState } from "@/components/ToolCallList";
 import { SideCanvas } from "@/components/SideCanvas";
-import { ApprovalCard } from "@/components/ApprovalCard";
+import { ApprovalCard, type SignOffAction } from "@/components/ApprovalCard";
+import { GlobalNotices } from "@/components/GlobalNotices";
 import { ScansHistoryView } from "@/components/ScansHistoryView";
 import { AgentHistoryView } from "@/components/AgentHistoryView";
 import { NetworkLabView } from "@/components/NetworkLabView";
 import { FloatingTaskWidget, ActiveTaskItem } from "@/components/FloatingTaskWidget";
+import { apiRequest, errorText, notify, useApiTokenVersion } from "@/lib/api";
+import {
+  buildLedger,
+  isGateVerdict,
+  ledgerScore,
+  ledgerVerdict,
+  mergeRetestResult,
+  runCases,
+  runDefectCount,
+  runId as getRunId,
+  runThreats,
+  strOrNull,
+} from "@/lib/runs";
 import type {
+  AgentRunRecord,
   ModelTier,
+  RawCaseResult,
   TestCaseResult,
   ThreatFinding,
   EvidenceLedger,
@@ -51,54 +67,60 @@ export default function Home() {
   const [testCases, setTestCases] = useState<TestCaseResult[]>([]);
   const [threats, setThreats] = useState<ThreatFinding[]>([]);
   const [evidenceLedger, setEvidenceLedger] = useState<EvidenceLedger | null>(null);
-  const [runsHistory, setRunsHistory] = useState<any[]>([]);
+  const [defectCount, setDefectCount] = useState<number | null>(null);
+  const [runsHistory, setRunsHistory] = useState<AgentRunRecord[]>([]);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [activeTasks, setActiveTasks] = useState<ActiveTaskItem[]>([]);
 
-  // Fetch counts and history
-  const fetchCountsAndHistory = async () => {
-    try {
-      const [agentRes, scansRes] = await Promise.all([
-        fetch("/api/agent/runs"),
-        fetch("/api/scans"),
-      ]);
-      if (agentRes.ok) {
-        const agentData = await agentRes.json();
-        const runsList = Array.isArray(agentData) ? agentData : agentData.runs || [];
-        setRunsHistory(runsList);
-        setAgentRunsCount(runsList.length);
-      }
-      if (scansRes.ok) {
-        const scansData = await scansRes.json();
-        const scansList = scansData.scans || [];
-        setScansCount(scansList.length);
-      }
-    } catch (e) {
-      console.error("Failed to fetch runs count:", e);
-    }
-  };
+  const tokenVersion = useApiTokenVersion();
+  const stageTimers = useRef<number[]>([]);
+  const loadSeq = useRef(0);
+
+  // Fetch counts and history (polled). Errors are not surfaced here: a 401 raises the
+  // "set your API token" banner via the API helper, and a flaky poll should not spam notices.
+  const fetchCountsAndHistory = useCallback(
+    () =>
+      Promise.all([
+        apiRequest<AgentRunRecord[] | { runs?: AgentRunRecord[] }>("/api/agent/runs", { label: "Runs list" }),
+        apiRequest<{ scans?: unknown[] }>("/api/scans", { label: "Scans list" }),
+      ]).then(([agentRes, scansRes]) => {
+        if (agentRes.ok && agentRes.data) {
+          const d = agentRes.data;
+          const runsList: AgentRunRecord[] = Array.isArray(d) ? d : d.runs || [];
+          setRunsHistory(runsList);
+          setAgentRunsCount(runsList.length);
+        }
+        if (scansRes.ok && scansRes.data) {
+          setScansCount((scansRes.data.scans || []).length);
+        }
+      }),
+    []
+  );
 
   useEffect(() => {
     fetchCountsAndHistory();
     const interval = setInterval(fetchCountsAndHistory, 12000);
     return () => clearInterval(interval);
+  }, [fetchCountsAndHistory, tokenVersion]);
+
+  // The simulated stage-progress timers must never outlive the launch (or the page).
+  const clearStageTimers = useCallback(() => {
+    stageTimers.current.forEach((id) => window.clearTimeout(id));
+    stageTimers.current = [];
   }, []);
+  useEffect(() => clearStageTimers, [clearStageTimers]);
 
   async function handleDiscover() {
     if (!target) return;
     setIsDiscovering(true);
     try {
-      const res = await fetch("/api/agent/discover", {
+      const r = await apiRequest<DiscoveredTarget>("/api/agent/discover", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target }),
+        json: { target },
+        label: "Discovery",
       });
-      if (res.ok) {
-        const data: DiscoveredTarget = await res.json();
-        setDiscoveredData(data);
-      }
-    } catch (err) {
-      console.error("Discovery failed:", err);
+      if (r.ok && r.data) setDiscoveredData(r.data);
+      else notify(r.ok ? "Discovery returned no data." : r.error);
     } finally {
       setIsDiscovering(false);
     }
@@ -108,17 +130,13 @@ export default function Home() {
     if (!target) return;
     setIsCrawling(true);
     try {
-      const res = await fetch("/api/agent/crawl", {
+      const r = await apiRequest<DiscoveredTarget>("/api/agent/crawl", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target, max_pages: 35 }),
+        json: { target, max_pages: 35 },
+        label: "Crawl",
       });
-      if (res.ok) {
-        const data: DiscoveredTarget = await res.json();
-        setDiscoveredData(data);
-      }
-    } catch (err) {
-      console.error("Crawl failed:", err);
+      if (r.ok && r.data) setDiscoveredData(r.data);
+      else notify(r.ok ? "Crawl returned no data." : r.error);
     } finally {
       setIsCrawling(false);
     }
@@ -133,61 +151,52 @@ export default function Home() {
       component: path,
       technique: "crawled_url_probe",
       method: method,
-      status: "PENDING" as any,
-      latency_ms: 0,
-      curl: `curl -i -X ${method} "${target.replace(/\/$/, '')}${path}"`,
+      status: "PENDING",
+      latency_ms: null,
+      curl: `curl -i -X ${method} "${target.replace(/\/$/, "")}${path}"`,
       assertion_details: "Active verification of crawled real URL",
     };
     setTestCases((prev) => [newCase, ...prev.filter((c) => c.id !== testId)]);
 
-    try {
-      const res = await fetch("/api/agent/retest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          target,
-          case: {
-            id: testId,
-            title: `Direct Probe: ${path}`,
-            component: path,
-            method: method,
-            technique: "crawled_url_probe",
-            input_hint: "Target crawl verification",
-            payload: null,
-            expected_behavior: "Returns valid HTTP response (non-500)",
-            expected_status: 200,
-            risk_level: "low",
-          },
-          run_id: currentRunId || null,
-        }),
-      });
-      if (res.ok) {
-        const updated = await res.json();
-        setTestCases((prev) =>
-          prev.map((c) =>
-            c.id === testId
-              ? {
-                  ...c,
-                  status: (updated.status || "PASS") as any,
-                  latency_ms: updated.latency_ms || 25,
-                  curl: updated.reproduction_curl || c.curl,
-                  response_status: updated.status_code || 200,
-                  response_body: updated.evidence || "",
-                  retested: true,
-                }
-              : c
-          )
-        );
-      }
-    } catch (err) {
-      console.error("Test endpoint error:", err);
-      setTestCases((prev) =>
-        prev.map((c) => (c.id === testId ? { ...c, status: "FAIL" as any } : c))
-      );
+    const r = await apiRequest<RawCaseResult>("/api/agent/retest", {
+      method: "POST",
+      json: {
+        target,
+        case: {
+          id: testId,
+          title: `Direct Probe: ${path}`,
+          component: path,
+          method: method,
+          technique: "crawled_url_probe",
+          input_hint: "Target crawl verification",
+          payload: null,
+          expected_behavior: "Returns valid HTTP response (non-500)",
+          expected_status: 200,
+          risk_level: "low",
+        },
+        run_id: currentRunId || null,
+      },
+      label: "Endpoint probe",
+    });
+
+    if (r.ok && r.data) {
+      const result = r.data;
+      setTestCases((prev) => prev.map((c) => (c.id === testId ? mergeRetestResult(c, result) : c)));
+      return;
     }
+    // The probe itself did not run: do not report it as a pass or as a target failure.
+    const msg = r.ok ? "Endpoint probe returned no result." : r.error;
+    setTestCases((prev) =>
+      prev.map((c) =>
+        c.id === testId ? { ...c, status: "SKIPPED", assertion_details: `Probe did not run: ${msg}` } : c
+      )
+    );
+    notify(msg);
   }
 
   async function handleLaunch() {
+    if (isRunning) return;
+    clearStageTimers();
     setIsRunning(true);
     setActiveTasks((prev) => [
       ...prev.filter((t) => t.id !== "agent_swarm"),
@@ -208,6 +217,35 @@ export default function Home() {
       { id: "triager", label: "Critic & Triager", subtext: "Triaging OWASP defects and compiling Evidence Ledger", status: "standby" },
     ]);
 
+    // Cosmetic progress only (the run endpoint is synchronous); cleared as soon as the
+    // request settles and on unmount.
+    stageTimers.current.push(
+      window.setTimeout(() => {
+        setStages((prev) =>
+          prev.map((s, idx) =>
+            idx === 0 ? { ...s, status: "succeeded" } : idx === 1 ? { ...s, status: "running" } : s
+          )
+        );
+      }, 800),
+      window.setTimeout(() => {
+        setStages((prev) =>
+          prev.map((s, idx) =>
+            idx <= 1 ? { ...s, status: "succeeded" } : idx === 2 ? { ...s, status: "running" } : s
+          )
+        );
+      }, 1500)
+    );
+
+    const failLaunch = (message: string) => {
+      clearStageTimers();
+      // Every stage that had started is marked failed; untouched stages stay on standby.
+      setStages((prev) => prev.map((s) => (s.status === "standby" ? s : { ...s, status: "failed" })));
+      setActiveTasks((prev) =>
+        prev.map((t) => (t.id === "agent_swarm" ? { ...t, status: "failed", detail: message } : t))
+      );
+      notify(message);
+    };
+
     try {
       const payload = {
         target,
@@ -220,32 +258,28 @@ export default function Home() {
         thinking_budget_tokens: thinkingBudget,
       };
 
-      setTimeout(() => {
-        setStages((prev) =>
-          prev.map((s, idx) =>
-            idx === 0 ? { ...s, status: "succeeded" } : idx === 1 ? { ...s, status: "running" } : s
-          )
-        );
-      }, 800);
-
-      setTimeout(() => {
-        setStages((prev) =>
-          prev.map((s, idx) =>
-            idx <= 1 ? { ...s, status: "succeeded" } : idx === 2 ? { ...s, status: "running" } : s
-          )
-        );
-      }, 1500);
-
-      const res = await fetch("/api/agent/run", {
+      const r = await apiRequest<AgentRunRecord & { report?: AgentRunRecord }>("/api/agent/run", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        json: payload,
+        label: "Agent run",
       });
+      clearStageTimers();
 
-      if (res.ok) {
-        const data = await res.json();
-        const rep = data.report || data;
-        handleLoadRun(rep);
+      if (!r.ok) {
+        failLaunch(r.error);
+        return;
+      }
+      const rep = r.data?.report ?? r.data;
+      if (!rep) {
+        failLaunch("Agent run failed: the backend returned an empty response.");
+        return;
+      }
+
+      await handleLoadRun(rep);
+
+      if (rep.status === "failed" || rep.error) {
+        failLaunch(`Agent run failed: ${rep.error || "the backend reported status \"failed\""}`);
+        return;
       }
 
       setStages((prev) => prev.map((s) => ({ ...s, status: "succeeded" })));
@@ -258,229 +292,117 @@ export default function Home() {
       );
       fetchCountsAndHistory();
     } catch (err) {
-      console.error("Agent run failed:", err);
-      setStages((prev) => prev.map((s) => ({ ...s, status: "succeeded" })));
-      setActiveTasks((prev) =>
-        prev.map((t) =>
-          t.id === "agent_swarm"
-            ? { ...t, status: "completed", detail: "Finished with warnings" }
-            : t
-        )
-      );
+      failLaunch(`Agent run failed: ${errorText(err)}`);
     } finally {
       setIsRunning(false);
     }
   }
 
   async function handleRetestCase(tc: TestCaseResult) {
-    try {
-      const res = await fetch("/api/agent/retest", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          target,
-          case: {
-            id: tc.id,
-            title: tc.title,
-            component: tc.component,
-            method: tc.method,
-            technique: tc.technique,
-            input_hint: "Interactive verification",
-            payload: tc.request_payload || null,
-            expected_behavior: tc.assertion_details || "Valid response",
-            expected_status: tc.response_status || 200,
-            risk_level: "medium",
-          },
-          run_id: currentRunId || null,
-        }),
-      });
+    const r = await apiRequest<RawCaseResult>("/api/agent/retest", {
+      method: "POST",
+      json: {
+        target,
+        case: {
+          id: tc.id,
+          title: tc.title,
+          component: tc.component,
+          method: tc.method,
+          technique: tc.technique,
+          input_hint: "Interactive verification",
+          payload: tc.request_payload || null,
+          expected_behavior: tc.assertion_details || "Valid response",
+          expected_status: tc.response_status || 200,
+          risk_level: "medium",
+        },
+        run_id: currentRunId || null,
+      },
+      label: "Retest",
+    });
 
-      if (res.ok) {
-        const updated = await res.json();
-        setTestCases((prev) =>
-          prev.map((item) =>
-            item.id === tc.id
-              ? {
-                  ...item,
-                  status: (updated.status || "PASS") as any,
-                  latency_ms: updated.latency_ms || item.latency_ms,
-                  curl: updated.reproduction_curl || item.curl,
-                  response_status: updated.status_code || item.response_status,
-                  response_body: updated.evidence || item.response_body,
-                  retested: true,
-                }
-              : item
-          )
-        );
-      }
-    } catch (err) {
-      console.error("Retest error:", err);
+    if (!r.ok) {
+      notify(r.error);
+      return;
     }
+    if (!r.data) {
+      notify("Retest returned no result.");
+      return;
+    }
+    const result = r.data;
+    setTestCases((prev) => prev.map((item) => (item.id === tc.id ? mergeRetestResult(item, result) : item)));
   }
 
-  async function handleLoadRun(run: any) {
+  async function handleLoadRun(run: AgentRunRecord | null | undefined) {
     if (!run) return;
-    const runId = run.id || run.run_id;
-    if (runId) setCurrentRunId(runId);
+    const seq = ++loadSeq.current;
+
+    // Reset every piece of result state first so nothing from the previous run can leak into this one.
+    setTestCases([]);
+    setThreats([]);
+    setEvidenceLedger(null);
+    setDefectCount(null);
+    setDiscoveredData(null);
+
+    const id = getRunId(run);
+    setCurrentRunId(id);
     if (run.target) setTarget(run.target);
 
     // If shallow summary, fetch full report details
-    let fullRun = run;
-    if (runId && (!run.executed_results || run.executed_results.length === 0) && (!run.steps || run.steps.length === 0)) {
-      try {
-        const res = await fetch(`/api/agent/runs/${runId}`);
-        if (res.ok) {
-          fullRun = await res.json();
-        }
-      } catch (e) {
-        console.warn("Failed to fetch full run details:", e);
-      }
+    let fullRun: AgentRunRecord = run;
+    if (id && (!run.executed_results || run.executed_results.length === 0) && (!run.steps || run.steps.length === 0)) {
+      const r = await apiRequest<AgentRunRecord>(`/api/agent/runs/${encodeURIComponent(id)}`, {
+        label: `Loading run ${id}`,
+      });
+      if (r.ok && r.data) fullRun = r.data;
+      else notify(r.ok ? `Loading run ${id} failed: empty response. Showing the summary only.` : `${r.error} Showing the summary only.`);
     }
 
-    // Load executed results or planned cases
-    if (fullRun.executed_results && fullRun.executed_results.length > 0) {
-      const cases: TestCaseResult[] = fullRun.executed_results.map((c: any) => ({
-        id: c.case_id || c.id,
-        title: c.title,
-        component: c.component,
-        technique: c.technique,
-        method: c.method || "GET",
-        status: c.status as any,
-        latency_ms: c.latency_ms || 25,
-        curl: c.curl_reproduction || c.curl || "",
-        request_payload: c.request_payload,
-        response_status: c.response_status,
-        response_content_type: c.response_content_type,
-        response_body: c.response_body_snippet || c.response_body,
-        assertion_details: c.assertion_details,
-      }));
-      setTestCases(cases);
-    } else if (fullRun.planned_cases && fullRun.planned_cases.length > 0) {
-      const cases: TestCaseResult[] = fullRun.planned_cases.map((c: any) => ({
-        id: c.id,
-        title: c.title,
-        component: c.component,
-        technique: c.technique,
-        method: c.method,
-        status: "PLANNED" as any,
-        latency_ms: 0,
-        curl: `curl -X ${c.method} "${fullRun.target}${c.component}"`,
-        request_payload: c.payload,
-        response_status: c.expected_status,
-        assertion_details: c.expected_behavior,
-      }));
-      setTestCases(cases);
-    } else if (fullRun.test_cases && fullRun.test_cases.length > 0) {
-      setTestCases(fullRun.test_cases);
-    }
+    // A newer load started while we were fetching: drop this one.
+    if (seq !== loadSeq.current) return;
 
-    // Load discovered routes
-    if (fullRun.discovered_routes && fullRun.discovered_routes.length > 0) {
+    setTestCases(runCases(fullRun));
+
+    const routes = fullRun.discovered_routes ?? [];
+    if (routes.length > 0) {
       setDiscoveredData({
-        target: fullRun.target,
-        is_spa: fullRun.discovered_routes.some((r: any) => r.is_spa_shell),
+        target: fullRun.target ?? run.target ?? "",
+        is_spa: routes.some((r) => r.is_spa_shell),
         app_architecture: fullRun.app_architecture,
         framework: fullRun.framework,
         detected_tech: fullRun.detected_tech,
-        count: fullRun.discovered_routes.length,
-        routes: fullRun.discovered_routes,
+        count: routes.length,
+        routes,
       });
     }
 
-    // Load triaged defects
-    if (fullRun.triaged_defects && fullRun.triaged_defects.length > 0) {
-      const mappedThreats: ThreatFinding[] = fullRun.triaged_defects.map((d: any) => ({
-        owasp_category: d.owasp_category || "API_SECURITY",
-        severity: d.severity as any,
-        title: d.title,
-        affected_routes: d.affected_endpoints || [],
-        remediation: d.remediation_patch_suggestion || "",
-      }));
-      setThreats(mappedThreats);
-    } else if (fullRun.threats) {
-      setThreats(fullRun.threats);
-    }
+    setThreats(runThreats(fullRun));
+    setDefectCount(runDefectCount(fullRun));
 
-    // Load evidence ledger
-    if (fullRun.evidence_ledger) {
-      const el = fullRun.evidence_ledger;
-      const score = el.overall_readiness ?? el.composite_score ?? (fullRun.readiness_score ?? 90);
-      const verdict = el.gate_verdict || el.verdict || (fullRun.gate_verdict ?? "GO");
-      const approvalStatus = (fullRun.approval_status || el.approval_status || "PENDING").toUpperCase() as any;
-
-      const contractScore = el.contract?.score ?? el.value_score ?? 96;
-      const authzScore = el.authz?.score ?? el.authority_score ?? 92;
-      const resilienceScore = el.resilience?.score ?? el.safety_score ?? 95;
-      const obsScore = el.observability?.score ?? el.evidence_score ?? 98;
-
-      setEvidenceLedger({
-        ...el,
-        composite_score: score,
-        overall_readiness: score,
-        verdict: verdict,
-        gate_verdict: verdict,
-        approval_status: approvalStatus,
-        approved_by: fullRun.approved_by || el.approved_by,
-        approval_notes: fullRun.approval_notes || el.approval_notes,
-        contract: {
-          score: contractScore,
-          status: el.contract?.status || (contractScore >= 80 ? "PASS" : "WARN"),
-          evidence: el.contract?.evidence || el.pillars?.contract?.evidence_summary || "Route contracts and negative JSON schemas validated.",
-        },
-        authz: {
-          score: authzScore,
-          status: el.authz?.status || (authzScore >= 80 ? "PASS" : "WARN"),
-          evidence: el.authz?.evidence || el.pillars?.authz?.evidence_summary || "Authentication & RBAC privilege boundaries validated.",
-        },
-        resilience: {
-          score: resilienceScore,
-          status: el.resilience?.status || (resilienceScore >= 80 ? "PASS" : "WARN"),
-          evidence: el.resilience?.evidence || el.pillars?.resilience?.evidence_summary || "Boundary payloads & error fuzzing resilience confirmed.",
-        },
-        observability: {
-          score: obsScore,
-          status: el.observability?.status || (obsScore >= 80 ? "PASS" : "WARN"),
-          evidence: el.observability?.evidence || el.pillars?.observability?.evidence_summary || "Trace propagation present. No secrets or credentials leaked in headers or responses.",
-        },
-      });
-    } else if (fullRun.readiness_score || fullRun.gate_verdict) {
-      const score = fullRun.readiness_score ?? 90;
-      const verdict = fullRun.gate_verdict ?? "GO";
-      setEvidenceLedger({
-        composite_score: score,
-        overall_readiness: score,
-        verdict: verdict,
-        gate_verdict: verdict,
-        approval_status: (fullRun.approval_status || "PENDING").toUpperCase() as any,
-        approved_by: fullRun.approved_by,
-        approval_notes: fullRun.approval_notes,
-        contract: { score: 96, status: "PASS", evidence: "API contract schema matches deployed endpoints." },
-        authz: { score: 92, status: "PASS", evidence: "Route-level authorization boundaries verified." },
-        resilience: { score: 95, status: "PASS", evidence: "Fuzzing & boundary resistance passed." },
-        observability: { score: 98, status: "PASS", evidence: "Clean error handling without sensitive data exposure." },
-      });
-    }
+    // Evidence ledger: only what the backend reported. No default score, verdict or pillar text.
+    setEvidenceLedger(buildLedger(fullRun));
   }
 
-  function handleLoadIntoStudio(run: any) {
+  function handleLoadIntoStudio(run: AgentRunRecord) {
     handleLoadRun(run);
     setActiveView("studio");
   }
 
   async function handleDeleteRun(runId: string) {
-    try {
-      const res = await fetch(`/api/agent/runs/${runId}`, { method: "DELETE" });
-      if (res.ok) {
-        setRunsHistory((prev) => prev.filter((r) => r.id !== runId));
-        setAgentRunsCount((prev) => Math.max(0, prev - 1));
-      }
-    } catch (err) {
-      console.error("Failed to delete run:", err);
+    const r = await apiRequest<unknown>(`/api/agent/runs/${encodeURIComponent(runId)}`, {
+      method: "DELETE",
+      label: "Delete run",
+    });
+    if (!r.ok) {
+      notify(r.error);
+      return;
     }
+    setRunsHistory((prev) => prev.filter((x) => getRunId(x) !== runId));
+    setAgentRunsCount((prev) => Math.max(0, prev - 1));
+    // The deleted run can no longer be signed off.
+    setCurrentRunId((prev) => (prev === runId ? null : prev));
   }
 
-
-  function handleNetworkRunningChange(running: boolean, detail: string) {
+  function handleNetworkRunningChange(running: boolean, detail: string, failed = false) {
     if (running) {
       setActiveTasks((prev) => [
         ...prev.filter((t) => t.id !== "network_test"),
@@ -498,7 +420,7 @@ export default function Home() {
       setActiveTasks((prev) =>
         prev.map((t) =>
           t.id === "network_test"
-            ? { ...t, status: "completed", detail }
+            ? { ...t, status: failed ? "failed" : "completed", detail }
             : t
         )
       );
@@ -509,26 +431,31 @@ export default function Home() {
     setActiveTasks((prev) => prev.filter((t) => t.id !== id));
   }
 
-  async function handleSignOff(status: "approved" | "rejected", operator: string, notes: string) {
-    if (!currentRunId) return;
-    try {
-      await fetch(`/api/agent/runs/${currentRunId}/${status}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user: operator, notes }),
-      });
-      if (evidenceLedger) {
-        setEvidenceLedger({
-          ...evidenceLedger,
-          approval_status: status === "approved" ? "APPROVED" : "REJECTED",
-          approved_by: operator,
-          approval_notes: notes,
-        });
-      }
-      fetchCountsAndHistory();
-    } catch (err) {
-      console.error("Signoff error:", err);
-    }
+  /** Resolves to an error message when the sign-off failed (state is NOT changed), or null on success. */
+  async function handleSignOff(action: SignOffAction, operator: string, notes: string): Promise<string | null> {
+    if (!currentRunId) return "No stored run is loaded, so there is nothing to sign off.";
+    const r = await apiRequest<AgentRunRecord>(`/api/agent/runs/${encodeURIComponent(currentRunId)}/${action}`, {
+      method: "POST",
+      json: { user: operator, notes },
+      label: action === "approve" ? "Approve" : "Reject",
+    });
+    if (!r.ok) return r.error;
+
+    // Prefer what the backend confirmed over what we sent.
+    const confirmed = r.data;
+    const status = strOrNull(confirmed?.approval_status) ?? (action === "approve" ? "approved" : "rejected");
+    setEvidenceLedger((prev) =>
+      prev
+        ? {
+            ...prev,
+            approval_status: status.toUpperCase(),
+            approved_by: strOrNull(confirmed?.approved_by) ?? operator,
+            approval_notes: confirmed?.approval_notes ?? notes,
+          }
+        : prev
+    );
+    fetchCountsAndHistory();
+    return null;
   }
 
   return (
@@ -541,6 +468,9 @@ export default function Home() {
         scansCount={scansCount}
         agentRunsCount={agentRunsCount}
       />
+
+      {/* API-token prompt (after a 401) and error notices */}
+      <GlobalNotices />
 
       {/* 1. Agent Studio (Persistent Background Mount) */}
       <div className={`flex-1 min-h-0 overflow-hidden ${activeView === "studio" ? "flex flex-col" : "hidden"}`}>
@@ -578,9 +508,10 @@ export default function Home() {
 
             {evidenceLedger && (
               <ApprovalCard
-                runId={currentRunId || "run-latest"}
+                key={currentRunId ?? "no-run"}
+                runId={currentRunId}
                 evidenceLedger={evidenceLedger}
-                defectCount={threats.length}
+                defectCount={defectCount}
                 onSignOff={handleSignOff}
               />
             )}
@@ -595,7 +526,6 @@ export default function Home() {
               evidenceLedger={evidenceLedger}
               isSpa={discoveredData?.is_spa ?? false}
               appArchitecture={discoveredData?.app_architecture}
-              target={target}
               onRetestCase={handleRetestCase}
               runsHistory={runsHistory}
               onLoadRun={handleLoadRun}
@@ -633,6 +563,9 @@ export default function Home() {
         <NetworkLabView
           initialTarget={target}
           onRunningChange={handleNetworkRunningChange}
+          ledgerScore={
+            isGateVerdict(ledgerVerdict(evidenceLedger)) ? ledgerScore(evidenceLedger) : null
+          }
         />
       </div>
 

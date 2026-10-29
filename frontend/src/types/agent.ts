@@ -40,8 +40,9 @@ export interface TestCaseResult {
   component: string;
   technique: string;
   method: string;
-  status: "PASS" | "FAIL" | "WARN" | "SKIPPED" | "PLANNED" | "PENDING";
-  latency_ms: number;
+  status: "PASS" | "FAIL" | "WARN" | "BLOCKED" | "SKIPPED" | "PLANNED" | "PENDING";
+  /** null when the backend did not report a latency (planned / not executed). */
+  latency_ms: number | null;
   curl: string;
   request_payload?: string | null;
   response_status?: number | null;
@@ -78,9 +79,15 @@ export interface AgentStep {
 }
 
 export interface PillarScore {
-  score: number;
-  status: "PASS" | "WARN" | "FAIL";
-  evidence: string;
+  score?: number | null;
+  status?: string | null;
+  evidence?: string | null;
+}
+
+export interface ExitCriterion {
+  criterion: string;
+  met: boolean;
+  details?: string;
 }
 
 export interface EvidenceLedger {
@@ -95,8 +102,9 @@ export interface EvidenceLedger {
   overall_readiness?: number;
   gate_verdict?: string;
   composite_score?: number;
-  verdict?: "GO" | "CONDITIONAL_GO" | "NO_GO";
-  approval_status?: "PENDING" | "APPROVED" | "REJECTED";
+  verdict?: string;
+  exit_criteria_checklist?: ExitCriterion[];
+  approval_status?: string;
   approved_by?: string;
   approval_notes?: string;
   executive_summary?: string;
@@ -128,6 +136,7 @@ export interface AgentRunFull {
   completed_at?: string;
   profile: string;
   provider: string;
+  model?: string;
   thinking?: boolean;
   model_tier?: ModelTier | string;
   thinking_budget_tokens?: number;
@@ -137,8 +146,8 @@ export interface AgentRunFull {
   steps: AgentStep[];
   discovered_routes: DiscoveredRoute[];
   planned_cases: PlannedCase[];
-  executed_results: TestCaseResult[];
-  triaged_defects: TriagedDefect[];
+  executed_results: RawCaseResult[];
+  triaged_defects: RawDefect[];
   evidence_ledger?: EvidenceLedger;
   approval_status?: string;
   approved_by?: string;
@@ -157,4 +166,83 @@ export interface RequesterIpResponse {
   detected_via: string;
   detected_at: string;
   client_inbound_ip: string;
+}
+
+/** Raw executed-case row as the backend serialises it (field names vary by version). */
+export interface RawCaseResult {
+  case_id?: string;
+  id?: string;
+  title?: string;
+  component?: string;
+  technique?: string;
+  method?: string;
+  status?: string;
+  latency_ms?: number | null;
+  curl?: string;
+  curl_reproduction?: string;
+  reproduction_curl?: string;
+  request_payload?: string | null;
+  response_status?: number | null;
+  status_code?: number | null;
+  response_content_type?: string | null;
+  content_type?: string | null;
+  response_body?: string | null;
+  response_body_snippet?: string | null;
+  evidence?: string | null;
+  assertion_details?: string | null;
+  failure_reason?: string | null;
+}
+
+/** Raw triaged defect (older and newer backend field names are both accepted). */
+export interface RawDefect {
+  id?: string;
+  case_id?: string;
+  title?: string;
+  severity?: string;
+  owasp_category?: string;
+  component?: string;
+  affected_endpoints?: string[];
+  remediation_patch_suggestion?: string;
+  recommended_fix?: string;
+  evidence_snippet?: string;
+  reproduction?: string;
+}
+
+/**
+ * Loose run record: a run summary (list endpoint), a full report, or a
+ * launch response. Every field is optional because the shape differs.
+ */
+export interface AgentRunRecord {
+  id?: string;
+  run_id?: string;
+  target?: string;
+  profile?: string;
+  provider?: string;
+  model?: string;
+  status?: string;
+  error?: string | null;
+  started_at?: string;
+  is_spa?: boolean;
+  app_architecture?: string;
+  framework?: string;
+  detected_tech?: string[];
+  steps?: AgentStep[];
+  discovered_routes?: DiscoveredRoute[];
+  planned_cases?: PlannedCase[];
+  executed_results?: RawCaseResult[];
+  test_cases?: TestCaseResult[];
+  triaged_defects?: RawDefect[];
+  threats?: ThreatFinding[];
+  evidence_ledger?: EvidenceLedger | null;
+  approval_status?: string | null;
+  approved_by?: string | null;
+  approval_notes?: string | null;
+  readiness_score?: number | null;
+  gate_verdict?: string | null;
+  verdict?: string | null;
+  defects_count?: number;
+  cases_count?: number;
+  requester_ip?: string | null;
+  requester_ip_type?: string | null;
+  allowlist_guidance?: string | null;
 }

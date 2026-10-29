@@ -1,47 +1,49 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { CheckCircle2, XCircle, ShieldCheck, UserCheck, AlertTriangle, Stamp, FileText, ExternalLink, Download } from "lucide-react";
+import { useState } from "react";
+import { CheckCircle2, XCircle, ShieldCheck, UserCheck, FileText, ExternalLink } from "lucide-react";
 import type { EvidenceLedger } from "@/types/agent";
+import { isGateVerdict, ledgerScore, ledgerVerdict } from "@/lib/runs";
+import { ReportButton } from "./ReportButton";
+import { VerdictBadge } from "./VerdictBadge";
+
+export type SignOffAction = "approve" | "reject";
 
 interface ApprovalCardProps {
-  runId: string;
+  /** Backend run id; null when the displayed results are not tied to a stored run. */
+  runId: string | null;
   evidenceLedger: EvidenceLedger;
-  defectCount: number;
-  onSignOff: (status: "approved" | "rejected", operator: string, notes: string) => Promise<void>;
+  /** Number of triaged defects, or null when unknown. */
+  defectCount: number | null;
+  /** Resolves to an error message when the backend rejected the sign-off, or null on success. */
+  onSignOff: (action: SignOffAction, operator: string, notes: string) => Promise<string | null>;
 }
 
 export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: ApprovalCardProps) {
-  const [operator, setOperator] = useState("SecOps Lead (Anshu)");
-  const [notes, setNotes] = useState("All critical exit criteria validated against real API routes.");
+  const [operator, setOperator] = useState("");
+  const [notes, setNotes] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Normalize scores and verdict across backend schema variations
-  const score = evidenceLedger.composite_score ?? evidenceLedger.overall_readiness ?? 90;
-  const verdict = evidenceLedger.verdict || evidenceLedger.gate_verdict || "GO";
-  const isGo = verdict === "GO";
+  // Only what the backend reported: no default score, no default verdict.
+  const score = ledgerScore(evidenceLedger);
+  const verdict = ledgerVerdict(evidenceLedger);
+  const hasGateVerdict = isGateVerdict(verdict);
 
-  const rawStatus = (evidenceLedger.approval_status || "PENDING").toLowerCase();
-  const [signStatus, setSignStatus] = useState<"pending" | "approved" | "rejected">(
-    rawStatus === "approved"
-      ? "approved"
-      : rawStatus === "rejected"
-      ? "rejected"
-      : "pending"
-  );
+  // The sign-off state always comes from the backend-confirmed ledger, never from a local guess.
+  const rawStatus = (evidenceLedger.approval_status || "").toLowerCase();
+  const signStatus: "pending" | "approved" | "rejected" =
+    rawStatus === "approved" ? "approved" : rawStatus === "rejected" ? "rejected" : "pending";
 
-  useEffect(() => {
-    const s = (evidenceLedger.approval_status || "PENDING").toLowerCase();
-    if (s === "approved" || s === "rejected" || s === "pending") {
-      setSignStatus(s as any);
-    }
-  }, [evidenceLedger.approval_status]);
+  const canSubmit = !!runId && operator.trim().length > 0 && !isSubmitting;
 
-  async function handleAction(action: "approved" | "rejected") {
+  async function handleAction(action: SignOffAction) {
+    if (!runId) return;
     setIsSubmitting(true);
+    setError(null);
     try {
-      await onSignOff(action, operator, notes);
-      setSignStatus(action);
+      const err = await onSignOff(action, operator.trim(), notes.trim());
+      if (err) setError(err);
     } finally {
       setIsSubmitting(false);
     }
@@ -82,45 +84,50 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
 
         <div className="flex items-center gap-2">
           {runId && (
-            <a
-              href={`/api/agent/runs/${runId}/report/html`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-2.5 py-1 rounded text-[11px] font-mono font-medium bg-cyan-950/60 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/60 flex items-center gap-1 transition-colors"
+            <ReportButton
+              path={`/api/agent/runs/${runId}/report/html`}
+              mode="tab"
+              className="px-2.5 py-1 rounded text-[11px] font-mono font-medium bg-cyan-950/60 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-800/60 flex items-center gap-1 transition-colors cursor-pointer"
               title="Open full executive HTML audit report"
             >
               <FileText className="w-3 h-3 text-cyan-400" />
               Audit Report
               <ExternalLink className="w-2.5 h-2.5 opacity-70" />
-            </a>
+            </ReportButton>
           )}
-          <span
-            className={`px-3 py-1 rounded-full text-xs font-mono font-bold border tracking-wider ${
-              isGo
-                ? "bg-emerald-950/80 text-emerald-300 border-emerald-600/70"
-                : "bg-rose-950/80 text-rose-300 border-rose-600/70"
-            }`}
-          >
-            {verdict}
-          </span>
+          <VerdictBadge verdict={verdict} />
         </div>
       </div>
 
       <p className="text-xs text-slate-300 mb-3 leading-relaxed">
-        Autonomous QA verification complete. Review the Evidence Ledger score and sign off for production deployment:
+        {hasGateVerdict
+          ? "Review the Evidence Ledger score and sign off for production deployment:"
+          : "The backend did not report a gate verdict (GO / CONDITIONAL GO / NO GO) for this run, so it cannot be approved for deployment."}
       </p>
 
       {/* Stats Metric Strip */}
       <div className="grid grid-cols-3 gap-2 p-2.5 bg-[#07090e] rounded-lg border border-[#162033] mb-3 text-xs font-mono">
         <div>
           <span className="text-slate-500 block text-[10px] uppercase font-bold">Score</span>
-          <span className="text-cyan-400 font-bold text-sm">{score}%</span>
+          {score === null ? (
+            <span className="text-slate-500 font-bold text-xs">not evaluated</span>
+          ) : (
+            <span className="text-cyan-400 font-bold text-sm">{score}%</span>
+          )}
         </div>
         <div>
           <span className="text-slate-500 block text-[10px] uppercase font-bold">Defects</span>
-          <span className={defectCount === 0 ? "text-emerald-400 font-bold text-sm" : "text-rose-400 font-bold text-sm"}>
-            {defectCount}
-          </span>
+          {defectCount === null ? (
+            <span className="text-slate-500 font-bold text-xs">unknown</span>
+          ) : (
+            <span
+              className={`font-bold text-sm ${
+                defectCount > 0 ? "text-rose-400" : hasGateVerdict ? "text-emerald-400" : "text-slate-300"
+              }`}
+            >
+              {defectCount}
+            </span>
+          )}
         </div>
         <div>
           <span className="text-slate-500 block text-[10px] uppercase font-bold">Review</span>
@@ -145,7 +152,7 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
             type="text"
             value={operator}
             onChange={(e) => setOperator(e.target.value)}
-            placeholder="Operator Sign-Off ID (e.g. secops@readyhai.io)"
+            placeholder="Operator sign-off ID (required, e.g. secops@readyhai.io)"
             className="bg-[#07090e] border border-[#1e2a40] rounded px-3 py-1.5 text-xs text-slate-200 font-mono focus:outline-none focus:border-cyan-500"
           />
           <input
@@ -155,21 +162,32 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
             placeholder="Audit notes"
             className="bg-[#07090e] border border-[#1e2a40] rounded px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500"
           />
+          {!runId && (
+            <p className="text-[11px] text-amber-300 font-mono">
+              These results are not tied to a stored run, so they cannot be signed off.
+            </p>
+          )}
+          {error && (
+            <p className="text-[11px] text-rose-300 font-mono break-words" role="alert">
+              {error}
+            </p>
+          )}
           <div className="grid grid-cols-2 gap-2 mt-1">
             <button
               type="button"
-              disabled={isSubmitting}
-              onClick={() => handleAction("approved")}
-              className="py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-all cursor-pointer"
+              disabled={!canSubmit || !hasGateVerdict}
+              onClick={() => handleAction("approve")}
+              title={hasGateVerdict ? undefined : "No backend gate verdict: approval is unavailable"}
+              className="py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(16,185,129,0.3)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
             >
               <CheckCircle2 className="w-3.5 h-3.5" />
               Approve for Deployment
             </button>
             <button
               type="button"
-              disabled={isSubmitting}
-              onClick={() => handleAction("rejected")}
-              className="py-2 px-3 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(244,63,94,0.3)] transition-all cursor-pointer"
+              disabled={!canSubmit}
+              onClick={() => handleAction("reject")}
+              className="py-2 px-3 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 shadow-[0_0_15px_rgba(244,63,94,0.3)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:shadow-none"
             >
               <XCircle className="w-3.5 h-3.5" />
               Block Release
@@ -180,7 +198,9 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
         <div className="p-3 bg-[#07090e] rounded-lg border border-[#162033] flex items-center gap-2.5 text-xs font-mono">
           <UserCheck className="w-4 h-4 text-cyan-400 shrink-0" />
           <span className="text-slate-300 leading-normal">
-            Signed off by <strong className="text-cyan-300">{operator}</strong> · {notes}
+            {signStatus === "approved" ? "Approved" : "Blocked"} by{" "}
+            <strong className="text-cyan-300">{evidenceLedger.approved_by || "unknown operator"}</strong>
+            {evidenceLedger.approval_notes ? ` · ${evidenceLedger.approval_notes}` : ""}
           </span>
         </div>
       )}

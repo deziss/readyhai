@@ -2,14 +2,11 @@
 
 import { useEffect, useState } from "react";
 import {
-  Activity,
-  Bot,
   CheckCircle2,
+  XCircle,
   ChevronRight,
-  ExternalLink,
   RotateCw,
   X,
-  Zap,
 } from "lucide-react";
 import type { SaaSViewMode } from "./Header";
 
@@ -18,7 +15,7 @@ export interface ActiveTaskItem {
   title: string;
   target: string;
   view: SaaSViewMode;
-  status: "running" | "completed";
+  status: "running" | "completed" | "failed";
   detail?: string;
   startTime: number;
 }
@@ -37,7 +34,7 @@ export function FloatingTaskWidget({
   onDismiss,
 }: FloatingTaskWidgetProps) {
   // Timer for elapsed seconds
-  const [now, setNow] = useState(Date.now());
+  const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
     if (tasks.length === 0) return;
@@ -56,6 +53,7 @@ export function FloatingTaskWidget({
         const isCurrentView = currentView === task.view;
         const elapsedSec = Math.floor((now - task.startTime) / 1000);
         const isRunning = task.status === "running";
+        const isFailed = task.status === "failed";
 
         return (
           <div
@@ -64,6 +62,8 @@ export function FloatingTaskWidget({
             className={`p-3.5 rounded-xl border backdrop-blur-xl transition-all shadow-[0_12px_36px_rgba(0,0,0,0.65)] ${
               isRunning
                 ? "bg-[#0b1222]/95 border-cyan-500/50 shadow-[0_0_20px_rgba(6,182,212,0.15)]"
+                : isFailed
+                ? "bg-[#1a0d12]/95 border-rose-500/50 shadow-[0_0_20px_rgba(244,63,94,0.15)]"
                 : "bg-[#0a1816]/95 border-emerald-500/50 shadow-[0_0_20px_rgba(16,185,129,0.15)]"
             }`}
           >
@@ -73,11 +73,15 @@ export function FloatingTaskWidget({
                   className={`p-2 rounded-lg border shrink-0 ${
                     isRunning
                       ? "bg-cyan-950/80 border-cyan-500/40 text-cyan-400"
+                      : isFailed
+                      ? "bg-rose-950/80 border-rose-500/40 text-rose-400"
                       : "bg-emerald-950/80 border-emerald-500/40 text-emerald-400"
                   }`}
                 >
                   {isRunning ? (
                     <RotateCw className="w-4 h-4 animate-spin text-cyan-400" />
+                  ) : isFailed ? (
+                    <XCircle className="w-4 h-4 text-rose-400" />
                   ) : (
                     <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                   )}
@@ -89,10 +93,12 @@ export function FloatingTaskWidget({
                       className={`text-[10px] font-mono px-2 py-0.2 rounded font-bold uppercase ${
                         isRunning
                           ? "bg-cyan-900/60 text-cyan-300 border border-cyan-700/50"
+                          : isFailed
+                          ? "bg-rose-900/60 text-rose-300 border border-rose-700/50"
                           : "bg-emerald-900/60 text-emerald-300 border border-emerald-700/50"
                       }`}
                     >
-                      {isRunning ? "Running in BG" : "Completed"}
+                      {isRunning ? "Running in BG" : isFailed ? "Failed" : "Completed"}
                     </span>
                     <span className="text-[10px] font-mono text-slate-400">
                       {elapsedSec}s
