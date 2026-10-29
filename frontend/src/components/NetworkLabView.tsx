@@ -137,8 +137,32 @@ export function NetworkLabView({
     return res;
   };
 
+  // A non-empty absolute http(s) URL, or an error message to show instead of calling the backend.
+  function validTarget(): string | null {
+    const t = target.trim();
+    if (!t) {
+      return "Enter a target URL first (e.g. http://host.docker.internal:3000 or https://app.example.com).";
+    }
+    let u: URL;
+    try {
+      u = new URL(t);
+    } catch {
+      return `"${t}" is not a valid URL. Include the scheme, e.g. https://${t}.`;
+    }
+    if (u.protocol !== "http:" && u.protocol !== "https:") {
+      return "Target must be an http:// or https:// URL.";
+    }
+    return null;
+  }
+
   // Run continuous regress test
   async function handleRunRegress() {
+    const bad = validTarget();
+    if (bad) {
+      setLabError(bad);
+      notify(bad);
+      return;
+    }
     setIsRegressRunning(true);
     setCurlResult(null);
     setLabError(null);
@@ -183,6 +207,12 @@ export function NetworkLabView({
 
   // Run 6-Pillar Deep Audit
   async function handleRunDeepAudit() {
+    const bad = validTarget();
+    if (bad) {
+      setDeepAuditError(bad);
+      notify(bad);
+      return;
+    }
     setIsDeepAuditRunning(true);
     setDeepAuditError(null);
     onRunningChange?.(true, "6-Pillar Deep Network & Protocol Audit");
@@ -209,6 +239,12 @@ export function NetworkLabView({
 
   // Run cURL test
   async function handleRunCurl() {
+    const bad = validTarget();
+    if (bad) {
+      setLabError(bad);
+      notify(bad);
+      return;
+    }
     setIsCurlRunning(true);
     setLabError(null);
     const r = await apiRequest<CurlTestResponse>("/api/network/curl", {
@@ -233,6 +269,12 @@ export function NetworkLabView({
   }
 
     async function handleRunMultiRegion() {
+    const bad = validTarget();
+    if (bad) {
+      setLabError(bad);
+      notify(bad);
+      return;
+    }
     setIsMultiRegionRunning(true);
     setLabError(null);
     onRunningChange?.(true, `Probing 4-Region Edge Mesh (${target})`);

@@ -94,3 +94,6 @@ Thumbs.db
 # Allow test fixtures to remain tracked
 !tests/fixtures/**
 !tests/fixtures/**/*.log
+
+# Local rules of engagement (real hosts/IPs). Use scope.example.toml as the template.
+scope.toml

@@ -11,9 +11,14 @@ services:
       READYHAI_DATA: /data
       READYHAI_DATA_VOLUME: readyhai_data
       READYHAI_ALLOWED_ROOTS: /targets
+      READYHAI_SCOPE: /config/scope.toml
     volumes:
       - readyhai_data:/data
       - ${TARGETS_DIR:-./targets}:/targets:ro
+      - ${SCOPE_FILE:-./scope.toml}:/config/scope.toml:ro
+    extra_hosts:
+      # Lets scans reach apps running on this machine as host.docker.internal.
+      - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:${READYHAI_PORT:-8080}:8080"
     depends_on:
@@ -38,6 +43,8 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - READYHAI_BACKEND_URL=http://readyhai:8080
+      # The UI proxy attaches this server-side; the browser never sees the token.
+      - READYHAI_TOKEN=${READYHAI_TOKEN}
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     depends_on:

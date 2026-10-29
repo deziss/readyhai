@@ -11,6 +11,13 @@ export async function proxy(
 
   const reqHeaders = new Headers(request.headers);
   reqHeaders.delete("host");
+  // Server-side auth: when the UI container has READYHAI_TOKEN, attach it here so the
+  // token never has to be pasted into (or stored by) the browser. A token the user
+  // set in Settings still takes precedence.
+  const serverToken = process.env.READYHAI_TOKEN?.trim();
+  if (serverToken && !reqHeaders.has("authorization")) {
+    reqHeaders.set("authorization", `Bearer ${serverToken}`);
+  }
 
   try {
     const isBodyAllowed = !["GET", "HEAD"].includes(request.method);

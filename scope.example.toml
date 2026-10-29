@@ -1,11 +1,41 @@
-# Scope file for `readyhai scan --scope`. One [[hosts]] entry per target.
-# Intrusive checks run only on env = "nonprod" hosts.
+# Rules of engagement. Copy to scope.toml and edit. Re-read on every request
+# (restart the readyhai container after editing — it is mounted as a single file).
+#
+# Policy:
+#   - A PUBLIC host is allowed with NO entry here, and defaults to full testing.
+#   - An INTERNAL host (localhost, 10.x/172.16-31/192.168, 169.254 metadata, etc.)
+#     is refused UNLESS you list it below — listing it is you vouching it is yours.
+#   - A listed host uses its env: "prod" = read-only (no writes/attacks/load),
+#     "nonprod" = full testing. Exact entries beat wildcards; on overlap prod wins.
+#   - Public code hosts (github/gitlab/bitbucket/codeberg/sr.ht) can be cloned
+#     without any entry; add an internal git server under [git] hosts.
+#
+# Only list hosts you own or are authorised to test.
 
+# From inside Docker, apps on your machine are reached as host.docker.internal.
 [[hosts]]
-host = "app.nonprod.example"
+host = "host.docker.internal"
 env = "nonprod"
 
-# Production: web/passive checks only.
+# Your machine's loopback (internal → must be listed to test it).
 [[hosts]]
-host = "app.example.com"
-env = "prod"
+host = "localhost"
+env = "nonprod"
+
+[[hosts]]
+host = "127.0.0.1"
+env = "nonprod"
+
+# Example internal staging host (replace with your own, or delete):
+# [[hosts]]
+# host = "staging.internal"
+# env = "nonprod"
+
+# Example production host — listed as prod so writes/attacks/load are refused:
+# [[hosts]]
+# host = "app.example.com"
+# env = "prod"
+
+# Internal git servers (public ones need no entry):
+# [git]
+# hosts = ["git.internal", "gitlab.internal", "10.0.0.20"]
