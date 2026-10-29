@@ -196,9 +196,11 @@ pub fn precheck(opts: &ScanOpts) -> Result<()> {
         crate::scope::check_host(&h.host, scope.as_ref(), true)?;
     }
     // Any remote repository, whatever its spelling: https://, git:<url>, ssh://, bare git@host:path.
+    // Public code hosts (github/gitlab/...) are allowed by default; an internal git host must be
+    // listed under [git] hosts in scope.toml.
     if t.kind == crate::model::TargetKind::Repo && t.path.is_none() {
         let host = engine::remote_repo_host(&t.raw)?;
-        crate::scope::check_host(&host, scope.as_ref(), true)?;
+        crate::scope::check_git_host(&host, scope.as_ref())?;
     }
     Ok(())
 }
@@ -367,25 +369,24 @@ mod tests {
             ..Default::default()
         };
         assert!(precheck(&mk("https://app.nonprod.example/", None)).is_ok());
-        // spec URL on another host is an SSRF pivot
+        // spec URL at an internal metadata IP is an SSRF pivot → refused
         assert!(precheck(&mk("https://app.nonprod.example/", Some("http://169.254.169.254/latest"))).is_err());
+        // ssh host audit of an internal box needs it listed; an unlisted internal IP is refused
         assert!(precheck(&mk("ssh://root@10.0.0.9", None)).is_err());
-        assert!(precheck(&mk("git:https://internal.git.example/x.git", None)).is_err());
-        assert!(precheck(&mk("git:git@internal.git.example:org/x.git", None)).is_err());
-        // every other spelling of a remote repository is scoped too
-        assert!(precheck(&mk("git@internal.git.example:org/x.git", None)).is_err(), "bare scp-like git@host:path");
-        assert!(precheck(&mk("git@app.nonprod.example:org/x.git", None)).is_ok());
-        assert!(precheck(&mk("git:ssh://git@internal.git.example/org/x.git", None)).is_err(), "ssh:// repo url");
-        assert!(precheck(&mk("git:ssh://git@app.nonprod.example/org/x.git", None)).is_ok());
-        assert!(precheck(&mk("ssh://git@internal.git.example/org/x.git", None)).is_err());
-        assert!(precheck(&mk("https://github.com/org/x", None)).is_err(), "github is not in scope either");
-        assert!(precheck(&mk("git:https://internal.git.example\\@app.nonprod.example/x.git", None)).is_err(), "backslash authority");
+        // remote repo clones: public code hosts are allowed with no scope entry (relaxed policy)
+        assert!(precheck(&mk("https://github.com/org/x", None)).is_ok());
+        assert!(precheck(&mk("git:https://gitlab.com/org/x.git", None)).is_ok());
+        assert!(precheck(&mk("git@github.com:org/x.git", None)).is_ok(), "bare scp-like git@host:path");
+        assert!(precheck(&mk("git:ssh://git@github.com/org/x.git", None)).is_ok(), "ssh:// repo url");
+        // an internal git host (by IP) is refused unless listed under [git] hosts
+        assert!(precheck(&mk("git:https://10.0.0.9/x.git", None)).is_err());
+        assert!(precheck(&mk("git@10.0.0.9:org/x.git", None)).is_err());
+        // git transport / option injection is always rejected by the host parser
         assert!(precheck(&mk("git:ext::sh -c id", None)).is_err());
-        // a git host that looks like an ssh option never passes
         assert!(precheck(&mk("git@-oProxyCommand=x:org/x.git", None)).is_err());
-        // web targets: backslash tricks resolve to the real (foreign) host
-        assert!(precheck(&mk("https://evil.example\\@app.nonprod.example/", None)).is_err());
-        assert!(precheck(&mk("https://app.nonprod.example/", Some("https://evil.example/openapi.json"))).is_err());
+        // web targets: a backslash trick that really points at an internal metadata host is refused
+        assert!(precheck(&mk("https://10.9.9.9\\@app.nonprod.example/", None)).is_err());
+        assert!(precheck(&mk("https://app.nonprod.example/", Some("http://10.0.0.5/openapi.json"))).is_err());
         // a local spec file is confined to the allowed roots (it would be copied into the run)
         assert!(precheck(&mk("https://app.nonprod.example/", Some("/etc/passwd"))).is_err());
         let _ = std::fs::remove_dir_all(&dir);

@@ -1593,10 +1593,14 @@ mod tests {
     // ---------------------------------------------------------------- guard
 
     #[test]
-    fn guard_refuses_everything_without_a_scope_file() {
+    fn guard_allows_public_blocks_internal_without_a_scope_file() {
         let app = test_app();
-        let r = guard(&app, "http://app.example/", false).unwrap_err();
-        assert_eq!(r.status(), StatusCode::FORBIDDEN);
+        // no scope file: a public host is allowed (relaxed policy)...
+        assert!(guard(&app, "http://app.example/", false).is_ok());
+        // ...but an internal/metadata host still needs an explicit entry
+        assert_eq!(guard(&app, "http://169.254.169.254/latest/", false).unwrap_err().status(), StatusCode::FORBIDDEN);
+        assert_eq!(guard(&app, "http://127.0.0.1:9000/", false).unwrap_err().status(), StatusCode::FORBIDDEN);
+        // non-http schemes are always refused
         assert_eq!(guard(&app, "ftp://app.example/", false).unwrap_err().status(), StatusCode::FORBIDDEN);
     }
 
@@ -1610,15 +1614,18 @@ mod tests {
         Arc::get_mut(&mut app).unwrap().scope = Some(f);
         assert!(guard(&app, "https://qa.example/a", true).is_ok());
         assert!(guard(&app, "https://www.example/", false).is_ok());
+        // www.example is listed prod → intrusive refused
         assert_eq!(guard(&app, "https://www.example/", true).unwrap_err().status(), StatusCode::FORBIDDEN);
-        assert_eq!(guard(&app, "https://other.example/", false).unwrap_err().status(), StatusCode::FORBIDDEN);
-        // the previously hard-coded customer host is now just another unlisted host
-        assert_eq!(guard(&app, "https://agent-prod.nuhire.in/", false).unwrap_err().status(), StatusCode::FORBIDDEN);
+        // an unlisted public host is allowed, including for intrusive actions (relaxed policy)
+        assert!(guard(&app, "https://other.example/", false).is_ok());
+        assert!(guard(&app, "https://other.example/", true).is_ok());
+        assert!(guard(&app, "https://agent-prod.nuhire.in/", false).is_ok());
         assert_eq!(guard_spec(&app, Some("  ".into())).unwrap(), None);
-        assert!(guard_spec(&app, Some("https://other.example/openapi.json".into())).is_err());
-        assert_eq!(guard_spec(&app, Some("https://qa.example/openapi.json".into())).unwrap().unwrap(), "https://qa.example/openapi.json");
-        // scans go through the same precheck
-        let mut opts = ScanOpts { target: "https://other.example/".into(), ..Default::default() };
+        assert_eq!(guard_spec(&app, Some("https://other.example/openapi.json".into())).unwrap().unwrap(), "https://other.example/openapi.json");
+        // an internal spec host still needs an entry
+        assert!(guard_spec(&app, Some("http://10.0.0.5/openapi.json".into())).is_err());
+        // scans go through the same precheck: an unlisted internal URL is refused
+        let mut opts = ScanOpts { target: "http://10.0.0.5:8080/".into(), ..Default::default() };
         assert_eq!(prepare_scan(&app, &mut opts).unwrap_err().status(), StatusCode::BAD_REQUEST);
         let mut opts = ScanOpts { target: "/etc".into(), ..Default::default() };
         assert_eq!(prepare_scan(&app, &mut opts).unwrap_err().status(), StatusCode::BAD_REQUEST);

@@ -1,12 +1,112 @@
 //! Rules of engagement for network targets (scope.toml).
+//!
+//! Policy (relaxed 2026-10): scope.toml no longer has to list every target.
+//! - A **public** host is allowed without an entry and defaults to `nonprod`
+//!   (full testing), because the user typed a public address they can reach.
+//! - An **internal** host (loopback, RFC1918, link-local/metadata, CGNAT,
+//!   unique-local v6) is refused *unless* it is listed in scope.toml. Listing it
+//!   is the user vouching "this private host is mine to test". This keeps the
+//!   SSRF protection (no accidental hit on 169.254.169.254 or an internal box)
+//!   while removing the per-host friction for public targets.
+//! - A listed host always uses its own `env`; `prod` stays read-only.
+//! - Remote git clones use the `[git]` host allowlist (seeded with the public
+//!   code hosts, so github/gitlab work out of the box).
 use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::Path;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Scope {
     #[serde(default)]
     pub hosts: Vec<ScopeHost>,
+    /// `[git]`: hosts allowed for remote repository clones.
+    #[serde(default)]
+    pub git: GitCfg,
+}
+
+/// `[git] hosts = [...]`: extra git hosts allowed for clone targets, on top of
+/// the built-in public defaults. Entries match exactly or as `*.suffix`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GitCfg {
+    #[serde(default)]
+    pub hosts: Vec<String>,
+}
+
+/// Public code hosts allowed for `git clone` with no scope.toml entry.
+const DEFAULT_GIT_HOSTS: &[&str] =
+    &["github.com", "*.github.com", "gitlab.com", "*.gitlab.com", "bitbucket.org", "codeberg.org", "git.sr.ht"];
+
+/// An IP that must not be reached unless the user explicitly listed its host in
+/// scope.toml: loopback, private, link-local (incl. the 169.254.169.254 cloud
+/// metadata endpoint), CGNAT, and the v6 equivalents.
+pub fn is_internal_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || matches!(v4.octets(), [100, b, ..] if (64..=127).contains(&b)) // 100.64.0.0/10 CGNAT
+        }
+        IpAddr::V6(v6) => {
+            if let Some(m) = v6.to_ipv4_mapped() {
+                return is_internal_ip(IpAddr::V4(m));
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local (incl. fd00:ec2::254 metadata)
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+        }
+    }
+}
+
+/// Does `host` name an internal address? A literal IP is checked directly; a
+/// name is resolved and counts as internal if *any* of its addresses is (a
+/// public name pointing at an internal IP is treated as internal). A name that
+/// does not resolve is treated as public — nothing connects to it, and the real
+/// operation fails later with a plain connection error.
+pub fn host_is_internal(host: &str) -> bool {
+    let h = norm_host(host);
+    if let Ok(ip) = h.parse::<IpAddr>() {
+        return is_internal_ip(ip);
+    }
+    match (h.as_str(), 0u16).to_socket_addrs() {
+        Ok(addrs) => addrs.map(|a| a.ip()).any(is_internal_ip),
+        Err(_) => false,
+    }
+}
+
+/// Host-name matches an allowlist entry (exact, or `*.suffix`).
+fn host_matches(host: &str, pattern: &str) -> bool {
+    let (host, pat) = (norm_host(host), norm_host(pattern));
+    match pat.strip_prefix("*.") {
+        Some(sfx) if !sfx.is_empty() => {
+            host.len() > sfx.len() + 1 && host.ends_with(sfx) && host.as_bytes()[host.len() - sfx.len() - 1] == b'.'
+        }
+        _ => host == pat,
+    }
+}
+
+/// A remote git clone host is allowed when it is a known public code host or is
+/// listed under `[git] hosts`. (A listed host may be internal: that is the user
+/// vouching for their own git server.) Public but unlisted hosts are allowed so
+/// `github.com/...` just works; an unknown *internal* host is refused.
+pub fn check_git_host(host: &str, scope: Option<&Scope>) -> Result<()> {
+    let host = norm_host(host);
+    if host.is_empty() {
+        bail!("empty git host");
+    }
+    let listed = DEFAULT_GIT_HOSTS.iter().any(|p| host_matches(&host, p))
+        || scope.is_some_and(|s| s.git.hosts.iter().any(|p| host_matches(&host, p)));
+    if listed {
+        return Ok(());
+    }
+    if host_is_internal(&host) {
+        bail!("git host '{host}' is internal and not listed — add it under [git] hosts in scope.toml to clone from it");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,24 +223,31 @@ pub fn url_host(url: &str) -> Result<String> {
 }
 
 /// Is the web target allowed, and is it nonprod (for intrusive checks)?
-pub fn check(url: &str, scope: Option<&Scope>, required: bool) -> Result<bool> {
-    check_host(&url_host(url)?, scope, required)
+/// `_required` is kept for call-site compatibility; the policy no longer depends
+/// on it (public hosts are allowed without a scope file).
+pub fn check(url: &str, scope: Option<&Scope>, _required: bool) -> Result<bool> {
+    check_host(&url_host(url)?, scope, _required)
 }
 
-/// Same decision for a bare host (ssh and git remotes, where the caller already extracted it).
-pub fn check_host(host: &str, scope: Option<&Scope>, required: bool) -> Result<bool> {
+/// Decide a bare host (web, ssh, resolved from a URL). Returns whether it is
+/// `nonprod` (intrusive actions allowed). Refuses an **internal** host that is
+/// not listed in scope.toml; a public host needs no entry and defaults to
+/// nonprod. A listed host always uses its own `env`.
+pub fn check_host(host: &str, scope: Option<&Scope>, _required: bool) -> Result<bool> {
     let host = norm_host(host);
     if host.is_empty() {
         bail!("empty host");
     }
-    match scope {
-        None if required => bail!("server mode: web targets must be listed in scope.toml (READYHAI_SCOPE)"),
-        None => Ok(false),
-        Some(s) => match s.find(&host) {
-            Some(h) => Ok(h.env.eq_ignore_ascii_case("nonprod")),
-            None => bail!("host '{host}' is not in scope.toml"),
-        },
+    if let Some(h) = scope.and_then(|s| s.find(&host)) {
+        return Ok(h.env.eq_ignore_ascii_case("nonprod"));
     }
+    if host_is_internal(&host) {
+        bail!(
+            "host '{host}' is internal and not listed in scope.toml — add it (env = \"nonprod\" for full testing, \"prod\" for read-only) to test it"
+        );
+    }
+    // Public, unlisted: allowed, treated as a nonprod test target.
+    Ok(true)
 }
 
 /// Outcome of [`egress_guard`]: the URL to actually request (normalised, so the client and the
@@ -155,15 +262,15 @@ pub struct Egress {
 }
 
 /// The one gate every outbound HTTP action of the server goes through (agent run/retest/discover/
-/// crawl, network lab, scans): the host must be in scope, and `intrusive` actions (writes,
-/// attack payloads, load, fault injection) are additionally refused on anything not tagged
-/// `nonprod`. A missing scope file refuses everything: the server never guesses.
+/// crawl, network lab, scans). A **public** host is allowed with no scope entry; an **internal**
+/// host must be listed in scope.toml. `intrusive` actions (writes, attack payloads, load, fault
+/// injection) are refused on any host whose scope entry is not `nonprod`.
 pub fn egress_guard(url: &str, scope: Option<&Scope>, intrusive: bool) -> Result<Egress> {
     let u = parse_web_url(url)?;
     let host = norm_host(u.host_str().unwrap_or_default());
     let nonprod = check_host(&host, scope, true)?;
     if intrusive && !nonprod {
-        bail!("host '{host}' is not tagged env = \"nonprod\" in scope.toml; intrusive actions are refused on prod hosts");
+        bail!("host '{host}' is tagged env = \"prod\" in scope.toml; intrusive actions (writes, attacks, load) are refused on prod hosts");
     }
     Ok(Egress { url: u.to_string(), host, nonprod })
 }
@@ -180,13 +287,49 @@ mod tests {
     fn hosts() {
         assert_eq!(url_host("https://user:pw@App.Example.com:8443/x?y").unwrap(), "app.example.com");
         let s = scope("[[hosts]]\nhost='*.nonprod.example'\nenv='nonprod'\n[[hosts]]\nhost='app.example'\nenv='prod'");
+        // listed entries use their env
         assert!(check("https://a.nonprod.example/", Some(&s), true).unwrap());
         assert!(!check("https://app.example/", Some(&s), true).unwrap());
-        assert!(check("https://evil.example/", Some(&s), true).is_err());
-        assert!(check("https://x/", None, true).is_err());
-        // a wildcard never matches the bare suffix or a look-alike
-        assert!(check("https://nonprod.example/", Some(&s), true).is_err());
-        assert!(check("https://anonprod.example/", Some(&s), true).is_err());
+        // a public host that is not listed is allowed and treated as nonprod (relaxed policy)
+        assert!(check("https://evil.example/", Some(&s), true).unwrap());
+        assert!(check("https://x.unlisted.example/", None, true).unwrap());
+        // a wildcard still does not match the bare suffix or a look-alike (but those are public → nonprod)
+        assert!(check("https://nonprod.example/", Some(&s), true).unwrap());
+        assert!(check("https://anonprod.example/", Some(&s), true).unwrap());
+    }
+
+    #[test]
+    fn internal_hosts_need_an_entry() {
+        assert!(is_internal_ip("127.0.0.1".parse().unwrap()));
+        assert!(is_internal_ip("10.1.2.3".parse().unwrap()));
+        assert!(is_internal_ip("192.168.0.9".parse().unwrap()));
+        assert!(is_internal_ip("169.254.169.254".parse().unwrap())); // cloud metadata
+        assert!(is_internal_ip("100.100.0.1".parse().unwrap())); // CGNAT
+        assert!(is_internal_ip("::1".parse().unwrap()));
+        assert!(is_internal_ip("fd00:ec2::254".parse().unwrap())); // unique-local metadata
+        assert!(!is_internal_ip("8.8.8.8".parse().unwrap()));
+        assert!(!is_internal_ip("1.1.1.1".parse().unwrap()));
+        // an unlisted internal IP target is refused
+        assert!(check("http://169.254.169.254/latest/meta-data/", None, true).is_err());
+        assert!(check("http://10.0.0.5:8080/", None, true).is_err());
+        // but a listed internal host is allowed with its env
+        let s = scope("[[hosts]]\nhost='10.0.0.5'\nenv='nonprod'\n[[hosts]]\nhost='127.0.0.1'\nenv='prod'");
+        assert!(check("http://10.0.0.5:8080/", Some(&s), true).unwrap());
+        assert!(!check("http://127.0.0.1/", Some(&s), true).unwrap()); // listed prod → read-only
+    }
+
+    #[test]
+    fn git_host_allowlist() {
+        assert!(check_git_host("github.com", None).is_ok());
+        assert!(check_git_host("gist.github.com", None).is_ok());
+        assert!(check_git_host("gitlab.com", None).is_ok());
+        // an unknown public host is allowed to clone (public code can live anywhere)
+        assert!(check_git_host("git.example.com", None).is_ok());
+        // an internal git host is refused unless listed under [git] hosts
+        assert!(check_git_host("10.0.0.9", None).is_err());
+        let s = scope("[git]\nhosts=['git.internal', '10.0.0.9']");
+        assert!(check_git_host("10.0.0.9", Some(&s)).is_ok());
+        assert!(check_git_host("git.internal", Some(&s)).is_ok());
     }
 
     #[test]
@@ -211,21 +354,24 @@ mod tests {
         // The WHATWG parser (reqwest) treats `\` like `/` in special URLs, so the request goes
         // to the part BEFORE the backslash. A hand-rolled splitter that looked after the last
         // '@' would call the first URL "allowed" while the client connects to evil.example.
+        // Prove the guard keys off the REAL host (before the backslash), not the decoy after it,
+        // using an internal host that is blocked unless listed: if the parser were fooled into
+        // reading `allowed.internal` the request would be allowed; it must read `10.9.9.9` and refuse.
+        let s = scope("[[hosts]]\nhost='allowed.internal'\nenv='nonprod'");
+        assert_eq!(url_host("http://10.9.9.9\\@allowed.internal/").unwrap(), "10.9.9.9");
+        assert!(check("http://10.9.9.9\\@allowed.internal/", Some(&s), true).is_err());
+        assert!(egress_guard("http://10.9.9.9\\@allowed.internal/", Some(&s), false).is_err());
+        // and the reverse: what looks foreign to a naive parser is really the listed host
         let s = scope("[[hosts]]\nhost='app.example'\nenv='nonprod'");
-        assert_eq!(url_host("http://evil.example\\@app.example/").unwrap(), "evil.example");
-        assert!(check("http://evil.example\\@app.example/", Some(&s), true).is_err());
-        assert!(egress_guard("http://evil.example\\@app.example/", Some(&s), false).is_err());
-        // and the reverse: what looks foreign to a naive parser is really the scoped host
         assert_eq!(url_host("http://app.example\\@evil.example/").unwrap(), "app.example");
         let e = egress_guard("http://app.example\\@evil.example/x", Some(&s), false).unwrap();
         assert_eq!(e.host, "app.example");
         // the normalised URL no longer contains the ambiguous backslash
         assert!(!e.url.contains('\\'), "{}", e.url);
         assert_eq!(url_host(&e.url).unwrap(), "app.example");
-        // other authority tricks
+        // authority tricks all resolve to the real host
         for u in ["http://evil.example#@app.example/", "http://evil.example?@app.example/", "http://app.example@evil.example/", "http://app.example:80@evil.example/"] {
             assert_eq!(url_host(u).unwrap(), "evil.example", "{u}");
-            assert!(check(u, Some(&s), true).is_err(), "{u}");
         }
     }
 
@@ -279,11 +425,14 @@ mod tests {
         assert!(egress_guard("https://www.example/", Some(&s), false).is_ok());
         assert!(!egress_guard("https://www.example/", Some(&s), false).unwrap().nonprod);
         let e = egress_guard("https://www.example/", Some(&s), true).unwrap_err().to_string();
-        assert!(e.contains("nonprod"), "{e}");
+        assert!(e.contains("prod") && e.contains("refused"), "{e}");
         assert!(egress_guard("https://qa.example/x", Some(&s), true).unwrap().nonprod);
-        assert!(egress_guard("https://other.example/", Some(&s), false).is_err());
-        // no scope file: everything is refused
-        assert!(egress_guard("https://qa.example/", None, false).is_err());
+        // an unlisted PUBLIC host is allowed (relaxed policy), even for intrusive actions
+        assert!(egress_guard("https://other.example/", Some(&s), false).is_ok());
+        assert!(egress_guard("https://other.example/", Some(&s), true).unwrap().nonprod);
+        // no scope file: public hosts allowed, internal still refused
+        assert!(egress_guard("https://qa.example/", None, false).is_ok());
+        assert!(egress_guard("http://127.0.0.1:8080/", None, true).is_err());
         assert!(egress_guard("ftp://qa.example/", Some(&s), false).is_err());
     }
 

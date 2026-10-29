@@ -82,11 +82,14 @@ Matching is case-insensitive on the URL host (userinfo and port stripped; `*.x` 
 
 | Situation | Result |
 |---|---|
-| Server/MCP, no scope file | Rejected: `web targets must be listed in scope.toml` |
-| Scope file given, host not listed | Rejected: `host 'h' is not in scope.toml` (CLI too) |
-| CLI, no scope file | Allowed, treated as non-nonprod |
-| Host listed `prod` | Allowed; intrusive checks skipped |
+| Public host, not listed | **Allowed**, treated as `nonprod` (full testing) — no entry needed |
+| Internal host (loopback, RFC1918, 169.254 metadata, CGNAT, unique-local v6), not listed | **Rejected**: `host 'h' is internal and not listed in scope.toml` |
+| Internal host, listed | Allowed with its `env` (you vouch it is yours) |
+| Host listed `prod` | Allowed; intrusive actions (writes, attacks, load) refused |
 | Host listed `nonprod` | Allowed; intrusive checks may run with `--profile deep` |
+| Remote git clone, public code host | Allowed (github/gitlab/bitbucket/codeberg/sr.ht by default) |
+| Remote git clone, internal host | Rejected unless listed under `[git] hosts = [...]` |
+| Non-http(s) scheme, or git `ext::`/option-injection | Always rejected |
 
 Scope applies only to the target URL. It does not cover redirects, the `--openapi` URL, or plugin network traffic (see [security-model.md](security-model.md)).
 
