@@ -131,13 +131,9 @@ fn is_secured(op: &Value, global: &Value) -> bool {
     }
 }
 
-pub fn parse(doc: Value) -> Result<Spec> {
-    if doc.get("openapi").and_then(|v| v.as_str()).map(|s| s.starts_with('3')) != Some(true) {
-        bail!("not an OpenAPI 3.x document");
-    }
-    let paths = doc.get("paths").and_then(|p| p.as_object()).cloned().unwrap_or_default();
-    let global_sec = doc.get("security").cloned().unwrap_or(Value::Null);
-    let base_path = doc
+/// Path of `servers[0].url` (no trailing slash): "/api/v1", or "" when the server is the origin root.
+pub fn base_path_of(doc: &Value) -> String {
+    let base = doc
         .pointer("/servers/0/url")
         .and_then(|u| u.as_str())
         .map(|u| {
@@ -145,7 +141,16 @@ pub fn parse(doc: Value) -> Result<Spec> {
             rest.trim_end_matches('/').to_string()
         })
         .unwrap_or_default();
-    let base_path = if base_path.is_empty() || base_path.starts_with('/') { base_path } else { format!("/{base_path}") };
+    if base.is_empty() || base.starts_with('/') { base } else { format!("/{base}") }
+}
+
+pub fn parse(doc: Value) -> Result<Spec> {
+    if doc.get("openapi").and_then(|v| v.as_str()).map(|s| s.starts_with('3')) != Some(true) {
+        bail!("not an OpenAPI 3.x document");
+    }
+    let paths = doc.get("paths").and_then(|p| p.as_object()).cloned().unwrap_or_default();
+    let global_sec = doc.get("security").cloned().unwrap_or(Value::Null);
+    let base_path = base_path_of(&doc);
     let mut ops = vec![];
     let mut untested = vec![];
     for (path, item) in &paths {
@@ -272,6 +277,16 @@ mod tests {
         assert_eq!(g.path_params().count(), 1);
         let p = s.ops.iter().find(|o| o.method == "POST").unwrap();
         assert!(!p.secured && p.body.is_some() && p.body_required);
+    }
+
+    #[test]
+    fn base_path_variants() {
+        let bp = |u: &str| base_path_of(&json!({"servers":[{"url":u}]}));
+        assert_eq!(bp("http://x/api/v1/"), "/api/v1");
+        assert_eq!(bp("https://x"), "");
+        assert_eq!(bp("/v2"), "/v2");
+        assert_eq!(bp("v3"), "/v3");
+        assert_eq!(base_path_of(&json!({})), "");
     }
 
     #[test]

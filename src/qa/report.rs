@@ -54,13 +54,129 @@ fn b64(data: &[u8]) -> String {
     o
 }
 
-/// RFC 4180 field quoting.
+/// Spreadsheet formula injection: a cell that starts with = + - @ (or TAB / CR) is evaluated by
+/// Excel / LibreOffice / Sheets. Defect text comes from specs and pages we do not control, so
+/// such a cell is prefixed with an apostrophe (the OWASP-recommended neutralisation).
+pub fn csv_neutralize(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+        std::borrow::Cow::Owned(format!("'{s}"))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
+/// RFC 4180 field quoting (after formula neutralisation).
 pub fn csv_field(s: &str) -> String {
+    let s = csv_neutralize(s);
     if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
-        s.to_string()
+        s.into_owned()
     }
+}
+
+// ------------------------------------------------------- markup escaping
+
+/// Escape text for INLINE Markdown (GitHub/GitLab flavour): one line, no emphasis / links /
+/// images / raw HTML / tables / headings / list markers, and no @mention pings. Defect text comes
+/// from spec and page sources, so nothing in it may become markup.
+pub fn md_inline(s: &str) -> String {
+    let one: String = s.chars().map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c }).collect();
+    let chars: Vec<char> = one.trim().chars().collect();
+    let mut o = String::with_capacity(chars.len() + 8);
+    for (i, &c) in chars.iter().enumerate() {
+        let alnum = |j: Option<usize>| j.and_then(|j| chars.get(j)).map(|x| x.is_alphanumeric()).unwrap_or(false);
+        match c {
+            '\\' | '`' | '*' | '[' | ']' | '<' | '>' | '|' | '~' => {
+                o.push('\\');
+                o.push(c);
+            }
+            // intraword underscores (snake_case, $RH_USER_TOKEN) are plain text in CommonMark
+            '_' if !(alnum(i.checked_sub(1)) && alnum(Some(i + 1))) => {
+                o.push('\\');
+                o.push(c);
+            }
+            '#' | '-' | '+' if i == 0 => {
+                o.push('\\');
+                o.push(c);
+            }
+            '@' => o.push_str("@\u{200B}"),
+            _ => o.push(c),
+        }
+    }
+    // "1. text" at the start would become an ordered list
+    if let Some(d) = o.find(|c: char| !c.is_ascii_digit()) {
+        if d > 0 && o[d..].starts_with(['.', ')']) {
+            o.insert(d, '\\');
+        }
+    }
+    o
+}
+
+/// Multi-line text as Markdown paragraphs: each line escaped, hard line breaks kept.
+pub fn md_lines(s: &str) -> String {
+    s.lines().map(md_inline).collect::<Vec<_>>().join("  \n")
+}
+
+/// A fenced code block whose fence is longer than any backtick run in `body`, so the content can
+/// never close it early (a spec value containing ``` stays inside the block).
+pub fn md_fence(body: &str, lang: &str) -> String {
+    let mut longest = 0;
+    let mut run = 0;
+    for c in body.chars() {
+        if c == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    let f = "`".repeat((longest + 1).max(3));
+    format!("{f}{lang}\n{}\n{f}\n", body.trim_end_matches('\n'))
+}
+
+/// Escape text for Jira wiki markup (inline).
+pub fn jira_text(s: &str) -> String {
+    let one: String = s.chars().map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c }).collect();
+    let t = one.trim();
+    let chars: Vec<char> = t.chars().collect();
+    let mut o = String::with_capacity(t.len() + 8);
+    for (i, &c) in chars.iter().enumerate() {
+        let prev_ws = i == 0 || chars[i - 1].is_whitespace();
+        let next_nonws = chars.get(i + 1).map(|n| !n.is_whitespace()).unwrap_or(false);
+        match c {
+            '\\' | '{' | '}' | '[' | ']' | '|' | '*' | '_' | '^' | '~' => {
+                o.push('\\');
+                o.push(c);
+            }
+            // -strike- / +underline+ / !image! / ??cite?? / list markers only start at a word boundary
+            '-' | '+' | '#' | '!' | '?' if prev_ws && (next_nonws || i == 0) => {
+                o.push('\\');
+                o.push(c);
+            }
+            _ => o.push(c),
+        }
+    }
+    // headings / block quotes must start a line
+    let lower = o.to_ascii_lowercase();
+    let heading = lower.len() > 2 && lower.starts_with('h') && lower.as_bytes()[1].is_ascii_digit() && lower[2..].starts_with('.');
+    if heading || lower.starts_with("bq.") {
+        o.insert(0, ' ');
+    }
+    o
+}
+
+/// Body of a Jira `{code}` block: only the closing macro matters, neutralise every `{code`.
+pub fn jira_code(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.to_ascii_lowercase().find("{code") {
+        out.push_str(&rest[..i]);
+        out.push_str("{ code");
+        rest = &rest[i + 5..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn csv_row(fields: &[String]) -> String {
@@ -248,21 +364,22 @@ fn status_label(s: FindingStatus) -> &'static str {
 
 // ----------------------------------------------------------------- Markdown
 
+/// Table cell: inline-escaped (which also escapes `|`), single line.
 fn md_cell(s: &str) -> String {
-    s.replace('|', "\\|").replace(['\n', '\r'], " ")
+    md_inline(s)
 }
 
 pub fn markdown(run: &Run) -> Result<String> {
     let q = run.qa.as_ref().ok_or_else(|| anyhow!("not a QA run"))?;
     let (rec, _) = rec_text(q.recommendation);
-    let mut m = format!("# QA test summary report\n\n**Target:** {}  \n**Environment:** {}  \n**Run:** {} ({})  \n**ReadyHai:** {} · mode {} · profile {}\n\n", run.target.raw, q.environment, run.id, run.started, run.version, q.mode, lc(&run.profile));
+    let mut m = format!("# QA test summary report\n\n**Target:** {}  \n**Environment:** {}  \n**Run:** {} ({})  \n**ReadyHai:** {} · mode {} · profile {}\n\n", md_inline(&run.target.raw), md_inline(&q.environment), md_inline(&run.id), md_inline(&run.started), md_inline(&run.version), md_inline(&q.mode), lc(&run.profile));
     m.push_str(&format!("## Recommendation: {rec}\n\n"));
     for c in &q.conditions {
-        m.push_str(&format!("- {c}\n"));
+        m.push_str(&format!("- {}\n", md_inline(c)));
     }
-    m.push_str(&format!("\n## Executive summary\n\n{}\n\n", q.executive_summary));
+    m.push_str(&format!("\n## Executive summary\n\n{}\n\n", md_lines(&q.executive_summary)));
     if let Some(a) = &q.ai_summary {
-        m.push_str(&format!("> AI-written summary (advisory): {}\n\n", a.replace('\n', "\n> ")));
+        m.push_str(&format!("> AI-written summary (advisory): {}\n\n", a.lines().map(md_inline).collect::<Vec<_>>().join("\n> ")));
     }
     let c = &q.counts;
     m.push_str(&format!("## Results\n\n| Planned | Executed | Passed | Failed | Blocked | Skipped | Flaky |\n|---|---|---|---|---|---|---|\n| {} | {} | {} | {} | {} | {} | {} |\n\n", c.planned, c.executed, c.passed, c.failed, c.blocked, c.skipped, c.flaky));
@@ -276,18 +393,18 @@ pub fn markdown(run: &Run) -> Result<String> {
         m.push('\n');
     }
     for d in &ds {
-        m.push_str(&format!("### {} {}\n\n{} · {} · {}\n\n", d.id, d.title, prio_str(d.priority), d.severity.as_str(), d.component));
+        m.push_str(&format!("### {} {}\n\n{} · {} · {}\n\n", md_inline(&d.id), md_inline(&d.title), prio_str(d.priority), d.severity.as_str(), md_inline(&d.component)));
         m.push_str("**Steps to reproduce**\n\n");
         for (i, s) in d.steps_to_reproduce.iter().enumerate() {
             if looks_like_code(s) {
-                m.push_str(&format!("\n```sh\n{s}\n```\n"));
+                m.push_str(&format!("\n{}", md_fence(s, "sh")));
             } else {
-                m.push_str(&format!("{}. {s}\n", i + 1));
+                m.push_str(&format!("{}. {}\n", i + 1, md_inline(s)));
             }
         }
-        m.push_str(&format!("\n**Expected:** {}\n\n**Actual:** {}\n\n", d.expected, d.actual));
+        m.push_str(&format!("\n**Expected:** {}\n\n**Actual:** {}\n\n", md_lines(&d.expected), md_lines(&d.actual)));
         if !d.remediation.is_empty() {
-            m.push_str(&format!("**Remediation:** {}\n\n", d.remediation));
+            m.push_str(&format!("**Remediation:** {}\n\n", md_lines(&d.remediation)));
         }
     }
     m.push_str("## Exit criteria\n\n| Criterion | Met | Blocking | Detail |\n|---|---|---|---|\n");
@@ -300,7 +417,7 @@ pub fn markdown(run: &Run) -> Result<String> {
             m.push_str(&format!("- {}\n", md_cell(n)));
         }
     }
-    m.push_str(&format!("\n---\nGenerated by ReadyHai {}.\n", run.version));
+    m.push_str(&format!("\n---\nGenerated by ReadyHai {}.\n", md_inline(&run.version)));
     Ok(m)
 }
 
@@ -308,21 +425,18 @@ pub fn markdown(run: &Run) -> Result<String> {
 
 fn jira_description(d: &Defect) -> String {
     let mut s = String::from("h3. Steps\n");
-    let mut n = 0;
     for st in &d.steps_to_reproduce {
         if looks_like_code(st) {
-            s.push_str(&format!("{{code}}\n{st}\n{{code}}\n"));
+            s.push_str(&format!("{{code}}\n{}\n{{code}}\n", jira_code(st)));
         } else {
-            n += 1;
-            s.push_str(&format!("# {st}\n"));
+            s.push_str(&format!("# {}\n", jira_text(st)));
         }
-        let _ = n;
     }
-    s.push_str(&format!("*Expected*: {}\n*Actual*: {}\n", d.expected, d.actual));
+    s.push_str(&format!("*Expected*: {}\n*Actual*: {}\n", jira_text(&d.expected), jira_text(&d.actual)));
     if !d.remediation.is_empty() {
-        s.push_str(&format!("*Remediation*: {}\n", d.remediation));
+        s.push_str(&format!("*Remediation*: {}\n", jira_text(&d.remediation)));
     }
-    s.push_str(&format!("*Severity*: {} | *Rule*: {} | *Environment*: {}\n", d.severity.as_str(), d.rule, d.environment));
+    s.push_str(&format!("*Severity*: {} | *Rule*: {} | *Environment*: {}\n", d.severity.as_str(), jira_text(&d.rule), jira_text(&d.environment)));
     s
 }
 
@@ -338,19 +452,19 @@ pub fn jira_csv(q: &QaReport) -> String {
 }
 
 fn md_description(d: &Defect) -> String {
-    let mut s = format!("**Severity:** {} · **Priority:** {} · **Component:** {}\n\n### Steps to reproduce\n", d.severity.as_str(), prio_str(d.priority), d.component);
+    let mut s = format!("**Severity:** {} · **Priority:** {} · **Component:** {}\n\n### Steps to reproduce\n", d.severity.as_str(), prio_str(d.priority), md_inline(&d.component));
     let mut n = 0;
     for st in &d.steps_to_reproduce {
         if looks_like_code(st) {
-            s.push_str(&format!("\n```sh\n{st}\n```\n"));
+            s.push_str(&format!("\n{}", md_fence(st, "sh")));
         } else {
             n += 1;
-            s.push_str(&format!("{n}. {st}\n"));
+            s.push_str(&format!("{n}. {}\n", md_inline(st)));
         }
     }
-    s.push_str(&format!("\n**Expected:** {}\n\n**Actual:** {}\n", d.expected, d.actual));
+    s.push_str(&format!("\n**Expected:** {}\n\n**Actual:** {}\n", md_lines(&d.expected), md_lines(&d.actual)));
     if !d.remediation.is_empty() {
-        s.push_str(&format!("\n**Remediation:** {}\n", d.remediation));
+        s.push_str(&format!("\n**Remediation:** {}\n", md_lines(&d.remediation)));
     }
     s
 }
@@ -570,6 +684,136 @@ pub(crate) mod tests {
         r.qa = None;
         assert!(write_formats(&r, &dir, &["md".into()]).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn hostile_defect() -> Defect {
+        let mut q = sample_qa(Recommendation::NoGo);
+        let mut d = q.defects.remove(0);
+        d.title = "=HYPERLINK(\"http://evil/\",\"x\") [click](javascript:alert(1)) <img src=x onerror=alert(1)> @admin".into();
+        d.component = "+cmd|' /C calc'!A0 GET /a`b".into();
+        d.expected = "- @SUM(1+1)\n# not a heading\n1. not a list".into();
+        d.actual = "{code}\n{panel}h1. pwned{panel}".into();
+        d.remediation = "*bold* _it_ ~~x~~ {noformat}".into();
+        d.steps_to_reproduce = vec![
+            "Open {code}http://x/{code} and [[link]]".into(),
+            "curl -sS 'http://x/```\nrm -rf /```' # code fence breakout".into(),
+        ];
+        d
+    }
+
+    #[test]
+    fn markdown_helpers_escape_markup() {
+        assert_eq!(md_inline("a_b_c"), "a_b_c", "intraword underscores stay");
+        assert_eq!(md_inline("_x_ *y* `z`"), "\\_x\\_ \\*y\\* \\`z\\`");
+        assert_eq!(md_inline("1. first"), "1\\. first");
+        assert_eq!(md_inline("# h"), "\\# h");
+        assert_eq!(md_inline("- item"), "\\- item");
+        assert_eq!(md_inline("[a](b) <i>|"), "\\[a\\](b) \\<i\\>\\|");
+        assert!(md_inline("@admin ping").starts_with("@\u{200B}admin"));
+        assert_eq!(md_inline("a\nb\r\nc"), "a b  c");
+        // a fence is always longer than the longest backtick run inside the body
+        assert_eq!(md_fence("x```y", "sh"), "````sh\nx```y\n````\n");
+        assert_eq!(md_fence("plain", ""), "```\nplain\n```\n");
+        assert_eq!(md_fence("a``````b", "sh").lines().next().unwrap(), "```````sh");
+    }
+
+    #[test]
+    fn markdown_report_cannot_be_hijacked_by_spec_text() {
+        let mut r = sample_run(Recommendation::NoGo);
+        r.qa.as_mut().unwrap().defects = vec![hostile_defect()];
+        let m = markdown(&r).unwrap();
+        // no live link / image / raw html / mention from the defect text
+        assert_eq!(m.matches("<img").count(), m.matches("\\<img").count(), "every < is escaped: {m}");
+        assert!(m.contains("\\[click\\](javascript:alert(1))"));
+        assert!(!m.contains("@admin"), "mentions are neutralised");
+        // the heading, the table row and the headings-in-text stay inert
+        assert!(m.contains("### D-001 \\=HYPERLINK") || m.contains("### D-001 =HYPERLINK"));
+        assert!(!m.lines().any(|l| l.trim_start().starts_with("# not a heading")));
+        assert!(m.contains("\\# not a heading") && m.contains("1\\. not a list"));
+        // the code step with ``` is inside a LONGER fence
+        assert!(m.contains("````sh\ncurl -sS 'http://x/```\nrm -rf /```' # code fence breakout\n````\n"), "{m}");
+        // fence balance: every line made only of backticks opens/closes with matching lengths
+        let fences: Vec<&str> = m.lines().filter(|l| l.starts_with("```")).collect();
+        assert_eq!(fences.len() % 2, 0, "{fences:?}");
+    }
+
+    #[test]
+    fn gitlab_description_is_escaped_too() {
+        let mut q = sample_qa(Recommendation::NoGo);
+        q.defects = vec![hostile_defect()];
+        let g = gitlab_json(&q);
+        let desc = g[0]["description"].as_str().unwrap();
+        assert_eq!(desc.matches("<img").count(), desc.matches("\\<img").count());
+        assert!(!desc.contains("@admin"));
+        assert!(desc.contains("````sh\ncurl -sS 'http://x/```"));
+        // the title is a plain field, untouched
+        assert!(g[0]["title"].as_str().unwrap().starts_with("=HYPERLINK"));
+    }
+
+    #[test]
+    fn jira_text_cannot_open_macros_or_close_the_code_block() {
+        assert_eq!(jira_text("{code}x{code}"), "\\{code\\}x\\{code\\}");
+        assert_eq!(jira_text("*b* _i_ [l] |t|"), "\\*b\\* \\_i\\_ \\[l\\] \\|t\\|");
+        assert_eq!(jira_text("snake-case and a - b"), "snake-case and a - b", "mid-word dashes are not strike-through");
+        assert_eq!(jira_text("-struck-"), "\\-struck-");
+        assert!(jira_text("h1. title").starts_with(' '), "headings must start a line");
+        assert!(jira_text("bq. quote").starts_with(' '));
+        assert_eq!(jira_code("a{code}b{CODE:java}c"), "a{ code}b{ code:java}c");
+        let d = hostile_defect();
+        let desc = jira_description(&d);
+        // exactly one {code} pair (the curl step); nothing from the spec can add another
+        assert_eq!(desc.matches("{code}").count(), 2, "{desc}");
+        assert!(!desc.contains("{panel}") && !desc.contains("{noformat}"));
+        assert!(desc.contains("\\{panel\\}"));
+    }
+
+    #[test]
+    fn csv_formula_injection_is_neutralised_in_every_export() {
+        for bad in ["=1+1", "+1", "-1+2", "@SUM(A1)", "\t=1", "\r=1"] {
+            let f = csv_field(bad);
+            assert!(f.trim_start_matches('"').starts_with('\''), "{bad:?} -> {f:?}");
+        }
+        assert_eq!(csv_field("plain"), "plain");
+        assert_eq!(csv_field("a=b"), "a=b", "only a LEADING sign is dangerous");
+        assert_eq!(csv_field("=a,b"), "\"'=a,b\"", "quoting still applies after neutralising");
+        let mut q = sample_qa(Recommendation::NoGo);
+        q.defects = vec![hostile_defect()];
+        q.cases[0].title = "=cmd|' /C calc'!A0".into();
+        q.cases[0].steps = vec!["+SUM(1)".into(), "@x".into()];
+        q.cases[0].expected = "-2".into();
+        // parse every cell back: none may start with a formula trigger
+        let all = [jira_csv(&q), testrail_csv(&q), xray_csv(&q)];
+        for csv in &all {
+            for rec in split_csv(csv).iter().skip(1) {
+                for cell in rec {
+                    assert!(!cell.starts_with(['=', '+', '-', '@', '\t', '\r']), "formula cell {cell:?} in {csv}");
+                }
+            }
+        }
+        assert!(all[0].contains("\"'=HYPERLINK"), "the defect title cell is prefixed");
+    }
+
+    /// Minimal RFC 4180 reader for the assertions above.
+    fn split_csv(s: &str) -> Vec<Vec<String>> {
+        let (mut rows, mut row, mut cell, mut q) = (vec![], vec![], String::new(), false);
+        let mut it = s.chars().peekable();
+        while let Some(c) = it.next() {
+            match (c, q) {
+                ('"', true) if it.peek() == Some(&'"') => {
+                    cell.push('"');
+                    it.next();
+                }
+                ('"', _) => q = !q,
+                (',', false) => row.push(std::mem::take(&mut cell)),
+                ('\r', false) => {}
+                ('\n', false) => {
+                    row.push(std::mem::take(&mut cell));
+                    rows.push(std::mem::take(&mut row));
+                }
+                (c, _) => cell.push(c),
+            }
+        }
+        rows
     }
 
     #[test]

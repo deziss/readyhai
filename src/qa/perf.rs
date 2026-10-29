@@ -52,33 +52,62 @@ pub fn effective_limits(o: Option<&PerfLimits>) -> Limits {
 }
 
 /// One virtual-user population: anonymous or a role. Header NAME/VALUE come from env at run time.
+/// `endpoints` are the paths this population requests: the anonymous one only gets endpoints the
+/// spec declares public (a 401 would be counted as a failure), the authenticated one gets all.
 #[derive(Debug, Clone)]
 pub struct Persona {
     pub name: String,
     pub has_auth: bool,
+    pub endpoints: Vec<String>,
 }
 
-/// Top-N GET paths without path parameters, spec order, health appended.
-pub fn pick_endpoints(spec: Option<&Value>, health: Option<&str>) -> Vec<String> {
-    let mut v: Vec<String> = vec![];
+/// A GET endpoint chosen for the smoke run (path already carries the spec server base path).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoint {
+    pub path: String,
+    /// The spec declares no security for it (health endpoints are treated as public).
+    pub public: bool,
+}
+
+fn has_required_input(doc: &Value, path: &str) -> bool {
+    let params = |v: Option<&Value>| v.and_then(|p| p.as_array()).cloned().unwrap_or_default();
+    let item = doc.pointer(&format!("/paths/{}", path.replace('~', "~0").replace('/', "~1")));
+    let all: Vec<Value> = params(item.and_then(|i| i.get("parameters"))).into_iter().chain(params(item.and_then(|i| i.pointer("/get/parameters")))).collect();
+    all.iter().any(|p| p.get("required").and_then(|r| r.as_bool()).unwrap_or(false) && matches!(p.get("in").and_then(|i| i.as_str()), Some("query" | "header" | "cookie")))
+}
+
+/// Top-N GET endpoints without path parameters or required inputs, spec order (each prefixed with
+/// the `servers[0].url` base path), health appended.
+pub fn pick_endpoint_set(spec: Option<&Value>, health: Option<&str>) -> Vec<Endpoint> {
+    let mut v: Vec<Endpoint> = vec![];
     if let Some(doc) = spec {
+        let base = super::api::spec::base_path_of(doc);
         for op in super::plan::ops_from_doc(doc) {
-            if op.method.eq_ignore_ascii_case("get") && !op.path.contains('{') && !v.contains(&op.path) {
-                v.push(op.path.clone());
+            if !op.method.eq_ignore_ascii_case("get") || op.path.contains('{') || has_required_input(doc, &op.path) {
+                continue;
+            }
+            let path = format!("{base}{}", op.path);
+            if !v.iter().any(|e| e.path == path) {
+                v.push(Endpoint { path, public: !op.secured });
             }
         }
     }
     v.truncate(MAX_ENDPOINTS - 1);
     if let Some(h) = health {
-        if !v.iter().any(|p| p == h) {
-            v.push(h.to_string());
+        if !v.iter().any(|e| e.path == h) {
+            v.push(Endpoint { path: h.to_string(), public: true });
         }
     }
     if v.is_empty() {
-        v.push("/".into());
+        v.push(Endpoint { path: "/".into(), public: true });
     }
     v.truncate(MAX_ENDPOINTS);
     v
+}
+
+/// Paths only (see `pick_endpoint_set`).
+pub fn pick_endpoints(spec: Option<&Value>, health: Option<&str>) -> Vec<String> {
+    pick_endpoint_set(spec, health).into_iter().map(|e| e.path).collect()
 }
 
 fn js(s: &str) -> String {
@@ -86,19 +115,29 @@ fn js(s: &str) -> String {
 }
 
 /// Generate the k6 script. Auth headers are read from `__ENV.RH_HN_<i>` / `__ENV.RH_HV_<i>`
-/// (persona index i); no secret is ever interpolated here.
-pub fn gen_script(base: &str, endpoints: &[String], personas: &[Persona], l: &Limits) -> String {
+/// (persona index i); no secret is ever interpolated here. Only 2xx/3xx count as success, so a
+/// 401/403/404 on a spec endpoint (broken credentials, wrong base path) is a failed request.
+pub fn gen_script(base: &str, personas: &[Persona], l: &Limits) -> String {
     let per = (l.vus as usize).div_ceil(personas.len().max(1)).max(1);
-    let mut s = String::from("import http from 'k6/http';\nimport { sleep } from 'k6';\n\nhttp.setResponseCallback(http.expectedStatuses({ min: 200, max: 499 })); // only 5xx / network errors count as failed\n\n");
-    s.push_str(&format!("const BASE = {};\nconst EPS = {};\n", js(base.trim_end_matches('/')),
-        serde_json::to_string(endpoints).unwrap_or("[]".into())));
-    s.push_str("export const options = {\n  scenarios: {\n");
+    let mut all: Vec<&str> = vec![];
+    for p in personas {
+        for e in &p.endpoints {
+            if !all.contains(&e.as_str()) {
+                all.push(e);
+            }
+        }
+    }
+    let mut s = String::from("import http from 'k6/http';\nimport { sleep } from 'k6';\n\nhttp.setResponseCallback(http.expectedStatuses({ min: 200, max: 399 })); // 4xx/5xx and network errors count as failed\n\n");
+    s.push_str(&format!("const BASE = {};\n", js(base.trim_end_matches('/'))));
     for (i, p) in personas.iter().enumerate() {
+        s.push_str(&format!("const EPS{i} = {};\n", serde_json::to_string(&p.endpoints).unwrap_or("[]".into())));
+    }
+    s.push_str("export const options = {\n  scenarios: {\n");
+    for i in 0..personas.len() {
         s.push_str(&format!(
             "    p{i}: {{ executor: 'constant-vus', vus: {per}, duration: '{}s', exec: 'persona{i}' }},\n",
             l.duration_secs
         ));
-        let _ = p;
     }
     s.push_str("  },\n  thresholds: {\n");
     s.push_str(&format!(
@@ -106,14 +145,14 @@ pub fn gen_script(base: &str, endpoints: &[String], personas: &[Persona], l: &Li
         l.max_error_rate
     ));
     s.push_str("    http_req_duration: ['p(95)<3600000'],\n");
-    for e in endpoints {
+    for e in &all {
         s.push_str(&format!("    {}: ['p(95)<3600000'],\n", js(&format!("http_req_duration{{name:{e}}}"))));
     }
     s.push_str("  },\n};\n\n");
-    s.push_str("function hit(i) {\n  const h = __ENV['RH_HV_' + i] ? { [__ENV['RH_HN_' + i]]: __ENV['RH_HV_' + i] } : {};\n");
-    s.push_str("  for (const e of EPS) {\n    http.get(BASE + e, { headers: h, tags: { name: e } });\n    sleep(0.2);\n  }\n}\n");
+    s.push_str("function hit(i, eps) {\n  const h = __ENV['RH_HV_' + i] ? { [__ENV['RH_HN_' + i]]: __ENV['RH_HV_' + i] } : {};\n");
+    s.push_str("  for (const e of eps) {\n    http.get(BASE + e, { headers: h, tags: { name: e } });\n    sleep(0.2);\n  }\n}\n");
     for (i, p) in personas.iter().enumerate() {
-        s.push_str(&format!("export function persona{i}() {{ hit({}); }} // {}\n", if p.has_auth { i.to_string() } else { "-1".into() }, p.name));
+        s.push_str(&format!("export function persona{i}() {{ hit({}, EPS{i}); }} // {}\n", if p.has_auth { i.to_string() } else { "-1".into() }, p.name));
     }
     s
 }
@@ -212,10 +251,6 @@ pub fn store_baseline(data: &Path, key: &str, m: &PerfMetrics) -> Result<()> {
 
 /// Pending result of the last run is stored next to the baseline so `baseline accept`
 /// can promote it (`<key>.perf.last.json` -> `<key>.perf.json`).
-pub fn accept_baseline(target_key: &str) -> Result<()> {
-    accept_baseline_in(&crate::engine::data_dir(), target_key)
-}
-
 pub fn accept_baseline_in(data: &Path, key: &str) -> Result<()> {
     let last = data.join("baselines").join(format!("{key}.perf.last.json"));
     if !last.exists() {
@@ -271,22 +306,35 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
                 .map(|r| r.status().is_success())
                 .unwrap_or(false)
     });
-    let endpoints = pick_endpoints(spec.as_ref(), health.copied());
+    let endpoint_set = pick_endpoint_set(spec.as_ref(), health.copied());
+    let endpoints: Vec<String> = endpoint_set.iter().map(|e| e.path.clone()).collect();
 
-    // Personas: anonymous + first role with credentials.
-    let mut personas = vec![Persona { name: "anonymous".into(), has_auth: false }];
+    // Personas: anonymous (public endpoints only) + first role with credentials (all endpoints).
+    let public: Vec<String> = endpoint_set.iter().filter(|e| e.public).map(|e| e.path.clone()).collect();
+    let mut personas: Vec<Persona> = vec![];
+    if !public.is_empty() {
+        personas.push(Persona { name: "anonymous".into(), has_auth: false, endpoints: public });
+    }
     let mut env: Vec<(String, String)> = vec![];
     if let Some(r) = qa.roles.roles.iter().find(|r| r.credential().is_some()) {
         if let Some((hn, hv)) = r.credential() {
             let i = personas.len();
             env.push((format!("RH_HN_{i}"), hn));
             env.push((format!("RH_HV_{i}"), hv));
-            personas.push(Persona { name: r.name.clone(), has_auth: true });
+            personas.push(Persona { name: r.name.clone(), has_auth: true, endpoints: endpoints.clone() });
         }
+    }
+    if personas.is_empty() {
+        qa.with(|c| c.untested.push("performance: every endpoint is secured and no role credential is available".into()));
+        return Ok(CheckOutput::status(CheckStatus::Skipped("no endpoint reachable without credentials and no role credential set".into())));
+    }
+    let skipped_secured = endpoint_set.iter().filter(|e| !e.public).count();
+    if skipped_secured > 0 && !personas.iter().any(|p| p.has_auth) {
+        qa.with(|c| c.notes.push(format!("perf: {skipped_secured} secured endpoint(s) not load-tested (no role credential)")));
     }
 
     let (cbase, local) = container_base(&base);
-    let script = gen_script(&cbase, &endpoints, &personas, &limits);
+    let script = gen_script(&cbase, &personas, &limits);
     let out = ctx.out_dir();
     std::fs::create_dir_all(&out)?;
     std::fs::write(out.join("perf.js"), &script)?;
@@ -435,10 +483,13 @@ mod tests {
     #[test]
     fn script_has_thresholds_and_no_secret() {
         let personas = vec![
-            Persona { name: "anonymous".into(), has_auth: false },
-            Persona { name: "admin".into(), has_auth: true },
+            Persona { name: "anonymous".into(), has_auth: false, endpoints: vec!["/health".into()] },
+            Persona { name: "admin".into(), has_auth: true, endpoints: vec!["/health".into(), "/api/x".into()] },
         ];
-        let s = gen_script("http://host.docker.internal:8080/", &["/health".into(), "/api/x".into()], &personas, &effective_limits(None));
+        let s = gen_script("http://host.docker.internal:8080/", &personas, &effective_limits(None));
+        assert!(s.contains("const EPS0 = [\"/health\"]") && s.contains("const EPS1 = [\"/health\",\"/api/x\"]"));
+        // 401/403/404 on spec endpoints must count as failed requests
+        assert!(s.contains("min: 200, max: 399") && !s.contains("max: 499"));
         assert!(s.contains("abortOnFail: true") && s.contains("rate<0.05"));
         assert!(s.contains("http_req_duration{name:/api/x}"));
         assert!(s.contains("__ENV['RH_HV_'") && s.contains("vus: 3"));
@@ -490,6 +541,17 @@ mod tests {
         accept_baseline_in(&d, "k").unwrap();
         assert_eq!(load_baseline(&d, "k").unwrap().p95, 9.0);
         let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn endpoints_get_the_server_base_path_and_security_flag() {
+        let doc: Value = serde_json::json!({"openapi":"3.0.0","servers":[{"url":"https://x.test/api/v1/"}],"security":[{"b":[]}],
+            "paths": {"/a": {"get": {}}, "/pub": {"get": {"security": []}}, "/b/{id}": {"get": {}},
+                      "/needs-q": {"get": {"parameters":[{"name":"q","in":"query","required":true}]}}}});
+        let e = pick_endpoint_set(Some(&doc), Some("/health"));
+        let got: Vec<(&str, bool)> = e.iter().map(|x| (x.path.as_str(), x.public)).collect();
+        assert_eq!(got, vec![("/api/v1/a", false), ("/api/v1/pub", true), ("/health", true)]);
+        assert_eq!(pick_endpoints(Some(&doc), None), vec!["/api/v1/a", "/api/v1/pub"]);
     }
 
     #[test]

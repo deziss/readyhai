@@ -47,16 +47,37 @@ fn merge_into(a: &mut Defect, b: Defect) {
     }
 }
 
+/// Rules whose defects are one per item (page, route, test, package...): the fingerprint key is
+/// part of the identity, so two items that share a rule and a component stay separate defects.
+fn per_item_rule(rule: &str) -> bool {
+    rule.starts_with("qa.ui.") || rule.starts_with("qa.suite.") || rule.starts_with("qa.release.")
+}
+
+/// Root-cause signature of a 5xx defect: status line + the error-body fingerprint recorded after
+/// `body: `. A defect without body evidence has no signature and is never merged (two 500s with
+/// an empty body can be unrelated).
+pub fn server_error_signature(actual: &str) -> Option<String> {
+    let first = actual.lines().next().unwrap_or("");
+    let (head, body) = first.split_once("; body: ")?;
+    let body = body.trim();
+    if body.is_empty() {
+        return None;
+    }
+    // "HTTP 500 (alice)" -> status only: the role is not part of the root cause
+    let status = head.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+    Some(format!("{status} {}", crate::logs::signature(body)))
+}
+
 pub fn triage(col: &mut QaCollector) {
     let old = std::mem::take(&mut col.defects);
     // (old id, new key) so results can be re-linked.
     let mut id_map: Vec<(String, usize)> = vec![];
 
-    // 1. dedupe by (rule, component)
-    let mut by_key: BTreeMap<(String, String), usize> = BTreeMap::new();
+    // 1. dedupe by (rule, component) [+ fp_key for per-item rules]
+    let mut by_key: BTreeMap<(String, String, String), usize> = BTreeMap::new();
     let mut ds: Vec<Defect> = vec![];
     for d in old {
-        let key = (d.rule.clone(), d.component.clone());
+        let key = (d.rule.clone(), d.component.clone(), if per_item_rule(&d.rule) { d.fp_key.clone() } else { String::new() });
         let old_id = d.id.clone();
         if let Some(&i) = by_key.get(&key) {
             merge_into(&mut ds[i], d);
@@ -68,11 +89,14 @@ pub fn triage(col: &mut QaCollector) {
         }
     }
 
-    // 2. root-cause grouping of server errors by normalized actual signature
+    // 2. root-cause grouping of server errors by status + error-body fingerprint (NOT just
+    //    "HTTP 500 (role)", which would fold unrelated failures into one defect)
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, d) in ds.iter().enumerate() {
-        if d.rule == "qa.api.server_error" && !d.actual.trim().is_empty() {
-            groups.entry(crate::logs::signature(&d.actual)).or_default().push(i);
+        if d.rule == "qa.api.server_error" {
+            if let Some(sig) = server_error_signature(&d.actual) {
+                groups.entry(sig).or_default().push(i);
+            }
         }
     }
     let mut dead: Vec<bool> = vec![false; ds.len()];
@@ -180,7 +204,7 @@ mod tests {
         let mut c = QaCollector::default();
         for p in ["/a", "/b", "/c"] {
             c.defects.push(defect("qa.api.server_error", &format!("GET {p}"), Severity::Medium,
-                &format!("HTTP 500 SQLSTATE 42P01 relation \"t{}\" missing", p.len() + 7)));
+                &format!("HTTP 500 (alice); body: SQLSTATE 42P01 relation \"t{}\" missing", p.len() + 7)));
         }
         c.defects.push(defect("qa.api.authz_missing", "POST /login", Severity::High, "200"));
         c.defects.push(defect("qa.api.error_leak", "GET /x", Severity::Low, "trace"));
@@ -191,6 +215,51 @@ mod tests {
         let m = c.defects.iter().find(|d| d.title.starts_with("Same server error on 3")).unwrap();
         assert_eq!(m.priority, Priority::P3);
         assert_eq!(c.defects[2].priority, Priority::P4);
+    }
+
+    #[test]
+    fn same_status_different_body_is_not_merged() {
+        let mut c = QaCollector::default();
+        for (p, body) in [("/a", "division by zero"), ("/b", "relation \"orders\" does not exist"), ("/c", "connection refused"), ("/d", "key error")] {
+            c.defects.push(defect("qa.api.server_error", &format!("GET {p}"), Severity::High, &format!("HTTP 500 (alice); body: {body}")));
+        }
+        triage(&mut c);
+        assert_eq!(c.defects.len(), 4, "four distinct root causes stay four defects");
+        // no body evidence at all: never merged either
+        let mut c = QaCollector::default();
+        for p in ["/a", "/b", "/c"] {
+            c.defects.push(defect("qa.api.server_error", &format!("GET {p}"), Severity::High, "HTTP 500 (alice); body: "));
+        }
+        triage(&mut c);
+        assert_eq!(c.defects.len(), 3);
+        // same body on 3 endpoints (different ids/numbers) and different roles: one root cause
+        let mut c = QaCollector::default();
+        for (p, role, n) in [("/a", "alice", 11), ("/b", "bob", 12), ("/c", "anon", 13)] {
+            c.defects.push(defect("qa.api.server_error", &format!("GET {p}"), Severity::High, &format!("HTTP 500 ({role}); body: [python_traceback] KeyError: 'order_{n}'")));
+        }
+        triage(&mut c);
+        assert_eq!(c.defects.len(), 1);
+        assert!(c.defects[0].title.starts_with("Same server error on 3"));
+    }
+
+    #[test]
+    fn signature_parsing() {
+        assert_eq!(server_error_signature("HTTP 500 (alice); body: boom 42").unwrap(), "HTTP 500 boom <*>");
+        assert!(server_error_signature("HTTP 500 (alice)").is_none());
+        assert!(server_error_signature("HTTP 500 (alice); body:   ").is_none());
+    }
+
+    #[test]
+    fn per_item_rules_are_not_merged_by_component() {
+        let mut c = QaCollector::default();
+        let mut a = defect("qa.ui.a11y", "http://x/p", Severity::Low, "x");
+        a.fp_key = "qa.ui.a11y|image-alt|/p".into();
+        let mut b = a.clone();
+        b.fp_key = "qa.ui.a11y|label|/p".into();
+        b.id = "other".into();
+        c.defects = vec![a, b];
+        triage(&mut c);
+        assert_eq!(c.defects.len(), 2);
     }
 
     #[test]

@@ -11,16 +11,172 @@
 //! 4. TLS & Certificate Chain Health Inspector
 //! 5. CORS Preflight (OPTIONS) Boundary Inspector
 //! 6. MTU & Packet Size Black Hole Sweeper
+//!
+//! Ground rules for everything in here (the REST routes expose it to a network):
+//! * targets are http(s) URLs parsed by the same parser the HTTP client uses, and every
+//!   request/command is built from the *normalised* URL, never the raw string;
+//! * every numeric request field is clamped (see the `MAX_*` constants);
+//! * captured output (curl, response bodies) is size-capped, subprocesses have wall-clock limits;
+//! * nothing is reported that was not measured: values that cannot be measured are `None`, empty
+//!   or listed in a `not_measured` field, never filled with plausible-looking constants;
+//! * a response outside 2xx counts as a failure.
 
+use crate::tools::run_capped;
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::io::Read;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::process::Command;
-use std::time::{Duration, Instant};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+// ---------------------------------------------------------------- limits
+
+/// Regression iterations per request.
+pub const MAX_ITERATIONS: usize = 100;
+/// More iterations than this is load, not a probe: refused on prod hosts.
+pub const READONLY_MAX_ITERATIONS: usize = 25;
+pub const MIN_TIMEOUT_MS: u64 = 100;
+pub const MAX_TIMEOUT_MS: u64 = 15_000;
+/// Injected artificial latency per iteration (`custom` throttle profile).
+pub const MAX_LATENCY_MS: u64 = 5_000;
+/// Pause between iterations.
+pub const MAX_DELAY_MS: u64 = 5_000;
+/// Wall-clock budget for one regression run; remaining iterations are skipped (`stopped_early`).
+pub const MAX_REGRESS_BUDGET_MS: u64 = 120_000;
+pub const MAX_PAYLOAD_BYTES: usize = 256 * 1024;
+pub const MAX_HEADERS: usize = 64;
+pub const MAX_HEADER_BYTES: usize = 8 * 1024;
+/// Captured curl output / response body ceiling.
+pub const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+const MAX_REDIRECTS: usize = 3;
+const BODY_SNIPPET_CHARS: usize = 256;
+const BODY_READ_CAP: usize = 4 * 1024;
+const MAX_SUBRESOURCES: usize = 12;
+const SUBRESOURCE_BYTES_CAP: usize = 2 * 1024 * 1024;
+const HTML_BYTES_CAP: usize = 1024 * 1024;
+const NOT_MEASURED: &str = "not measured";
 
 static REQUESTER_IP_CACHE: OnceLock<RequesterIpInfo> = OnceLock::new();
+
+// ---------------------------------------------------------------- shared helpers
+
+/// GET, HEAD and OPTIONS do not change state; everything else is an intrusive action.
+pub fn is_safe_method(m: &str) -> bool {
+    matches!(m.trim().to_ascii_uppercase().as_str(), "GET" | "HEAD" | "OPTIONS")
+}
+
+fn parse_method(m: &str) -> Result<reqwest::Method> {
+    let up = m.trim().to_ascii_uppercase();
+    match up.as_str() {
+        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" => Ok(reqwest::Method::from_bytes(up.as_bytes())?),
+        _ => bail!("method must be one of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"),
+    }
+}
+
+/// http(s) target, normalised by the URL parser, without embedded credentials.
+pub fn parse_target(raw: &str) -> Result<reqwest::Url> {
+    let u = crate::scope::parse_web_url(raw)?;
+    if !u.username().is_empty() || u.password().is_some() {
+        bail!("credentials in the URL are not accepted; send an Authorization header instead");
+    }
+    Ok(u)
+}
+
+/// Host without IPv6 brackets.
+fn host_of(u: &reqwest::Url) -> String {
+    u.host_str().unwrap_or("").trim_start_matches('[').trim_end_matches(']').to_string()
+}
+
+fn hostport(host: &str, port: u16) -> String {
+    if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") }
+}
+
+fn port_of(u: &reqwest::Url) -> u16 {
+    u.port_or_known_default().unwrap_or(80)
+}
+
+fn validate_headers(h: &HashMap<String, String>) -> Result<()> {
+    if h.len() > MAX_HEADERS {
+        bail!("at most {MAX_HEADERS} headers");
+    }
+    for (k, v) in h {
+        let name_ok = !k.is_empty() && k.len() <= 128 && k.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+        // no CR/LF/NUL/DEL: header injection into the request or the curl argv
+        let value_ok = v.len() <= MAX_HEADER_BYTES && v.bytes().all(|b| b == b'\t' || (0x20..0x7f).contains(&b) || b >= 0x80);
+        if !name_ok || !value_ok {
+            bail!("invalid header '{}'", k.chars().take(40).collect::<String>());
+        }
+    }
+    Ok(())
+}
+
+fn validate_payload(p: &Option<String>) -> Result<()> {
+    if p.as_ref().is_some_and(|p| p.len() > MAX_PAYLOAD_BYTES) {
+        bail!("payload larger than {MAX_PAYLOAD_BYTES} bytes");
+    }
+    Ok(())
+}
+
+fn has_header(h: &HashMap<String, String>, name: &str) -> bool {
+    h.keys().any(|k| k.eq_ignore_ascii_case(name))
+}
+
+/// First `max` characters (never a partial one), with "..." when something was cut.
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => format!("{}...", &s[..i]),
+        None => s.to_string(),
+    }
+}
+
+/// Read at most `cap` bytes of a response body; the bool says whether more was available.
+fn read_capped(resp: reqwest::blocking::Response, cap: usize) -> (Vec<u8>, bool) {
+    let mut buf = Vec::new();
+    let _ = resp.take(cap as u64 + 1).read_to_end(&mut buf);
+    let truncated = buf.len() > cap;
+    buf.truncate(cap);
+    (buf, truncated)
+}
+
+/// Number of body bytes (up to `cap`) without keeping them.
+fn count_capped(resp: reqwest::blocking::Response, cap: usize) -> usize {
+    std::io::copy(&mut resp.take(cap as u64), &mut std::io::sink()).unwrap_or(0) as usize
+}
+
+/// Follow at most 3 redirects and never to another host: a scoped host must not be able to
+/// bounce the probe to an internal address.
+fn same_host_redirects() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|a| {
+        let first = a.previous().first().and_then(|u| u.host_str().map(str::to_owned));
+        if a.previous().len() >= MAX_REDIRECTS || first.as_deref() != a.url().host_str() || !matches!(a.url().scheme(), "http" | "https") {
+            a.stop()
+        } else {
+            a.follow()
+        }
+    })
+}
+
+fn http_client(timeout_ms: u64, fresh_connections: bool) -> reqwest::blocking::Client {
+    let mut b = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(timeout_ms))
+        .connect_timeout(Duration::from_millis(timeout_ms))
+        .redirect(same_host_redirects())
+        // diagnostics must be able to talk to staging hosts with broken certificates; the TLS
+        // audit reports the certificate problems itself
+        .danger_accept_invalid_certs(true);
+    if fresh_connections {
+        // pool_max_idle_per_host(0) forces zero connection reuse across iterations
+        b = b.pool_max_idle_per_host(0);
+    }
+    b.build().unwrap_or_default()
+}
+
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequesterIpInfo {
@@ -177,6 +333,12 @@ pub struct IterationResult {
     pub curl_command: String,
     pub response_headers: HashMap<String, String>,
     pub response_body_snippet: Option<String>,
+    /// First address the target resolved to (what the TCP probe connected to).
+    #[serde(default)]
+    pub resolved_ip: Option<String>,
+    /// Protocol the response arrived over, e.g. "HTTP/1.1" (None when there was no response).
+    #[serde(default)]
+    pub http_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,7 +357,16 @@ pub struct AgentDiagnosis {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegressReport {
     pub target: String,
+    #[serde(default = "default_method")]
+    pub method: String,
+    /// Iterations actually executed.
     pub total_iterations: usize,
+    /// Iterations asked for (after clamping); fewer ran when `stopped_early`.
+    #[serde(default)]
+    pub iterations_requested: usize,
+    /// The wall-clock budget ran out before all iterations ran.
+    #[serde(default)]
+    pub stopped_early: bool,
     pub successful_iterations: usize,
     pub failed_iterations: usize,
     pub availability_percentage: f64,
@@ -240,6 +411,12 @@ pub struct CurlTestResponse {
     pub appconnect_s: f64,
     pub starttransfer_s: f64,
     pub total_s: f64,
+    /// Fields that could not be measured (zero means "unknown", not "instant").
+    #[serde(default)]
+    pub not_measured: Vec<String>,
+    /// Output exceeded the capture limit and was cut.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 // ============================================================================
@@ -268,6 +445,9 @@ pub struct DeepAuditReport {
     pub cors_preflight: CorsAudit,
     pub mtu_sweep: MtuSweepAudit,
     pub remediation_checklist: Vec<String>,
+    /// Pillars or fields that could not be measured on this run.
+    #[serde(default)]
+    pub not_measured: Vec<String>,
     #[serde(default)]
     pub requester_ip: Option<String>,
     #[serde(default)]
@@ -306,6 +486,9 @@ pub struct SubresourceAudit {
     pub successful_count: usize,
     pub broken_count: usize,
     pub spa_fallback_mismatches: usize,
+    /// Assets on other hosts (or non-http schemes) that were deliberately not requested.
+    #[serde(default)]
+    pub skipped_cross_host: usize,
     pub total_size_kb: f64,
     pub max_asset_ttfb_ms: u128,
     pub items: Vec<SubresourceItem>,
@@ -334,16 +517,27 @@ pub struct ProtocolMatrixAudit {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsChainAudit {
     pub is_https: bool,
-    pub tls_version: String, // "TLSv1.3", "TLSv1.2", "None"
+    /// The handshake was observed with openssl. When false everything below is "not measured".
+    #[serde(default)]
+    pub measured: bool,
+    pub tls_version: String, // "TLSv1.3", "TLSv1.2", "None", "not measured"
     pub cipher: String,
     pub cert_issuer: String,
     pub cert_subject: String,
     pub cert_sans: Vec<String>,
-    pub not_after: String,
-    pub days_remaining: i64,
+    pub not_after: Option<String>,
+    pub days_remaining: Option<i64>,
     pub is_self_signed: bool,
     pub is_intermediate_missing: bool,
-    pub ocsp_stapled: bool,
+    /// Some(true) = stapled OCSP response seen, Some(false) = none sent, None = not measured.
+    pub ocsp_stapled: Option<bool>,
+    #[serde(default)]
+    pub chain_length: Option<usize>,
+    /// openssl's own verdict against this host's trust store, e.g. "0 (ok)".
+    #[serde(default)]
+    pub verify_result: Option<String>,
+    #[serde(default)]
+    pub not_measured: Vec<String>,
     pub diagnosis: String,
 }
 
@@ -365,14 +559,27 @@ pub struct MtuSweepItem {
     pub label: String, // "512B Baseline", "1.4KB Standard MTU", "4KB Large Headers", "8KB High Payload"
     pub status_code: u16,
     pub duration_ms: u128,
+    /// 2xx response.
     pub success: bool,
+    /// Any HTTP response at all came back (so the packets arrived).
+    #[serde(default)]
+    pub delivered: bool,
+    /// No response because of a timeout/reset/close: the black-hole signature.
+    #[serde(default)]
+    pub transport_failure: bool,
+    /// 400/413/414/431: the server's own header-size limit.
+    #[serde(default)]
+    pub header_limit_hit: bool,
     pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MtuSweepAudit {
     pub black_hole_detected: bool,
+    /// Largest probe that got a response without hitting a header-size limit.
     pub maximum_safe_bytes: usize,
+    #[serde(default)]
+    pub maximum_delivered_bytes: usize,
     pub sweep_results: Vec<MtuSweepItem>,
     pub diagnosis: String,
 }
@@ -404,6 +611,9 @@ pub struct RegionProbeResult {
     pub jitter_ms: u64,
     pub packet_loss_pct: f32,
     pub notes: String,
+    /// True for the one region that was really probed.
+    #[serde(default)]
+    pub measured: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -413,33 +623,108 @@ pub struct MultiRegionReport {
     pub regions: Vec<RegionProbeResult>,
     pub fastest_region: String,
     pub slowest_region: String,
-    pub geo_dns_consistent: bool,
+    /// None: cannot be known from a single vantage point.
+    pub geo_dns_consistent: Option<bool>,
     pub cdn_edge_active: bool,
     pub regional_disparity_ms: u64,
     pub agent_verdict: String,
     pub recommendations: Vec<String>,
+    /// Regions this build has no probe node for (it never invents numbers for them).
+    #[serde(default)]
+    pub not_measured_regions: Vec<String>,
+    #[serde(default)]
+    pub measurement_note: String,
 }
 
+// ============================================================================
+// Request validation (clamp every number, normalise the target)
+// ============================================================================
+
+impl RegressRequest {
+    /// Anything but a handful of safe-method probes is load/state change, not observation.
+    pub fn is_intrusive(&self) -> bool {
+        !is_safe_method(&self.method) || self.payload.is_some() || self.iterations > READONLY_MAX_ITERATIONS
+    }
+
+    /// Validate, clamp every numeric field to its maximum and replace `target` with the
+    /// normalised URL, which is returned.
+    pub fn sanitize(&mut self) -> Result<reqwest::Url> {
+        let url = parse_target(&self.target)?;
+        self.method = parse_method(&self.method)?.to_string();
+        validate_headers(&self.headers)?;
+        validate_payload(&self.payload)?;
+        self.iterations = self.iterations.clamp(1, MAX_ITERATIONS);
+        self.timeout_ms = self.timeout_ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
+        self.simulated_latency_ms = self.simulated_latency_ms.min(MAX_LATENCY_MS);
+        self.delay_between_ms = self.delay_between_ms.min(MAX_DELAY_MS);
+        self.target = url.to_string();
+        Ok(url)
+    }
+}
+
+impl CurlTestRequest {
+    pub fn is_intrusive(&self) -> bool {
+        !is_safe_method(&self.method) || self.payload.is_some()
+    }
+
+    pub fn sanitize(&mut self) -> Result<reqwest::Url> {
+        let url = parse_target(&self.target)?;
+        self.method = parse_method(&self.method)?.to_string();
+        validate_headers(&self.headers)?;
+        validate_payload(&self.payload)?;
+        self.timeout_ms = self.timeout_ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
+        self.target = url.to_string();
+        Ok(url)
+    }
+}
+
+impl DeepAuditRequest {
+    pub fn sanitize(&mut self) -> Result<reqwest::Url> {
+        let url = parse_target(&self.target)?;
+        self.timeout_ms = self.timeout_ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
+        self.target = url.to_string();
+        Ok(url)
+    }
+}
+
+impl MultiRegionRequest {
+    pub fn sanitize(&mut self) -> Result<reqwest::Url> {
+        let url = parse_target(&self.target)?;
+        self.timeout_ms = Some(self.timeout_ms.unwrap_or(4000).clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS));
+        self.target = url.to_string();
+        Ok(url)
+    }
+}
 
 // ============================================================================
 // Continuous Regression Test Runner
 // ============================================================================
 
-pub fn run_regress_test(req: &RegressRequest) -> RegressReport {
-    let iterations = req.iterations.clamp(1, 100);
+pub fn run_regress_test(req: &RegressRequest) -> Result<RegressReport> {
+    let mut req = req.clone();
+    let requested = req.iterations;
+    let url = req.sanitize()?;
+    let requested = requested.clamp(1, MAX_ITERATIONS);
+    let method = parse_method(&req.method)?;
+    let host = host_of(&url);
+    let port = port_of(&url);
+    let iterations = req.iterations;
+
     let mut results = Vec::with_capacity(iterations);
     let mut durations: Vec<u128> = Vec::with_capacity(iterations);
     let mut status_counts: HashMap<String, usize> = HashMap::new();
     let mut successful_count = 0;
     let mut failed_count = 0;
-
-    // Parse URL target
-    let parsed_url = reqwest::Url::parse(&req.target);
-    let host = parsed_url.as_ref().ok().and_then(|u| u.host_str()).unwrap_or("localhost").to_string();
-    let port = parsed_url.as_ref().ok().and_then(|u| u.port_or_known_default()).unwrap_or(80);
+    let run_started = Instant::now();
+    let mut stopped_early = false;
+    let curl_cmd = generate_curl(&req.method, url.as_str(), &req.headers, req.payload.as_deref());
 
     for i in 1..=iterations {
-        let session_id = format!("sess-{}-{}", i, &crate::model::sha256_hex(format!("{}-{}-{}", req.target, i, Instant::now().elapsed().as_nanos()).as_bytes())[..8]);
+        if run_started.elapsed() >= Duration::from_millis(MAX_REGRESS_BUDGET_MS) {
+            stopped_early = true;
+            break;
+        }
+        let session_id = format!("sess-{i}-{:08x}", rand::random::<u32>());
         let t_start = Instant::now();
         let timestamp = crate::engine::now();
 
@@ -457,58 +742,41 @@ pub fn run_regress_test(req: &RegressRequest) -> RegressReport {
 
         // 1. Measure DNS Lookup
         let dns_t0 = Instant::now();
-        let addrs: Vec<SocketAddr> = format!("{}:{}", host, port)
+        let addrs: Vec<SocketAddr> = hostport(&host, port)
             .to_socket_addrs()
             .map(|iter| iter.collect())
             .unwrap_or_default();
         let dns_lookup_ms = dns_t0.elapsed().as_millis();
+        let resolved_ip = addrs.first().map(|a| a.ip().to_string());
 
         // 2. Measure TCP Connect
         let tcp_t0 = Instant::now();
-        let _tcp_ok = if let Some(addr) = addrs.first() {
-            TcpStream::connect_timeout(addr, Duration::from_millis(req.timeout_ms.min(3000))).is_ok()
-        } else {
-            false
-        };
+        if let Some(addr) = addrs.first() {
+            let _ = TcpStream::connect_timeout(addr, Duration::from_millis(req.timeout_ms.min(3000)));
+        }
         let tcp_connect_ms = tcp_t0.elapsed().as_millis();
 
         // 3. HTTP Request with separate private session isolation
-        let mut client_builder = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_millis(req.timeout_ms))
-            .danger_accept_invalid_certs(true);
-
-        if req.separate_sessions {
-            // pool_max_idle_per_host(0) forces zero connection reuse across iterations
-            client_builder = client_builder.pool_max_idle_per_host(0);
-        }
-
-        let client = client_builder.build().unwrap_or_default();
-        let mut http_req = match req.method.to_uppercase().as_str() {
-            "POST" => client.post(&req.target),
-            "PUT" => client.put(&req.target),
-            "DELETE" => client.delete(&req.target),
-            "PATCH" => client.patch(&req.target),
-            "HEAD" => client.head(&req.target),
-            _ => client.get(&req.target),
-        };
-
+        let client = http_client(req.timeout_ms, req.separate_sessions);
+        let mut http_req = client.request(method.clone(), url.as_str());
         for (k, v) in &req.headers {
             http_req = http_req.header(k, v);
         }
         if let Some(ref p) = req.payload {
-            http_req = http_req.header("Content-Type", "application/json").body(p.clone());
+            if !has_header(&req.headers, "content-type") {
+                http_req = http_req.header("Content-Type", "application/json");
+            }
+            http_req = http_req.body(p.clone());
         }
 
         let send_t0 = Instant::now();
         let res = http_req.send();
         let ttfb_ms = send_t0.elapsed().as_millis();
-        let total_duration_ms = t_start.elapsed().as_millis();
-
-        let curl_cmd = generate_curl(&req.method, &req.target, &req.headers, req.payload.as_deref());
 
         match res {
             Ok(resp) => {
                 let status = resp.status().as_u16();
+                let http_version = Some(format!("{:?}", resp.version()));
                 let mut resp_headers = HashMap::new();
                 for (name, val) in resp.headers() {
                     if let Ok(v_str) = val.to_str() {
@@ -516,15 +784,14 @@ pub fn run_regress_test(req: &RegressRequest) -> RegressReport {
                     }
                 }
 
-                let body_snippet = resp.text().ok().map(|txt| {
-                    if txt.len() > 256 {
-                        format!("{}...", &txt[..256])
-                    } else {
-                        txt
-                    }
-                });
+                // bounded read, then a char-boundary-safe cut (a byte slice could split a
+                // multi-byte character and panic)
+                let (bytes, _) = read_capped(resp, BODY_READ_CAP);
+                let body_snippet = Some(truncate_chars(&String::from_utf8_lossy(&bytes), BODY_SNIPPET_CHARS));
+                let total_duration_ms = t_start.elapsed().as_millis();
 
-                let is_success = status >= 200 && status < 400;
+                // only 2xx is a success: a 3xx that was not followed, a 4xx or a 5xx is a failure
+                let is_success = (200..300).contains(&status);
                 if is_success {
                     successful_count += 1;
                 } else {
@@ -544,13 +811,16 @@ pub fn run_regress_test(req: &RegressRequest) -> RegressReport {
                     ttfb_ms,
                     status_code: status,
                     success: is_success,
-                    error_message: if is_success { None } else { Some(format!("HTTP Status {}", status)) },
-                    curl_command: curl_cmd,
+                    error_message: if is_success { None } else { Some(format!("HTTP Status {status}")) },
+                    curl_command: curl_cmd.clone(),
                     response_headers: resp_headers,
                     response_body_snippet: body_snippet,
+                    resolved_ip,
+                    http_version,
                 });
             }
             Err(e) => {
+                let total_duration_ms = t_start.elapsed().as_millis();
                 failed_count += 1;
                 *status_counts.entry("ERR".to_string()).or_insert(0) += 1;
                 durations.push(total_duration_ms);
@@ -566,9 +836,11 @@ pub fn run_regress_test(req: &RegressRequest) -> RegressReport {
                     status_code: 0,
                     success: false,
                     error_message: Some(e.to_string()),
-                    curl_command: curl_cmd,
+                    curl_command: curl_cmd.clone(),
                     response_headers: HashMap::new(),
                     response_body_snippet: None,
+                    resolved_ip,
+                    http_version: None,
                 });
             }
         }
@@ -598,8 +870,8 @@ pub fn run_regress_test(req: &RegressRequest) -> RegressReport {
     let p99_latency_ms = durations.get(p99_idx).copied().unwrap_or(0);
     let jitter_ms = p99_latency_ms.saturating_sub(p50_latency_ms);
 
-    let availability_percentage = if iterations > 0 {
-        (successful_count as f64 / iterations as f64) * 100.0
+    let availability_percentage = if total_count > 0 {
+        (successful_count as f64 / total_count as f64) * 100.0
     } else {
         0.0
     };
@@ -607,9 +879,12 @@ pub fn run_regress_test(req: &RegressRequest) -> RegressReport {
     let diagnosis = diagnose(&results, availability_percentage, p50_latency_ms, p99_latency_ms, jitter_ms, req.timeout_ms);
 
     let ip_info = detect_requester_public_ip();
-    RegressReport {
+    Ok(RegressReport {
         target: req.target.clone(),
-        total_iterations: iterations,
+        method: req.method.clone(),
+        total_iterations: total_count,
+        iterations_requested: requested,
+        stopped_early,
         successful_iterations: successful_count,
         failed_iterations: failed_count,
         availability_percentage,
@@ -625,7 +900,7 @@ pub fn run_regress_test(req: &RegressRequest) -> RegressReport {
         iterations: results,
         requester_ip: Some(ip_info.egress_public_ip.clone()),
         allowlist_recommendation: Some(ip_info.allowlist_guidance.clone()),
-    }
+    })
 }
 
 // ============================================================================
@@ -736,9 +1011,40 @@ pub fn diagnose(
                 ],
             };
         }
+
+        // Everything else that failed: plain non-2xx answers (3xx not followed, 4xx, other 5xx)
+        // or errors with no response. Never fall through to "STABLE" with failures on record.
+        let c3 = results.iter().filter(|r| (300..400).contains(&r.status_code)).count();
+        let c4 = results.iter().filter(|r| (400..500).contains(&r.status_code)).count();
+        let c5 = results.iter().filter(|r| r.status_code >= 500).count();
+        let other = results.iter().filter(|r| !r.success && r.status_code == 0).count();
+        let failed = results.iter().filter(|r| !r.success).count();
+        return AgentDiagnosis {
+            flakiness_detected: true,
+            root_cause_type: "HTTP_ERRORS".to_string(),
+            severity: if c5 > 0 { "HIGH" } else if c4 > 0 || other > 0 { "MEDIUM" } else { "LOW" }.to_string(),
+            title: "Target Answered With Non-2xx Responses".to_string(),
+            summary: format!("{failed}/{} requests did not return 2xx (3xx: {c3}, 4xx: {c4}, 5xx: {c5}, no response: {other}).", results.len()),
+            how_agent_found_it: vec![
+                format!("Sent {} isolated requests and classified each response by status class.", results.len()),
+                "Only 2xx counts as success; redirects are not followed to other hosts and count as failures.".to_string(),
+            ],
+            technical_breakdown: vec![
+                "4xx: wrong path/method, missing credentials, or a WAF/rate limiter rejecting the probe.".to_string(),
+                "5xx other than 502/503/504: the application itself is failing.".to_string(),
+                "3xx: the target redirects (for example http to https); probe the final URL instead.".to_string(),
+            ],
+            reproduction_curl: sample_curl,
+            remediation_checklist: vec![
+                "Confirm the URL, method and headers are what the endpoint expects (re-run with the reproduction curl).".to_string(),
+                "If the target redirects, use its canonical URL.".to_string(),
+                "Check application logs for the failing status codes.".to_string(),
+            ],
+        };
     }
 
-    if jitter > 350 || p99 > (p50 * 3) {
+    // A 3x ratio alone is noise at sub-millisecond latencies (1ms vs 4ms); require real spread too.
+    if jitter > 350 || (p99 > p50 * 3 && jitter > 50) {
         return AgentDiagnosis {
             flakiness_detected: true,
             root_cause_type: "HIGH_JITTER".to_string(),
@@ -787,105 +1093,155 @@ pub fn diagnose(
 // Interactive cURL Test Execution
 // ============================================================================
 
-pub fn execute_curl_test(req: &CurlTestRequest) -> CurlTestResponse {
-    let timeout_s = (req.timeout_ms / 1000).max(1);
+const CURL_MARKER: &str = "---READYHAI_TIMINGS---";
+
+/// The curl invocation. `-q` skips ~/.curlrc, `--proto` limits it to http(s) (no file://, gopher://,
+/// ...), `--data-raw` never treats a payload starting with '@' as a file to upload, and `--`
+/// ends option parsing so nothing in the URL can be read as a flag.
+fn curl_command(req: &CurlTestRequest, url: &reqwest::Url, timeout_s: u64) -> Command {
     let mut cmd = Command::new("curl");
-    cmd.arg("-sS");
-    cmd.arg("-v");
+    cmd.arg("-q").arg("-sS").arg("-v");
+    cmd.arg("--proto").arg("=http,https");
     cmd.arg("-X").arg(req.method.to_uppercase());
     cmd.arg("--connect-timeout").arg(timeout_s.to_string());
     cmd.arg("--max-time").arg((timeout_s * 2).to_string());
-    cmd.arg("-w").arg("\n---READYHAI_TIMINGS---\nnamelookup:%{time_namelookup}\nconnect:%{time_connect}\nappconnect:%{time_appconnect}\npretransfer:%{time_pretransfer}\nstarttransfer:%{time_starttransfer}\ntotal:%{time_total}\nhttp_code:%{http_code}\nspeed_download:%{speed_download}\n");
-
+    cmd.arg("-w").arg(format!("\n{CURL_MARKER}\nnamelookup:%{{time_namelookup}}\nconnect:%{{time_connect}}\nappconnect:%{{time_appconnect}}\npretransfer:%{{time_pretransfer}}\nstarttransfer:%{{time_starttransfer}}\ntotal:%{{time_total}}\nhttp_code:%{{http_code}}\nspeed_download:%{{speed_download}}\n"));
     for (k, v) in &req.headers {
-        cmd.arg("-H").arg(format!("{}: {}", k, v));
+        cmd.arg("-H").arg(format!("{k}: {v}"));
     }
     if let Some(ref p) = req.payload {
-        cmd.arg("-H").arg("Content-Type: application/json");
-        cmd.arg("-d").arg(p);
+        if !has_header(&req.headers, "content-type") {
+            cmd.arg("-H").arg("Content-Type: application/json");
+        }
+        cmd.arg("--data-raw").arg(p);
     }
-    cmd.arg(&req.target);
+    cmd.arg("--").arg(url.as_str());
+    cmd
+}
 
-    let full_curl_cmd = generate_curl(&req.method, &req.target, &req.headers, req.payload.as_deref());
+pub fn execute_curl_test(req: &CurlTestRequest) -> Result<CurlTestResponse> {
+    let mut req = req.clone();
+    let url = req.sanitize()?;
+    let timeout_s = req.timeout_ms.div_ceil(1000).clamp(1, MAX_TIMEOUT_MS / 1000);
+    let full_curl_cmd = generate_curl(&req.method, url.as_str(), &req.headers, req.payload.as_deref());
+    let mut cmd = curl_command(&req, &url, timeout_s);
 
-    match cmd.output() {
+    // hard wall-clock limit slightly above curl's own --max-time, bounded output
+    match run_capped(&mut cmd, Duration::from_secs(timeout_s * 2 + 5), MAX_CAPTURE_BYTES, None) {
         Ok(out) => {
-            let stdout_str = String::from_utf8_lossy(&out.stdout).to_string();
-            let stderr_str = String::from_utf8_lossy(&out.stderr).to_string();
-            let (clean_stdout, timings) = parse_curl_output(&stdout_str);
-
-            CurlTestResponse {
-                command: full_curl_cmd,
-                exit_code: out.status.code().unwrap_or(0),
-                stdout: clean_stdout,
-                stderr: stderr_str,
-                status_code: timings.get("http_code").and_then(|v| v.parse().ok()).unwrap_or(0),
-                dns_lookup_s: timings.get("namelookup").and_then(|v| v.parse().ok()).unwrap_or(0.0),
-                connect_s: timings.get("connect").and_then(|v| v.parse().ok()).unwrap_or(0.0),
-                appconnect_s: timings.get("appconnect").and_then(|v| v.parse().ok()).unwrap_or(0.0),
-                starttransfer_s: timings.get("starttransfer").and_then(|v| v.parse().ok()).unwrap_or(0.0),
-                total_s: timings.get("total").and_then(|v| v.parse().ok()).unwrap_or(0.0),
+            let mut stderr_str = out.stderr_lossy();
+            if out.timed_out {
+                stderr_str.push_str("\n(curl was killed after the hard time limit)");
             }
-        }
-        Err(e) => {
-            // Fallback pure-Rust measurement if curl binary is missing
-            let t0 = Instant::now();
-            let client = reqwest::blocking::Client::builder()
-                .timeout(Duration::from_millis(req.timeout_ms))
-                .danger_accept_invalid_certs(true)
-                .build()
-                .unwrap_or_default();
-
-            let res = client.request(
-                reqwest::Method::from_bytes(req.method.as_bytes()).unwrap_or(reqwest::Method::GET),
-                &req.target,
-            ).send();
-
-            let elapsed_s = t0.elapsed().as_secs_f64();
-            match res {
-                Ok(resp) => {
-                    let code = resp.status().as_u16();
-                    let body = resp.text().unwrap_or_default();
-                    CurlTestResponse {
-                        command: full_curl_cmd,
-                        exit_code: 0,
-                        stdout: body,
-                        stderr: format!("(Fallback execution via native HTTP client; curl command not found: {})", e),
-                        status_code: code,
-                        dns_lookup_s: 0.002,
-                        connect_s: 0.005,
-                        appconnect_s: 0.010,
-                        starttransfer_s: elapsed_s * 0.8,
-                        total_s: elapsed_s,
-                    }
+            let (mut clean_stdout, timings) = if out.truncated && !out.stdout_tail.is_empty() {
+                // the -w trailer is at the very end: read the timings from the retained tail
+                let (_, t) = parse_curl_output(&String::from_utf8_lossy(&out.stdout_tail));
+                let mut body = out.stdout_lossy();
+                if let Some(pos) = body.find(CURL_MARKER) {
+                    body.truncate(pos);
                 }
-                Err(err) => CurlTestResponse {
-                    command: full_curl_cmd,
-                    exit_code: 1,
-                    stdout: "".to_string(),
-                    stderr: format!("Execution failed: {}", err),
-                    status_code: 0,
-                    dns_lookup_s: 0.0,
-                    connect_s: 0.0,
-                    appconnect_s: 0.0,
-                    starttransfer_s: 0.0,
-                    total_s: elapsed_s,
-                },
+                (body.trim().to_string(), t)
+            } else {
+                parse_curl_output(&out.stdout_lossy())
+            };
+            if out.truncated {
+                clean_stdout.push_str(&format!("\n[output truncated at {MAX_CAPTURE_BYTES} bytes]"));
             }
+            let secs = |k: &str| timings.get(k).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+
+            Ok(CurlTestResponse {
+                command: full_curl_cmd,
+                exit_code: out.status.and_then(|s| s.code()).unwrap_or(-1),
+                stdout: clean_stdout,
+                stderr: truncate_chars(&stderr_str, 64 * 1024),
+                status_code: timings.get("http_code").and_then(|v| v.parse().ok()).unwrap_or(0),
+                dns_lookup_s: secs("namelookup"),
+                connect_s: secs("connect"),
+                appconnect_s: secs("appconnect"),
+                starttransfer_s: secs("starttransfer"),
+                total_s: secs("total"),
+                not_measured: vec![],
+                truncated: out.truncated,
+            })
         }
+        Err(e) => native_curl_fallback(&req, &url, full_curl_cmd, &e.to_string()),
     }
 }
 
+/// curl could not be run: measure what the native client can measure, and say what it cannot.
+/// Nothing is invented: DNS/connect/TLS handshake timings are not observable here, so they are
+/// zero and listed in `not_measured`.
+fn native_curl_fallback(req: &CurlTestRequest, url: &reqwest::Url, command: String, why: &str) -> Result<CurlTestResponse> {
+    let t0 = Instant::now();
+    let client = http_client(req.timeout_ms, true);
+    let method = parse_method(&req.method)?;
+    let mut rb = client.request(method, url.as_str());
+    for (k, v) in &req.headers {
+        rb = rb.header(k, v);
+    }
+    if let Some(ref p) = req.payload {
+        if !has_header(&req.headers, "content-type") {
+            rb = rb.header("Content-Type", "application/json");
+        }
+        rb = rb.body(p.clone());
+    }
+    let res = rb.send();
+    let headers_s = t0.elapsed().as_secs_f64();
+    match res {
+        Ok(resp) => {
+            let code = resp.status().as_u16();
+            let (bytes, truncated) = read_capped(resp, MAX_CAPTURE_BYTES);
+            let total_s = t0.elapsed().as_secs_f64();
+            Ok(CurlTestResponse {
+                command,
+                exit_code: 0,
+                stdout: String::from_utf8_lossy(&bytes).into_owned(),
+                stderr: format!("(Fallback execution via native HTTP client; curl could not be run: {why})"),
+                status_code: code,
+                dns_lookup_s: 0.0,
+                connect_s: 0.0,
+                appconnect_s: 0.0,
+                starttransfer_s: headers_s,
+                total_s,
+                not_measured: ["dns_lookup_s", "connect_s", "appconnect_s"].map(String::from).to_vec(),
+                truncated,
+            })
+        }
+        Err(err) => Ok(CurlTestResponse {
+            command,
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: format!("Execution failed: {err}"),
+            status_code: 0,
+            dns_lookup_s: 0.0,
+            connect_s: 0.0,
+            appconnect_s: 0.0,
+            starttransfer_s: 0.0,
+            total_s: t0.elapsed().as_secs_f64(),
+            not_measured: ["dns_lookup_s", "connect_s", "appconnect_s", "starttransfer_s"].map(String::from).to_vec(),
+            truncated: false,
+        }),
+    }
+}
+
+/// Reproduction command for the report: every value single-quoted so a header or payload cannot
+/// break out of the command when someone pastes it into a shell.
 pub fn generate_curl(method: &str, target: &str, headers: &HashMap<String, String>, payload: Option<&str>) -> String {
-    let mut parts = vec![format!("curl -s -o /dev/null -w \"DNS: %{{time_namelookup}}s | Connect: %{{time_connect}}s | TTFB: %{{time_starttransfer}}s | Total: %{{time_total}}s | Status: %{{http_code}}\\n\" -X {}", method.to_uppercase())];
+    let mut parts = vec![format!(
+        "curl -s -o /dev/null -w {} -X {}",
+        sh_quote("DNS: %{time_namelookup}s | Connect: %{time_connect}s | TTFB: %{time_starttransfer}s | Total: %{time_total}s | Status: %{http_code}\\n"),
+        sh_quote(&method.to_uppercase())
+    )];
     for (k, v) in headers {
-        parts.push(format!("-H \"{}: {}\"", k, v));
+        parts.push(format!("-H {}", sh_quote(&format!("{k}: {v}"))));
     }
     if let Some(p) = payload {
-        parts.push("-H \"Content-Type: application/json\"".to_string());
-        parts.push(format!("-d '{}'", p.replace('\'', "'\\''")));
+        if !has_header(headers, "content-type") {
+            parts.push("-H 'Content-Type: application/json'".to_string());
+        }
+        parts.push(format!("--data-raw {}", sh_quote(p)));
     }
-    parts.push(format!("\"{}\"", target));
+    parts.push(format!("-- {}", sh_quote(target)));
     parts.join(" ")
 }
 
@@ -893,9 +1249,9 @@ fn parse_curl_output(stdout: &str) -> (String, HashMap<String, String>) {
     let mut timings = HashMap::new();
     let clean_body;
 
-    if let Some(pos) = stdout.find("---READYHAI_TIMINGS---") {
+    if let Some(pos) = stdout.find(CURL_MARKER) {
         clean_body = stdout[..pos].trim().to_string();
-        let timing_section = &stdout[pos + "---READYHAI_TIMINGS---".len()..];
+        let timing_section = &stdout[pos + CURL_MARKER.len()..];
         for line in timing_section.lines() {
             if let Some((k, v)) = line.split_once(':') {
                 timings.insert(k.trim().to_string(), v.trim().to_string());
@@ -912,47 +1268,37 @@ fn parse_curl_output(stdout: &str) -> (String, HashMap<String, String>) {
 // 6-Pillar Deep Diagnostic Suite Implementations
 // ============================================================================
 
-pub fn run_deep_audit(req: &DeepAuditRequest) -> DeepAuditReport {
+pub fn run_deep_audit(req: &DeepAuditRequest) -> Result<DeepAuditReport> {
+    let mut req = req.clone();
+    let url = req.sanitize()?;
     let timestamp = crate::engine::now();
-    let parsed_url = reqwest::Url::parse(&req.target);
-    let host = parsed_url.as_ref().ok().and_then(|u| u.host_str()).unwrap_or("localhost").to_string();
-    let port = parsed_url.as_ref().ok().and_then(|u| u.port_or_known_default()).unwrap_or(80);
+    let host = host_of(&url);
+    let port = port_of(&url);
+    let target = url.as_str();
 
     // 1. Dual-Stack IPv4 vs IPv6 Happy Eyeballs Audit
     let dual_stack = audit_dual_stack(&host, port, req.timeout_ms);
 
     // 2. Sub-Resource Cascade Audit (SPA & Assets)
-    let subresources = if let Ok(ref u) = parsed_url {
-        audit_subresources(u, req.timeout_ms)
-    } else {
-        SubresourceAudit {
-            total_discovered: 0,
-            successful_count: 0,
-            broken_count: 0,
-            spa_fallback_mismatches: 0,
-            total_size_kb: 0.0,
-            max_asset_ttfb_ms: 0,
-            items: Vec::new(),
-            diagnosis: "Invalid target URL format; skipped asset parsing.".to_string(),
-        }
-    };
+    let subresources = audit_subresources(&url, req.timeout_ms);
 
     // 3. Protocol Matrix Audit
-    let protocol_matrix = audit_protocol_matrix(&req.target, req.timeout_ms);
+    let protocol_matrix = audit_protocol_matrix(target, req.timeout_ms);
 
     // 4. TLS & Certificate Chain Audit
-    let tls_chain = audit_tls_chain(&req.target, &host, port, req.timeout_ms);
+    let tls_chain = audit_tls_chain(&url, &host, port, req.timeout_ms);
 
     // 5. CORS Preflight Audit
-    let cors_preflight = audit_cors_preflight(&req.target, req.timeout_ms);
+    let cors_preflight = audit_cors_preflight(target, req.timeout_ms);
 
     // 6. MTU & Packet Size Sweep Audit
-    let mtu_sweep = audit_mtu_sweep(&req.target, req.timeout_ms);
+    let mtu_sweep = audit_mtu_sweep(target, req.timeout_ms);
 
     // Calculate Health Score & Verdict
     let mut score: i32 = 100;
     let mut risks: Vec<String> = Vec::new();
     let mut remedies: Vec<String> = Vec::new();
+    let mut not_measured: Vec<String> = Vec::new();
 
     if dual_stack.happy_eyeballs_risk {
         score -= 25;
@@ -962,7 +1308,7 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> DeepAuditReport {
 
     if subresources.broken_count > 0 {
         score -= (subresources.broken_count as i32 * 10).min(30);
-        risks.push(format!("{} sub-resource asset(s) failed with 4xx/5xx status codes.", subresources.broken_count));
+        risks.push(format!("{} sub-resource asset(s) did not return a 2xx response.", subresources.broken_count));
         remedies.push("Verify asset paths and ensure build assets / bundles are properly uploaded to your web server / CDN.".to_string());
     }
 
@@ -972,10 +1318,24 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> DeepAuditReport {
         remedies.push("Update Nginx/reverse proxy `try_files` rule so missing static files (`.js`, `.css`) return 404 instead of falling back to `/index.html`.".to_string());
     }
 
+    if !tls_chain.measured && tls_chain.is_https {
+        not_measured.push(format!("tls_chain ({})", tls_chain.not_measured.first().map(String::as_str).unwrap_or("openssl unavailable")));
+    }
     if tls_chain.is_intermediate_missing {
         score -= 25;
         risks.push("Incomplete TLS Certificate Chain: Intermediate CA is missing from server bundle. Fails on clean browsers and mobile devices.".to_string());
         remedies.push("Replace your server certificate with the full chain bundle (e.g. `fullchain.pem` instead of `cert.pem`).".to_string());
+    }
+    if let Some(days) = tls_chain.days_remaining {
+        if days < 0 {
+            score -= 30;
+            risks.push(format!("TLS certificate expired {} day(s) ago.", -days));
+            remedies.push("Renew the certificate immediately and automate renewal (ACME / cert-manager).".to_string());
+        } else if days <= 14 {
+            score -= 15;
+            risks.push(format!("TLS certificate expires in {days} day(s)."));
+            remedies.push("Renew the certificate and verify that automated renewal is working.".to_string());
+        }
     }
 
     if !cors_preflight.preflight_passed {
@@ -986,7 +1346,7 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> DeepAuditReport {
 
     if mtu_sweep.black_hole_detected {
         score -= 30;
-        risks.push("MTU Black Hole Detected: Packets larger than standard MTU (~1400 bytes) are dropped without fragmentation.".to_string());
+        risks.push("MTU Black Hole Detected: requests with larger headers time out or are reset while the small baseline request succeeds.".to_string());
         remedies.push("Enable Path MTU Discovery or configure TCP MSS clamping (`iptables -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu`).".to_string());
     }
 
@@ -999,14 +1359,16 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> DeepAuditReport {
         "FAIL"
     };
 
-    let summary = if risks.is_empty() {
-        "All 6 deep network and protocol pillars are healthy. Zero cold-start regressions or protocol degradation detected.".to_string()
+    let summary = if risks.is_empty() && not_measured.is_empty() {
+        "All 6 deep network and protocol pillars were measured and look healthy.".to_string()
+    } else if risks.is_empty() {
+        format!("No problems found in the measured pillars; not measured: {}.", not_measured.join(", "))
     } else {
         format!("Detected {} network vulnerability/flakiness vector(s). Overall Network Health Score: {}/100.", risks.len(), final_score)
     };
 
     let ip_info = detect_requester_public_ip();
-    DeepAuditReport {
+    Ok(DeepAuditReport {
         target: req.target.clone(),
         timestamp,
         overall_verdict: overall_verdict.to_string(),
@@ -1020,14 +1382,15 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> DeepAuditReport {
         cors_preflight,
         mtu_sweep,
         remediation_checklist: remedies,
+        not_measured,
         requester_ip: Some(ip_info.egress_public_ip.clone()),
         allowlist_recommendation: Some(ip_info.allowlist_guidance.clone()),
-    }
+    })
 }
 
 fn audit_dual_stack(host: &str, port: u16, timeout_ms: u64) -> DualStackAudit {
     let connect_timeout = Duration::from_millis(timeout_ms.min(2500));
-    let lookup_result = format!("{}:{}", host, port).to_socket_addrs();
+    let lookup_result = hostport(host, port).to_socket_addrs();
 
     match lookup_result {
         Ok(addrs) => {
@@ -1115,22 +1478,21 @@ fn audit_dual_stack(host: &str, port: u16, timeout_ms: u64) -> DualStackAudit {
 }
 
 fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAudit {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap_or_default();
+    let client = http_client(timeout_ms, false);
 
     let mut items = Vec::new();
     let mut total_size_bytes = 0;
     let mut broken_count = 0;
     let mut spa_fallback_count = 0;
+    let mut skipped_cross_host = 0;
     let mut max_ttfb = 0;
+    let base_host = base_url.host_str().map(str::to_ascii_lowercase);
 
     let res = client.get(base_url.as_str()).send();
     if let Ok(resp) = res {
         let content_type = resp.headers().get("content-type").and_then(|h| h.to_str().ok()).unwrap_or("").to_lowercase();
-        let body = resp.text().unwrap_or_default();
+        let (bytes, _) = read_capped(resp, HTML_BYTES_CAP);
+        let body = String::from_utf8_lossy(&bytes).into_owned();
 
         if content_type.contains("text/html") || body.contains("<html") || body.contains("<!doctype") {
             // Extract sub-resources
@@ -1161,17 +1523,22 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
             }
 
             // Limit to first 12 discovered subresources for performance
-            discovered_urls.truncate(12);
+            discovered_urls.truncate(MAX_SUBRESOURCES);
 
             for (raw_url, tag_type) in discovered_urls {
-                let resolved_url = if let Ok(u) = base_url.join(&raw_url) {
-                    u.to_string()
-                } else {
-                    raw_url.clone()
+                // The page is untrusted input: only probe assets on the audited host, never a
+                // URL the page points at (internal addresses, other hosts, non-http schemes).
+                let resolved = match base_url.join(&raw_url) {
+                    Ok(u) if matches!(u.scheme(), "http" | "https") && u.host_str().map(str::to_ascii_lowercase) == base_host => u,
+                    _ => {
+                        skipped_cross_host += 1;
+                        continue;
+                    }
                 };
+                let resolved_url = resolved.to_string();
 
                 let t0 = Instant::now();
-                let asset_res = client.get(&resolved_url).send();
+                let asset_res = client.get(resolved.as_str()).send();
                 let ttfb = t0.elapsed().as_millis();
                 max_ttfb = max_ttfb.max(ttfb);
 
@@ -1179,17 +1546,18 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
                     Ok(a_resp) => {
                         let status = a_resp.status().as_u16();
                         let a_ct = a_resp.headers().get("content-type").and_then(|h| h.to_str().ok()).unwrap_or("").to_lowercase();
-                        let a_bytes = a_resp.bytes().map(|b| b.len()).unwrap_or(0);
+                        let a_bytes = count_capped(a_resp, SUBRESOURCE_BYTES_CAP);
                         total_size_bytes += a_bytes;
 
-                        let is_broken = status >= 400;
+                        let is_broken = !(200..300).contains(&status);
                         if is_broken {
                             broken_count += 1;
                         }
 
                         // Check SPA Fallback Mismatch
                         // If file is named .js or .mjs, but server sent text/html!
-                        let is_spa_fallback_error = (resolved_url.ends_with(".js") || resolved_url.contains(".js?")) && a_ct.contains("text/html");
+                        let path = resolved.path();
+                        let is_spa_fallback_error = (path.ends_with(".js") || path.ends_with(".mjs")) && a_ct.contains("text/html");
                         if is_spa_fallback_error {
                             spa_fallback_count += 1;
                         }
@@ -1203,7 +1571,7 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
                             size_bytes: a_bytes,
                             is_spa_fallback_error,
                             is_broken,
-                            error: if is_broken { Some(format!("HTTP {}", status)) } else { None },
+                            error: if is_broken { Some(format!("HTTP {status}")) } else { None },
                         });
                     }
                     Err(err) => {
@@ -1226,13 +1594,18 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
     }
 
     let diagnosis = if spa_fallback_count > 0 {
-        format!("CRITICAL: Detected {} JavaScript chunk(s) returning HTML index shells! This causes fatal syntax errors and blank screens on first load.", spa_fallback_count)
+        format!("CRITICAL: Detected {spa_fallback_count} JavaScript chunk(s) returning HTML index shells! This causes fatal syntax errors and blank screens on first load.")
     } else if broken_count > 0 {
-        format!("WARNING: {} sub-resource asset(s) failed with 4xx/5xx status codes.", broken_count)
+        format!("WARNING: {broken_count} sub-resource asset(s) did not return a 2xx response.")
     } else if items.is_empty() {
-        "Target is an API endpoint or non-HTML resource; zero sub-resources to probe.".to_string()
+        "Target is an API endpoint or non-HTML resource, or has no same-host sub-resources; nothing to probe.".to_string()
     } else {
         format!("All {} discovered sub-resources loaded successfully with correct MIME types.", items.len())
+    };
+    let diagnosis = if skipped_cross_host > 0 {
+        format!("{diagnosis} ({skipped_cross_host} cross-host or non-http asset(s) were not probed: only the audited host is contacted.)")
+    } else {
+        diagnosis
     };
 
     SubresourceAudit {
@@ -1240,11 +1613,26 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
         successful_count: items.iter().filter(|i| !i.is_broken).count(),
         broken_count,
         spa_fallback_mismatches: spa_fallback_count,
+        skipped_cross_host,
         total_size_kb: (total_size_bytes as f64) / 1024.0,
         max_asset_ttfb_ms: max_ttfb,
         items,
         diagnosis,
     }
+}
+
+/// One curl protocol probe. Returns (negotiated HTTP version, status code), or None when curl
+/// could not be run or reached nothing.
+fn curl_protocol_probe(flag: &str, target: &str, timeout_s: u64) -> Option<(String, u16)> {
+    let mut cmd = Command::new("curl");
+    cmd.args(["-q", "-s", "-o", "/dev/null", "-w", "%{http_version}:%{http_code}", "--proto", "=http,https", flag]);
+    cmd.arg("--connect-timeout").arg(timeout_s.to_string());
+    cmd.arg("--max-time").arg(timeout_s.to_string());
+    cmd.arg("--").arg(target);
+    let out = run_capped(&mut cmd, Duration::from_secs(timeout_s + 3), 4096, None).ok()?;
+    let s = out.stdout_lossy();
+    let (ver, code) = s.trim().split_once(':')?;
+    Some((ver.to_string(), code.parse().ok().filter(|c| *c > 0)?))
 }
 
 fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
@@ -1253,26 +1641,11 @@ fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
 
     // 1. Probe HTTP/1.1
     let t0 = Instant::now();
-    let out_11 = Command::new("curl")
-        .arg("-s")
-        .arg("-o").arg("/dev/null")
-        .arg("-w").arg("%{http_version}:%{http_code}")
-        .arg("--http1.1")
-        .arg("--connect-timeout").arg(timeout_s.to_string())
-        .arg("--max-time").arg(timeout_s.to_string())
-        .arg(target)
-        .output();
+    let p11 = curl_protocol_probe("--http1.1", target, timeout_s);
     let dur_11 = t0.elapsed().as_millis();
-
-    let (sup_11, code_11, ver_11) = match out_11 {
-        Ok(o) => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            let parts: Vec<&str> = s.split(':').collect();
-            let ver = parts.first().copied().unwrap_or("1.1");
-            let code = parts.get(1).and_then(|c| c.parse().ok()).unwrap_or(0);
-            (code > 0, code, ver.to_string())
-        }
-        Err(_) => (false, 0, "1.1".to_string()),
+    let (sup_11, code_11, ver_11) = match &p11 {
+        Some((v, c)) => (true, *c, v.clone()),
+        None => (false, 0, "1.1".to_string()),
     };
 
     protocols.push(ProtocolItem {
@@ -1285,26 +1658,11 @@ fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
 
     // 2. Probe HTTP/2
     let t0 = Instant::now();
-    let out_2 = Command::new("curl")
-        .arg("-s")
-        .arg("-o").arg("/dev/null")
-        .arg("-w").arg("%{http_version}:%{http_code}")
-        .arg("--http2")
-        .arg("--connect-timeout").arg(timeout_s.to_string())
-        .arg("--max-time").arg(timeout_s.to_string())
-        .arg(target)
-        .output();
+    let p2 = curl_protocol_probe("--http2", target, timeout_s);
     let dur_2 = t0.elapsed().as_millis();
-
-    let (sup_2, code_2, _ver_2) = match out_2 {
-        Ok(o) => {
-            let s = String::from_utf8_lossy(&o.stdout);
-            let parts: Vec<&str> = s.split(':').collect();
-            let ver = parts.first().copied().unwrap_or("1.1");
-            let code = parts.get(1).and_then(|c| c.parse().ok()).unwrap_or(0);
-            (ver.contains('2'), code, ver.to_string())
-        }
-        Err(_) => (false, 0, "2".to_string()),
+    let (sup_2, code_2) = match &p2 {
+        Some((v, c)) => (v == "2", *c),
+        None => (false, 0),
     };
 
     protocols.push(ProtocolItem {
@@ -1319,17 +1677,12 @@ fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
         },
     });
 
-    // 3. Probe HTTP/3 via Alt-Svc header
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap_or_default();
-
+    // 3. HTTP/3 is only detected through the Alt-Svc header; no QUIC connection is attempted.
+    let client = http_client(timeout_ms, false);
     let mut alt_svc = None;
     if let Ok(res) = client.get(target).send() {
         if let Some(h) = res.headers().get("alt-svc") {
-            alt_svc = h.to_str().ok().map(|s| s.to_string());
+            alt_svc = h.to_str().ok().map(|s| truncate_chars(s, 512));
         }
     }
 
@@ -1338,9 +1691,9 @@ fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
         protocol: "HTTP/3 (QUIC / UDP)".to_string(),
         supported: http3_advertised,
         negotiation_time_ms: 0,
-        status_code: if http3_advertised { 200 } else { 0 },
+        status_code: 0,
         notes: if http3_advertised {
-            "Advertised via Alt-Svc header. Eliminates TCP head-of-line blocking.".to_string()
+            "Advertised via Alt-Svc header. A QUIC connection was not attempted (no negotiation time or status measured).".to_string()
         } else {
             "Alt-Svc header not detected. Server does not announce HTTP/3 QUIC.".to_string()
         },
@@ -1348,14 +1701,18 @@ fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
 
     let active_protocol = if sup_2 {
         "HTTP/2".to_string()
+    } else if sup_11 {
+        format!("HTTP/{ver_11}")
     } else {
-        format!("HTTP/{}", ver_11)
+        "unreachable".to_string()
     };
 
     let diagnosis = if sup_2 {
         "EXCELLENT: HTTP/2 multiplexing is operational, reducing connection overhead for multiple assets.".to_string()
-    } else {
+    } else if sup_11 {
         "STANDARD: Server operates on HTTP/1.1 without multiplexing. Multiple concurrent assets require separate TCP sockets.".to_string()
+    } else {
+        "No protocol probe got an HTTP response (target unreachable, or curl is not installed).".to_string()
     };
 
     ProtocolMatrixAudit {
@@ -1368,99 +1725,244 @@ fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
     }
 }
 
-fn audit_tls_chain(target: &str, host: &str, port: u16, timeout_ms: u64) -> TlsChainAudit {
-    let is_https = target.starts_with("https://") || port == 443;
-    if !is_https {
+// ---------------------------------------------------------------- TLS (measured with openssl)
+
+/// What `openssl s_client -status -showcerts` told us.
+#[derive(Debug, Default, PartialEq)]
+struct SClient {
+    version: Option<String>,
+    cipher: Option<String>,
+    verify_code: Option<i32>,
+    verify_text: Option<String>,
+    /// Some(true) = a stapled OCSP response was sent, Some(false) = none sent, None = no statement.
+    ocsp_stapled: Option<bool>,
+    chain_len: usize,
+    leaf_pem: Option<String>,
+}
+
+fn parse_s_client(text: &str) -> SClient {
+    let mut s = SClient::default();
+    for line in text.lines() {
+        let l = line.trim();
+        if let Some(rest) = l.strip_prefix("New, ") {
+            // "New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384"
+            if let Some((ver, cipher)) = rest.split_once(", Cipher is ") {
+                if !cipher.contains("(NONE)") {
+                    s.version = Some(ver.trim().to_string());
+                    s.cipher = Some(cipher.trim().to_string());
+                }
+            }
+        } else if let Some(rest) = l.strip_prefix("Verify return code:") {
+            // "Verify return code: 20 (unable to get local issuer certificate)"
+            let rest = rest.trim();
+            s.verify_code = rest.split_whitespace().next().and_then(|c| c.parse().ok());
+            s.verify_text = Some(rest.to_string());
+        } else if l.starts_with("OCSP response: no response sent") {
+            s.ocsp_stapled = Some(false);
+        } else if l.starts_with("OCSP Response Status: successful") || l == "OCSP Response Data:" {
+            s.ocsp_stapled = Some(true);
+        }
+    }
+    let mut in_pem = false;
+    let mut pem = String::new();
+    for line in text.lines() {
+        if line.starts_with("-----BEGIN CERTIFICATE-----") {
+            in_pem = true;
+            s.chain_len += 1;
+            if s.chain_len == 1 {
+                pem.clear();
+            }
+        }
+        if in_pem && s.chain_len == 1 {
+            pem.push_str(line);
+            pem.push('\n');
+        }
+        if line.starts_with("-----END CERTIFICATE-----") {
+            in_pem = false;
+        }
+    }
+    if s.chain_len >= 1 {
+        s.leaf_pem = Some(pem);
+    }
+    s
+}
+
+/// Days since 1970-01-01 of a proleptic Gregorian date (Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// "Jan  1 00:00:00 2027 GMT" (openssl's notAfter format) to unix seconds.
+fn parse_openssl_date(s: &str) -> Option<i64> {
+    let mut it = s.split_whitespace();
+    let mon = it.next()?;
+    let day: i64 = it.next()?.parse().ok()?;
+    let mut hms = it.next()?.split(':');
+    let (h, mi, sec): (i64, i64, i64) = (hms.next()?.parse().ok()?, hms.next()?.parse().ok()?, hms.next()?.parse().ok()?);
+    let year: i64 = it.next()?.parse().ok()?;
+    let m = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].iter().position(|x| *x == mon)? as i64 + 1;
+    Some(days_from_civil(year, m, day) * 86_400 + h * 3600 + mi * 60 + sec)
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct LeafInfo {
+    subject: Option<String>,
+    issuer: Option<String>,
+    not_after: Option<String>,
+    sans: Vec<String>,
+}
+
+/// Parse `openssl x509 -noout -subject -issuer -enddate [-ext subjectAltName]` output.
+fn parse_x509(text: &str) -> LeafInfo {
+    let mut leaf = LeafInfo::default();
+    let mut lines = text.lines().peekable();
+    while let Some(line) = lines.next() {
+        let l = line.trim();
+        if let Some(v) = l.strip_prefix("subject=") {
+            leaf.subject = Some(v.trim().to_string());
+        } else if let Some(v) = l.strip_prefix("issuer=") {
+            leaf.issuer = Some(v.trim().to_string());
+        } else if let Some(v) = l.strip_prefix("notAfter=") {
+            leaf.not_after = Some(v.trim().to_string());
+        } else if l.starts_with("X509v3 Subject Alternative Name") {
+            if let Some(next) = lines.next() {
+                leaf.sans = next.split(',').filter_map(|e| e.trim().strip_prefix("DNS:").map(str::to_string)).collect();
+            }
+        }
+    }
+    leaf
+}
+
+fn unmeasured_tls(is_https: bool, why: &str) -> TlsChainAudit {
+    TlsChainAudit {
+        is_https,
+        measured: false,
+        tls_version: NOT_MEASURED.to_string(),
+        cipher: NOT_MEASURED.to_string(),
+        cert_issuer: NOT_MEASURED.to_string(),
+        cert_subject: NOT_MEASURED.to_string(),
+        cert_sans: Vec::new(),
+        not_after: None,
+        days_remaining: None,
+        is_self_signed: false,
+        is_intermediate_missing: false,
+        ocsp_stapled: None,
+        chain_length: None,
+        verify_result: None,
+        not_measured: vec![why.to_string()],
+        diagnosis: format!("TLS was not measured: {why}."),
+    }
+}
+
+fn audit_tls_chain(url: &reqwest::Url, host: &str, port: u16, timeout_ms: u64) -> TlsChainAudit {
+    if url.scheme() != "https" {
         return TlsChainAudit {
             is_https: false,
+            measured: true,
             tls_version: "None".to_string(),
             cipher: "None (Plaintext HTTP)".to_string(),
             cert_issuer: "None".to_string(),
             cert_subject: "None".to_string(),
             cert_sans: Vec::new(),
-            not_after: "N/A".to_string(),
-            days_remaining: 0,
+            not_after: None,
+            days_remaining: None,
             is_self_signed: false,
             is_intermediate_missing: false,
-            ocsp_stapled: false,
+            ocsp_stapled: None,
+            chain_length: None,
+            verify_result: None,
+            not_measured: Vec::new(),
             diagnosis: "Target uses unencrypted plaintext HTTP transport.".to_string(),
         };
     }
 
-    let _timeout_s = (timeout_ms / 1000).max(1);
-    let output = Command::new("openssl")
-        .arg("s_client")
-        .arg("-connect").arg(format!("{}:{}", host, port))
-        .arg("-servername").arg(host)
-        .arg("-brief")
-        .output();
+    let limit = Duration::from_millis(timeout_ms.clamp(2000, 10_000));
+    let mut cmd = Command::new("openssl");
+    cmd.arg("s_client").arg("-connect").arg(hostport(host, port)).args(["-status", "-showcerts"]);
+    if host.parse::<std::net::IpAddr>().is_err() {
+        cmd.arg("-servername").arg(host);
+    }
+    // stdin is null: s_client otherwise waits for input and the call hangs
+    let out = match run_capped(&mut cmd, limit, MAX_CAPTURE_BYTES, None) {
+        Ok(o) if o.timed_out => return unmeasured_tls(true, "openssl s_client timed out"),
+        Ok(o) => o,
+        Err(_) => return unmeasured_tls(true, "openssl is not available"),
+    };
+    let text = format!("{}\n{}", out.stdout_lossy(), out.stderr_lossy());
+    let sc = parse_s_client(&text);
+    let (Some(tls_version), Some(cipher)) = (sc.version.clone(), sc.cipher.clone()) else {
+        return unmeasured_tls(true, "TLS handshake failed or no TLS output was returned");
+    };
 
-    let mut tls_ver = "TLSv1.3".to_string();
-    let mut cipher = "TLS_AES_256_GCM_SHA384".to_string();
-    let issuer = "Let's Encrypt / Cloudflare".to_string();
-    let subject = format!("CN={}", host);
-    let mut is_self_signed = false;
-    let mut is_intermediate_missing = false;
-
-    if let Ok(o) = output {
-        let text = format!("{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr));
-        if text.contains("TLSv1.2") {
-            tls_ver = "TLSv1.2".to_string();
-        } else if text.contains("TLSv1.3") {
-            tls_ver = "TLSv1.3".to_string();
-        }
-
-        if text.contains("self signed") || text.contains("self-signed") {
-            is_self_signed = true;
-        }
-
-        // Incomplete chain: verification error: unable to get local issuer certificate
-        if text.contains("unable to get local issuer certificate") || text.contains("certificate chain incomplete") {
-            is_intermediate_missing = true;
-        }
-
-        for line in text.lines() {
-            if line.contains("Ciphersuite:") || line.contains("Cipher    :") {
-                if let Some((_, c)) = line.split_once(':') {
-                    cipher = c.trim().to_string();
-                }
-            }
-            if line.contains("Verification error:") {
-                is_intermediate_missing = true;
-            }
+    // Certificate details come from the leaf PEM s_client printed.
+    let mut leaf = LeafInfo::default();
+    if let Some(pem) = &sc.leaf_pem {
+        let run_x509 = |args: &[&str]| {
+            let mut c = Command::new("openssl");
+            c.arg("x509").arg("-noout").args(args);
+            run_capped(&mut c, Duration::from_secs(5), 64 * 1024, Some(pem.as_bytes())).ok().filter(|o| o.success())
+        };
+        let o = run_x509(&["-subject", "-issuer", "-enddate", "-ext", "subjectAltName"]).or_else(|| run_x509(&["-subject", "-issuer", "-enddate"]));
+        if let Some(o) = o {
+            leaf = parse_x509(&o.stdout_lossy());
         }
     }
 
+    let days_remaining = leaf.not_after.as_deref().and_then(parse_openssl_date).map(|exp| {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+        (exp - now).div_euclid(86_400)
+    });
+    let code = sc.verify_code;
+    let is_self_signed = matches!(code, Some(18 | 19)) || (leaf.subject.is_some() && leaf.subject == leaf.issuer);
+    // 21 = "unable to verify the first certificate"; 20 with a single certificate sent means the
+    // server did not send the intermediate. With a longer chain, 20 is an untrusted root instead.
+    let is_intermediate_missing = !is_self_signed && (code == Some(21) || (code == Some(20) && sc.chain_len <= 1));
+
+    let mut not_measured = Vec::new();
+    if leaf.subject.is_none() {
+        not_measured.push("certificate details (could not parse the leaf certificate)".to_string());
+    }
+    if sc.ocsp_stapled.is_none() {
+        not_measured.push("ocsp_stapled".to_string());
+    }
     let diagnosis = if is_intermediate_missing {
         "CRITICAL: Intermediate certificate missing or invalid issuer! Modern desktop browsers cache intermediates, but mobile devices and fresh sessions will fail with SSL errors.".to_string()
     } else if is_self_signed {
         "WARNING: Self-signed certificate detected. Public clients without explicit trust roots will reject this connection.".to_string()
+    } else if let Some(t) = sc.verify_text.as_deref().filter(|_| code != Some(0)) {
+        format!("WARNING: certificate verification against this host's trust store failed: {t}.")
     } else {
-        format!("TLS configuration is healthy using {} with cipher {}.", tls_ver, cipher)
+        format!("TLS handshake succeeded using {tls_version} with cipher {cipher}.")
     };
 
     TlsChainAudit {
         is_https: true,
-        tls_version: tls_ver,
+        measured: true,
+        tls_version,
         cipher,
-        cert_issuer: issuer,
-        cert_subject: subject,
-        cert_sans: vec![host.to_string()],
-        not_after: "2027-01-01".to_string(),
-        days_remaining: 365,
+        cert_issuer: leaf.issuer.unwrap_or_else(|| NOT_MEASURED.to_string()),
+        cert_subject: leaf.subject.unwrap_or_else(|| NOT_MEASURED.to_string()),
+        cert_sans: leaf.sans,
+        not_after: leaf.not_after,
+        days_remaining,
         is_self_signed,
         is_intermediate_missing,
-        ocsp_stapled: true,
+        ocsp_stapled: sc.ocsp_stapled,
+        chain_length: Some(sc.chain_len),
+        verify_result: sc.verify_text,
+        not_measured,
         diagnosis,
     }
 }
 
 fn audit_cors_preflight(target: &str, timeout_ms: u64) -> CorsAudit {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap_or_default();
+    let client = http_client(timeout_ms, false);
 
     let res = client.request(reqwest::Method::OPTIONS, target)
         .header("Origin", "https://qa-probe.readyhai.internal")
@@ -1481,10 +1983,10 @@ fn audit_cors_preflight(target: &str, timeout_ms: u64) -> CorsAudit {
             let has_wildcard_with_creds = allow_orig.as_deref() == Some("*") && allow_cred.as_deref() == Some("true");
             let preflight_passed = (status == 200 || status == 204) && allow_orig.is_some() && !has_wildcard_with_creds;
 
-            let diagnosis = if !preflight_passed {
-                format!("FAIL: CORS Preflight returned HTTP status {}. Browsers will reject cross-origin requests before sending data.", status)
-            } else if has_wildcard_with_creds {
+            let diagnosis = if has_wildcard_with_creds {
                 "FAIL: Wildcard Access-Control-Allow-Origin '*' with Access-Control-Allow-Credentials 'true' is rejected by browser CORS specifications.".to_string()
+            } else if !preflight_passed {
+                format!("FAIL: CORS Preflight returned HTTP status {status} without a usable Access-Control-Allow-Origin. Browsers will reject cross-origin requests before sending data.")
             } else {
                 "PASS: Preflight OPTIONS is accepted with valid Access-Control headers.".to_string()
             };
@@ -1508,18 +2010,37 @@ fn audit_cors_preflight(target: &str, timeout_ms: u64) -> CorsAudit {
             allow_headers: None,
             allow_credentials: None,
             has_wildcard_with_creds: false,
-            diagnosis: format!("Preflight request failed: {}", err),
+            diagnosis: format!("Preflight request failed: {err}"),
         },
     }
 }
 
+/// HTTP statuses a server uses to say "your headers are too big" (a server limit, not a network fault).
+fn is_header_limit_status(status: u16) -> bool {
+    matches!(status, 400 | 413 | 414 | 431)
+}
+
+/// Transport-level failure that large packets dying in the network look like: a timeout, a reset
+/// or a connection closed mid-request. A refused connection or DNS failure is not one.
+fn is_black_hole_error(e: &reqwest::Error) -> bool {
+    if e.is_timeout() {
+        return true;
+    }
+    let s = format!("{e:?}").to_lowercase();
+    ["reset", "broken pipe", "closed before", "incomplete", "unexpected eof", "connection closed"].iter().any(|p| s.contains(p))
+}
+
+/// A payload size counts as black-holed only when a request that got NO HTTP response at all
+/// (timeout/reset) follows a smaller one that did. Any HTTP status, including 400/431, proves the
+/// packets arrived.
+fn mtu_black_hole(results: &[MtuSweepItem]) -> bool {
+    let baseline_delivered = results.first().is_some_and(|r| r.delivered);
+    baseline_delivered && results.iter().any(|r| r.payload_bytes >= 1400 && !r.delivered && r.transport_failure)
+}
+
 fn audit_mtu_sweep(target: &str, timeout_ms: u64) -> MtuSweepAudit {
-    let sweep_timeout = Duration::from_millis(timeout_ms.clamp(800, 2000));
-    let client = reqwest::blocking::Client::builder()
-        .timeout(sweep_timeout)
-        .danger_accept_invalid_certs(true)
-        .build()
-        .unwrap_or_default();
+    let sweep_timeout = timeout_ms.clamp(800, 2000);
+    let client = http_client(sweep_timeout, true);
 
     let probes = [
         (512, "512B Baseline"),
@@ -1529,248 +2050,231 @@ fn audit_mtu_sweep(target: &str, timeout_ms: u64) -> MtuSweepAudit {
     ];
 
     let mut results = Vec::new();
-    let mut black_hole_detected = false;
     let mut max_safe = 0;
+    let mut max_delivered = 0;
+    let mut header_limit_seen = false;
 
     for (size, label) in probes {
         let padding = "A".repeat(size);
-        let t0 = Instant::now();
-        let res = client.get(target)
-            .header("X-MTU-Sweep-Padding", padding)
-            .send();
-        let dur = t0.elapsed().as_millis();
+        let attempt = || {
+            let t0 = Instant::now();
+            let res = client.get(target).header("X-MTU-Sweep-Padding", padding.clone()).send();
+            (res, t0.elapsed().as_millis())
+        };
+        let (mut res, mut dur) = attempt();
+        // one retry on a timeout: a single lost SYN is not a black hole
+        if size >= 1400 && res.as_ref().is_err_and(|e| e.is_timeout()) {
+            (res, dur) = attempt();
+        }
 
         match res {
             Ok(resp) => {
                 let status = resp.status().as_u16();
-                let success = status >= 200 && status < 400;
-                if success {
+                let success = (200..300).contains(&status);
+                let header_limit_hit = is_header_limit_status(status);
+                header_limit_seen |= header_limit_hit;
+                max_delivered = max_delivered.max(size);
+                if !header_limit_hit {
                     max_safe = max_safe.max(size);
-                } else if size >= 1400 {
-                    black_hole_detected = true;
                 }
-
                 results.push(MtuSweepItem {
                     payload_bytes: size,
                     label: label.to_string(),
                     status_code: status,
                     duration_ms: dur,
                     success,
-                    error: if success { None } else { Some(format!("HTTP {}", status)) },
+                    delivered: true,
+                    transport_failure: false,
+                    header_limit_hit,
+                    error: if success { None } else if header_limit_hit {
+                        Some(format!("HTTP {status}: the server rejected the header size (a server limit, not a network drop)"))
+                    } else {
+                        Some(format!("HTTP {status}"))
+                    },
                 });
             }
             Err(e) => {
-                if size >= 1400 {
-                    black_hole_detected = true;
-                }
                 results.push(MtuSweepItem {
                     payload_bytes: size,
                     label: label.to_string(),
                     status_code: 0,
                     duration_ms: dur,
                     success: false,
+                    delivered: false,
+                    transport_failure: is_black_hole_error(&e),
+                    header_limit_hit: false,
                     error: Some(e.to_string()),
                 });
             }
         }
     }
 
+    let black_hole_detected = mtu_black_hole(&results);
+    let baseline_failed = results.first().is_some_and(|r| !r.delivered);
     let diagnosis = if black_hole_detected {
-        "CRITICAL: Path MTU Black Hole detected! Packets >= 1.4KB timed out or were dropped. Network firewalls may be blocking ICMP Fragmentation Needed packets.".to_string()
+        "CRITICAL: Path MTU Black Hole suspected! The small baseline request was answered, but a larger request timed out or was reset without any HTTP response. Network firewalls may be blocking ICMP Fragmentation Needed packets.".to_string()
+    } else if baseline_failed {
+        "Baseline request got no HTTP response; the target is unreachable, so the MTU sweep is inconclusive.".to_string()
+    } else if header_limit_seen {
+        format!("No black hole: every probe got an HTTP response. The server rejects large headers (HTTP 400/413/414/431) above {max_safe} bytes; that is a header-size limit, not a network fault.")
     } else {
-        format!("All MTU packet size sweeps succeeded up to {} bytes without packet fragmentation drops.", max_safe)
+        format!("All MTU packet size sweeps got HTTP responses up to {max_delivered} bytes without drops.")
     };
 
     MtuSweepAudit {
         black_hole_detected,
         maximum_safe_bytes: max_safe,
+        maximum_delivered_bytes: max_delivered,
         sweep_results: results,
         diagnosis,
     }
 }
 
-
 // ============================================================================
-// Multi-Region Probing & HAR Export Functions
+// Latency probe from this host (remote vantage points do not exist)
 // ============================================================================
 
-pub fn run_multi_region_audit(req: &MultiRegionRequest) -> MultiRegionReport {
-    let timestamp = crate::engine::now();
-    let timeout_ms = req.timeout_ms.unwrap_or(4000).clamp(500, 15000);
-    let parsed_url = reqwest::Url::parse(&req.target);
-    let host = parsed_url.as_ref().ok().and_then(|u| u.host_str()).unwrap_or("localhost").to_string();
-    let port = parsed_url.as_ref().ok().and_then(|u| u.port_or_known_default()).unwrap_or(80);
-    let is_local = host == "localhost" || host == "127.0.0.1" || host.starts_with("192.168.") || host.starts_with("10.");
+/// ReadyHai has no probe nodes in other regions, so it cannot say how the target looks from
+/// Frankfurt or Mumbai. This function measures what it can: DNS, TCP connect, time to first byte,
+/// total time, jitter and loss over a few fresh connections from the machine it runs on. The
+/// previous implementation invented per-region numbers; those regions are now listed in
+/// `not_measured_regions`.
+const NOT_MEASURED_REGIONS: [&str; 4] = ["us-east-1", "eu-west-1", "ap-south-1", "ap-southeast-1"];
+const LOCAL_SAMPLES: usize = 3;
 
-    // Probe baseline
+struct Sample {
+    dns_ms: u64,
+    connect_ms: u64,
+    ttfb_ms: u64,
+    total_ms: u64,
+    status: u16,
+    resolved_ip: Option<String>,
+    headers: HashMap<String, String>,
+}
+
+fn local_sample(url: &reqwest::Url, host: &str, port: u16, timeout_ms: u64) -> Option<Sample> {
+    let dns_t0 = Instant::now();
+    let addrs: Vec<SocketAddr> = hostport(host, port).to_socket_addrs().map(|i| i.collect()).unwrap_or_default();
+    let dns_ms = dns_t0.elapsed().as_millis() as u64;
+    let addr = *addrs.first()?;
+
+    let tcp_t0 = Instant::now();
+    TcpStream::connect_timeout(&addr, Duration::from_millis(timeout_ms)).ok()?;
+    let connect_ms = tcp_t0.elapsed().as_millis() as u64;
+
+    let client = http_client(timeout_ms, true);
     let t0 = Instant::now();
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(timeout_ms))
-        .danger_accept_invalid_certs(true)
-        .build();
+    let resp = client.get(url.as_str()).send().ok()?;
+    let ttfb_ms = t0.elapsed().as_millis() as u64;
+    let status = resp.status().as_u16();
+    let headers = resp
+        .headers()
+        .iter()
+        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), truncate_chars(v, 200))))
+        .collect();
+    let _ = count_capped(resp, SUBRESOURCE_BYTES_CAP);
+    let total_ms = t0.elapsed().as_millis() as u64;
+    Some(Sample { dns_ms, connect_ms, ttfb_ms, total_ms, status, resolved_ip: Some(addr.ip().to_string()), headers })
+}
 
-    let base_probe = client.as_ref().ok().and_then(|c| c.get(&req.target).send().ok());
-    let base_elapsed = t0.elapsed().as_millis() as u64;
+pub fn run_multi_region_audit(req: &MultiRegionRequest) -> Result<MultiRegionReport> {
+    let mut req = req.clone();
+    let url = req.sanitize()?;
+    let timestamp = crate::engine::now();
+    let timeout_ms = req.timeout_ms.unwrap_or(4000);
+    let host = host_of(&url);
+    let port = port_of(&url);
 
-    let (base_status, cf_ray, cf_pop, server_hdr) = match base_probe {
-        Some(resp) => {
-            let status = resp.status().as_u16();
-            let ray = resp.headers().get("cf-ray").and_then(|h| h.to_str().ok()).map(|s| s.to_string());
-            let pop = resp.headers().get("x-amz-cf-pop")
-                .or_else(|| resp.headers().get("x-served-by"))
-                .and_then(|h| h.to_str().ok())
-                .map(|s| s.to_string());
-            let srv = resp.headers().get("server").and_then(|h| h.to_str().ok()).map(|s| s.to_string());
-            (status, ray, pop, srv)
-        }
-        None => (0, None, None, None),
-    };
-
-    let resolved_ip = format!("{}:{}", host, port)
-        .to_socket_addrs()
-        .ok()
-        .and_then(|mut addrs| addrs.next())
-        .map(|a| a.ip().to_string())
-        .unwrap_or_else(|| if is_local { "127.0.0.1".into() } else { "Unknown IP".into() });
-
-    let cdn_edge_active = cf_ray.is_some() || cf_pop.is_some() || server_hdr.as_deref().unwrap_or("").to_lowercase().contains("cloudflare");
-
-    let region_configs = [
-        ("us-east-1", "US-East (N. Virginia)", "🇺🇸", "Ashburn, VA · iad1", 14u64, 22u64, "iad1-edge"),
-        ("eu-west-1", "EU-West (Frankfurt)", "🇪🇺", "Frankfurt, DE · fra1", 24u64, 88u64, "fra1-edge"),
-        ("ap-south-1", "APAC (Mumbai)", "🇮🇳", "Mumbai, IN · bom1", 34u64, 142u64, "bom1-edge"),
-        ("ap-southeast-1", "APAC (Singapore)", "🇸🇬", "Singapore, SG · sin1", 28u64, 158u64, "sin1-edge"),
-    ];
-
-    let mut regions = Vec::new();
-
-    for (id, name, flag, location, dns_offset, transit_offset, default_pop) in region_configs {
-        let (dns_ms, connect_ms, ttfb_ms, total_ms, status_code, pop_name, status_label, jitter, loss, notes) = if base_status == 0 {
-            (dns_offset, transit_offset, 0, transit_offset + dns_offset, 0, "N/A".to_string(), "OFFLINE".to_string(), 0, 100.0, "Connection refused or timed out from regional probe node.".to_string())
-        } else {
-            let effective_transit = if cdn_edge_active {
-                (transit_offset / 3).max(12)
-            } else {
-                transit_offset
-            };
-
-            let regional_dns = dns_offset + (base_elapsed % 5);
-            let regional_connect = effective_transit + (base_elapsed % 8);
-            let regional_ttfb = regional_connect + base_elapsed.min(45);
-            let total = regional_dns + regional_ttfb + 5;
-            let status_code = base_status;
-
-            let pop = if let Some(ref r) = cf_ray {
-                format!("{}-{}", id, r.split("-").last().unwrap_or("edge"))
-            } else if let Some(ref p) = cf_pop {
-                format!("{}-{}", id, p)
-            } else {
-                default_pop.to_string()
-            };
-
-            let (label, notes) = if total < 150 {
-                ("OPTIMAL", if cdn_edge_active { "Accelerated via regional Edge CDN POP with minimal latency." } else { "Direct low-latency route to origin." })
-            } else if total < 300 {
-                ("ELEVATED", if cdn_edge_active { "Moderate latency; verify asset compression and HTTP/2 multiplexing." } else { "Trans-continental transit latency without local CDN edge cache." })
-            } else {
-                ("DEGRADED", "High round-trip delay. Recommend enabling Cloudflare / CloudFront edge distribution.")
-            };
-
-            (
-                regional_dns,
-                regional_connect,
-                regional_ttfb,
-                total,
-                status_code,
-                pop,
-                label.to_string(),
-                (regional_dns % 4) + 2,
-                0.0f32,
-                if is_local {
-                    format!("{} (Simulated transit hops from {} mesh node to local test harness)", notes, id)
-                } else {
-                    notes.to_string()
+    let mut samples = Vec::new();
+    let mut failures = 0usize;
+    for _ in 0..LOCAL_SAMPLES {
+        match local_sample(&url, &host, port, timeout_ms) {
+            Some(s) => samples.push(s),
+            None => {
+                failures += 1;
+                // two failures in a row: the target is down, do not burn the full timeout again
+                if failures >= 2 && samples.is_empty() {
+                    break;
                 }
-            )
-        };
-
-        regions.push(RegionProbeResult {
-            region_id: id.to_string(),
-            region_name: name.to_string(),
-            flag: flag.to_string(),
-            location: location.to_string(),
-            resolved_ip: resolved_ip.clone(),
-            dns_time_ms: dns_ms,
-            tcp_connect_ms: connect_ms,
-            ttfb_ms,
-            total_time_ms: total_ms,
-            http_status: status_code,
-            edge_pop: pop_name,
-            status: status_label,
-            jitter_ms: jitter,
-            packet_loss_pct: loss,
-            notes,
-        });
+            }
+        }
     }
+    let attempted = samples.len() + failures;
+    let loss = if attempted > 0 { failures as f32 / attempted as f32 * 100.0 } else { 100.0 };
 
-    let fastest = regions.iter().filter(|r| r.http_status > 0).min_by_key(|r| r.total_time_ms);
-    let slowest = regions.iter().filter(|r| r.http_status > 0).max_by_key(|r| r.total_time_ms);
+    let median = |f: fn(&Sample) -> u64| -> u64 {
+        let mut v: Vec<u64> = samples.iter().map(f).collect();
+        v.sort_unstable();
+        v.get(v.len() / 2).copied().unwrap_or(0)
+    };
+    let totals: Vec<u64> = samples.iter().map(|s| s.total_ms).collect();
+    let jitter = totals.iter().max().copied().unwrap_or(0).saturating_sub(totals.iter().min().copied().unwrap_or(0));
+    let last = samples.last();
+    let (cf_ray, pop_hdr, server_hdr) = match last {
+        Some(s) => (
+            s.headers.get("cf-ray").cloned(),
+            s.headers.get("x-amz-cf-pop").or_else(|| s.headers.get("x-served-by")).cloned(),
+            s.headers.get("server").cloned(),
+        ),
+        None => (None, None, None),
+    };
+    let cdn_edge_active = cf_ray.is_some() || pop_hdr.is_some() || server_hdr.as_deref().unwrap_or("").to_lowercase().contains("cloudflare");
+    let total_ms = median(|s| s.total_ms);
 
-    let fastest_name = fastest.map(|r| r.region_name.clone()).unwrap_or_else(|| "None".into());
-    let slowest_name = slowest.map(|r| r.region_name.clone()).unwrap_or_else(|| "None".into());
-
-    let disparity = if let (Some(f), Some(s)) = (fastest, slowest) {
-        s.total_time_ms.saturating_sub(f.total_time_ms)
+    let (label, notes) = if samples.is_empty() {
+        ("OFFLINE", "No request from this host got an HTTP response (DNS failure, connection refused or timeout).".to_string())
+    } else if total_ms < 150 {
+        ("OPTIMAL", "Low latency from this host.".to_string())
+    } else if total_ms < 300 {
+        ("ELEVATED", "Moderate latency from this host; verify asset compression and HTTP/2 multiplexing.".to_string())
     } else {
-        0
+        ("DEGRADED", "High round-trip time from this host.".to_string())
     };
 
-    let (verdict, recommendations) = if base_status == 0 {
-        (
-            "CRITICAL: Target is unreachable globally. All regional probe nodes failed to establish a TCP handshake.".to_string(),
-            vec![
-                "Check server process status, public IP routing, and firewall/security groups (ports 80/443).".to_string(),
-                "Verify DNS records (A and AAAA) point to active live servers.".to_string(),
-            ]
-        )
-    } else if cdn_edge_active && disparity < 120 {
-        (
-            format!("EXCELLENT: Global Edge CDN is active. Latency disparity across 4 regions is tightly bounded ({}ms). Users in APAC and EU experience near-instant TTFB.", disparity),
-            vec![
-                "Maintain Cache-Control: public, s-maxage=86400 on static assets to preserve low TTFB across all edge nodes.".to_string(),
-                "Ensure HTTP/3 (QUIC) is enabled to eliminate head-of-line blocking on lossy mobile networks.".to_string(),
-            ]
-        )
-    } else if disparity > 150 {
-        (
-            format!("REGIONAL DISPARITY DETECTED: Disparity between fastest ({}) and slowest ({}) is {}ms. Distant regional users suffer substantial latency due to trans-continental origin round-trips.", fastest_name, slowest_name, disparity),
-            vec![
-                "Deploy a CDN (Cloudflare, AWS CloudFront, or Fastly) with Global Anycast routing to terminate TLS handshakes at local edge POPs.".to_string(),
-                "Configure edge caching for HTML shells and static sub-resources to avoid hitting origins across oceans.".to_string(),
-                "Implement Geo-DNS routing (Route53 or Cloudflare Load Balancing) to direct users to their nearest regional server pool.".to_string(),
-            ]
-        )
-    } else {
-        (
-            format!("ACCEPTABLE: Regional latency distribution is moderate ({}ms disparity). Origin is responding consistently across global simulated probes.", disparity),
-            vec![
-                "Consider turning on Edge CDN caching to bring APAC TTFB below 80ms.".to_string(),
-            ]
-        )
+    let region = RegionProbeResult {
+        region_id: "local".to_string(),
+        region_name: "This host (measured)".to_string(),
+        flag: String::new(),
+        location: "Machine running ReadyHai".to_string(),
+        resolved_ip: last.and_then(|s| s.resolved_ip.clone()).unwrap_or_else(|| NOT_MEASURED.to_string()),
+        dns_time_ms: median(|s| s.dns_ms),
+        tcp_connect_ms: median(|s| s.connect_ms),
+        ttfb_ms: median(|s| s.ttfb_ms),
+        total_time_ms: total_ms,
+        http_status: last.map(|s| s.status).unwrap_or(0),
+        edge_pop: pop_hdr.clone().or(cf_ray.clone()).unwrap_or_else(|| "not detected".to_string()),
+        status: label.to_string(),
+        jitter_ms: jitter,
+        packet_loss_pct: loss,
+        notes,
+        measured: true,
     };
 
-    MultiRegionReport {
+    let note = "ReadyHai has no remote probe nodes: only this host was measured. Regional latency, geo-DNS behaviour and per-region edge selection were not measured.".to_string();
+    let verdict = if samples.is_empty() {
+        "CRITICAL: Target is unreachable from this host: no request got an HTTP response.".to_string()
+    } else if cdn_edge_active {
+        format!("REACHABLE from this host in {total_ms}ms (median of {} sample(s)); CDN/edge response headers are present. {note}", samples.len())
+    } else {
+        format!("REACHABLE from this host in {total_ms}ms (median of {} sample(s)); no CDN/edge response headers seen. {note}", samples.len())
+    };
+
+    Ok(MultiRegionReport {
         target: req.target.clone(),
         timestamp,
-        regions,
-        fastest_region: fastest_name,
-        slowest_region: slowest_name,
-        geo_dns_consistent: true,
+        regions: vec![region],
+        fastest_region: NOT_MEASURED.to_string(),
+        slowest_region: NOT_MEASURED.to_string(),
+        geo_dns_consistent: None,
         cdn_edge_active,
-        regional_disparity_ms: disparity,
+        regional_disparity_ms: 0,
         agent_verdict: verdict,
-        recommendations,
-    }
+        recommendations: vec![
+            "To compare regions, run ReadyHai from a machine in each region you care about and compare the reports.".to_string(),
+        ],
+        not_measured_regions: NOT_MEASURED_REGIONS.iter().map(|s| s.to_string()).collect(),
+        measurement_note: note,
+    })
 }
 
 pub fn generate_har_from_regress(report: &RegressReport) -> serde_json::Value {
@@ -1793,16 +2297,17 @@ pub fn generate_har_from_regress(report: &RegressReport) -> serde_json::Value {
         let wait = it.ttfb_ms as i64;
         let receive = (it.duration_ms as i64 - wait).max(0);
 
-        entries.push(json!({
+        let http_version = it.http_version.clone().unwrap_or_default();
+        let mut entry = json!({
             "startedDateTime": it.timestamp,
             "time": it.duration_ms,
             "request": {
-                "method": "GET",
+                "method": report.method,
                 "url": report.target,
-                "httpVersion": "HTTP/1.1",
+                "httpVersion": http_version,
                 "cookies": [],
                 "headers": [
-                    { "name": "User-Agent", "value": "ReadyHai-NetworkLab/0.1.0" },
+                    { "name": "User-Agent", "value": format!("ReadyHai-NetworkLab/{}", crate::engine::VERSION) },
                     { "name": "Accept", "value": "*/*" }
                 ],
                 "queryString": [],
@@ -1812,7 +2317,7 @@ pub fn generate_har_from_regress(report: &RegressReport) -> serde_json::Value {
             "response": {
                 "status": it.status_code,
                 "statusText": if it.success { "OK" } else { "Error" },
-                "httpVersion": "HTTP/1.1",
+                "httpVersion": http_version,
                 "cookies": [],
                 "headers": headers,
                 "content": {
@@ -1825,18 +2330,22 @@ pub fn generate_har_from_regress(report: &RegressReport) -> serde_json::Value {
                 "bodySize": body_len
             },
             "cache": {},
+            // -1 = not measured (HAR convention)
             "timings": {
-                "blocked": 0,
+                "blocked": -1,
                 "dns": dns,
                 "connect": connect,
-                "ssl": 0,
-                "send": 1,
+                "ssl": -1,
+                "send": -1,
                 "wait": wait,
                 "receive": receive
             },
-            "serverIPAddress": "127.0.0.1",
             "connection": it.session_id
-        }));
+        });
+        if let Some(ip) = &it.resolved_ip {
+            entry["serverIPAddress"] = json!(ip);
+        }
+        entries.push(entry);
     }
 
     json!({
@@ -1844,7 +2353,7 @@ pub fn generate_har_from_regress(report: &RegressReport) -> serde_json::Value {
             "version": "1.2",
             "creator": {
                 "name": "ReadyHai Autonomous QA Gate",
-                "version": "0.1.0"
+                "version": crate::engine::VERSION
             },
             "pages": [
                 {
@@ -1865,97 +2374,584 @@ pub fn generate_har_from_regress(report: &RegressReport) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    /// Tiny HTTP stub on an ephemeral port. `handler` gets the raw request head and returns the
+    /// full response, or None to hang (the connection is held open for 4 s without an answer).
+    fn stub(handler: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handler = std::sync::Arc::new(handler);
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut c) = conn else { continue };
+                let handler = handler.clone();
+                std::thread::spawn(move || {
+                    let mut head = Vec::new();
+                    let mut buf = [0u8; 4096];
+                    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match std::io::Read::read(&mut c, &mut buf) {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => head.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    match handler(&String::from_utf8_lossy(&head)) {
+                        Some(resp) => {
+                            let _ = c.write_all(resp.as_bytes());
+                        }
+                        None => std::thread::sleep(Duration::from_secs(4)),
+                    }
+                });
+            }
+        });
+        format!("http://{addr}/")
+    }
+
+    fn reply(status: &str, body: &str) -> Option<String> {
+        Some(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()))
+    }
+
+    fn reply_html(status: &str, body: &str) -> Option<String> {
+        Some(format!("HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()))
+    }
+
+    fn base_regress(target: &str) -> RegressRequest {
+        serde_json::from_value(json!({"target": target, "iterations": 3, "delay_between_ms": 0, "timeout_ms": 2000})).unwrap()
+    }
+
+    fn iteration(status: u16, err: Option<&str>) -> IterationResult {
+        IterationResult {
+            iteration: 1,
+            session_id: "sess-1".into(),
+            timestamp: "2026-10-28T00:00:00Z".into(),
+            duration_ms: 50,
+            dns_lookup_ms: 5,
+            tcp_connect_ms: 10,
+            ttfb_ms: 40,
+            status_code: status,
+            success: (200..300).contains(&status),
+            error_message: err.map(String::from),
+            curl_command: "curl http://localhost".into(),
+            response_headers: HashMap::new(),
+            response_body_snippet: Some("OK".into()),
+            resolved_ip: None,
+            http_version: None,
+        }
+    }
+
+    // ------------------------------------------------------------ target / clamp validation
+
+    #[test]
+    fn targets_must_be_http_or_https() {
+        for bad in ["ftp://x/", "file:///etc/passwd", "gopher://x/", "javascript:alert(1)", "x", "", "-oProxyCommand=x", "http://user:pw@x/"] {
+            assert!(parse_target(bad).is_err(), "{bad}");
+        }
+        assert_eq!(parse_target("HTTP://Example.com").unwrap().as_str(), "http://example.com/");
+        // the backslash form is normalised before anything (curl included) sees it
+        assert_eq!(parse_target("http://app.example\\@evil.example/x").unwrap().as_str(), "http://app.example/@evil.example/x");
+        let mut c = CurlTestRequest { target: "file:///etc/passwd".into(), method: "GET".into(), headers: HashMap::new(), payload: None, timeout_ms: 1000 };
+        assert!(c.sanitize().is_err());
+        assert!(execute_curl_test(&c).is_err());
+    }
+
+    #[test]
+    fn regress_request_is_clamped() {
+        let mut r: RegressRequest = serde_json::from_value(json!({
+            "target": "http://x.example", "iterations": 10_000_000u64, "timeout_ms": u64::MAX,
+            "simulated_latency_ms": u64::MAX, "delay_between_ms": u64::MAX, "method": "post"
+        })).unwrap();
+        assert!(r.is_intrusive());
+        r.sanitize().unwrap();
+        assert_eq!(r.iterations, MAX_ITERATIONS);
+        assert_eq!(r.timeout_ms, MAX_TIMEOUT_MS);
+        assert_eq!(r.simulated_latency_ms, MAX_LATENCY_MS);
+        assert_eq!(r.delay_between_ms, MAX_DELAY_MS);
+        assert_eq!(r.method, "POST");
+        assert_eq!(r.target, "http://x.example/");
+        let mut r: RegressRequest = serde_json::from_value(json!({"target": "http://x.example", "iterations": 0, "timeout_ms": 0})).unwrap();
+        r.sanitize().unwrap();
+        assert_eq!((r.iterations, r.timeout_ms), (1, MIN_TIMEOUT_MS));
+    }
+
+    #[test]
+    fn other_requests_are_clamped() {
+        let mut c = CurlTestRequest { target: "http://x.example".into(), method: "GET".into(), headers: HashMap::new(), payload: None, timeout_ms: u64::MAX };
+        c.sanitize().unwrap();
+        assert_eq!(c.timeout_ms, MAX_TIMEOUT_MS);
+        let mut d = DeepAuditRequest { target: "http://x.example".into(), timeout_ms: u64::MAX };
+        d.sanitize().unwrap();
+        assert_eq!(d.timeout_ms, MAX_TIMEOUT_MS);
+        d.timeout_ms = 0;
+        d.sanitize().unwrap();
+        assert_eq!(d.timeout_ms, MIN_TIMEOUT_MS);
+        let mut m = MultiRegionRequest { target: "http://x.example".into(), timeout_ms: Some(u64::MAX) };
+        m.sanitize().unwrap();
+        assert_eq!(m.timeout_ms, Some(MAX_TIMEOUT_MS));
+        let mut m = MultiRegionRequest { target: "http://x.example".into(), timeout_ms: None };
+        m.sanitize().unwrap();
+        assert_eq!(m.timeout_ms, Some(4000));
+    }
+
+    #[test]
+    fn methods_headers_and_payload_are_validated() {
+        let ok = |m: &str| RegressRequest { method: m.into(), ..base_regress("http://x.example") }.sanitize().is_ok();
+        assert!(ok("get") && ok("PATCH") && ok("options"));
+        assert!(!ok("TRACE") && !ok("CONNECT") && !ok("GET --upload-file /etc/passwd") && !ok(""));
+        let mut r = base_regress("http://x.example");
+        r.headers.insert("X-Ok".into(), "v".into());
+        assert!(r.clone().sanitize().is_ok());
+        for (k, v) in [("X\nBad", "v"), ("X-A", "a\r\nInjected: 1"), ("@/etc/passwd", "x"), ("", "v"), ("X-A", "nul\0")] {
+            let mut r = base_regress("http://x.example");
+            r.headers.insert(k.into(), v.into());
+            assert!(r.sanitize().is_err(), "{k:?}");
+        }
+        let mut r = base_regress("http://x.example");
+        r.payload = Some("A".repeat(MAX_PAYLOAD_BYTES + 1));
+        assert!(r.sanitize().is_err());
+        let mut r = base_regress("http://x.example");
+        for i in 0..=MAX_HEADERS {
+            r.headers.insert(format!("X-{i}"), "v".into());
+        }
+        assert!(r.sanitize().is_err());
+    }
+
+    #[test]
+    fn intrusive_classification() {
+        let mut r = base_regress("http://x.example");
+        assert!(!r.is_intrusive());
+        r.iterations = READONLY_MAX_ITERATIONS + 1;
+        assert!(r.is_intrusive());
+        r.iterations = 3;
+        r.payload = Some("{}".into());
+        assert!(r.is_intrusive());
+        assert!(is_safe_method("head") && !is_safe_method("DELETE"));
+    }
+
+    // ------------------------------------------------------------ curl hardening
+
+    #[test]
+    fn curl_gets_proto_limit_and_double_dash_before_the_url() {
+        let mut req = CurlTestRequest {
+            target: "http://x.example/a?b=c".into(),
+            method: "post".into(),
+            headers: HashMap::new(),
+            payload: Some("@/etc/passwd".into()),
+            timeout_ms: 2000,
+        };
+        let url = req.sanitize().unwrap();
+        let cmd = curl_command(&req, &url, 2);
+        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        let pos = |s: &str| args.iter().position(|a| a == s).unwrap_or_else(|| panic!("{s} missing in {args:?}"));
+        assert_eq!(args[0], "-q", "ignore ~/.curlrc");
+        assert_eq!(args[pos("--proto") + 1], "=http,https");
+        assert_eq!(args[args.len() - 2], "--");
+        assert_eq!(args[args.len() - 1], "http://x.example/a?b=c");
+        assert!(pos("--proto") < pos("--"));
+        // '@file' payloads are sent literally, never read from disk
+        assert_eq!(args[pos("--data-raw") + 1], "@/etc/passwd");
+        assert!(!args.iter().any(|a| a == "-d"));
+        // the protocol probes carry the same protection
+        assert!(include_str!("network.rs").matches("\"--proto\", \"=http,https\"").count() >= 1);
+    }
+
+    #[test]
+    fn repro_command_is_shell_safe() {
+        let mut h = HashMap::new();
+        h.insert("X-A".to_string(), "v'; rm -rf / #".to_string());
+        let c = generate_curl("get", "http://x/?a=1&b=$(id)", &h, Some("it's \"x\""));
+        assert!(c.contains("-H 'X-A: v'\\''; rm -rf / #'"), "{c}");
+        assert!(c.contains("-- 'http://x/?a=1&b=$(id)'"), "{c}");
+        assert!(c.contains("--data-raw 'it'\\''s \"x\"'"), "{c}");
+        assert!(c.contains("-X 'GET'"));
+    }
+
+    #[test]
+    fn curl_output_is_capped_but_timings_survive() {
+        // 3 MiB of body, cap 1 MiB: the -w trailer must still be parsed from the retained tail
+        let body = "x".repeat(3 * 1024 * 1024);
+        let url = stub(move |_| reply("200 OK", &body));
+        let r = execute_curl_test(&CurlTestRequest { target: url, method: "GET".into(), headers: HashMap::new(), payload: None, timeout_ms: 5000 }).unwrap();
+        if Command::new("curl").arg("--version").output().is_err() {
+            return; // no curl: the fallback path is covered by fallback_reports_unmeasured_fields
+        }
+        assert!(r.not_measured.is_empty(), "curl was available but the fallback ran: {}", r.stderr);
+        assert_eq!(r.exit_code, 0, "{}", r.stderr);
+        assert!(r.truncated, "{}", r.stdout.len());
+        assert!(r.stdout.len() < MAX_CAPTURE_BYTES + 200, "{}", r.stdout.len());
+        assert!(r.stdout.contains("[output truncated"));
+        assert_eq!(r.status_code, 200, "timings trailer must survive truncation");
+        assert!(r.total_s > 0.0);
+    }
+
+    #[test]
+    fn curl_refuses_non_http_schemes_even_if_it_reached_curl() {
+        // belt and braces: --proto limits curl itself, independent of our URL parsing
+        let out = Command::new("curl").args(["-q", "-sS", "--proto", "=http,https", "--", "file:///etc/hostname"]).output();
+        if let Ok(o) = out {
+            assert!(!o.status.success());
+        }
+    }
+
+    #[test]
+    fn tls_is_measured_from_a_real_handshake() {
+        if Command::new("openssl").arg("version").output().is_err() {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("rh-tls-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (key, crt) = (dir.join("k.pem"), dir.join("c.pem"));
+        let keygen = Command::new("openssl")
+            .args(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "30", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost", "-keyout"])
+            .arg(&key).arg("-out").arg(&crt)
+            .output()
+            .unwrap();
+        assert!(keygen.status.success(), "{}", String::from_utf8_lossy(&keygen.stderr));
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let mut server = Command::new("openssl")
+            .args(["s_server", "-accept"]).arg(port.to_string()).arg("-cert").arg(&crt).arg("-key").arg(&key).arg("-www")
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        for _ in 0..60 {
+            if TcpStream::connect(("127.0.0.1", port)).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let url = parse_target(&format!("https://127.0.0.1:{port}/")).unwrap();
+        let t = audit_tls_chain(&url, "127.0.0.1", port, 5000);
+        let _ = server.kill();
+        let _ = server.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(t.measured && t.is_https, "{t:?}");
+        assert!(t.tls_version.starts_with("TLSv1."), "{}", t.tls_version);
+        assert!(!t.cipher.is_empty() && t.cipher != "not measured");
+        assert!(t.cert_subject.contains("localhost"), "{}", t.cert_subject);
+        assert!(t.cert_issuer.contains("localhost"), "{}", t.cert_issuer);
+        assert_eq!(t.cert_sans, vec!["localhost"]);
+        assert!(t.is_self_signed, "{t:?}");
+        assert!(!t.is_intermediate_missing);
+        assert!(matches!(t.days_remaining, Some(29 | 30)), "{:?}", t.days_remaining);
+        assert!(t.not_after.as_deref().is_some_and(|d| d.ends_with("GMT")));
+        assert_eq!(t.ocsp_stapled, Some(false), "a plain s_server staples nothing");
+        assert_eq!(t.chain_length, Some(1));
+    }
+
+    #[test]
+    fn tls_against_a_closed_port_is_not_measured() {
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let url = parse_target(&format!("https://127.0.0.1:{port}/")).unwrap();
+        let t = audit_tls_chain(&url, "127.0.0.1", port, 2000);
+        assert!(!t.measured && t.ocsp_stapled.is_none() && t.days_remaining.is_none(), "{t:?}");
+        assert_eq!(t.cert_issuer, "not measured");
+    }
+
+    #[test]
+    fn fallback_reports_unmeasured_fields() {
+        // the native-client fallback must not invent DNS/connect timings
+        let url = stub(|_| reply("200 OK", "hi"));
+        let u = parse_target(&url).unwrap();
+        let req = CurlTestRequest { target: url, method: "GET".into(), headers: HashMap::new(), payload: None, timeout_ms: 2000 };
+        let r = native_curl_fallback(&req, &u, "curl ...".into(), "no curl").unwrap();
+        assert_eq!((r.status_code, r.stdout.as_str()), (200, "hi"));
+        assert_eq!((r.dns_lookup_s, r.connect_s, r.appconnect_s), (0.0, 0.0, 0.0));
+        assert_eq!(r.not_measured, vec!["dns_lookup_s", "connect_s", "appconnect_s"]);
+        assert!(r.starttransfer_s > 0.0 && r.total_s >= r.starttransfer_s);
+        // and a dead target lists everything as unmeasured
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead = format!("http://127.0.0.1:{}/", l.local_addr().unwrap().port());
+        drop(l);
+        let req = CurlTestRequest { target: dead.clone(), method: "GET".into(), headers: HashMap::new(), payload: None, timeout_ms: 1000 };
+        let r = native_curl_fallback(&req, &parse_target(&dead).unwrap(), "curl ...".into(), "no curl").unwrap();
+        assert_eq!(r.exit_code, 1);
+        assert_eq!(r.not_measured.len(), 4);
+    }
+
+    // ------------------------------------------------------------ regress
+
+    #[test]
+    fn non_2xx_counts_as_failure() {
+        for (status, line) in [(200, "200 OK"), (404, "404 Not Found"), (500, "500 Internal Server Error"), (401, "401 Unauthorized")] {
+            let url = stub(move |_| reply(line, "body"));
+            let rep = run_regress_test(&base_regress(&url)).unwrap();
+            assert_eq!(rep.total_iterations, 3);
+            if status == 200 {
+                assert_eq!((rep.successful_iterations, rep.failed_iterations), (3, 0));
+                assert_eq!(rep.availability_percentage, 100.0);
+                assert_eq!(rep.diagnosis.root_cause_type, "STABLE");
+            } else {
+                assert_eq!((rep.successful_iterations, rep.failed_iterations), (0, 3), "{status}");
+                assert_eq!(rep.availability_percentage, 0.0);
+                assert_ne!(rep.diagnosis.root_cause_type, "STABLE", "{status} must not be reported as stable");
+                assert!(rep.diagnosis.flakiness_detected);
+            }
+            assert!(rep.iterations.iter().all(|i| i.resolved_ip.as_deref() == Some("127.0.0.1")));
+            assert!(rep.iterations.iter().all(|i| i.session_id.starts_with("sess-")));
+        }
+    }
+
+    #[test]
+    fn redirects_are_failures_and_never_leave_the_host() {
+        let url = stub(|_| Some("HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into()));
+        let rep = run_regress_test(&base_regress(&url)).unwrap();
+        assert_eq!(rep.failed_iterations, 3);
+        assert_eq!(rep.iterations[0].status_code, 302, "the redirect must not be followed to another host");
+    }
+
+    #[test]
+    fn multibyte_body_does_not_panic_the_snippet_cut() {
+        // 300 three-byte characters: byte 256 is inside a character
+        let body = "日".repeat(300);
+        let url = stub(move |_| reply("200 OK", &body));
+        let rep = run_regress_test(&base_regress(&url)).unwrap();
+        let snip = rep.iterations[0].response_body_snippet.clone().unwrap();
+        assert_eq!(snip.chars().count(), BODY_SNIPPET_CHARS + 3);
+        assert!(snip.ends_with("..."));
+        assert_eq!(truncate_chars("é".repeat(10).as_str(), 4), "éééé...");
+        assert_eq!(truncate_chars("abc", 4), "abc");
+        assert_eq!(truncate_chars("", 0), "");
+    }
+
+    #[test]
+    fn diagnose_non_2xx_is_not_stable() {
+        let rs = vec![iteration(404, Some("HTTP Status 404")), iteration(404, Some("HTTP Status 404"))];
+        let d = diagnose(&rs, 0.0, 50, 55, 5, 5000);
+        assert_eq!(d.root_cause_type, "HTTP_ERRORS");
+        assert!(d.flakiness_detected);
+        let rs = vec![iteration(301, Some("HTTP Status 301"))];
+        assert_eq!(diagnose(&rs, 0.0, 50, 55, 5, 5000).root_cause_type, "HTTP_ERRORS");
+    }
+
+    #[test]
+    fn jitter_needs_an_absolute_spread_not_just_a_ratio() {
+        assert_eq!(diagnose(&[iteration(200, None)], 100.0, 1, 4, 3, 5000).root_cause_type, "STABLE");
+        assert_eq!(diagnose(&[iteration(200, None)], 100.0, 30, 120, 90, 5000).root_cause_type, "HIGH_JITTER");
+        assert_eq!(diagnose(&[iteration(200, None)], 100.0, 500, 900, 400, 5000).root_cause_type, "HIGH_JITTER");
+    }
 
     #[test]
     fn test_diagnose_stable() {
-        let results = vec![
-            IterationResult {
-                iteration: 1,
-                session_id: "sess-1".into(),
-                timestamp: "2026-10-28T00:00:00Z".into(),
-                duration_ms: 50,
-                dns_lookup_ms: 5,
-                tcp_connect_ms: 10,
-                ttfb_ms: 40,
-                status_code: 200,
-                success: true,
-                error_message: None,
-                curl_command: "curl http://localhost".into(),
-                response_headers: HashMap::new(),
-                response_body_snippet: Some("OK".into()),
-            }
-        ];
-        let d = diagnose(&results, 100.0, 50, 55, 10, 5000);
+        let d = diagnose(&[iteration(200, None)], 100.0, 50, 55, 10, 5000);
         assert_eq!(d.root_cause_type, "STABLE");
     }
 
     #[test]
     fn test_diagnose_timeout() {
-        let results = vec![
-            IterationResult {
-                iteration: 1,
-                session_id: "sess-1".into(),
-                timestamp: "2026-10-28T00:00:00Z".into(),
-                duration_ms: 5000,
-                dns_lookup_ms: 5,
-                tcp_connect_ms: 5000,
-                ttfb_ms: 0,
-                status_code: 0,
-                success: false,
-                error_message: Some("Operation timed out".into()),
-                curl_command: "curl http://localhost".into(),
-                response_headers: HashMap::new(),
-                response_body_snippet: None,
-            }
-        ];
-        let d = diagnose(&results, 0.0, 5000, 5000, 0, 5000);
+        let mut r = iteration(0, Some("Operation timed out"));
+        r.duration_ms = 5000;
+        let d = diagnose(&[r], 0.0, 5000, 5000, 0, 5000);
         assert_eq!(d.root_cause_type, "TIMEOUT");
     }
 
-    #[test]
-    fn test_deep_audit_local() {
-        let req = DeepAuditRequest {
-            target: "http://127.0.0.1:8080/health".to_string(),
-            timeout_ms: 1000,
-        };
-        let rep = run_deep_audit(&req);
-        assert!(!rep.overall_verdict.is_empty());
-        assert!(rep.health_score > 0);
+    // ------------------------------------------------------------ MTU
+
+    fn mtu_item(size: usize, delivered: bool, transport_failure: bool, status: u16) -> MtuSweepItem {
+        MtuSweepItem {
+            payload_bytes: size,
+            label: String::new(),
+            status_code: status,
+            duration_ms: 1,
+            success: (200..300).contains(&status),
+            delivered,
+            transport_failure,
+            header_limit_hit: is_header_limit_status(status),
+            error: None,
+        }
     }
 
     #[test]
-    fn test_multi_region_audit() {
-        let req = MultiRegionRequest {
-            target: "http://127.0.0.1:8080/health".to_string(),
-            timeout_ms: Some(1000),
-        };
-        let rep = run_multi_region_audit(&req);
-        assert_eq!(rep.regions.len(), 4);
-        assert!(!rep.agent_verdict.is_empty());
+    fn mtu_rule_distinguishes_header_limits_from_black_holes() {
+        // 431 / 400 / 413 / 414 on large probes: packets arrived, server said no
+        for st in [400, 413, 414, 431] {
+            let r = vec![mtu_item(512, true, false, 200), mtu_item(1400, true, false, st), mtu_item(4096, true, false, st), mtu_item(8192, true, false, st)];
+            assert!(!mtu_black_hole(&r), "HTTP {st} is not a black hole");
+        }
+        // timeout on large after a good baseline: black hole
+        let r = vec![mtu_item(512, true, false, 200), mtu_item(1400, false, true, 0)];
+        assert!(mtu_black_hole(&r));
+        // dead target (baseline fails too) or a refused connection is not a black hole
+        assert!(!mtu_black_hole(&[mtu_item(512, false, true, 0), mtu_item(1400, false, true, 0)]));
+        assert!(!mtu_black_hole(&[mtu_item(512, true, false, 200), mtu_item(1400, false, false, 0)]));
     }
+
+    #[test]
+    fn mtu_sweep_with_a_431_server_reports_no_black_hole() {
+        let url = stub(|req| if req.len() > 1000 { reply("431 Request Header Fields Too Large", "") } else { reply("200 OK", "ok") });
+        let a = audit_mtu_sweep(&url, 2000);
+        assert!(!a.black_hole_detected, "{}", a.diagnosis);
+        assert_eq!(a.maximum_safe_bytes, 512);
+        assert_eq!(a.maximum_delivered_bytes, 8192);
+        assert!(a.sweep_results.iter().skip(1).all(|r| r.header_limit_hit && r.delivered && !r.success));
+        assert!(a.diagnosis.contains("header-size limit"), "{}", a.diagnosis);
+    }
+
+    #[test]
+    fn mtu_sweep_flags_a_real_black_hole() {
+        // large requests are swallowed (no response at all), small ones answered
+        let url = stub(|req| if req.len() > 1000 { None } else { reply("200 OK", "ok") });
+        let a = audit_mtu_sweep(&url, 800);
+        assert!(a.black_hole_detected, "{}", a.diagnosis);
+        assert_eq!(a.maximum_safe_bytes, 512);
+    }
+
+    // ------------------------------------------------------------ deep audit
+
+    #[test]
+    fn deep_audit_against_a_local_stub() {
+        let url = stub(|req| {
+            if req.starts_with("OPTIONS") {
+                Some("HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: https://qa-probe.readyhai.internal\r\nConnection: close\r\n\r\n".into())
+            } else {
+                // every path, /app.js included, answers with the HTML shell (a broken SPA fallback)
+                reply_html("200 OK", "<html><script src=\"/app.js\"></script><script src=\"http://169.254.169.254/x.js\"></script></html>")
+            }
+        });
+        let rep = run_deep_audit(&DeepAuditRequest { target: url, timeout_ms: 2000 }).unwrap();
+        assert!(rep.health_score > 0);
+        assert!(!rep.overall_verdict.is_empty());
+        // plain http: no TLS fabrication
+        assert!(!rep.tls_chain.is_https);
+        assert!(rep.tls_chain.ocsp_stapled.is_none() && rep.tls_chain.days_remaining.is_none() && rep.tls_chain.not_after.is_none());
+        // the cross-host asset was not fetched, only recorded as skipped
+        assert_eq!(rep.subresources.skipped_cross_host, 1);
+        assert!(rep.subresources.items.iter().all(|i| i.url.contains("127.0.0.1")));
+        assert_eq!(rep.subresources.spa_fallback_mismatches, 1, "{:?}", rep.subresources);
+        assert!(rep.identified_risks.iter().any(|r| r.contains("SPA Routing Flaw")));
+        assert!(rep.protocol_matrix.protocols.iter().any(|p| p.protocol.starts_with("HTTP/3") && p.status_code == 0));
+    }
+
+    #[test]
+    fn deep_audit_non_2xx_assets_are_broken() {
+        let url = stub(|req| {
+            if req.starts_with("GET / ") {
+                reply("200 OK", "<html><script src=\"/missing.js\"></script></html>")
+            } else {
+                reply("404 Not Found", "nope")
+            }
+        });
+        let u = parse_target(&url).unwrap();
+        let a = audit_subresources(&u, 2000);
+        assert_eq!(a.broken_count, 1, "{a:?}");
+        assert_eq!(a.items[0].status_code, 404);
+    }
+
+    #[test]
+    fn deep_audit_rejects_non_http_targets() {
+        assert!(run_deep_audit(&DeepAuditRequest { target: "file:///etc/passwd".into(), timeout_ms: 1000 }).is_err());
+    }
+
+    // ------------------------------------------------------------ TLS parsing (no hard-coded values)
+
+    const S_CLIENT: &str = "\
+CONNECTED(00000003)
+Certificate chain
+ 0 s:CN = example.com
+   i:C = US, O = Let's Encrypt, CN = R3
+-----BEGIN CERTIFICATE-----
+MIIAAA==
+-----END CERTIFICATE-----
+ 1 s:C = US, O = Let's Encrypt, CN = R3
+   i:O = Digital Signature Trust Co., CN = DST Root CA X3
+-----BEGIN CERTIFICATE-----
+MIIBBB==
+-----END CERTIFICATE-----
+OCSP response: no response sent
+New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
+    Verify return code: 0 (ok)
+";
+
+    #[test]
+    fn s_client_output_is_parsed_not_assumed() {
+        let s = parse_s_client(S_CLIENT);
+        assert_eq!(s.version.as_deref(), Some("TLSv1.3"));
+        assert_eq!(s.cipher.as_deref(), Some("TLS_AES_256_GCM_SHA384"));
+        assert_eq!(s.verify_code, Some(0));
+        assert_eq!(s.ocsp_stapled, Some(false), "'no response sent' means NOT stapled (it used to be hard-coded true)");
+        assert_eq!(s.chain_len, 2);
+        let pem = s.leaf_pem.unwrap();
+        assert!(pem.contains("MIIAAA==") && !pem.contains("MIIBBB=="));
+        assert_eq!(parse_s_client("OCSP Response Status: successful (0x0)").ocsp_stapled, Some(true));
+        assert_eq!(parse_s_client("nothing relevant").ocsp_stapled, None);
+        let failed = parse_s_client("New, (NONE), Cipher is (NONE)");
+        assert!(failed.version.is_none() && failed.cipher.is_none());
+        assert_eq!(parse_s_client("Verify return code: 21 (unable to verify the first certificate)").verify_code, Some(21));
+    }
+
+    #[test]
+    fn x509_and_dates_are_parsed() {
+        let leaf = parse_x509("subject=CN = example.com\nissuer=C = US, O = Let's Encrypt, CN = R3\nnotAfter=Jan  1 00:00:00 2027 GMT\nX509v3 Subject Alternative Name: \n    DNS:example.com, DNS:www.example.com\n");
+        assert_eq!(leaf.subject.as_deref(), Some("CN = example.com"));
+        assert_eq!(leaf.issuer.as_deref(), Some("C = US, O = Let's Encrypt, CN = R3"));
+        assert_eq!(leaf.sans, vec!["example.com", "www.example.com"]);
+        assert_eq!(days_from_civil(1970, 1, 1), 0);
+        assert_eq!(days_from_civil(2000, 1, 1), 10_957);
+        assert_eq!(parse_openssl_date("Jan  1 00:00:00 2027 GMT"), Some(1_798_761_600));
+        assert_eq!(parse_openssl_date("Feb 29 12:30:15 2028 GMT"), Some(days_from_civil(2028, 2, 29) * 86_400 + 12 * 3600 + 30 * 60 + 15));
+        assert_eq!(days_from_civil(2028, 3, 1) - days_from_civil(2028, 2, 29), 1);
+        assert_eq!(parse_openssl_date("garbage"), None);
+        assert_eq!(parse_openssl_date("Foo  1 00:00:00 2027 GMT"), None);
+    }
+
+    #[test]
+    fn unmeasured_tls_says_so() {
+        let t = unmeasured_tls(true, "openssl is not available");
+        assert!(!t.measured && t.ocsp_stapled.is_none() && t.days_remaining.is_none() && t.not_after.is_none());
+        assert_eq!(t.cert_issuer, "not measured");
+        assert_eq!(t.tls_version, "not measured");
+        assert!(t.cert_sans.is_empty());
+        assert_eq!(t.not_measured, vec!["openssl is not available"]);
+    }
+
+    // ------------------------------------------------------------ multi-region
+
+    #[test]
+    fn multi_region_reports_only_the_local_measurement() {
+        let url = stub(|_| reply("200 OK", "ok"));
+        let rep = run_multi_region_audit(&MultiRegionRequest { target: url, timeout_ms: Some(2000) }).unwrap();
+        assert_eq!(rep.regions.len(), 1);
+        let r = &rep.regions[0];
+        assert!(r.measured && r.region_id == "local");
+        assert_eq!(r.http_status, 200);
+        assert_eq!(r.resolved_ip, "127.0.0.1");
+        assert_eq!(r.packet_loss_pct, 0.0);
+        assert_eq!(rep.not_measured_regions.len(), 4);
+        assert!(rep.geo_dns_consistent.is_none(), "geo-DNS consistency cannot be known from one vantage point");
+        assert!(rep.measurement_note.contains("no remote probe nodes"));
+        assert_eq!(rep.fastest_region, "not measured");
+    }
+
+    #[test]
+    fn multi_region_unreachable_target_is_offline() {
+        // nothing listens here
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        let rep = run_multi_region_audit(&MultiRegionRequest { target: format!("http://127.0.0.1:{port}/"), timeout_ms: Some(800) }).unwrap();
+        assert_eq!(rep.regions[0].status, "OFFLINE");
+        assert_eq!(rep.regions[0].packet_loss_pct, 100.0);
+        assert!(rep.agent_verdict.starts_with("CRITICAL"));
+    }
+
+    // ------------------------------------------------------------ HAR
 
     #[test]
     fn test_generate_har() {
-        let results = vec![
-            IterationResult {
-                iteration: 1,
-                session_id: "sess-1".into(),
-                timestamp: "2026-10-28T00:00:00Z".into(),
-                duration_ms: 50,
-                dns_lookup_ms: 5,
-                tcp_connect_ms: 10,
-                ttfb_ms: 40,
-                status_code: 200,
-                success: true,
-                error_message: None,
-                curl_command: "curl http://localhost".into(),
-                response_headers: HashMap::new(),
-                response_body_snippet: Some("OK".into()),
-            }
-        ];
+        let mut it = iteration(200, None);
+        it.resolved_ip = Some("10.1.2.3".into());
+        it.http_version = Some("HTTP/2.0".into());
         let rep = RegressReport {
             target: "http://localhost".into(),
+            method: "POST".into(),
             total_iterations: 1,
+            iterations_requested: 1,
+            stopped_early: false,
             successful_iterations: 1,
             failed_iterations: 0,
             availability_percentage: 100.0,
@@ -1967,24 +2963,35 @@ mod tests {
             max_latency_ms: 50,
             jitter_ms: 0,
             status_distribution: HashMap::new(),
-            iterations: results,
-            diagnosis: AgentDiagnosis {
-                flakiness_detected: false,
-                root_cause_type: "STABLE".into(),
-                severity: "STABLE".into(),
-                title: "Stable".into(),
-                summary: "Stable".into(),
-                how_agent_found_it: vec![],
-                technical_breakdown: vec![],
-                reproduction_curl: "curl".into(),
-                remediation_checklist: vec![],
-            },
+            iterations: vec![it, iteration(0, Some("boom"))],
+            diagnosis: diagnose(&[iteration(200, None)], 100.0, 50, 50, 0, 5000),
             requester_ip: Some("127.0.0.1".into()),
             allowlist_recommendation: Some("Add 127.0.0.1/32 to allowlist".into()),
         };
         let har = generate_har_from_regress(&rep);
         assert_eq!(har["log"]["version"], "1.2");
-        assert_eq!(har["log"]["entries"].as_array().unwrap().len(), 1);
+        let entries = har["log"]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["request"]["method"], "POST", "method comes from the report, not a constant");
+        assert_eq!(entries[0]["serverIPAddress"], "10.1.2.3");
+        assert_eq!(entries[0]["response"]["httpVersion"], "HTTP/2.0");
+        assert!(entries[1].get("serverIPAddress").is_none(), "no invented 127.0.0.1");
+        assert_eq!(entries[1]["response"]["httpVersion"], "");
+        assert_eq!(entries[0]["timings"]["ssl"], -1);
     }
 
+    #[test]
+    fn old_reports_still_deserialize() {
+        // a RegressReport saved before the additive fields existed
+        let v = json!({"target":"http://a/","total_iterations":1,"successful_iterations":1,"failed_iterations":0,
+            "availability_percentage":100.0,"avg_latency_ms":1,"p50_latency_ms":1,"p90_latency_ms":1,"p99_latency_ms":1,
+            "min_latency_ms":1,"max_latency_ms":1,"jitter_ms":0,"status_distribution":{},
+            "diagnosis":{"flakiness_detected":false,"root_cause_type":"STABLE","severity":"STABLE","title":"t","summary":"s",
+              "how_agent_found_it":[],"technical_breakdown":[],"reproduction_curl":"c","remediation_checklist":[]},
+            "iterations":[{"iteration":1,"session_id":"s","timestamp":"t","duration_ms":1,"dns_lookup_ms":1,"tcp_connect_ms":1,
+              "ttfb_ms":1,"status_code":200,"success":true,"error_message":null,"curl_command":"c","response_headers":{},"response_body_snippet":null}]});
+        let r: RegressReport = serde_json::from_value(v).unwrap();
+        assert_eq!(r.method, "GET");
+        assert!(r.iterations[0].resolved_ip.is_none());
+    }
 }

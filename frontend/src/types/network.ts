@@ -143,11 +143,11 @@ export interface TlsChainAudit {
   cert_issuer: string;
   cert_subject: string;
   cert_sans: string[];
-  not_after: string;
-  days_remaining: number;
+  not_after: string | null;
+  days_remaining: number | null;
   is_self_signed: boolean;
   is_intermediate_missing: boolean;
-  ocsp_stapled: boolean;
+  ocsp_stapled: boolean | null;
   diagnosis: string;
 }
 

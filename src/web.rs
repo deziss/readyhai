@@ -45,14 +45,13 @@ fn client(redirects: bool) -> Result<Client> {
 }
 
 /// Host part of an http(s) URL (no userinfo, no port).
-fn host_of(url: &str) -> &str {
-    let rest = url.split_once("://").map(|x| x.1).unwrap_or(url);
-    let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
-    let auth = auth.rsplit('@').next().unwrap_or(auth);
-    if let Some(r) = auth.strip_prefix('[') {
-        return r.split(']').next().unwrap_or(r);
-    }
-    auth.split(':').next().unwrap_or(auth)
+/// Host as the HTTP client will resolve it (WHATWG URL parsing), so scope and
+/// loopback decisions match the connection actually made.
+fn host_of(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase()))
+        .unwrap_or_default()
 }
 
 fn is_local(host: &str) -> bool {
@@ -68,7 +67,7 @@ fn origin_of(url: &str) -> String {
 /// Rewrite loopback hosts so a container can reach the host machine.
 fn container_url(url: &str) -> (String, bool) {
     let h = host_of(url);
-    if is_local(h) {
+    if is_local(&h) {
         let (scheme, rest) = url.split_once("://").unwrap_or(("http", url));
         let (auth, tail) = match rest.find(['/', '?', '#']) {
             Some(i) => rest.split_at(i),
@@ -184,7 +183,7 @@ fn smoke(ctx: &Ctx) -> Result<CheckOutput> {
             .remediation("Profile the endpoint; add caching or reduce backend latency."));
     }
     let https = url.starts_with("https://");
-    let host = host_of(&url).to_string();
+    let host = host_of(&url);
     if !https && !is_local(&host) {
         add(Finding::new("web.smoke", "web.no_tls", Category::Security, Severity::Medium,
             "Target served over plain HTTP", &url)
@@ -528,6 +527,8 @@ mod tests {
     #[test]
     fn hosts() {
         assert_eq!(host_of("http://user@localhost:8080/x"), "localhost");
+        // Backslash in the authority: the client connects to evil.example, so must we.
+        assert_eq!(host_of("https://evil.example\\@app.nonprod.example/"), "evil.example");
         assert_eq!(container_url("http://127.0.0.1:3000/a").0, "http://host.docker.internal:3000/a");
         assert!(!container_url("https://example.com").1);
     }

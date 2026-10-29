@@ -19,11 +19,42 @@ pub struct State {
     initialized: bool,
 }
 
+/// Take private copies of the real stdin/stdout for the JSON-RPC channel, then point fd 0 at
+/// /dev/null and fd 1 at stderr. Every child process (docker, git, ssh, curl, ...) and every stray
+/// `println!` anywhere in the process then inherits harmless descriptors: a tool call can neither
+/// write into the protocol stream nor swallow a request line from it.
+#[cfg(unix)]
+fn isolate_stdio() -> Result<(std::fs::File, std::fs::File)> {
+    use std::os::fd::FromRawFd;
+    unsafe extern "C" {
+        fn dup(fd: i32) -> i32;
+        fn dup2(old: i32, new: i32) -> i32;
+    }
+    let null = std::fs::File::open("/dev/null")?;
+    let (rpc_in, rpc_out) = unsafe {
+        let (i, o) = (dup(0), dup(1));
+        if i < 0 || o < 0 {
+            bail!("cannot duplicate stdio: {}", std::io::Error::last_os_error());
+        }
+        (std::fs::File::from_raw_fd(i), std::fs::File::from_raw_fd(o))
+    };
+    use std::os::fd::AsRawFd;
+    if unsafe { dup2(null.as_raw_fd(), 0) } < 0 || unsafe { dup2(2, 1) } < 0 {
+        bail!("cannot redirect stdio: {}", std::io::Error::last_os_error());
+    }
+    Ok((rpc_in, rpc_out))
+}
+
+#[cfg(not(unix))]
+fn isolate_stdio() -> Result<(std::fs::File, std::fs::File)> {
+    bail!("the MCP server needs a unix platform")
+}
+
 pub fn serve_stdio() -> Result<()> {
-    let stdin = std::io::stdin();
-    let mut out = std::io::stdout().lock();
+    let (rpc_in, rpc_out) = isolate_stdio()?;
+    let mut out = std::io::BufWriter::new(rpc_out);
     let mut st = State::default();
-    for line in stdin.lock().lines() {
+    for line in std::io::BufReader::new(rpc_in).lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
@@ -122,15 +153,28 @@ fn call_tool(name: &str, args: &Value) -> Result<String> {
     }
 }
 
-/// Server-like restrictions shared by MCP and the REST API: path/apk under
-/// allowed roots, web targets must pass the scope file. Cheap, no side effects.
+fn under_roots(p: &std::path::Path, roots: &[PathBuf]) -> bool {
+    let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    roots.iter().any(|r| r.canonicalize().map(|r| p.starts_with(r)).unwrap_or(false))
+}
+
+/// Server-like restrictions shared by MCP and the REST API (`/runs` and `/api/scans`): path/apk
+/// and spec files under allowed roots, every network destination (web URL, spec URL, ssh host,
+/// git remote in any URL form) in the scope file. Cheap, no side effects.
 pub fn precheck(opts: &ScanOpts) -> Result<()> {
     let t = engine::parse_target(&opts.target, opts.openapi.clone())?;
     for p in [t.path.as_ref(), t.apk.as_ref()].into_iter().flatten() {
-        let p = p.canonicalize().unwrap_or_else(|_| p.clone());
-        let ok = opts.allowed_roots.iter().any(|r| r.canonicalize().map(|r| p.starts_with(r)).unwrap_or(false));
-        if !ok {
+        if !under_roots(p, &opts.allowed_roots) {
             bail!("path is outside READYHAI_ALLOWED_ROOTS");
+        }
+    }
+    // `openapi` is a URL or a local file; a local file is copied into the run, so it is a read
+    // primitive unless it is confined like every other path.
+    let spec_is_url = t.openapi.as_deref().is_some_and(|o| o.starts_with("http://") || o.starts_with("https://"));
+    if let Some(o) = t.openapi.as_deref().filter(|_| !spec_is_url) {
+        let p = std::path::Path::new(o);
+        if p.canonicalize().is_err() || !under_roots(p, &opts.allowed_roots) {
+            bail!("openapi spec must be an http(s) URL or a file under READYHAI_ALLOWED_ROOTS");
         }
     }
     let scope = match &opts.scope {
@@ -138,33 +182,23 @@ pub fn precheck(opts: &ScanOpts) -> Result<()> {
         None => None,
     };
     // Every network destination the scan will touch must be in scope (SSRF guard).
-    let mut dests: Vec<String> = vec![];
+    let mut web: Vec<&str> = vec![];
     if let Some(url) = &t.url {
-        dests.push(url.clone());
+        web.push(url);
     }
-    if let Some(o) = t.openapi.as_ref().filter(|o| o.starts_with("http://") || o.starts_with("https://")) {
-        dests.push(o.clone());
+    if spec_is_url && let Some(o) = &t.openapi {
+        web.push(o);
+    }
+    for u in web {
+        crate::scope::egress_guard(u, scope.as_ref(), false)?;
     }
     if let Some(h) = &t.host {
-        dests.push(format!("ssh://{}", h.host));
+        crate::scope::check_host(&h.host, scope.as_ref(), true)?;
     }
-    let git_target = if let Some(g) = t.raw.strip_prefix("git:") {
-        Some(g)
-    } else if t.kind == crate::model::TargetKind::Repo && (t.raw.starts_with("https://") || t.raw.starts_with("http://")) {
-        Some(t.raw.as_str())
-    } else {
-        None
-    };
-    if let Some(g) = git_target {
-        // git@host:org/repo → ssh://host
-        let g = match g.strip_prefix("git@") {
-            Some(rest) => format!("ssh://{}", rest.split(':').next().unwrap_or("")),
-            None => g.to_string(),
-        };
-        dests.push(g);
-    }
-    for d in dests {
-        crate::scope::check(&d, scope.as_ref(), true)?;
+    // Any remote repository, whatever its spelling: https://, git:<url>, ssh://, bare git@host:path.
+    if t.kind == crate::model::TargetKind::Repo && t.path.is_none() {
+        let host = engine::remote_repo_host(&t.raw)?;
+        crate::scope::check_host(&host, scope.as_ref(), true)?;
     }
     Ok(())
 }
@@ -338,6 +372,85 @@ mod tests {
         assert!(precheck(&mk("ssh://root@10.0.0.9", None)).is_err());
         assert!(precheck(&mk("git:https://internal.git.example/x.git", None)).is_err());
         assert!(precheck(&mk("git:git@internal.git.example:org/x.git", None)).is_err());
+        // every other spelling of a remote repository is scoped too
+        assert!(precheck(&mk("git@internal.git.example:org/x.git", None)).is_err(), "bare scp-like git@host:path");
+        assert!(precheck(&mk("git@app.nonprod.example:org/x.git", None)).is_ok());
+        assert!(precheck(&mk("git:ssh://git@internal.git.example/org/x.git", None)).is_err(), "ssh:// repo url");
+        assert!(precheck(&mk("git:ssh://git@app.nonprod.example/org/x.git", None)).is_ok());
+        assert!(precheck(&mk("ssh://git@internal.git.example/org/x.git", None)).is_err());
+        assert!(precheck(&mk("https://github.com/org/x", None)).is_err(), "github is not in scope either");
+        assert!(precheck(&mk("git:https://internal.git.example\\@app.nonprod.example/x.git", None)).is_err(), "backslash authority");
+        assert!(precheck(&mk("git:ext::sh -c id", None)).is_err());
+        // a git host that looks like an ssh option never passes
+        assert!(precheck(&mk("git@-oProxyCommand=x:org/x.git", None)).is_err());
+        // web targets: backslash tricks resolve to the real (foreign) host
+        assert!(precheck(&mk("https://evil.example\\@app.nonprod.example/", None)).is_err());
+        assert!(precheck(&mk("https://app.nonprod.example/", Some("https://evil.example/openapi.json"))).is_err());
+        // a local spec file is confined to the allowed roots (it would be copied into the run)
+        assert!(precheck(&mk("https://app.nonprod.example/", Some("/etc/passwd"))).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Child half of `tool_children_cannot_touch_the_json_rpc_stream`: runs in a subprocess so
+    /// redirecting its fds cannot disturb the test harness.
+    #[test]
+    fn stdio_isolation_child() {
+        if std::env::var("RH_STDIO_CHILD").as_deref() != Ok("1") {
+            return;
+        }
+        let (rpc_in, mut rpc_out) = isolate_stdio().unwrap();
+        // a tool that prints to stdout and reads stdin, run the way every scanner child is
+        let o = std::process::Command::new("sh").args(["-c", "echo CHILD-LEAK; cat; echo cat-done >&2"]).status().unwrap();
+        assert!(o.success());
+        // our own channel still works and still sees the request that was sent to us
+        let line = std::io::BufReader::new(rpc_in).lines().next().unwrap().unwrap();
+        writeln!(rpc_out, "RPC-OUT {line}").unwrap();
+        rpc_out.flush().unwrap();
+        println!("STRAY-PRINTLN");
+    }
+
+    #[test]
+    fn tool_children_cannot_touch_the_json_rpc_stream() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+        let exe = std::env::current_exe().unwrap();
+        let mut child = Command::new(exe)
+            .args(["--exact", "mcp::tests::stdio_isolation_child", "--nocapture", "--test-threads=1"])
+            .env("RH_STDIO_CHILD", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n").unwrap();
+        let out = child.wait_with_output().unwrap();
+        let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success(), "child failed:\n{stdout}\n{stderr}");
+        assert!(stdout.contains("RPC-OUT {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"), "request line was swallowed or reply lost:\n{stdout}\n{stderr}");
+        assert!(!stdout.contains("CHILD-LEAK"), "a child wrote to the protocol stream:\n{stdout}");
+        assert!(!stdout.contains("STRAY-PRINTLN"), "println! reached the protocol stream:\n{stdout}");
+        assert!(stderr.contains("CHILD-LEAK") && stderr.contains("STRAY-PRINTLN") && stderr.contains("cat-done"), "{stderr}");
+    }
+
+    #[test]
+    fn spec_file_under_allowed_root_is_accepted() {
+        let dir = std::env::temp_dir().join(format!("rh-spec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let scope = dir.join("scope.toml");
+        std::fs::write(&scope, "[[hosts]]\nhost = \"app.nonprod.example\"\nenv = \"nonprod\"\n").unwrap();
+        let spec = dir.join("openapi.json");
+        std::fs::write(&spec, "{}").unwrap();
+        let opts = ScanOpts {
+            target: "https://app.nonprod.example/".into(),
+            openapi: Some(spec.to_string_lossy().into_owned()),
+            scope: Some(scope),
+            server: true,
+            allowed_roots: vec![dir.clone()],
+            ..Default::default()
+        };
+        assert!(precheck(&opts).is_ok());
+        let outside = ScanOpts { allowed_roots: vec![std::env::temp_dir().join("rh-no-such-root")], ..opts };
+        assert!(precheck(&outside).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

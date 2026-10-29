@@ -132,25 +132,72 @@ pub fn status_documented(op: &Op, status: u16) -> bool {
     op.responses.is_empty() || schema_for(op, status).is_some()
 }
 
-/// Returns the leak label if the body shows an internal error disclosure.
+/// HTML attribute values (`href="/home/x"`) are navigation, never an error disclosure.
+fn strip_attrs(body: &str) -> std::borrow::Cow<'_, str> {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r#"(?i)\b(?:href|src|action|data-[\w-]+)\s*=\s*(?:"[^"]*"|'[^']*')"#).unwrap()).replace_all(body, "")
+}
+
+/// Returns the leak label if the body shows an internal error disclosure. Callers only run it on
+/// error responses (status >= 400); the patterns still avoid prose and navigation links.
 pub fn leak_kind(body: &str) -> Option<&'static str> {
     static R: OnceLock<Vec<(&'static str, Regex)>> = OnceLock::new();
     let rs = R.get_or_init(|| {
         [
             ("python_traceback", r"Traceback \(most recent call last\)"),
-            ("python_file", r#"File "[^"]+\.py""#),
-            ("stack_frame", r"\bat [a-z][\w$]*\.[A-Za-z_$][\w$.]*\("),
+            ("python_file", r#"File "[^"]+\.py", line \d+"#),
+            // Java/Kotlin/Scala: at pkg.Class.method(File.java:12) | (Native Method) | (Unknown Source)
+            ("java_frame", r"\bat\s+[\w$.<>]+\((?:[\w$]+\.(?:java|kt|scala|groovy)(?::\d+)?|Native Method|Unknown Source)\)"),
+            // Node: at fn (/abs/path/file.js:10:5) | at async fn (file:///x.js:1:2)
+            ("node_frame", r"\bat\s+(?:async\s+)?[\w$.<>\[\] ]+\s\((?:/|file:|[A-Za-z]:\\)[^)\s]+:\d+:\d+\)"),
+            // .NET: at Ns.Class.Method(args) in C:\x\File.cs:line 12
+            ("dotnet_frame", r"\bat\s+[\w.<>]+\([^)]*\)\s+in\s+\S+:line\s+\d+"),
             ("sqlstate", r"SQLSTATE"),
-            ("oracle", r"ORA-\d+"),
-            ("java_thread", r"Exception in thread"),
-            ("stack_trace", r"(?i)stack ?trace"),
-            ("server_path", r"/home/|/usr/src/"),
+            ("oracle", r"ORA-\d{5}"),
+            ("java_thread", r#"Exception in thread ""#),
+            // a `stackTrace` / `stack_trace` JSON key, or a "Stack trace:" heading; not the words in prose
+            ("stack_trace", r#"(?i)"stack_?trace"\s*:|(?m)^\s*stack ?trace\s*:"#),
+            // absolute source paths of the server (not "/home/" nav links)
+            ("server_path", r#"(?:^|[\s"'(=:])(?:/home/[\w.-]+|/usr/src|/usr/local/lib|/var/www|/opt|/srv|/app|/workspace|/root)/[\w./@+-]*\.(?:py|rb|php|js|ts|java|go|rs|cs|kt|scala|jar)\b"#),
+            ("server_path", r"[A-Za-z]:\\(?:[\w .-]+\\)+[\w.-]+\.(?:py|cs|java|js|ts|rb|php)\b"),
         ]
         .iter()
         .map(|(k, p)| (*k, Regex::new(p).unwrap()))
         .collect()
     });
-    rs.iter().find(|(_, r)| r.is_match(body)).map(|x| x.0)
+    let body = strip_attrs(body);
+    rs.iter().find(|(_, r)| r.is_match(&body)).map(|x| x.0)
+}
+
+/// Short, volatile-free fingerprint of an error body for root-cause grouping: the first
+/// meaningful line (JSON `message`/`error`/`detail` when present), numbers/uuids normalised by
+/// the caller's signature function, at most 120 chars. Empty when the body says nothing.
+pub fn body_fingerprint(body: &str) -> String {
+    let t = body.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let mut text = t.to_string();
+    if let Ok(v) = serde_json::from_str::<Value>(t) {
+        for k in ["message", "error", "detail", "title", "exception", "msg", "error_description"] {
+            if let Some(m) = v.get(k).and_then(|x| x.as_str().map(String::from).or_else(|| x.get("message").and_then(|y| y.as_str()).map(String::from))) {
+                text = m;
+                break;
+            }
+        }
+    }
+    let stripped = strip_attrs(&text).into_owned();
+    let line = stripped
+        .lines()
+        .map(|l| l.trim())
+        .find(|l| !l.is_empty() && !l.starts_with('<') && !l.starts_with('{') && !l.starts_with('['))
+        .map(str::to_string)
+        .unwrap_or_else(|| stripped.split_whitespace().collect::<Vec<_>>().join(" "));
+    let mut out: String = line.chars().take(120).collect();
+    if let Some(l) = leak_kind(body) {
+        out = format!("[{l}] {out}");
+    }
+    out
 }
 
 fn response_fields(op: &Op, out: &mut BTreeSet<String>) {
@@ -252,6 +299,31 @@ mod tests {
         assert_eq!(leak_kind("Traceback (most recent call last):\n File \"/x/app.py\", line 3"), Some("python_traceback"));
         assert_eq!(leak_kind("ORA-00942: table"), Some("oracle"));
         assert_eq!(leak_kind("{\"error\":\"bad request\"}"), None);
+        assert_eq!(leak_kind("\tat com.acme.shop.OrderService.load(OrderService.java:42)"), Some("java_frame"));
+        assert_eq!(leak_kind("    at handler (/srv/app/server.js:10:5)"), Some("node_frame"));
+        assert_eq!(leak_kind("error in /home/deploy/app/main.py near x"), Some("server_path"));
+        assert_eq!(leak_kind("{\"stackTrace\": \"x\"}"), Some("stack_trace"));
+        assert_eq!(leak_kind("{\"stack_trace\": \"x\"}"), Some("stack_trace"));
+    }
+
+    #[test]
+    fn leak_ignores_navigation_and_prose() {
+        // a normal 404 page with nav links and the words "stack trace" in prose
+        let html = r#"<nav><a href="/home/index.js">Home</a> <a href="/usr/src/docs.py">Docs</a> <a href="/home/">h</a></nav>
+            <p>Look at example.com(now) for help; we never show a stack trace to users.</p>"#;
+        assert_eq!(leak_kind(html), None);
+        assert_eq!(leak_kind("Visit /home/ or /usr/src/ for more"), None);
+        assert_eq!(leak_kind("arrived at home.page(1)"), None);
+    }
+
+    #[test]
+    fn body_fingerprint_is_stable_and_specific() {
+        let a = body_fingerprint("{\"message\":\"relation \\\"orders\\\" does not exist\",\"code\":500}");
+        let b = body_fingerprint("{\"message\":\"division by zero\"}");
+        assert_ne!(a, b);
+        assert!(a.contains("relation"));
+        assert_eq!(body_fingerprint(""), "");
+        assert!(body_fingerprint("Traceback (most recent call last):\n  File \"/a/b.py\", line 3\nValueError: x").starts_with("[python_traceback]"));
     }
 
     #[test]

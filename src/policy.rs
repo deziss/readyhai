@@ -119,6 +119,13 @@ pub fn verdict(policy: &Policy, findings: &[Finding], checks: &[CheckResult]) ->
     if w > 0 {
         warn.push(format!("{w} {scope}finding(s) at or above {}", policy.warn_severity.as_str()));
     }
+    let no_docker = checks
+        .iter()
+        .filter(|c| matches!(&c.status, CheckStatus::Skipped(r) if r.contains("docker not available")))
+        .count();
+    if no_docker > 0 {
+        warn.push(format!("{no_docker} scanner check(s) did not run: docker not available"));
+    }
     for c in checks {
         match &c.status {
             CheckStatus::Errored(r) => warn.push(format!("check {} errored: {r}", c.id)),

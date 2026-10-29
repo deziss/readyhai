@@ -25,6 +25,21 @@ npm run build
 
 The frontend runs at `http://localhost:3000` and automatically proxies `/api/*` to the ReadyHai backend running on `http://127.0.0.1:8080`.
 
+## API Authentication
+
+Every backend `/api/*` route (everything except `/health`) requires `Authorization: Bearer <token>`.
+
+1. Open the UI and click **Set API token** (key icon in the header).
+2. Paste the backend bearer token and save. It is stored in this browser's `localStorage` (key `readyhai_api_token`) and attached to every request by `src/lib/api.ts`; if storage is blocked it is kept in memory for the session.
+3. After any `401`, a banner asks you to set (or replace) the token; the failing view recovers once a valid token is saved.
+
+Notes:
+
+- The Next.js `/api/*` proxy forwards the `Authorization` header to the backend unchanged; it holds no token of its own.
+- Report links (HTML / Markdown / SARIF / JSON / JUnit) cannot send headers from a plain `<a>` or `<iframe>`, so they are fetched with the token and opened or downloaded as blobs. HTML reports are shown in a sandboxed iframe.
+- Sign-off uses `POST /api/agent/runs/{id}/approve` and `/reject`. The approval state in the UI changes only after the backend confirms it.
+- The UI shows only values the backend reported. A missing verdict, score, pillar, requester IP or latency is rendered as "not evaluated" / "unknown" in a neutral style; a green GO only ever appears when the backend returned a `GO` verdict.
+
 ## Environment Configuration
 
 | Variable | Default | Purpose |

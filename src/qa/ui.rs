@@ -211,8 +211,9 @@ pub fn build(rep: &UiReport, env: &str, unmap: &dyn Fn(&str) -> String) -> Built
     let mut b = B { out: Built::default(), env, n: 0 };
     b.out.notes.extend(rep.notes.iter().cloned());
     let mut m = CoverageMatrix::default();
-    // a11y grouped per rule id: (impact, help, pages, nodes, first target)
-    let mut axe: std::collections::BTreeMap<String, (String, String, Vec<String>, u32, String)> = Default::default();
+    // a11y per (rule id, page path): (impact, help, page url, nodes, first target). One defect per
+    // item, so a NEW violation (or the same rule on a new page) is a new fingerprint and gates.
+    let mut axe: std::collections::BTreeMap<(String, String), (String, String, String, u32, String)> = Default::default();
 
     for p in &rep.pages {
         let url = unmap(&p.url);
@@ -252,8 +253,7 @@ pub fn build(rep: &UiReport, env: &str, unmap: &dyn Fn(&str) -> String) -> Built
             b.case(id.clone(), Technique::Exploratory, Priority::P2, "No axe-core accessibility violations".into(), url.clone(), None,
                 vec![format!("Open {url}"), "Run axe-core".into()], "No violations");
             for a in list {
-                let e = axe.entry(a.id.clone()).or_insert((a.impact.clone(), a.help.clone(), vec![], 0, a.target.clone()));
-                e.2.push(url.clone());
+                let e = axe.entry((a.id.clone(), path.clone())).or_insert((a.impact.clone(), a.help.clone(), url.clone(), 0, a.target.clone()));
                 e.3 += a.nodes;
             }
             m.set(&path, "a11y", if list.is_empty() { Cell::Pass } else { Cell::Fail });
@@ -298,49 +298,56 @@ pub fn build(rep: &UiReport, env: &str, unmap: &dyn Fn(&str) -> String) -> Built
             let mut evid: Vec<Evidence> = p.shots.iter().map(|s| ev(EvidenceKind::Screenshot, &s.file, &format!("{}px", s.viewport))).collect();
             if changed.is_empty() {
                 let has_base = p.shots.iter().any(|s| s.diff_ratio.is_some());
-                b.result(&id, None, if has_base { "matches baseline".into() } else { "no baseline yet; current shots stored as baseline".into() }, evid);
-                m.set(&path, "visual", Cell::Pass);
+                if has_base {
+                    b.result(&id, None, "matches baseline".into(), evid);
+                    m.set(&path, "visual", Cell::Pass);
+                } else {
+                    // nothing was compared: not a pass
+                    b.out.results.push(TestResult { case_id: id.clone(), status: ResultStatus::Skipped,
+                        actual: "no baseline yet; current shots stored as the baseline (nothing compared)".into(), duration_ms: 0, attempts: 1, evidence: evid, defect_id: None });
+                    m.set(&path, "visual", Cell::Untested);
+                }
             } else {
                 for s in &changed {
                     if let Some(df) = &s.diff_file {
                         evid.push(ev(EvidenceKind::Screenshot, df, &format!("diff {}px", s.viewport)));
                     }
                 }
-                let worst = changed.iter().map(|s| s.diff_ratio.unwrap_or(0.0)).fold(0.0, f64::max);
-                let i = b.defect("qa.ui.visual_change", Category::Quality, Severity::Low, format!("Visual change vs baseline ({:.1}% pixels)", worst * 100.0), url.clone(), format!("qa.ui.visual_change|{path}"));
-                let d = &mut b.out.defects[i];
-                d.expected = "Page unchanged vs approved baseline".into();
-                d.actual = format!("{:.1}% of pixels differ at {} px", worst * 100.0, changed.iter().map(|s| s.viewport.to_string()).collect::<Vec<_>>().join(", "));
-                d.steps_to_reproduce = vec![format!("Open {url}"), "Compare with the baseline screenshot (see evidence)".into()];
-                d.remediation = "Needs human review: if the change is intended, accept with `readyhai baseline accept`.".into();
-                d.evidence = evid.clone();
-                d.cases.push(id.clone());
-                let dd = d.clone();
-                b.result(&id, Some(&dd), dd.actual.clone(), evid);
+                // one defect per changed viewport (a new viewport regression is a new fingerprint)
+                let mut first: Option<Defect> = None;
+                for s in &changed {
+                    let ratio = s.diff_ratio.unwrap_or(0.0);
+                    let i = b.defect("qa.ui.visual_change", Category::Quality, Severity::Low, format!("Visual change vs baseline at {} px ({:.1}% pixels)", s.viewport, ratio * 100.0), url.clone(), format!("qa.ui.visual_change|{path}|{}", s.viewport));
+                    let d = &mut b.out.defects[i];
+                    d.expected = "Page unchanged vs approved baseline".into();
+                    d.actual = format!("{:.1}% of pixels differ at {} px", ratio * 100.0, s.viewport);
+                    d.steps_to_reproduce = vec![format!("Open {url}"), "Compare with the baseline screenshot (see evidence)".into()];
+                    d.remediation = "Needs human review: if the change is intended, accept with `readyhai baseline accept <run>`.".into();
+                    d.evidence = evid.clone();
+                    d.cases.push(id.clone());
+                    first.get_or_insert_with(|| d.clone());
+                }
+                let dd = first.expect("changed is non-empty");
+                b.result(&id, Some(&dd), changed.iter().map(|s| format!("{:.1}% at {}px", s.diff_ratio.unwrap_or(0.0) * 100.0, s.viewport)).collect::<Vec<_>>().join(", "), evid);
                 m.set(&path, "visual", Cell::Fail);
             }
         }
     }
 
-    // a11y defects (one per rule id)
-    for (rid, (impact, help, pages, nodes, target)) in &axe {
+    // a11y defects (one per rule id and page)
+    for ((rid, path), (impact, help, url, nodes, target)) in &axe {
         let sev = if matches!(impact.as_str(), "critical" | "serious") { Severity::Medium } else { Severity::Low };
-        let i = b.defect("qa.ui.a11y", Category::Quality, sev, format!("Accessibility: {help} ({rid}, {impact})"), pages[0].clone(), format!("qa.ui.a11y|{rid}"));
+        let i = b.defect("qa.ui.a11y", Category::Quality, sev, format!("Accessibility: {help} ({rid}, {impact}) on {path}"), url.clone(), format!("qa.ui.a11y|{rid}|{path}"));
         let d = &mut b.out.defects[i];
         d.expected = "WCAG-conformant markup (axe-core reports no violation)".into();
-        d.actual = format!("{nodes} element(s) on {} page(s); first: {target}", pages.len());
-        d.steps_to_reproduce = vec![format!("Open {}", pages[0]), format!("Run axe-core and look for rule `{rid}` at `{target}`")];
+        d.actual = format!("{nodes} element(s) on {path}; first: {target}");
+        d.steps_to_reproduce = vec![format!("Open {url}"), format!("Run axe-core and look for rule `{rid}` at `{target}`")];
         d.remediation = format!("Fix axe rule `{rid}`: https://dequeuniversity.com/rules/axe/4.10/{rid}");
-        for p in pages.iter() {
-            let path = rep.pages.iter().find(|x| unmap(&x.url) == *p).map(|x| x.path.clone()).unwrap_or_default();
-            let cid = format!("ui.{path}.a11y");
-            d.cases.push(cid);
-        }
+        let cid = format!("ui.{path}.a11y");
+        d.cases.push(cid.clone());
         let dd = d.clone();
-        for cid in &dd.cases {
-            if !b.out.results.iter().any(|r| &r.case_id == cid) {
-                b.result(cid, Some(&dd), format!("axe violation {rid} ({impact})"), vec![]);
-            }
+        if !b.out.results.iter().any(|r| r.case_id == cid) {
+            b.result(&cid, Some(&dd), format!("axe violation {rid} ({impact})"), vec![]);
         }
     }
 
@@ -462,6 +469,36 @@ fn copy_dir_pngs(from: &Path, to: &Path, skip_diff: bool) -> usize {
     n
 }
 
+/// Directory holding the accepted visual baseline PNGs of a target.
+pub fn visual_baseline_dir(data: &Path, target_key: &str) -> PathBuf {
+    data.join("baselines").join(target_key).join("visual")
+}
+
+/// Promote the screenshots of run `run_dir` (`artifacts/ui/shots/*.png`, diff images excluded) to
+/// the visual baseline, replacing the previous PNGs. Returns how many were promoted.
+pub fn accept_visual_baseline_in(data: &Path, target_key: &str, run_dir: &Path) -> Result<usize> {
+    let shots = run_dir.join("artifacts").join("ui").join("shots");
+    let has_png = std::fs::read_dir(&shots)
+        .map(|rd| rd.flatten().any(|e| { let n = e.file_name().to_string_lossy().to_string(); n.ends_with(".png") && !n.ends_with(".diff.png") }))
+        .unwrap_or(false);
+    if !has_png {
+        anyhow::bail!("run recorded no UI screenshots to promote");
+    }
+    let dst = visual_baseline_dir(data, target_key);
+    let _ = std::fs::remove_dir_all(&dst);
+    let n = copy_dir_pngs(&shots, &dst, true);
+    if n == 0 {
+        anyhow::bail!("could not copy the run's screenshots to {}", dst.display());
+    }
+    Ok(n)
+}
+
+/// `baseline accept <run>` hook for the visual baselines of that run.
+#[allow(dead_code)]
+pub fn accept_visual_baseline(target_key: &str, run_id: &str) -> Result<usize> {
+    accept_visual_baseline_in(&crate::engine::data_dir(), target_key, &crate::engine::run_dir(run_id))
+}
+
 fn set_mode(p: &Path, mode: u32) {
     #[cfg(unix)]
     {
@@ -534,7 +571,7 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
     }
 
     // Visual baselines.
-    let bdir = crate::engine::data_dir().join("baselines").join(crate::engine::target_key(&ctx.target)).join("visual");
+    let bdir = visual_baseline_dir(&crate::engine::data_dir(), &crate::engine::target_key(&ctx.target));
     let have_baseline = copy_dir_pngs(&bdir, &out.join("visual-baseline"), false) > 0;
     let _ = std::fs::remove_dir_all(out.join("shots"));
 
@@ -594,7 +631,7 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
     if !have_baseline && rep.pages.iter().any(|p| !p.shots.is_empty()) {
         let n = copy_dir_pngs(&out.join("shots"), &bdir, true);
         if n > 0 {
-            built.notes.push(format!("UI visual: no baseline existed, stored {n} screenshot(s) as the baseline ({}). Next run compares against them.", bdir.display()));
+            built.notes.push(format!("UI visual: no baseline existed, stored {n} screenshot(s) as the baseline ({}). Next run compares against them; promote a later run with `readyhai baseline accept <run>`.", bdir.display()));
         }
     }
     if !modes.contains(&"forms") {
@@ -651,6 +688,56 @@ mod tests {
         assert_eq!(cell("login", "admin"), Cell::Pass);
         assert_eq!(cell("/signup.html", "forms"), Cell::Fail);
         assert!(j.component == "login");
+    }
+
+    #[test]
+    fn a11y_and_visual_are_per_item() {
+        let page = |u: &str, p: &str, axe: &str, shots: &str| format!(r#"{{"url":"http://x{u}","path":"{p}","axe":[{axe}],"shots":[{shots}]}}"#);
+        let violation = |id: &str| format!(r##"{{"id":"{id}","impact":"serious","help":"h","nodes":2,"target":"#t"}}"##);
+        let shot = |vp: u32, ratio: f64| format!(r#"{{"viewport":{vp},"file":"shots/{vp}.png","diff_ratio":{ratio}}}"#);
+        let json = format!(r#"{{"pages":[{},{}]}}"#,
+            page("/a", "/a", &format!("{},{}", violation("image-alt"), violation("label")), &format!("{},{},{}", shot(375, 0.2), shot(768, 0.3), shot(1366, 0.0))),
+            page("/b", "/b", &violation("image-alt"), ""));
+        let rep: UiReport = serde_json::from_str(&json).unwrap();
+        let b = build(&rep, "nonprod", &|s| s.to_string());
+        let a11y: Vec<&Defect> = b.defects.iter().filter(|d| d.rule == "qa.ui.a11y").collect();
+        // same rule on two pages + a second rule on one page: three distinct fingerprints
+        assert_eq!(a11y.len(), 3);
+        let fps: std::collections::BTreeSet<&str> = a11y.iter().map(|d| d.fp_key.as_str()).collect();
+        assert_eq!(fps.len(), 3);
+        assert!(fps.contains("qa.ui.a11y|image-alt|/a") && fps.contains("qa.ui.a11y|image-alt|/b") && fps.contains("qa.ui.a11y|label|/a"));
+        // two changed viewports of one page: two fingerprints
+        let vis: Vec<&str> = b.defects.iter().filter(|d| d.rule == "qa.ui.visual_change").map(|d| d.fp_key.as_str()).collect();
+        assert_eq!(vis, vec!["qa.ui.visual_change|/a|375", "qa.ui.visual_change|/a|768"]);
+    }
+
+    #[test]
+    fn first_visual_run_compares_nothing_so_is_not_a_pass() {
+        let rep: UiReport = serde_json::from_str(r#"{"pages":[{"url":"http://x/","path":"/","shots":[{"viewport":375,"file":"shots/375.png"}]}]}"#).unwrap();
+        let b = build(&rep, "nonprod", &|s| s.to_string());
+        let r = b.results.iter().find(|r| r.case_id == "ui./.visual").unwrap();
+        assert_eq!(r.status, ResultStatus::Skipped);
+        let m = &b.coverage;
+        let (ri, ci) = (m.rows.iter().position(|x| x == "/").unwrap(), m.columns.iter().position(|x| x == "visual").unwrap());
+        assert_eq!(m.cells.iter().find(|x| x.0 == ri && x.1 == ci).unwrap().2, Cell::Untested);
+    }
+
+    #[test]
+    fn accept_visual_promotes_run_shots() {
+        let d = std::env::temp_dir().join(format!("rh-vis-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let run = d.join("runs/r1");
+        let shots = run.join("artifacts/ui/shots");
+        std::fs::create_dir_all(&shots).unwrap();
+        std::fs::write(shots.join("a.png"), b"png").unwrap();
+        std::fs::write(shots.join("a.diff.png"), b"diff").unwrap();
+        let old = visual_baseline_dir(&d, "k");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("stale.png"), b"old").unwrap();
+        assert_eq!(accept_visual_baseline_in(&d, "k", &run).unwrap(), 1);
+        assert!(old.join("a.png").is_file() && !old.join("a.diff.png").exists() && !old.join("stale.png").exists());
+        assert!(accept_visual_baseline_in(&d, "k", &d.join("runs/none")).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
