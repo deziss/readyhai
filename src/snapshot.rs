@@ -32,30 +32,79 @@ pub struct Snapshot {
 
 const MAX_FILE: u64 = 20 * 1024 * 1024;
 const SKIP_DIRS: &[&str] = &[
-    ".git", "node_modules", ".venv", "venv", "__pycache__", "target", ".tox", ".mypy_cache",
-    ".pytest_cache", "dist", ".next", ".cache", ".gradle", ".idea", ".readyhai",
+    ".git",
+    "node_modules",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "target",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "dist",
+    ".next",
+    ".cache",
+    ".gradle",
+    ".idea",
+    ".readyhai",
 ];
 
 /// Basename / path globs that are secret-bearing. Matched case-insensitively.
 const DENY: &[&str] = &[
-    "**/.env", "**/.env.*", "**/*.env", "**/*secret*.yaml", "**/*secret*.yml", "**/*secrets*.json",
-    "**/*.pem", "**/*.key", "**/*.p12", "**/*.pfx", "**/*.jks", "**/*.keystore", "**/*.csr",
-    "**/id_rsa*", "**/id_ed25519*", "**/id_ecdsa*", "**/id_dsa*",
-    "**/creds*.{md,txt,json,yaml,yml,csv,ini,conf,cfg,toml,xml}", "**/creds",
+    "**/.env",
+    "**/.env.*",
+    "**/*.env",
+    "**/*secret*.yaml",
+    "**/*secret*.yml",
+    "**/*secrets*.json",
+    "**/*.pem",
+    "**/*.key",
+    "**/*.p12",
+    "**/*.pfx",
+    "**/*.jks",
+    "**/*.keystore",
+    "**/*.csr",
+    "**/id_rsa*",
+    "**/id_ed25519*",
+    "**/id_ecdsa*",
+    "**/id_dsa*",
+    "**/creds*.{md,txt,json,yaml,yml,csv,ini,conf,cfg,toml,xml}",
+    "**/creds",
     "**/*credential*.{md,txt,json,yaml,yml,csv,ini,conf,cfg,toml,xml}",
-    "**/.npmrc", "**/.pypirc", "**/.netrc", "**/.htpasswd", "**/.dockercfg", "**/.docker/config.json",
-    "**/*password*.{txt,json,yaml,yml,csv,ini,conf,cfg,toml}", "**/*token*.json", "**/robot$*.json", "**/*.tfstate", "**/*.tfstate.*",
-    "**/*.kdbx", "**/backups/env_backup*",
+    "**/.npmrc",
+    "**/.pypirc",
+    "**/.netrc",
+    "**/.htpasswd",
+    "**/.dockercfg",
+    "**/.docker/config.json",
+    "**/*password*.{txt,json,yaml,yml,csv,ini,conf,cfg,toml}",
+    "**/*token*.json",
+    "**/robot$*.json",
+    "**/*.tfstate",
+    "**/*.tfstate.*",
+    "**/*.kdbx",
+    "**/backups/env_backup*",
 ];
 /// Example/template files are safe and useful (they show expected config).
 const ALLOW: &[&str] = &[
-    "**/*.example", "**/*.sample", "**/*.template", "**/*.dist", "**/*_example", "**/*.example.*",
-    "**/.env.example*", "**/.env.sample*", "**/.env.template*",
+    "**/*.example",
+    "**/*.sample",
+    "**/*.template",
+    "**/*.dist",
+    "**/*_example",
+    "**/*.example.*",
+    "**/.env.example*",
+    "**/.env.sample*",
+    "**/.env.template*",
 ];
 
 fn globset(pats: &[&str], extra: &[String]) -> Result<GlobSet> {
     let mut b = GlobSetBuilder::new();
-    for p in pats.iter().map(|s| s.to_string()).chain(extra.iter().cloned()) {
+    for p in pats
+        .iter()
+        .map(|s| s.to_string())
+        .chain(extra.iter().cloned())
+    {
         b.add(Glob::new(&p.to_lowercase())?);
     }
     Ok(b.build()?)
@@ -68,7 +117,10 @@ pub struct Denylist {
 
 impl Denylist {
     pub fn new(extra: &[String]) -> Result<Self> {
-        Ok(Denylist { deny: globset(DENY, extra)?, allow: globset(ALLOW, &[])? })
+        Ok(Denylist {
+            deny: globset(DENY, extra)?,
+            allow: globset(ALLOW, &[])?,
+        })
     }
     pub fn is_denied(&self, rel: &str) -> bool {
         let l = rel.to_lowercase();
@@ -91,7 +143,11 @@ fn git_tracked(repo: &Path, prefix: &str, out: &mut BTreeSet<String>) {
     }
     for p in o.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
         let p = String::from_utf8_lossy(p);
-        out.insert(if prefix.is_empty() { p.to_string() } else { format!("{prefix}/{p}") });
+        out.insert(if prefix.is_empty() {
+            p.to_string()
+        } else {
+            format!("{prefix}/{p}")
+        });
     }
 }
 
@@ -107,12 +163,22 @@ fn inside_work_tree(dir: &Path) -> bool {
 }
 
 pub fn rel(root: &Path, p: &Path) -> String {
-    p.strip_prefix(root).unwrap_or(p).to_string_lossy().replace('\\', "/")
+    p.strip_prefix(root)
+        .unwrap_or(p)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 /// Copy `src` into `dest` (created, must not exist or be empty).
-pub fn take(src: &Path, dest: &Path, extra_deny: &[String], extra_skip: &[String]) -> Result<Snapshot> {
-    let src = src.canonicalize().with_context(|| format!("target {}", src.display()))?;
+pub fn take(
+    src: &Path,
+    dest: &Path,
+    extra_deny: &[String],
+    extra_skip: &[String],
+) -> Result<Snapshot> {
+    let src = src
+        .canonicalize()
+        .with_context(|| format!("target {}", src.display()))?;
     let deny = Denylist::new(extra_deny)?;
     fs::create_dir_all(dest)?;
     let mut snap = Snapshot {
@@ -126,9 +192,12 @@ pub fn take(src: &Path, dest: &Path, extra_deny: &[String], extra_skip: &[String
     };
     let skip = |name: &str| SKIP_DIRS.contains(&name) || extra_skip.iter().any(|s| s == name);
 
-    let walker = WalkDir::new(&src).follow_links(false).into_iter().filter_entry(|e| {
-        e.depth() == 0 || !(e.file_type().is_dir() && skip(&e.file_name().to_string_lossy()))
-    });
+    let walker = WalkDir::new(&src)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            e.depth() == 0 || !(e.file_type().is_dir() && skip(&e.file_name().to_string_lossy()))
+        });
     for entry in walker {
         let entry = match entry {
             Ok(e) => e,
@@ -141,7 +210,8 @@ pub fn take(src: &Path, dest: &Path, extra_deny: &[String], extra_skip: &[String
             let parent_repo = r.is_empty() && !path.join(".git").exists() && inside_work_tree(path);
             if path.join(".git").exists() || parent_repo {
                 git_tracked(path, &r, &mut snap.tracked);
-                snap.git_repos.push(if r.is_empty() { ".".into() } else { r.clone() });
+                snap.git_repos
+                    .push(if r.is_empty() { ".".into() } else { r.clone() });
             }
             if !r.is_empty() {
                 fs::create_dir_all(dest.join(&r))?;
@@ -159,7 +229,10 @@ pub fn take(src: &Path, dest: &Path, extra_deny: &[String], extra_skip: &[String
         if deny.is_denied(&r) {
             // Never open: placeholder only.
             fs::write(&target, b"")?;
-            snap.denied.push(DeniedFile { path: r.clone(), tracked: false });
+            snap.denied.push(DeniedFile {
+                path: r.clone(),
+                tracked: false,
+            });
             snap.files.push(r);
             continue;
         }
@@ -199,11 +272,27 @@ mod tests {
     #[test]
     fn denylist() {
         let d = Denylist::new(&[]).unwrap();
-        for p in [".env", "a/.env.prod", "k8s/secret.yaml", "x/id_rsa", "certs/tls.key", "creds.md", "app/prod.env"] {
+        for p in [
+            ".env",
+            "a/.env.prod",
+            "k8s/secret.yaml",
+            "x/id_rsa",
+            "certs/tls.key",
+            "creds.md",
+            "app/prod.env",
+        ] {
             assert!(d.is_denied(p), "{p} should be denied");
         }
-        for p in [".env.example", "app/.env_example", "src/main.py", "README.md", "k8s/deployment.yaml",
-            "templates/reset_password.html", "app/credentials_service.py", "creds_helper.py"] {
+        for p in [
+            ".env.example",
+            "app/.env_example",
+            "src/main.py",
+            "README.md",
+            "k8s/deployment.yaml",
+            "templates/reset_password.html",
+            "app/credentials_service.py",
+            "creds_helper.py",
+        ] {
             assert!(!d.is_denied(p), "{p} should be allowed");
         }
     }

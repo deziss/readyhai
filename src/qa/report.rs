@@ -2,9 +2,9 @@
 //! bug-tracker / test-management exports. Everything is derived from `run.qa`.
 use crate::model::*;
 use crate::qa::model::*;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use minijinja::{AutoEscape, Environment};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
 pub const QA_FORMATS: &[&str] = &["qa", "pdf", "md", "jira", "gitlab", "testrail", "xray"];
@@ -45,11 +45,21 @@ fn b64(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut o = String::with_capacity(data.len() * 4 / 3 + 4);
     for c in data.chunks(3) {
-        let n = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | *c.get(2).unwrap_or(&0) as u32;
+        let n = (c[0] as u32) << 16
+            | (*c.get(1).unwrap_or(&0) as u32) << 8
+            | *c.get(2).unwrap_or(&0) as u32;
         o.push(T[(n >> 18) as usize & 63] as char);
         o.push(T[(n >> 12) as usize & 63] as char);
-        o.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        o.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        o.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        o.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     o
 }
@@ -81,11 +91,24 @@ pub fn csv_field(s: &str) -> String {
 /// images / raw HTML / tables / headings / list markers, and no @mention pings. Defect text comes
 /// from spec and page sources, so nothing in it may become markup.
 pub fn md_inline(s: &str) -> String {
-    let one: String = s.chars().map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c }).collect();
+    let one: String = s
+        .chars()
+        .map(|c| {
+            if matches!(c, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
     let chars: Vec<char> = one.trim().chars().collect();
     let mut o = String::with_capacity(chars.len() + 8);
     for (i, &c) in chars.iter().enumerate() {
-        let alnum = |j: Option<usize>| j.and_then(|j| chars.get(j)).map(|x| x.is_alphanumeric()).unwrap_or(false);
+        let alnum = |j: Option<usize>| {
+            j.and_then(|j| chars.get(j))
+                .map(|x| x.is_alphanumeric())
+                .unwrap_or(false)
+        };
         match c {
             '\\' | '`' | '*' | '[' | ']' | '<' | '>' | '|' | '~' => {
                 o.push('\\');
@@ -105,10 +128,11 @@ pub fn md_inline(s: &str) -> String {
         }
     }
     // "1. text" at the start would become an ordered list
-    if let Some(d) = o.find(|c: char| !c.is_ascii_digit()) {
-        if d > 0 && o[d..].starts_with(['.', ')']) {
-            o.insert(d, '\\');
-        }
+    if let Some(d) = o.find(|c: char| !c.is_ascii_digit())
+        && d > 0
+        && o[d..].starts_with(['.', ')'])
+    {
+        o.insert(d, '\\');
     }
     o
 }
@@ -137,13 +161,25 @@ pub fn md_fence(body: &str, lang: &str) -> String {
 
 /// Escape text for Jira wiki markup (inline).
 pub fn jira_text(s: &str) -> String {
-    let one: String = s.chars().map(|c| if matches!(c, '\n' | '\r' | '\t') { ' ' } else { c }).collect();
+    let one: String = s
+        .chars()
+        .map(|c| {
+            if matches!(c, '\n' | '\r' | '\t') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
     let t = one.trim();
     let chars: Vec<char> = t.chars().collect();
     let mut o = String::with_capacity(t.len() + 8);
     for (i, &c) in chars.iter().enumerate() {
         let prev_ws = i == 0 || chars[i - 1].is_whitespace();
-        let next_nonws = chars.get(i + 1).map(|n| !n.is_whitespace()).unwrap_or(false);
+        let next_nonws = chars
+            .get(i + 1)
+            .map(|n| !n.is_whitespace())
+            .unwrap_or(false);
         match c {
             '\\' | '{' | '}' | '[' | ']' | '|' | '*' | '_' | '^' | '~' => {
                 o.push('\\');
@@ -159,7 +195,10 @@ pub fn jira_text(s: &str) -> String {
     }
     // headings / block quotes must start a line
     let lower = o.to_ascii_lowercase();
-    let heading = lower.len() > 2 && lower.starts_with('h') && lower.as_bytes()[1].is_ascii_digit() && lower[2..].starts_with('.');
+    let heading = lower.len() > 2
+        && lower.starts_with('h')
+        && lower.as_bytes()[1].is_ascii_digit()
+        && lower[2..].starts_with('.');
     if heading || lower.starts_with("bq.") {
         o.insert(0, ' ');
     }
@@ -180,14 +219,23 @@ pub fn jira_code(s: &str) -> String {
 }
 
 fn csv_row(fields: &[String]) -> String {
-    let mut l = fields.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
+    let mut l = fields
+        .iter()
+        .map(|f| csv_field(f))
+        .collect::<Vec<_>>()
+        .join(",");
     l.push_str("\r\n");
     l
 }
 
 fn defects_sorted(q: &QaReport) -> Vec<&Defect> {
     let mut d: Vec<&Defect> = q.defects.iter().collect();
-    d.sort_by(|a, b| a.priority.cmp(&b.priority).then(b.severity.cmp(&a.severity)).then(a.id.cmp(&b.id)));
+    d.sort_by(|a, b| {
+        a.priority
+            .cmp(&b.priority)
+            .then(b.severity.cmp(&a.severity))
+            .then(a.id.cmp(&b.id))
+    });
     d
 }
 
@@ -201,29 +249,58 @@ struct EvOut {
 
 fn safe_rel(p: &str) -> Option<PathBuf> {
     let pb = Path::new(p);
-    if p.is_empty() || pb.is_absolute() || pb.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+    if p.is_empty()
+        || pb.is_absolute()
+        || pb
+            .components()
+            .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    {
         return None;
     }
     Some(pb.to_path_buf())
 }
 
 fn stage_evidence(run_dir: &Path, out: Option<&Path>, ev: &Evidence, n: usize) -> EvOut {
-    let (Some(out), Some(rel)) = (out, safe_rel(&ev.path)) else { return EvOut { link: None, data_uri: None } };
-    let src = [run_dir.join("artifacts").join(&rel), run_dir.join(&rel)].into_iter().find(|p| p.is_file());
-    let Some(src) = src else { return EvOut { link: None, data_uri: None } };
+    let (Some(out), Some(rel)) = (out, safe_rel(&ev.path)) else {
+        return EvOut {
+            link: None,
+            data_uri: None,
+        };
+    };
+    let src = [run_dir.join("artifacts").join(&rel), run_dir.join(&rel)]
+        .into_iter()
+        .find(|p| p.is_file());
+    let Some(src) = src else {
+        return EvOut {
+            link: None,
+            data_uri: None,
+        };
+    };
     let base: String = src
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_default()
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let name = format!("{n:03}-{base}");
     let dir = out.join("evidence");
     if std::fs::create_dir_all(&dir).is_err() || std::fs::copy(&src, dir.join(&name)).is_err() {
-        return EvOut { link: None, data_uri: None };
+        return EvOut {
+            link: None,
+            data_uri: None,
+        };
     }
-    let ext = src.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let ext = src
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
     let mime = match ext.as_str() {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
@@ -238,13 +315,17 @@ fn stage_evidence(run_dir: &Path, out: Option<&Path>, ev: &Evidence, n: usize) -
             .map(|b| format!("data:{m};base64,{}", b64(&b))),
         _ => None,
     };
-    EvOut { link: Some(format!("evidence/{name}")), data_uri }
+    EvOut {
+        link: Some(format!("evidence/{name}")),
+        data_uri,
+    }
 }
 
 // --------------------------------------------------------------------- HTML
 
 fn bar(counts: &ResultCounts) -> Vec<Value> {
-    let total = (counts.passed + counts.failed + counts.blocked + counts.skipped + counts.flaky).max(1) as f64;
+    let total = (counts.passed + counts.failed + counts.blocked + counts.skipped + counts.flaky)
+        .max(1) as f64;
     let mut x = 0.0;
     let mut v = vec![];
     for (label, n, cls) in [
@@ -288,7 +369,10 @@ pub fn qa_html(run: &Run, out: Option<&Path>) -> Result<String> {
     let q = run.qa.as_ref().ok_or_else(|| anyhow!("not a QA run"))?;
     let mut env = Environment::new();
     env.set_auto_escape_callback(|_| AutoEscape::Html);
-    env.add_template("qa-report.html.j2", include_str!("../../templates/qa-report.html.j2"))?;
+    env.add_template(
+        "qa-report.html.j2",
+        include_str!("../../templates/qa-report.html.j2"),
+    )?;
     let run_dir = crate::engine::run_dir(&run.id);
     let mut n = 0usize;
     let defects: Vec<Value> = defects_sorted(q)
@@ -351,7 +435,11 @@ pub fn qa_html(run: &Run, out: Option<&Path>) -> Result<String> {
 
 fn looks_like_code(s: &str) -> bool {
     let t = s.trim_start();
-    t.starts_with("curl") || t.starts_with("npx") || t.starts_with("await ") || t.contains('\n') || t.starts_with("$ ")
+    t.starts_with("curl")
+        || t.starts_with("npx")
+        || t.starts_with("await ")
+        || t.contains('\n')
+        || t.starts_with("$ ")
 }
 
 fn status_label(s: FindingStatus) -> &'static str {
@@ -372,14 +460,29 @@ fn md_cell(s: &str) -> String {
 pub fn markdown(run: &Run) -> Result<String> {
     let q = run.qa.as_ref().ok_or_else(|| anyhow!("not a QA run"))?;
     let (rec, _) = rec_text(q.recommendation);
-    let mut m = format!("# QA test summary report\n\n**Target:** {}  \n**Environment:** {}  \n**Run:** {} ({})  \n**ReadyHai:** {} · mode {} · profile {}\n\n", md_inline(&run.target.raw), md_inline(&q.environment), md_inline(&run.id), md_inline(&run.started), md_inline(&run.version), md_inline(&q.mode), lc(&run.profile));
+    let mut m = format!(
+        "# QA test summary report\n\n**Target:** {}  \n**Environment:** {}  \n**Run:** {} ({})  \n**ReadyHai:** {} · mode {} · profile {}\n\n",
+        md_inline(&run.target.raw),
+        md_inline(&q.environment),
+        md_inline(&run.id),
+        md_inline(&run.started),
+        md_inline(&run.version),
+        md_inline(&q.mode),
+        lc(&run.profile)
+    );
     m.push_str(&format!("## Recommendation: {rec}\n\n"));
     for c in &q.conditions {
         m.push_str(&format!("- {}\n", md_inline(c)));
     }
-    m.push_str(&format!("\n## Executive summary\n\n{}\n\n", md_lines(&q.executive_summary)));
+    m.push_str(&format!(
+        "\n## Executive summary\n\n{}\n\n",
+        md_lines(&q.executive_summary)
+    ));
     if let Some(a) = &q.ai_summary {
-        m.push_str(&format!("> AI-written summary (advisory): {}\n\n", a.lines().map(md_inline).collect::<Vec<_>>().join("\n> ")));
+        m.push_str(&format!(
+            "> AI-written summary (advisory): {}\n\n",
+            a.lines().map(md_inline).collect::<Vec<_>>().join("\n> ")
+        ));
     }
     let c = &q.counts;
     m.push_str(&format!("## Results\n\n| Planned | Executed | Passed | Failed | Blocked | Skipped | Flaky |\n|---|---|---|---|---|---|---|\n| {} | {} | {} | {} | {} | {} | {} |\n\n", c.planned, c.executed, c.passed, c.failed, c.blocked, c.skipped, c.flaky));
@@ -388,12 +491,27 @@ pub fn markdown(run: &Run) -> Result<String> {
     if !ds.is_empty() {
         m.push_str("| ID | Priority | Severity | Component | Title | Status |\n|---|---|---|---|---|---|\n");
         for d in &ds {
-            m.push_str(&format!("| {} | {} | {} | {} | {} | {} |\n", md_cell(&d.id), prio_str(d.priority), d.severity.as_str(), md_cell(&d.component), md_cell(&d.title), status_label(d.status)));
+            m.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} |\n",
+                md_cell(&d.id),
+                prio_str(d.priority),
+                d.severity.as_str(),
+                md_cell(&d.component),
+                md_cell(&d.title),
+                status_label(d.status)
+            ));
         }
         m.push('\n');
     }
     for d in &ds {
-        m.push_str(&format!("### {} {}\n\n{} · {} · {}\n\n", md_inline(&d.id), md_inline(&d.title), prio_str(d.priority), d.severity.as_str(), md_inline(&d.component)));
+        m.push_str(&format!(
+            "### {} {}\n\n{} · {} · {}\n\n",
+            md_inline(&d.id),
+            md_inline(&d.title),
+            prio_str(d.priority),
+            d.severity.as_str(),
+            md_inline(&d.component)
+        ));
         m.push_str("**Steps to reproduce**\n\n");
         for (i, s) in d.steps_to_reproduce.iter().enumerate() {
             if looks_like_code(s) {
@@ -402,14 +520,27 @@ pub fn markdown(run: &Run) -> Result<String> {
                 m.push_str(&format!("{}. {}\n", i + 1, md_inline(s)));
             }
         }
-        m.push_str(&format!("\n**Expected:** {}\n\n**Actual:** {}\n\n", md_lines(&d.expected), md_lines(&d.actual)));
+        m.push_str(&format!(
+            "\n**Expected:** {}\n\n**Actual:** {}\n\n",
+            md_lines(&d.expected),
+            md_lines(&d.actual)
+        ));
         if !d.remediation.is_empty() {
-            m.push_str(&format!("**Remediation:** {}\n\n", md_lines(&d.remediation)));
+            m.push_str(&format!(
+                "**Remediation:** {}\n\n",
+                md_lines(&d.remediation)
+            ));
         }
     }
     m.push_str("## Exit criteria\n\n| Criterion | Met | Blocking | Detail |\n|---|---|---|---|\n");
     for e in &q.exit_criteria {
-        m.push_str(&format!("| {} | {} | {} | {} |\n", md_cell(&e.name), if e.met { "yes" } else { "NO" }, if e.blocking { "yes" } else { "no" }, md_cell(&e.detail)));
+        m.push_str(&format!(
+            "| {} | {} | {} | {} |\n",
+            md_cell(&e.name),
+            if e.met { "yes" } else { "NO" },
+            if e.blocking { "yes" } else { "no" },
+            md_cell(&e.detail)
+        ));
     }
     if !q.notes.is_empty() {
         m.push_str("\n## Notes\n\n");
@@ -417,7 +548,10 @@ pub fn markdown(run: &Run) -> Result<String> {
             m.push_str(&format!("- {}\n", md_cell(n)));
         }
     }
-    m.push_str(&format!("\n---\nGenerated by ReadyHai {}.\n", md_inline(&run.version)));
+    m.push_str(&format!(
+        "\n---\nGenerated by ReadyHai {}.\n",
+        md_inline(&run.version)
+    ));
     Ok(m)
 }
 
@@ -432,27 +566,55 @@ fn jira_description(d: &Defect) -> String {
             s.push_str(&format!("# {}\n", jira_text(st)));
         }
     }
-    s.push_str(&format!("*Expected*: {}\n*Actual*: {}\n", jira_text(&d.expected), jira_text(&d.actual)));
+    s.push_str(&format!(
+        "*Expected*: {}\n*Actual*: {}\n",
+        jira_text(&d.expected),
+        jira_text(&d.actual)
+    ));
     if !d.remediation.is_empty() {
         s.push_str(&format!("*Remediation*: {}\n", jira_text(&d.remediation)));
     }
-    s.push_str(&format!("*Severity*: {} | *Rule*: {} | *Environment*: {}\n", d.severity.as_str(), jira_text(&d.rule), jira_text(&d.environment)));
+    s.push_str(&format!(
+        "*Severity*: {} | *Rule*: {} | *Environment*: {}\n",
+        d.severity.as_str(),
+        jira_text(&d.rule),
+        jira_text(&d.environment)
+    ));
     s
 }
 
 pub fn jira_csv(q: &QaReport) -> String {
-    let mut o = csv_row(&["Summary", "Issue Type", "Priority", "Labels", "Component", "Description"].map(String::from));
+    let mut o = csv_row(
+        &[
+            "Summary",
+            "Issue Type",
+            "Priority",
+            "Labels",
+            "Component",
+            "Description",
+        ]
+        .map(String::from),
+    );
     for d in defects_sorted(q) {
         o.push_str(&csv_row(&[
-            d.title.clone(), "Bug".into(), jira_priority(d.priority).into(),
-            format!("readyhai qa-{}", lc(&d.area)), d.component.clone(), jira_description(d),
+            d.title.clone(),
+            "Bug".into(),
+            jira_priority(d.priority).into(),
+            format!("readyhai qa-{}", lc(&d.area)),
+            d.component.clone(),
+            jira_description(d),
         ]));
     }
     o
 }
 
 fn md_description(d: &Defect) -> String {
-    let mut s = format!("**Severity:** {} · **Priority:** {} · **Component:** {}\n\n### Steps to reproduce\n", d.severity.as_str(), prio_str(d.priority), md_inline(&d.component));
+    let mut s = format!(
+        "**Severity:** {} · **Priority:** {} · **Component:** {}\n\n### Steps to reproduce\n",
+        d.severity.as_str(),
+        prio_str(d.priority),
+        md_inline(&d.component)
+    );
     let mut n = 0;
     for st in &d.steps_to_reproduce {
         if looks_like_code(st) {
@@ -462,9 +624,16 @@ fn md_description(d: &Defect) -> String {
             s.push_str(&format!("{n}. {}\n", md_inline(st)));
         }
     }
-    s.push_str(&format!("\n**Expected:** {}\n\n**Actual:** {}\n", md_lines(&d.expected), md_lines(&d.actual)));
+    s.push_str(&format!(
+        "\n**Expected:** {}\n\n**Actual:** {}\n",
+        md_lines(&d.expected),
+        md_lines(&d.actual)
+    ));
     if !d.remediation.is_empty() {
-        s.push_str(&format!("\n**Remediation:** {}\n", md_lines(&d.remediation)));
+        s.push_str(&format!(
+            "\n**Remediation:** {}\n",
+            md_lines(&d.remediation)
+        ));
     }
     s
 }
@@ -484,28 +653,69 @@ pub fn gitlab_json(q: &QaReport) -> Value {
 }
 
 pub fn testrail_csv(q: &QaReport) -> String {
-    let mut o = csv_row(&["Title", "Section", "Type", "Priority", "Preconditions", "Steps", "Expected Result"].map(String::from));
+    let mut o = csv_row(
+        &[
+            "Title",
+            "Section",
+            "Type",
+            "Priority",
+            "Preconditions",
+            "Steps",
+            "Expected Result",
+        ]
+        .map(String::from),
+    );
     for c in &q.cases {
-        let steps = c.steps.iter().enumerate().map(|(i, s)| format!("{}. {s}", i + 1)).collect::<Vec<_>>().join("\n");
-        let pre = c.role.as_ref().map(|r| format!("Role: {r}")).unwrap_or_default();
+        let steps = c
+            .steps
+            .iter()
+            .enumerate()
+            .map(|(i, s)| format!("{}. {s}", i + 1))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pre = c
+            .role
+            .as_ref()
+            .map(|r| format!("Role: {r}"))
+            .unwrap_or_default();
         o.push_str(&csv_row(&[
-            c.title.clone(), lc(&c.area), lc(&c.technique), prio_str(c.priority).into(), pre, steps, c.expected.clone(),
+            c.title.clone(),
+            lc(&c.area),
+            lc(&c.technique),
+            prio_str(c.priority).into(),
+            pre,
+            steps,
+            c.expected.clone(),
         ]));
     }
     o
 }
 
 pub fn xray_csv(q: &QaReport) -> String {
-    let mut o = csv_row(&["Test Summary", "Test Type", "Action", "Data", "Result"].map(String::from));
+    let mut o =
+        csv_row(&["Test Summary", "Test Type", "Action", "Data", "Result"].map(String::from));
     for c in &q.cases {
         if c.steps.is_empty() {
-            o.push_str(&csv_row(&[c.title.clone(), "Manual".into(), String::new(), String::new(), c.expected.clone()]));
+            o.push_str(&csv_row(&[
+                c.title.clone(),
+                "Manual".into(),
+                String::new(),
+                String::new(),
+                c.expected.clone(),
+            ]));
         }
         for (i, s) in c.steps.iter().enumerate() {
             let last = i + 1 == c.steps.len();
             o.push_str(&csv_row(&[
-                c.title.clone(), "Manual".into(), s.clone(), c.component.clone(),
-                if last { c.expected.clone() } else { String::new() },
+                c.title.clone(),
+                "Manual".into(),
+                s.clone(),
+                c.component.clone(),
+                if last {
+                    c.expected.clone()
+                } else {
+                    String::new()
+                },
             ]));
         }
     }
@@ -518,7 +728,9 @@ pub fn xray_csv(q: &QaReport) -> String {
 pub fn write_formats(run: &Run, dir: &Path, formats: &[String]) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(dir)?;
     let mut out = vec![];
-    let want_html = formats.iter().any(|f| matches!(f.as_str(), "qa" | "html" | "pdf"));
+    let want_html = formats
+        .iter()
+        .any(|f| matches!(f.as_str(), "qa" | "html" | "pdf"));
     let mut html_done = false;
     for f in formats {
         if !QA_FORMATS.contains(&f.as_str()) && f != "html" {
@@ -541,7 +753,10 @@ pub fn write_formats(run: &Run, dir: &Path, formats: &[String]) -> Result<Vec<Pa
             }
             "md" => ("qa-report.md", markdown(run)?),
             "jira" => ("defects.jira.csv", jira_csv(q)),
-            "gitlab" => ("defects.gitlab.json", serde_json::to_string_pretty(&gitlab_json(q))?),
+            "gitlab" => (
+                "defects.gitlab.json",
+                serde_json::to_string_pretty(&gitlab_json(q))?,
+            ),
             "testrail" => ("testcases.testrail.csv", testrail_csv(q)),
             "xray" => ("testcases.xray.csv", xray_csv(q)),
             _ => continue,
@@ -573,16 +788,41 @@ fn render_pdf(dir: &Path) -> Result<PathBuf> {
     }
     let dir = std::fs::canonicalize(dir)?;
     let o = Command::new("docker")
-        .args(["run", "--rm", "--network", "none", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
-            "--tmpfs", "/tmp:rw,mode=1777", "--user", "65534:65534", "-v"])
+        .args([
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--read-only",
+            "--tmpfs",
+            "/tmp:rw,mode=1777",
+            "--user",
+            "65534:65534",
+            "-v",
+        ])
         .arg(format!("{}:/out", dir.display()))
         .arg(&image)
-        .args(["node", "/runner/pdf.mjs", "/out/qa-report.html", "/out/qa-report.pdf"])
+        .args([
+            "node",
+            "/runner/pdf.mjs",
+            "/out/qa-report.html",
+            "/out/qa-report.pdf",
+        ])
         .stdin(Stdio::null())
         .output()?;
     let p = dir.join("qa-report.pdf");
     if !o.status.success() || !p.is_file() {
-        return Err(anyhow!("docker run failed: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("")));
+        return Err(anyhow!(
+            "docker run failed: {}",
+            String::from_utf8_lossy(&o.stderr)
+                .lines()
+                .last()
+                .unwrap_or("")
+        ));
     }
     Ok(p)
 }
@@ -594,39 +834,112 @@ pub(crate) mod tests {
 
     pub(crate) fn sample_qa(rec: Recommendation) -> QaReport {
         let d = Defect {
-            id: "D-001".into(), rule: "qa.api.bola".into(), category: Category::Security, severity: Severity::High,
-            priority: Priority::P1, area: Area::Api, title: "<script>alert(1)</script>, \"quoted\"\nline".into(),
-            component: "GET /orders/{id}".into(), environment: "staging".into(),
-            steps_to_reproduce: vec!["Login as user".into(), "curl -H \"Authorization: Bearer $RH_USER_TOKEN\" https://x/orders/2".into()],
-            expected: "403".into(), actual: "200 with other user's order".into(),
-            evidence: vec![Evidence { kind: EvidenceKind::Screenshot, path: "shots/a.png".into(), note: String::new() }],
-            reproduced: (3, 3), cases: vec![], remediation: "Check ownership".into(), fp_key: "k".into(),
-            fingerprint: String::new(), status: FindingStatus::New, regression: true, ai_note: Some("<b>ai</b>".into()),
+            id: "D-001".into(),
+            rule: "qa.api.bola".into(),
+            category: Category::Security,
+            severity: Severity::High,
+            priority: Priority::P1,
+            area: Area::Api,
+            title: "<script>alert(1)</script>, \"quoted\"\nline".into(),
+            component: "GET /orders/{id}".into(),
+            environment: "staging".into(),
+            steps_to_reproduce: vec![
+                "Login as user".into(),
+                "curl -H \"Authorization: Bearer $RH_USER_TOKEN\" https://x/orders/2".into(),
+            ],
+            expected: "403".into(),
+            actual: "200 with other user's order".into(),
+            evidence: vec![Evidence {
+                kind: EvidenceKind::Screenshot,
+                path: "shots/a.png".into(),
+                note: String::new(),
+            }],
+            reproduced: (3, 3),
+            cases: vec![],
+            remediation: "Check ownership".into(),
+            fp_key: "k".into(),
+            fingerprint: String::new(),
+            status: FindingStatus::New,
+            regression: true,
+            ai_note: Some("<b>ai</b>".into()),
         };
         let mut cov = CoverageMatrix::default();
         cov.set("GET /orders", "authz", Cell::Fail);
         cov.set("GET /orders", "positive", Cell::Pass);
         QaReport {
-            recommendation: rec, conditions: vec!["Fix D-001".into()], executive_summary: "All good, mostly.".into(),
-            ai_summary: Some("AI says <i>hi</i>".into()), mode: "deterministic".into(), environment: "staging".into(),
-            scope: vec!["API".into()], out_of_scope: vec!["Load".into()], roles: vec!["user".into()], plan: vec![],
-            counts: ResultCounts { planned: 5, executed: 4, passed: 3, failed: 1, ..Default::default() },
-            cases: vec![TestCase { id: "c1".into(), area: Area::Api, technique: Technique::AuthMatrix, title: "Orders, authz".into(),
-                priority: Priority::P1, component: "GET /orders/{id}".into(), role: Some("user".into()),
-                steps: vec!["Login".into(), "GET order 2".into()], expected: "403".into(), source: CaseSource::Deterministic }],
-            results: vec![], defects: vec![d], coverage: cov,
-            risks: vec![Risk { title: "r".into(), level: "high".into(), mitigation: "m".into() }],
-            exit_criteria: vec![ExitCriterion { name: "No P1".into(), met: false, blocking: true, detail: "1 open".into() }],
+            recommendation: rec,
+            conditions: vec!["Fix D-001".into()],
+            executive_summary: "All good, mostly.".into(),
+            ai_summary: Some("AI says <i>hi</i>".into()),
+            mode: "deterministic".into(),
+            environment: "staging".into(),
+            scope: vec!["API".into()],
+            out_of_scope: vec!["Load".into()],
+            roles: vec!["user".into()],
+            plan: vec![],
+            counts: ResultCounts {
+                planned: 5,
+                executed: 4,
+                passed: 3,
+                failed: 1,
+                ..Default::default()
+            },
+            cases: vec![TestCase {
+                id: "c1".into(),
+                area: Area::Api,
+                technique: Technique::AuthMatrix,
+                title: "Orders, authz".into(),
+                priority: Priority::P1,
+                component: "GET /orders/{id}".into(),
+                role: Some("user".into()),
+                steps: vec!["Login".into(), "GET order 2".into()],
+                expected: "403".into(),
+                source: CaseSource::Deterministic,
+            }],
+            results: vec![],
+            defects: vec![d],
+            coverage: cov,
+            risks: vec![Risk {
+                title: "r".into(),
+                level: "high".into(),
+                mitigation: "m".into(),
+            }],
+            exit_criteria: vec![ExitCriterion {
+                name: "No P1".into(),
+                met: false,
+                blocking: true,
+                detail: "1 open".into(),
+            }],
             notes: vec!["perf p95=120ms".into()],
         }
     }
 
     pub(crate) fn sample_run(rec: Recommendation) -> Run {
         Run {
-            id: "r1".into(), version: "0.1.0".into(),
-            target: Target { kind: TargetKind::Web, raw: "http://a".into(), path: None, image: None, url: Some("http://a".into()), openapi: None, host: None, apk: None, device: None },
-            profile: Profile::Quick, started: "2026-10-25T10:00:00Z".into(), finished: "f".into(), verdict: Verdict::Fail,
-            reasons: vec![], categories: vec![], checks: vec![], findings: vec![], fixed: 0, notes: vec![], errors: vec![],
+            id: "r1".into(),
+            version: "0.1.0".into(),
+            target: Target {
+                kind: TargetKind::Web,
+                raw: "http://a".into(),
+                path: None,
+                image: None,
+                url: Some("http://a".into()),
+                openapi: None,
+                host: None,
+                apk: None,
+                device: None,
+            },
+            profile: Profile::Quick,
+            started: "2026-10-25T10:00:00Z".into(),
+            finished: "f".into(),
+            verdict: Verdict::Fail,
+            reasons: vec![],
+            categories: vec![],
+            checks: vec![],
+            findings: vec![],
+            fixed: 0,
+            notes: vec![],
+            errors: vec![],
             qa: Some(sample_qa(rec)),
         }
     }
@@ -640,8 +953,16 @@ pub(crate) mod tests {
         assert!(h.contains("Content-Security-Policy"));
         assert!(h.contains("NO-GO"));
         assert!(h.contains("AI-written summary"));
-        assert!(qa_html(&sample_run(Recommendation::Go), None).unwrap().contains(">GO<"));
-        assert!(qa_html(&sample_run(Recommendation::ConditionalGo), None).unwrap().contains("CONDITIONAL GO"));
+        assert!(
+            qa_html(&sample_run(Recommendation::Go), None)
+                .unwrap()
+                .contains(">GO<")
+        );
+        assert!(
+            qa_html(&sample_run(Recommendation::ConditionalGo), None)
+                .unwrap()
+                .contains("CONDITIONAL GO")
+        );
     }
 
     #[test]
@@ -657,14 +978,26 @@ pub(crate) mod tests {
         let q = sample_qa(Recommendation::NoGo);
         let j = jira_csv(&q);
         assert!(j.starts_with("Summary,Issue Type,Priority,Labels,Component,Description\r\n"));
-        assert!(j.contains("Highest") && j.contains("readyhai qa-api") && j.contains("{code}") && j.contains("h3. Steps"));
+        assert!(
+            j.contains("Highest")
+                && j.contains("readyhai qa-api")
+                && j.contains("{code}")
+                && j.contains("h3. Steps")
+        );
         assert!(j.contains("\"\"quoted\"\""));
     }
 
     #[test]
     fn exports_have_no_secrets() {
         let q = sample_qa(Recommendation::NoGo);
-        let all = format!("{}{}{}{}{}", jira_csv(&q), gitlab_json(&q), testrail_csv(&q), xray_csv(&q), markdown(&sample_run(Recommendation::NoGo)).unwrap());
+        let all = format!(
+            "{}{}{}{}{}",
+            jira_csv(&q),
+            gitlab_json(&q),
+            testrail_csv(&q),
+            xray_csv(&q),
+            markdown(&sample_run(Recommendation::NoGo)).unwrap()
+        );
         assert!(all.contains("$RH_USER_TOKEN"));
         let re = regex::Regex::new(r"Bearer\s+[A-Za-z0-9._-]{16,}").unwrap();
         assert!(!re.is_match(&all));
@@ -675,9 +1008,26 @@ pub(crate) mod tests {
     #[test]
     fn markdown_sanity_and_write() {
         let m = markdown(&sample_run(Recommendation::ConditionalGo)).unwrap();
-        assert!(m.contains("## Recommendation: CONDITIONAL GO") && m.contains("### D-001") && m.contains("```sh") && m.contains("## Exit criteria"));
+        assert!(
+            m.contains("## Recommendation: CONDITIONAL GO")
+                && m.contains("### D-001")
+                && m.contains("```sh")
+                && m.contains("## Exit criteria")
+        );
         let dir = std::env::temp_dir().join(format!("rh-qa-{}", std::process::id()));
-        let files = write_formats(&sample_run(Recommendation::Go), &dir, &["qa".into(), "md".into(), "jira".into(), "gitlab".into(), "testrail".into(), "xray".into()]).unwrap();
+        let files = write_formats(
+            &sample_run(Recommendation::Go),
+            &dir,
+            &[
+                "qa".into(),
+                "md".into(),
+                "jira".into(),
+                "gitlab".into(),
+                "testrail".into(),
+                "xray".into(),
+            ],
+        )
+        .unwrap();
         assert_eq!(files.len(), 6);
         // non-QA run: skipped
         let mut r = sample_run(Recommendation::Go);
@@ -714,7 +1064,10 @@ pub(crate) mod tests {
         // a fence is always longer than the longest backtick run inside the body
         assert_eq!(md_fence("x```y", "sh"), "````sh\nx```y\n````\n");
         assert_eq!(md_fence("plain", ""), "```\nplain\n```\n");
-        assert_eq!(md_fence("a``````b", "sh").lines().next().unwrap(), "```````sh");
+        assert_eq!(
+            md_fence("a``````b", "sh").lines().next().unwrap(),
+            "```````sh"
+        );
     }
 
     #[test]
@@ -723,15 +1076,27 @@ pub(crate) mod tests {
         r.qa.as_mut().unwrap().defects = vec![hostile_defect()];
         let m = markdown(&r).unwrap();
         // no live link / image / raw html / mention from the defect text
-        assert_eq!(m.matches("<img").count(), m.matches("\\<img").count(), "every < is escaped: {m}");
+        assert_eq!(
+            m.matches("<img").count(),
+            m.matches("\\<img").count(),
+            "every < is escaped: {m}"
+        );
         assert!(m.contains("\\[click\\](javascript:alert(1))"));
         assert!(!m.contains("@admin"), "mentions are neutralised");
         // the heading, the table row and the headings-in-text stay inert
         assert!(m.contains("### D-001 \\=HYPERLINK") || m.contains("### D-001 =HYPERLINK"));
-        assert!(!m.lines().any(|l| l.trim_start().starts_with("# not a heading")));
+        assert!(
+            !m.lines()
+                .any(|l| l.trim_start().starts_with("# not a heading"))
+        );
         assert!(m.contains("\\# not a heading") && m.contains("1\\. not a list"));
         // the code step with ``` is inside a LONGER fence
-        assert!(m.contains("````sh\ncurl -sS 'http://x/```\nrm -rf /```' # code fence breakout\n````\n"), "{m}");
+        assert!(
+            m.contains(
+                "````sh\ncurl -sS 'http://x/```\nrm -rf /```' # code fence breakout\n````\n"
+            ),
+            "{m}"
+        );
         // fence balance: every line made only of backticks opens/closes with matching lengths
         let fences: Vec<&str> = m.lines().filter(|l| l.starts_with("```")).collect();
         assert_eq!(fences.len() % 2, 0, "{fences:?}");
@@ -753,10 +1118,20 @@ pub(crate) mod tests {
     #[test]
     fn jira_text_cannot_open_macros_or_close_the_code_block() {
         assert_eq!(jira_text("{code}x{code}"), "\\{code\\}x\\{code\\}");
-        assert_eq!(jira_text("*b* _i_ [l] |t|"), "\\*b\\* \\_i\\_ \\[l\\] \\|t\\|");
-        assert_eq!(jira_text("snake-case and a - b"), "snake-case and a - b", "mid-word dashes are not strike-through");
+        assert_eq!(
+            jira_text("*b* _i_ [l] |t|"),
+            "\\*b\\* \\_i\\_ \\[l\\] \\|t\\|"
+        );
+        assert_eq!(
+            jira_text("snake-case and a - b"),
+            "snake-case and a - b",
+            "mid-word dashes are not strike-through"
+        );
         assert_eq!(jira_text("-struck-"), "\\-struck-");
-        assert!(jira_text("h1. title").starts_with(' '), "headings must start a line");
+        assert!(
+            jira_text("h1. title").starts_with(' '),
+            "headings must start a line"
+        );
         assert!(jira_text("bq. quote").starts_with(' '));
         assert_eq!(jira_code("a{code}b{CODE:java}c"), "a{ code}b{ code:java}c");
         let d = hostile_defect();
@@ -771,11 +1146,18 @@ pub(crate) mod tests {
     fn csv_formula_injection_is_neutralised_in_every_export() {
         for bad in ["=1+1", "+1", "-1+2", "@SUM(A1)", "\t=1", "\r=1"] {
             let f = csv_field(bad);
-            assert!(f.trim_start_matches('"').starts_with('\''), "{bad:?} -> {f:?}");
+            assert!(
+                f.trim_start_matches('"').starts_with('\''),
+                "{bad:?} -> {f:?}"
+            );
         }
         assert_eq!(csv_field("plain"), "plain");
         assert_eq!(csv_field("a=b"), "a=b", "only a LEADING sign is dangerous");
-        assert_eq!(csv_field("=a,b"), "\"'=a,b\"", "quoting still applies after neutralising");
+        assert_eq!(
+            csv_field("=a,b"),
+            "\"'=a,b\"",
+            "quoting still applies after neutralising"
+        );
         let mut q = sample_qa(Recommendation::NoGo);
         q.defects = vec![hostile_defect()];
         q.cases[0].title = "=cmd|' /C calc'!A0".into();
@@ -786,11 +1168,17 @@ pub(crate) mod tests {
         for csv in &all {
             for rec in split_csv(csv).iter().skip(1) {
                 for cell in rec {
-                    assert!(!cell.starts_with(['=', '+', '-', '@', '\t', '\r']), "formula cell {cell:?} in {csv}");
+                    assert!(
+                        !cell.starts_with(['=', '+', '-', '@', '\t', '\r']),
+                        "formula cell {cell:?} in {csv}"
+                    );
                 }
             }
         }
-        assert!(all[0].contains("\"'=HYPERLINK"), "the defect title cell is prefixed");
+        assert!(
+            all[0].contains("\"'=HYPERLINK"),
+            "the defect title cell is prefixed"
+        );
     }
 
     /// Minimal RFC 4180 reader for the assertions above.

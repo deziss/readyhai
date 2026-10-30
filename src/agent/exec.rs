@@ -1,7 +1,7 @@
 //! Explorer: turns planned cases into real HTTP requests, judges them with the oracle, re-runs
 //! failures to detect flakiness, and writes down exactly what was sent (reproduction curl) and seen.
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::sync::OnceLock;
@@ -37,12 +37,23 @@ pub struct Credentials {
 
 impl std::fmt::Debug for Credentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Credentials").field("roles", &self.tokens.keys().collect::<Vec<_>>()).finish()
+        f.debug_struct("Credentials")
+            .field("roles", &self.tokens.keys().collect::<Vec<_>>())
+            .finish()
     }
 }
 
 fn role_key(role: &str) -> String {
-    role.trim().chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' }).collect()
+    role.trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 impl Credentials {
@@ -53,10 +64,12 @@ impl Credentials {
     pub fn from_env() -> Self {
         let mut c = Credentials::default();
         for (k, v) in std::env::vars() {
-            if let Some(role) = k.strip_prefix("RH_").and_then(|r| r.strip_suffix("_TOKEN")) {
-                if !role.is_empty() && !v.trim().is_empty() {
-                    c.tokens.insert(role.to_ascii_uppercase(), v.trim().to_string());
-                }
+            if let Some(role) = k.strip_prefix("RH_").and_then(|r| r.strip_suffix("_TOKEN"))
+                && !role.is_empty()
+                && !v.trim().is_empty()
+            {
+                c.tokens
+                    .insert(role.to_ascii_uppercase(), v.trim().to_string());
             }
         }
         c
@@ -92,7 +105,12 @@ pub enum Auth {
 
 /// Explicit `role` wins; legacy cases (no role) are inferred from the title/hint like before.
 pub fn auth_for(case: &PlannedCase) -> Auth {
-    if let Some(r) = case.role.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+    if let Some(r) = case
+        .role
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
         return match r.to_ascii_lowercase().as_str() {
             "anon" | "anonymous" | "none" | "unauthenticated" => Auth::None,
             "forged" => Auth::Forged,
@@ -104,7 +122,13 @@ pub fn auth_for(case: &PlannedCase) -> Auth {
     if title.contains("forged") {
         return Auth::Forged;
     }
-    if case.technique == "authz" && (title.contains("unauth") || hint.contains("without auth") || hint.contains("no auth") || case.expected_status.is_some_and(|s| s == 401 || s == 403) || case.component.starts_with("/.")) {
+    if case.technique == "authz"
+        && (title.contains("unauth")
+            || hint.contains("without auth")
+            || hint.contains("no auth")
+            || case.expected_status.is_some_and(|s| s == 401 || s == 403)
+            || case.component.starts_with("/."))
+    {
         return Auth::None;
     }
     if case.technique == "authz" {
@@ -145,7 +169,11 @@ pub fn normalize_component(raw: &str) -> Result<String, String> {
     if t.contains('{') || t.contains('}') {
         return Err("unresolved path template placeholder".into());
     }
-    Ok(if t.starts_with('/') { t.to_string() } else { format!("/{t}") })
+    Ok(if t.starts_with('/') {
+        t.to_string()
+    } else {
+        format!("/{t}")
+    })
 }
 
 fn form_key_re() -> &'static Regex {
@@ -160,7 +188,18 @@ fn looks_like_form(p: &str) -> bool {
 /// Payload as decoded key/value pairs: JSON object, `k=v&k2=v2`, or free text (`q=`).
 pub fn payload_pairs(p: &str) -> Vec<(String, String)> {
     if let Ok(Value::Object(m)) = serde_json::from_str::<Value>(p.trim()) {
-        return m.into_iter().map(|(k, v)| (k, match v { Value::String(s) => s, other => other.to_string() })).collect();
+        return m
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    match v {
+                        Value::String(s) => s,
+                        other => other.to_string(),
+                    },
+                )
+            })
+            .collect();
     }
     if looks_like_form(p) {
         return p
@@ -197,14 +236,23 @@ fn string_leaves(v: &Value, out: &mut Vec<String>) {
 
 /// Validate and build the request for a case. Errors mean "this case must not be sent".
 pub fn build_request(case: &PlannedCase, target: &str) -> Result<RequestSpec, String> {
-    let method = normalize_method(&case.method).ok_or_else(|| format!("method '{}' is not allowed (GET, HEAD, OPTIONS, POST, PUT, PATCH, DELETE only)", case.method.chars().take(16).collect::<String>()))?;
+    let method = normalize_method(&case.method).ok_or_else(|| {
+        format!(
+            "method '{}' is not allowed (GET, HEAD, OPTIONS, POST, PUT, PATCH, DELETE only)",
+            case.method.chars().take(16).collect::<String>()
+        )
+    })?;
     let base = reqwest::Url::parse(target).map_err(|e| format!("bad target URL: {e}"))?;
     if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
         return Err("target is not an http(s) URL".into());
     }
     let path = normalize_component(&case.component)?;
-    let mut url = reqwest::Url::parse(&format!("{}{}", target.trim_end_matches('/'), path)).map_err(|e| format!("bad URL: {e}"))?;
-    if url.host_str() != base.host_str() || url.port_or_known_default() != base.port_or_known_default() || url.scheme() != base.scheme() {
+    let mut url = reqwest::Url::parse(&format!("{}{}", target.trim_end_matches('/'), path))
+        .map_err(|e| format!("bad URL: {e}"))?;
+    if url.host_str() != base.host_str()
+        || url.port_or_known_default() != base.port_or_known_default()
+        || url.scheme() != base.scheme()
+    {
         return Err("request would leave the target origin".into());
     }
     let mut sent_values: Vec<String> = url.query_pairs().map(|(_, v)| v.into_owned()).collect();
@@ -213,7 +261,8 @@ pub fn build_request(case: &PlannedCase, target: &str) -> Result<RequestSpec, St
         if matches!(method, "GET" | "HEAD" | "OPTIONS") {
             // payloads for bodiless methods belong in the query string
             let pairs = payload_pairs(p);
-            url.query_pairs_mut().extend_pairs(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+            url.query_pairs_mut()
+                .extend_pairs(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
             sent_values.extend(pairs.into_iter().map(|(_, v)| v));
         } else {
             let (ct, b) = body_and_type(p);
@@ -225,7 +274,14 @@ pub fn build_request(case: &PlannedCase, target: &str) -> Result<RequestSpec, St
             body = Some((ct, b));
         }
     }
-    Ok(RequestSpec { method, path: path.clone(), url: url.to_string(), body, auth: auth_for(case), sent_values })
+    Ok(RequestSpec {
+        method,
+        path: path.clone(),
+        url: url.to_string(),
+        body,
+        auth: auth_for(case),
+        sent_values,
+    })
 }
 
 fn sq(s: &str) -> String {
@@ -242,8 +298,14 @@ pub fn curl_for(spec: &RequestSpec) -> String {
         p.push(format!("-i -X {}", spec.method));
     }
     match &spec.auth {
-        Auth::Role(r) => p.push(format!("-H \"Authorization: Bearer ${{{}}}\"", Credentials::env_var(r))),
-        Auth::Forged => p.push(format!("-H {}", sq(&format!("Authorization: Bearer {FORGED_TOKEN}")))),
+        Auth::Role(r) => p.push(format!(
+            "-H \"Authorization: Bearer ${{{}}}\"",
+            Credentials::env_var(r)
+        )),
+        Auth::Forged => p.push(format!(
+            "-H {}",
+            sq(&format!("Authorization: Bearer {FORGED_TOKEN}"))
+        )),
         Auth::None => {}
     }
     if let Some((ct, body)) = &spec.body {
@@ -269,7 +331,13 @@ pub struct ExecOptions {
 
 impl Default for ExecOptions {
     fn default() -> Self {
-        ExecOptions { dry_run: false, is_spa_target: false, credentials: Credentials::from_env(), reruns: 2, timeout: Duration::from_secs(10) }
+        ExecOptions {
+            dry_run: false,
+            is_spa_target: false,
+            credentials: Credentials::from_env(),
+            reruns: 2,
+            timeout: Duration::from_secs(10),
+        }
     }
 }
 
@@ -291,7 +359,11 @@ struct Seen {
     latency_ms: u64,
 }
 
-fn send_once(client: &reqwest::blocking::Client, spec: &RequestSpec, bearer: Option<&str>) -> Result<Seen, String> {
+fn send_once(
+    client: &reqwest::blocking::Client,
+    spec: &RequestSpec,
+    bearer: Option<&str>,
+) -> Result<Seen, String> {
     let t0 = Instant::now();
     let method = reqwest::Method::from_bytes(spec.method.as_bytes()).map_err(|e| e.to_string())?;
     let mut rb = client.request(method, &spec.url);
@@ -303,15 +375,44 @@ fn send_once(client: &reqwest::blocking::Client, spec: &RequestSpec, bearer: Opt
     }
     let resp = rb.send().map_err(|e| e.to_string())?;
     let status = resp.status().as_u16();
-    let headers: Vec<(String, String)> = resp.headers().iter().map(|(k, v)| (k.as_str().to_ascii_lowercase(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect();
-    let content_type = headers.iter().find(|(k, _)| k == "content-type").map(|(_, v)| v.clone()).unwrap_or_default();
+    let headers: Vec<(String, String)> = resp
+        .headers()
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.as_str().to_ascii_lowercase(),
+                String::from_utf8_lossy(v.as_bytes()).into_owned(),
+            )
+        })
+        .collect();
+    let content_type = headers
+        .iter()
+        .find(|(k, _)| k == "content-type")
+        .map(|(_, v)| v.clone())
+        .unwrap_or_default();
     let mut buf = Vec::new();
     let _ = resp.take(BODY_CAP as u64).read_to_end(&mut buf);
-    Ok(Seen { status, content_type, headers, body: String::from_utf8_lossy(&buf).into_owned(), latency_ms: t0.elapsed().as_millis() as u64 })
+    Ok(Seen {
+        status,
+        content_type,
+        headers,
+        body: String::from_utf8_lossy(&buf).into_owned(),
+        latency_ms: t0.elapsed().as_millis() as u64,
+    })
 }
 
 fn safe_id(id: &str) -> String {
-    let s: String = id.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).take(64).collect();
+    let s: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(64)
+        .collect();
     if s.is_empty() { "case".into() } else { s }
 }
 
@@ -351,41 +452,115 @@ fn skipped(c: &PlannedCase, reason: impl Into<String>, curl: String) -> CaseExec
 fn spa_shell(ct: &str, body: &str, is_spa_target: bool) -> bool {
     ct.to_ascii_lowercase().contains("html")
         && is_spa_target
-        && ["__NEXT_DATA__", "/_next/static/", "__NUXT__", "ng-version", "data-reactroot", "<app-root", "id=\"root\"", "id=\"app\"", "/@vite/client"].iter().any(|m| body.contains(m))
+        && [
+            "__NEXT_DATA__",
+            "/_next/static/",
+            "__NUXT__",
+            "ng-version",
+            "data-reactroot",
+            "<app-root",
+            "id=\"root\"",
+            "id=\"app\"",
+            "/@vite/client",
+        ]
+        .iter()
+        .any(|m| body.contains(m))
 }
 
 fn redacted_headers(h: &[(String, String)]) -> Vec<Value> {
-    h.iter().map(|(k, v)| json!([k, if is_sensitive_key(k) { "[REDACTED]".to_string() } else { redact_for_llm(v) }])).collect()
+    h.iter()
+        .map(|(k, v)| {
+            json!([
+                k,
+                if is_sensitive_key(k) {
+                    "[REDACTED]".to_string()
+                } else {
+                    redact_for_llm(v)
+                }
+            ])
+        })
+        .collect()
 }
 
 /// Execute `cases` against `target` with default options (used by the operator "retest" action).
-pub fn execute_cases(cases: &[PlannedCase], target: &str, is_spa_target: bool) -> Vec<CaseExecutionResult> {
-    let opts = ExecOptions { is_spa_target, ..ExecOptions::default() };
+pub fn execute_cases(
+    cases: &[PlannedCase],
+    target: &str,
+    is_spa_target: bool,
+) -> Vec<CaseExecutionResult> {
+    let opts = ExecOptions {
+        is_spa_target,
+        ..ExecOptions::default()
+    };
     execute_cases_with(cases, target, &opts, &mut RunBudget::from_env())
 }
 
-pub fn execute_cases_with(cases: &[PlannedCase], target: &str, opts: &ExecOptions, budget: &mut RunBudget) -> Vec<CaseExecutionResult> {
-    let curl_of = |c: &PlannedCase| build_request(c, target).map(|s| curl_for(&s)).unwrap_or_default();
-    let parsed = reqwest::Url::parse(target).ok().filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some());
+pub fn execute_cases_with(
+    cases: &[PlannedCase],
+    target: &str,
+    opts: &ExecOptions,
+    budget: &mut RunBudget,
+) -> Vec<CaseExecutionResult> {
+    let curl_of = |c: &PlannedCase| {
+        build_request(c, target)
+            .map(|s| curl_for(&s))
+            .unwrap_or_default()
+    };
+    let parsed = reqwest::Url::parse(target)
+        .ok()
+        .filter(|u| matches!(u.scheme(), "http" | "https") && u.host_str().is_some());
     let Some(parsed) = parsed else {
         return cases.iter().map(|c| skipped(c, "target is not an http(s) URL: the agent only probes over HTTP, nothing was executed", curl_of(c))).collect();
     };
     let client = match build_client(opts.timeout) {
         Ok(c) => c,
-        Err(e) => return cases.iter().map(|c| skeleton(c, "BLOCKED", format!("could not build the HTTP client: {e}"), curl_of(c))).collect(),
+        Err(e) => {
+            return cases
+                .iter()
+                .map(|c| {
+                    skeleton(
+                        c,
+                        "BLOCKED",
+                        format!("could not build the HTTP client: {e}"),
+                        curl_of(c),
+                    )
+                })
+                .collect();
+        }
     };
-    let host = format!("{}:{}", parsed.host_str().unwrap_or(""), parsed.port_or_known_default().unwrap_or(0));
-    cases.iter().map(|c| run_case(&client, c, target, &host, opts, budget)).collect()
+    let host = format!(
+        "{}:{}",
+        parsed.host_str().unwrap_or(""),
+        parsed.port_or_known_default().unwrap_or(0)
+    );
+    cases
+        .iter()
+        .map(|c| run_case(&client, c, target, &host, opts, budget))
+        .collect()
 }
 
-fn run_case(client: &reqwest::blocking::Client, c: &PlannedCase, target: &str, host: &str, opts: &ExecOptions, budget: &mut RunBudget) -> CaseExecutionResult {
+fn run_case(
+    client: &reqwest::blocking::Client,
+    c: &PlannedCase,
+    target: &str,
+    host: &str,
+    opts: &ExecOptions,
+    budget: &mut RunBudget,
+) -> CaseExecutionResult {
     let spec = match build_request(c, target) {
         Ok(s) => s,
         Err(e) => return skipped(c, format!("invalid case, not sent: {e}"), String::new()),
     };
     let curl = curl_for(&spec);
     if opts.dry_run && is_mutating(spec.method) {
-        return skipped(c, format!("dry_run: state-changing method {} was not sent", spec.method), curl);
+        return skipped(
+            c,
+            format!(
+                "dry_run: state-changing method {} was not sent",
+                spec.method
+            ),
+            curl,
+        );
     }
     if let Err(m) = budget.take_step() {
         return skipped(c, m, curl);
@@ -395,7 +570,14 @@ fn run_case(client: &reqwest::blocking::Client, c: &PlannedCase, target: &str, h
         Auth::Forged => (Some(format!("Bearer {FORGED_TOKEN}")), true, None),
         Auth::Role(r) => match opts.credentials.token(r) {
             Some(t) => (Some(format!("Bearer {t}")), true, None),
-            None => (None, false, Some(format!("no credential for role '{r}': request sent without Authorization (set {})", Credentials::env_var(r)))),
+            None => (
+                None,
+                false,
+                Some(format!(
+                    "no credential for role '{r}': request sent without Authorization (set {})",
+                    Credentials::env_var(r)
+                )),
+            ),
         },
     };
     let https = spec.url.starts_with("https://");
@@ -415,7 +597,16 @@ fn run_case(client: &reqwest::blocking::Client, c: &PlannedCase, target: &str, h
                 let shell = spa_shell(&seen.content_type, &seen.body, opts.is_spa_target);
                 let outcome = oracle::judge(
                     c,
-                    &Observation { status: seen.status, content_type: &seen.content_type, headers: &seen.headers, body: &seen.body, sent_values: &spec.sent_values, is_spa_shell: shell, authenticated, https },
+                    &Observation {
+                        status: seen.status,
+                        content_type: &seen.content_type,
+                        headers: &seen.headers,
+                        body: &seen.body,
+                        sent_values: &spec.sent_values,
+                        is_spa_shell: shell,
+                        authenticated,
+                        https,
+                    },
                 );
                 let again = outcome.verdict == Verdict::Fail;
                 attempts.push((Some(seen), Some(outcome), None));
@@ -436,7 +627,11 @@ fn run_case(client: &reqwest::blocking::Client, c: &PlannedCase, target: &str, h
         .map(|(i, (s, o, e))| AttemptRecord {
             attempt: i as u32 + 1,
             status_code: s.as_ref().map(|s| s.status),
-            verdict: o.as_ref().map(|o| o.verdict.label().to_string()).or_else(|| e.as_ref().map(|_| "ERROR".to_string())).unwrap_or_default(),
+            verdict: o
+                .as_ref()
+                .map(|o| o.verdict.label().to_string())
+                .or_else(|| e.as_ref().map(|_| "ERROR".to_string()))
+                .unwrap_or_default(),
         })
         .collect();
 
@@ -455,15 +650,22 @@ fn run_case(client: &reqwest::blocking::Client, c: &PlannedCase, target: &str, h
         let e = first_err.unwrap_or_else(|| "unknown error".into());
         res.status = "BLOCKED".into();
         res.failure_reason = Some(format!("Connection error: {e}"));
-        res.evidence = format!("request failed: {}", crate::llm::untrusted::redact_then_truncate(&e, 300));
+        res.evidence = format!(
+            "request failed: {}",
+            crate::llm::untrusted::redact_then_truncate(&e, 300)
+        );
         detail["response"] = json!({"error": e});
         res.evidence_detail = Some(detail);
         return res;
     };
 
     // flaky: failed first, but a completed re-run did not reproduce it
-    let reruns_done: Vec<&OracleOutcome> = attempts.iter().filter_map(|(_, o, _)| o.as_ref()).collect();
-    let non_repro = reruns_done.iter().filter(|o| o.verdict != Verdict::Fail).count();
+    let reruns_done: Vec<&OracleOutcome> =
+        attempts.iter().filter_map(|(_, o, _)| o.as_ref()).collect();
+    let non_repro = reruns_done
+        .iter()
+        .filter(|o| o.verdict != Verdict::Fail)
+        .count();
     let flaky = outcome.verdict == Verdict::Fail && non_repro > 0;
 
     res.status_code = Some(seen.status);
@@ -479,13 +681,20 @@ fn run_case(client: &reqwest::blocking::Client, c: &PlannedCase, target: &str, h
         Verdict::Pass => "PASS".into(),
     };
     res.failure_reason = if flaky {
-        Some(format!("flaky: failed on attempt 1, but {non_repro} of {} re-run(s) did not reproduce it. Original failure: {}", reruns_done.len(), outcome.reason().unwrap_or_default()))
+        Some(format!(
+            "flaky: failed on attempt 1, but {non_repro} of {} re-run(s) did not reproduce it. Original failure: {}",
+            reruns_done.len(),
+            outcome.reason().unwrap_or_default()
+        ))
     } else {
         outcome.reason()
     };
     // redact FIRST, then cut: a secret straddling the cut must not survive as a prefix
     res.evidence = if seen.body.is_empty() {
-        format!("{} {} bytes=0 content-type={}", spec.method, seen.status, seen.content_type)
+        format!(
+            "{} {} bytes=0 content-type={}",
+            spec.method, seen.status, seen.content_type
+        )
     } else {
         crate::llm::untrusted::redact_then_truncate(&seen.body, 300)
     };
@@ -508,26 +717,62 @@ mod tests {
 
     fn case(method: &str, component: &str, payload: Option<&str>) -> PlannedCase {
         PlannedCase {
-            id: "TC-001".into(), title: "t".into(), component: component.into(), method: method.into(), technique: "boundary".into(), input_hint: String::new(),
-            payload: payload.map(String::from), expected_behavior: String::new(), expected_status: None, risk_level: "low".into(), role: None, secured: None,
-            route_status: None, expect_fields: vec![], expected_content_type: None, source: None,
+            id: "TC-001".into(),
+            title: "t".into(),
+            component: component.into(),
+            method: method.into(),
+            technique: "boundary".into(),
+            input_hint: String::new(),
+            payload: payload.map(String::from),
+            expected_behavior: String::new(),
+            expected_status: None,
+            risk_level: "low".into(),
+            role: None,
+            secured: None,
+            route_status: None,
+            expect_fields: vec![],
+            expected_content_type: None,
+            source: None,
         }
     }
 
     #[test]
     fn only_the_seven_http_methods_are_allowed() {
         for m in ["GET", "head", "Options", "POST", "put", "PATCH", "delete"] {
-            assert!(build_request(&case(m, "/x", None), "http://h").is_ok(), "{m}");
+            assert!(
+                build_request(&case(m, "/x", None), "http://h").is_ok(),
+                "{m}"
+            );
         }
-        for m in ["TRACE", "CONNECT", "PROPFIND", "", "GET /x HTTP/1.1\r\nX:", "G ET"] {
-            assert!(build_request(&case(m, "/x", None), "http://h").is_err(), "{m:?} must be rejected");
+        for m in [
+            "TRACE",
+            "CONNECT",
+            "PROPFIND",
+            "",
+            "GET /x HTTP/1.1\r\nX:",
+            "G ET",
+        ] {
+            assert!(
+                build_request(&case(m, "/x", None), "http://h").is_err(),
+                "{m:?} must be rejected"
+            );
         }
     }
 
     #[test]
     fn components_cannot_leave_the_target_or_inject() {
-        for bad in ["http://evil.test/x", "//evil.test/x", "/a b", "/a\r\nHost: evil", "", "/orders/{id}"] {
-            assert!(build_request(&case("GET", bad, None), "http://h").is_err(), "{bad:?}");
+        for bad in [
+            "http://evil.test/x",
+            "//evil.test/x",
+            "/a b",
+            "/a\r\nHost: evil",
+            "",
+            "/orders/{id}",
+        ] {
+            assert!(
+                build_request(&case("GET", bad, None), "http://h").is_err(),
+                "{bad:?}"
+            );
         }
         let ok = build_request(&case("GET", "orders", None), "http://h:8080/").unwrap();
         assert_eq!(ok.url, "http://h:8080/orders");
@@ -535,18 +780,48 @@ mod tests {
 
     #[test]
     fn get_payload_goes_to_the_query_string_not_the_body() {
-        let s = build_request(&case("GET", "/search", Some("q=\"><script>alert(1)</script>")), "http://h").unwrap();
+        let s = build_request(
+            &case("GET", "/search", Some("q=\"><script>alert(1)</script>")),
+            "http://h",
+        )
+        .unwrap();
         assert!(s.body.is_none());
         assert!(s.url.starts_with("http://h/search?q="), "{}", s.url);
-        assert!(s.sent_values.iter().any(|v| v == "\"><script>alert(1)</script>"));
-        let j = build_request(&case("HEAD", "/search", Some("{\"a\": 1, \"b\": \"x y\"}")), "http://h").unwrap();
-        assert!(j.body.is_none() && j.url.contains("a=1") && (j.url.contains("b=x+y") || j.url.contains("b=x%20y")), "{}", j.url);
+        assert!(
+            s.sent_values
+                .iter()
+                .any(|v| v == "\"><script>alert(1)</script>")
+        );
+        let j = build_request(
+            &case("HEAD", "/search", Some("{\"a\": 1, \"b\": \"x y\"}")),
+            "http://h",
+        )
+        .unwrap();
+        assert!(
+            j.body.is_none()
+                && j.url.contains("a=1")
+                && (j.url.contains("b=x+y") || j.url.contains("b=x%20y")),
+            "{}",
+            j.url
+        );
         let free = build_request(&case("GET", "/s?z=1", Some("' OR '1'='1")), "http://h").unwrap();
-        assert!(free.url.contains("z=1") && free.url.contains("q="), "{}", free.url);
-        let post = build_request(&case("POST", "/orders", Some("{\"item\": \"a\"}")), "http://h").unwrap();
+        assert!(
+            free.url.contains("z=1") && free.url.contains("q="),
+            "{}",
+            free.url
+        );
+        let post = build_request(
+            &case("POST", "/orders", Some("{\"item\": \"a\"}")),
+            "http://h",
+        )
+        .unwrap();
         assert_eq!(post.body.as_ref().unwrap().0, "application/json");
         let bad_json = build_request(&case("POST", "/orders", Some("{\"")), "http://h").unwrap();
-        assert_eq!(bad_json.body.unwrap().0, "application/json", "malformed JSON is still sent as JSON: that is the test");
+        assert_eq!(
+            bad_json.body.unwrap().0,
+            "application/json",
+            "malformed JSON is still sent as JSON: that is the test"
+        );
         let form = build_request(&case("POST", "/f", Some("data=AAA&x=1")), "http://h").unwrap();
         assert_eq!(form.body.unwrap().0, "application/x-www-form-urlencoded");
     }
@@ -559,13 +834,22 @@ mod tests {
         let curl = curl_for(&s);
         assert!(curl.contains("-X PATCH"), "{curl}");
         assert!(curl.contains("'http://h/o/1'"), "{curl}");
-        assert!(curl.contains("--data-raw '{\"note\": \"it'\\''s\"}'"), "{curl}");
-        assert!(curl.contains("Authorization: Bearer ${RH_USER_TOKEN}"), "{curl}");
+        assert!(
+            curl.contains("--data-raw '{\"note\": \"it'\\''s\"}'"),
+            "{curl}"
+        );
+        assert!(
+            curl.contains("Authorization: Bearer ${RH_USER_TOKEN}"),
+            "{curl}"
+        );
         // a hostile path cannot break out of the quotes
         let h = build_request(&case("GET", "/x'$(id)'", None), "http://h").unwrap();
         let hc = curl_for(&h);
         assert!(hc.ends_with("'http://h/x'\\''$(id)'\\'''"), "{hc}");
-        assert!(!hc.contains("\"http"), "URL must not be double-quoted: {hc}");
+        assert!(
+            !hc.contains("\"http"),
+            "URL must not be double-quoted: {hc}"
+        );
         let head = curl_for(&build_request(&case("HEAD", "/x", None), "http://h").unwrap());
         assert!(head.contains("-I -X HEAD"), "{head}");
         let g = curl_for(&build_request(&case("GET", "/s", Some("q=1")), "http://h").unwrap());
@@ -585,6 +869,9 @@ mod tests {
         assert_eq!(Credentials::env_var("shop-admin"), "RH_SHOP_ADMIN_TOKEN");
         let creds = Credentials::none().with("admin", "tok");
         assert_eq!(creds.token("ADMIN"), Some("tok"));
-        assert!(!format!("{creds:?}").contains("tok\""), "Debug must not print tokens");
+        assert!(
+            !format!("{creds:?}").contains("tok\""),
+            "Debug must not print tokens"
+        );
     }
 }

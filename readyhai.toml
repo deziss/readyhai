@@ -1,0 +1,18 @@
+# ReadyHai self-scan config. The fixtures under tests/fixtures/ are deliberately
+# vulnerable/misconfigured inputs for the test suite; they are not shipped code.
+# Review these entries before the expiry date.
+
+[[suppress]]
+rule = "*"
+path = "tests/fixtures/**"
+reason = "deliberately vulnerable test fixtures (vuln-app, qa-repo, mobsf output); not product code"
+expires = "2027-10-30"
+
+[snapshot]
+skip_dirs = ["fixtures", "readyhai-report", "target"]
+
+[[suppress]]
+rule = "readiness.compose.docker_sock"
+path = "docker-compose.yml"
+reason = "By design: only the read-only tecnativa socket-proxy mounts the socket; readyhai reaches it over TCP with a path allowlist (see docs/security-model.md)"
+expires = "2027-10-30"

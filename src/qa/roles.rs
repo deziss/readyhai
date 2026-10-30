@@ -63,8 +63,10 @@ fn set(globs: &[String]) -> Result<GlobSet> {
 
 impl Roles {
     pub fn load(path: &Path) -> Result<Roles> {
-        let text = std::fs::read_to_string(path).with_context(|| format!("roles file {}", path.display()))?;
-        let mut r: Roles = toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("roles file {}", path.display()))?;
+        let mut r: Roles =
+            toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
         r.dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         #[cfg(unix)]
         {
@@ -72,7 +74,10 @@ impl Roles {
             if let Ok(m) = std::fs::metadata(path)
                 && m.permissions().mode() & 0o077 != 0
             {
-                r.warnings.push(format!("{} is readable by group/others — chmod 600 it", path.display()));
+                r.warnings.push(format!(
+                    "{} is readable by group/others — chmod 600 it",
+                    path.display()
+                ));
             }
         }
         let mut names = std::collections::HashSet::new();
@@ -80,7 +85,11 @@ impl Roles {
             if !names.insert(role.name.clone()) {
                 bail!("duplicate role '{}'", role.name);
             }
-            if !role.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+            if !role
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+            {
                 bail!("role name '{}' must be [A-Za-z0-9_-]", role.name);
             }
             set(&role.allow)?;
@@ -97,22 +106,37 @@ impl Roles {
 impl Role {
     /// Placeholder used in repro steps instead of the secret.
     pub fn placeholder(&self) -> String {
-        format!("$RH_{}_TOKEN", self.name.to_ascii_uppercase().replace('-', "_"))
+        format!(
+            "$RH_{}_TOKEN",
+            self.name.to_ascii_uppercase().replace('-', "_")
+        )
     }
 
     /// (header name, header value) resolved from env at call time. None for auth=none/cookie
     /// or when the env var is unset.
     pub fn credential(&self) -> Option<(String, String)> {
-        let env = |k: &Option<String>| k.as_ref().and_then(|k| std::env::var(k).ok()).filter(|v| !v.is_empty());
+        let env = |k: &Option<String>| {
+            k.as_ref()
+                .and_then(|k| std::env::var(k).ok())
+                .filter(|v| !v.is_empty())
+        };
         match self.auth {
-            AuthKind::Bearer => env(&self.token_env).map(|t| ("Authorization".into(), format!("Bearer {t}"))),
+            AuthKind::Bearer => {
+                env(&self.token_env).map(|t| ("Authorization".into(), format!("Bearer {t}")))
+            }
             AuthKind::Header => {
-                let name = self.header_name.clone().unwrap_or_else(|| "X-API-Key".into());
+                let name = self
+                    .header_name
+                    .clone()
+                    .unwrap_or_else(|| "X-API-Key".into());
                 env(&self.token_env).map(|t| (name, t))
             }
             AuthKind::Basic => {
                 let (u, p) = (env(&self.username_env)?, env(&self.password_env)?);
-                Some(("Authorization".into(), format!("Basic {}", b64(format!("{u}:{p}").as_bytes()))))
+                Some((
+                    "Authorization".into(),
+                    format!("Basic {}", b64(format!("{u}:{p}").as_bytes())),
+                ))
             }
             AuthKind::Cookie | AuthKind::None => None,
         }

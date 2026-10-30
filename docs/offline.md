@@ -93,7 +93,7 @@ At the end of a `qa` run the endpoint is probed (GET `<base>/models`, 2 s). Unre
 
 **Guardrails:** `redact_for_llm` on every input; target text is control-char-stripped, fence-neutralised and fenced as data; budget of 20 calls and 300 s per run; responses cached by sha256(model, system, prompt) under `<data>/llm-cache`, so reruns are reproducible and cache hits are free.
 
-Status: Live-verified with local vLLM serving Qwen3 reasoning models (`qwen3.8-flash-next`). The autonomous agent loop in `src/agent.rs` handles reasoning token streams (`reasoning_content`), synthesizes adversarial test suites, executes probes, clusters defects, and calculates the 4-pillar Evidence Ledger with sub-second latencies.
+Status: Live-verified with local vLLM serving Qwen3 reasoning models (`qwen3.8-flash-next`). The autonomous agent loop in `src/agent/` handles reasoning token streams (`reasoning_content`), synthesizes adversarial test suites, executes probes, clusters defects, and calculates the 4-pillar Evidence Ledger with sub-second latencies.
 
 ## Fully air-gapped AI
 

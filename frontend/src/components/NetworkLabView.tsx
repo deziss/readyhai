@@ -50,7 +50,8 @@ interface NetworkLabViewProps {
   ledgerScore?: number | null;
 }
 
-const BADGE_BASE = "http://localhost:8080";
+// Badge URLs are origin-relative and go through the Next.js /api proxy.
+const badgeBase = () => (typeof window === "undefined" ? "" : window.location.origin);
 
 export function NetworkLabView({
   initialTarget = "http://readyhai:8080",
@@ -68,11 +69,11 @@ export function NetworkLabView({
   const [method, setMethod] = useState("GET");
   const [iterations, setIterations] = useState(10);
   const [throttleProfile, setThrottleProfile] = useState("unthrottled");
-  const [customLatency, setCustomLatency] = useState(120);
+  const [customLatency] = useState(120);
   const [separateSessions, setSeparateSessions] = useState(true);
   const [delayBetweenMs, setDelayBetweenMs] = useState(25);
   const [customHeaders, setCustomHeaders] = useState("");
-  const [customPayload, setCustomPayload] = useState("");
+  const [customPayload] = useState("");
 
   // Regressive Results
   const [isRegressRunning, setIsRegressRunning] = useState(false);
@@ -87,18 +88,24 @@ export function NetworkLabView({
 
   // Restore cached deep audit result if available for target
   useEffect(() => {
-    try {
-      const cached = localStorage.getItem(`readyhai_deep_audit_${target}`);
-      if (cached && !deepAuditReport) {
-        setDeepAuditReport(JSON.parse(cached));
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      try {
+        const cached = localStorage.getItem(`readyhai_deep_audit_${target}`);
+        if (cached) setDeepAuditReport((prev) => prev ?? JSON.parse(cached));
+      } catch {
+        /* ignore corrupt cache */
       }
-    } catch (_) {}
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [target]);
 
   // cURL Runner
   const [isCurlRunning, setIsCurlRunning] = useState(false);
   const [curlResult, setCurlResult] = useState<CurlTestResponse | null>(null);
-  const [copiedCurl, setCopiedCurl] = useState(false);
   const [copiedText, setCopiedText] = useState<string | null>(null);
   const [isMultiRegionRunning, setIsMultiRegionRunning] = useState(false);
   const [multiRegionReport, setMultiRegionReport] = useState<MultiRegionReport | null>(null);
@@ -1642,7 +1649,7 @@ export function NetworkLabView({
                       </div>
                       <button
                         disabled={!gateStatus}
-                        onClick={() => copyToClipboard(`![ReadyHai Gate](${BADGE_BASE}/api/badges/gate?status=${encodeURIComponent((gateStatus || "").toLowerCase())})`, "badge-gate")}
+                        onClick={() => copyToClipboard(`![ReadyHai Gate](${badgeBase()}/api/badges/gate?status=${encodeURIComponent((gateStatus || "").toLowerCase())})`, "badge-gate")}
                         className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {copiedText === "badge-gate" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -1664,7 +1671,7 @@ export function NetworkLabView({
                       </div>
                       <button
                         disabled={ledgerScore === null}
-                        onClick={() => copyToClipboard(`![Evidence Ledger](${BADGE_BASE}/api/badges/ledger?score=${encodeURIComponent(`${ledgerScore}/100`)})`, "badge-ledger")}
+                        onClick={() => copyToClipboard(`![Evidence Ledger](${badgeBase()}/api/badges/ledger?score=${encodeURIComponent(`${ledgerScore}/100`)})`, "badge-ledger")}
                         className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {copiedText === "badge-ledger" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -1686,7 +1693,7 @@ export function NetworkLabView({
                       </div>
                       <button
                         disabled={!meshBadgeText}
-                        onClick={() => meshBadgeText && copyToClipboard(`![Network Mesh](${BADGE_BASE}/api/badges/network?status=${encodeURIComponent(meshBadgeText)})`, "badge-mesh")}
+                        onClick={() => meshBadgeText && copyToClipboard(`![Network Mesh](${badgeBase()}/api/badges/network?status=${encodeURIComponent(meshBadgeText)})`, "badge-mesh")}
                         className="text-xs text-cyan-400 hover:text-cyan-300 flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {copiedText === "badge-mesh" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}

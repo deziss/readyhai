@@ -235,10 +235,16 @@ pub struct CheckOutput {
 
 impl CheckOutput {
     pub fn findings(findings: Vec<Finding>) -> Self {
-        CheckOutput { status: None, findings }
+        CheckOutput {
+            status: None,
+            findings,
+        }
     }
     pub fn status(status: CheckStatus) -> Self {
-        CheckOutput { status: Some(status), findings: vec![] }
+        CheckOutput {
+            status: Some(status),
+            findings: vec![],
+        }
     }
 }
 
@@ -320,7 +326,9 @@ pub struct ErrorCluster {
     pub first_seen: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, clap::ValueEnum,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Profile {
     Quick,

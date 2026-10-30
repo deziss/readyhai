@@ -24,12 +24,12 @@ Single Rust crate (`readyhai`, edition 2024, ~16,300 lines in `src/` after incre
 | REST server | `src/serve.rs` | axum 0.8, bearer token, one in-process worker. |
 | MCP server | `src/mcp.rs` | Hand-written JSON-RPC 2.0 over stdio. No `rmcp` crate. |
 | LLM abstraction | `src/llm.rs` | Provider catalog (vLLM, Ollama, cloud), reasoning token extraction, token budgeting. |
-| Agentic AI Engine | `src/agent.rs` | Autonomous 4-agent loop (Planner -> Explorer -> Triager -> Readiness Gate), 4-pillar Evidence Ledger scoring. |
+| Agentic AI Engine | `src/agent/` | Autonomous 4-agent loop (Planner -> Explorer -> Triager -> Readiness Gate), 4-pillar Evidence Ledger scoring. |
 | Web Studio SPA | `src/web_ui.rs` | Cyber-dark single-page web app with real-time pipeline status, terminal trace, scenario inspector, and runs history. |
 
 ## Agentic AI Architecture & Evidence Ledger (Increment 3)
 
-The Agentic AI subsystem in `src/agent.rs` introduces an autonomous multi-agent testing architecture governed by an LLM-as-a-Judge supervisor:
+The Agentic AI subsystem in `src/agent/` introduces an autonomous multi-agent testing architecture governed by an LLM-as-a-Judge supervisor:
 
 ```
 [Target URL / Spec]

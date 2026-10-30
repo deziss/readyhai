@@ -42,8 +42,23 @@ impl Default for RunBudget {
 
 impl RunBudget {
     /// `rate_per_host`: requests per second per host; 0 or less disables pacing.
-    pub fn new(max_steps: usize, max_requests: usize, max_wall: Duration, rate_per_host: f64) -> Self {
-        RunBudget { max_steps, max_requests, max_wall, rate: rate_per_host, started: Instant::now(), steps: 0, requests: 0, last_hit: HashMap::new(), stopped: None }
+    pub fn new(
+        max_steps: usize,
+        max_requests: usize,
+        max_wall: Duration,
+        rate_per_host: f64,
+    ) -> Self {
+        RunBudget {
+            max_steps,
+            max_requests,
+            max_wall,
+            rate: rate_per_host,
+            started: Instant::now(),
+            steps: 0,
+            requests: 0,
+            last_hit: HashMap::new(),
+            stopped: None,
+        }
     }
 
     /// Defaults, overridden by READYHAI_AGENT_MAX_STEPS / _MAX_REQUESTS / _MAX_SECONDS / _RATE_PER_HOST.
@@ -121,7 +136,9 @@ impl RunBudget {
                 if since < gap {
                     let wait = gap - since;
                     if self.started.elapsed() + wait >= self.max_wall {
-                        return self.wall_check().and(Err("wall-clock budget would be exceeded by rate limiting".into()));
+                        return self.wall_check().and(Err(
+                            "wall-clock budget would be exceeded by rate limiting".into(),
+                        ));
                     }
                     std::thread::sleep(wait);
                 }
@@ -167,7 +184,11 @@ mod tests {
         let mut b = RunBudget::new(2, 3, Duration::from_secs(60), 0.0);
         assert!(b.take_step().is_ok() && b.take_step().is_ok());
         assert!(b.take_step().unwrap_err().contains("step budget"));
-        assert!(b.take_request("h").is_ok() && b.take_request("h").is_ok() && b.take_request("h").is_ok());
+        assert!(
+            b.take_request("h").is_ok()
+                && b.take_request("h").is_ok()
+                && b.take_request("h").is_ok()
+        );
         assert!(b.take_request("h").unwrap_err().contains("request budget"));
         assert_eq!(b.usage().steps, 2);
         assert!(b.usage().stopped.is_some());
@@ -180,10 +201,17 @@ mod tests {
         for _ in 0..4 {
             b.take_request("a").unwrap();
         }
-        assert!(t.elapsed() >= Duration::from_millis(140), "4 requests at 20/s need >= 150ms, took {:?}", t.elapsed());
+        assert!(
+            t.elapsed() >= Duration::from_millis(140),
+            "4 requests at 20/s need >= 150ms, took {:?}",
+            t.elapsed()
+        );
         let t = Instant::now();
         b.take_request("b").unwrap();
-        assert!(t.elapsed() < Duration::from_millis(40), "a different host is not paced by host a");
+        assert!(
+            t.elapsed() < Duration::from_millis(40),
+            "a different host is not paced by host a"
+        );
     }
 
     #[test]

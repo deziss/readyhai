@@ -1,3 +1,14 @@
+// Style lints only; correctness lints stay denied in CI (`cargo clippy -- -D warnings`).
+#![allow(
+    clippy::too_many_arguments,
+    clippy::result_large_err,
+    clippy::type_complexity,
+    clippy::field_reassign_with_default,
+    clippy::if_same_then_else,
+    clippy::unnecessary_sort_by,
+    clippy::some_filter
+)]
+
 mod agent;
 mod android;
 mod baseline;
@@ -12,8 +23,8 @@ mod host;
 mod llm;
 mod logs;
 mod mcp;
-pub mod network;
 mod model;
+pub mod network;
 mod policy;
 mod qa;
 mod report;
@@ -31,7 +42,11 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(name = "readyhai", version, about = "Ready hai? Self-hosted QA tester + production-readiness gate")]
+#[command(
+    name = "readyhai",
+    version,
+    about = "Ready hai? Self-hosted QA tester + production-readiness gate"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -142,6 +157,12 @@ enum Cmd {
         /// OpenAPI spec URL: plan cases from real operations instead of probing a few paths
         #[arg(long)]
         spec: Option<String>,
+        /// Scope file (scope.toml); the agent sends writes and attack payloads, so a public target must be listed with env = "nonprod"
+        #[arg(long, env = "READYHAI_SCOPE")]
+        scope: Option<PathBuf>,
+        /// Plan only: validate scope and print what would run, send no requests
+        #[arg(long)]
+        dry_run: bool,
     },
     /// REST API + job worker
     Serve {
@@ -185,7 +206,9 @@ enum BundleCmd {
         #[arg(long)]
         with_model: Option<PathBuf>,
     },
-    Import { bundle: PathBuf },
+    Import {
+        bundle: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -211,7 +234,22 @@ fn main() -> ExitCode {
 
 fn run() -> anyhow::Result<u8> {
     match Cli::parse().cmd {
-        Cmd::Scan { target, profile, openapi, policy, scope, config, baseline, format, out, no_tools, os, key, device, plugins } => {
+        Cmd::Scan {
+            target,
+            profile,
+            openapi,
+            policy,
+            scope,
+            config,
+            baseline,
+            format,
+            out,
+            no_tools,
+            os,
+            key,
+            device,
+            plugins,
+        } => {
             let opts = ScanOpts {
                 target,
                 profile: Some(profile),
@@ -228,7 +266,12 @@ fn run() -> anyhow::Result<u8> {
                 ..Default::default()
             };
             let id = engine::new_run_id();
-            eprintln!("readyhai {} · run {id} · {} · profile {:?}", engine::VERSION, opts.target, profile);
+            eprintln!(
+                "readyhai {} · run {id} · {} · profile {:?}",
+                engine::VERSION,
+                opts.target,
+                profile
+            );
             let run = engine::scan(&opts, &id)?;
             let files = report::write(&run, &out, &format)?;
             print_summary(&run);
@@ -237,7 +280,22 @@ fn run() -> anyhow::Result<u8> {
             }
             Ok(run.verdict.exit_code() as u8)
         }
-        Cmd::Qa { url, repo, spec, roles, journeys, profile, scope, policy, config, baseline, format, out, no_tools, plugins } => {
+        Cmd::Qa {
+            url,
+            repo,
+            spec,
+            roles,
+            journeys,
+            profile,
+            scope,
+            policy,
+            config,
+            baseline,
+            format,
+            out,
+            no_tools,
+            plugins,
+        } => {
             let opts = ScanOpts {
                 target: url,
                 profile: Some(profile),
@@ -255,23 +313,42 @@ fn run() -> anyhow::Result<u8> {
                 ..Default::default()
             };
             let id = engine::new_run_id();
-            eprintln!("readyhai {} · QA run {id} · {} · profile {:?}", engine::VERSION, opts.target, profile);
+            eprintln!(
+                "readyhai {} · QA run {id} · {} · profile {:?}",
+                engine::VERSION,
+                opts.target,
+                profile
+            );
             let run = engine::scan(&opts, &id)?;
             let files = report::write(&run, &out, &format)?;
             print_summary(&run);
             if let Some(q) = &run.qa {
-                eprintln!("  QA recommendation: {:?} — {} defect(s), {} case(s)", q.recommendation, q.defects.len(), q.cases.len());
+                eprintln!(
+                    "  QA recommendation: {:?} — {} defect(s), {} case(s)",
+                    q.recommendation,
+                    q.defects.len(),
+                    q.cases.len()
+                );
             }
             for f in files {
                 eprintln!("report: {}", f.display());
             }
             Ok(run.verdict.exit_code() as u8)
         }
-        Cmd::Bundle { cmd: BundleCmd::Export { out, set, with_model } } => {
+        Cmd::Bundle {
+            cmd:
+                BundleCmd::Export {
+                    out,
+                    set,
+                    with_model,
+                },
+        } => {
             bundle::export(&out, &set, with_model.as_deref())?;
             Ok(0)
         }
-        Cmd::Bundle { cmd: BundleCmd::Import { bundle: b } } => {
+        Cmd::Bundle {
+            cmd: BundleCmd::Import { bundle: b },
+        } => {
             bundle::import(&b)?;
             Ok(0)
         }
@@ -279,12 +356,18 @@ fn run() -> anyhow::Result<u8> {
             bundle::doctor()?;
             Ok(0)
         }
-        Cmd::Baseline { cmd: BaselineCmd::Accept { run, out } } => {
+        Cmd::Baseline {
+            cmd: BaselineCmd::Accept { run, out },
+        } => {
             let r = engine::load_run(&run)?;
             let path = out.unwrap_or_else(|| engine::default_baseline_path(&r.target));
             let b = baseline::Baseline::from_run(&r, engine::now());
             b.save(&path)?;
-            eprintln!("baseline: {} fingerprints → {}", b.fingerprints.len(), path.display());
+            eprintln!(
+                "baseline: {} fingerprints → {}",
+                b.fingerprints.len(),
+                path.display()
+            );
             if r.qa.is_some() {
                 for line in qa::accept_baselines(&engine::target_key(&r.target), &r.id) {
                     eprintln!("baseline: {line}");
@@ -295,7 +378,11 @@ fn run() -> anyhow::Result<u8> {
         Cmd::Checks => {
             let plugins = std::env::var("READYHAI_PLUGINS").ok().map(PathBuf::from);
             for c in checks::all(plugins.as_deref()) {
-                let kinds: Vec<String> = c.kinds.iter().map(|k| format!("{k:?}").to_lowercase()).collect();
+                let kinds: Vec<String> = c
+                    .kinds
+                    .iter()
+                    .map(|k| format!("{k:?}").to_lowercase())
+                    .collect();
                 println!(
                     "{:<26} {:<12} {:<9} {:<12} {}{}",
                     c.id,
@@ -308,20 +395,55 @@ fn run() -> anyhow::Result<u8> {
             }
             Ok(0)
         }
-        Cmd::Tools { cmd: ToolsCmd::Pull { lock } } => {
+        Cmd::Tools {
+            cmd: ToolsCmd::Pull { lock },
+        } => {
             tools::tools_pull(lock.as_deref())?;
             Ok(0)
         }
-        Cmd::Tools { cmd: ToolsCmd::Update } => {
+        Cmd::Tools {
+            cmd: ToolsCmd::Update,
+        } => {
             tools::tools_update(&tools::Docker::detect(&engine::data_dir()))?;
             Ok(0)
         }
-        Cmd::Agent { target, max_steps, spec } => {
+        Cmd::Agent {
+            target,
+            max_steps,
+            spec,
+            scope,
+            dry_run,
+        } => {
+            // Same egress guard as the API (intrusive: writes, attack payloads).
+            let sc = match &scope {
+                Some(p) => Some(scope::Scope::load(p)?),
+                None => None,
+            };
+            let target = scope::egress_guard(&target, sc.as_ref(), true)?.url;
+            let spec = match spec.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                Some(s) => Some(scope::egress_guard(s, sc.as_ref(), false)?.url),
+                None => None,
+            };
+            let max_steps = max_steps.clamp(1, 50);
+            if dry_run {
+                println!("readyhai agent --dry-run: no requests sent");
+                println!("  target:    {target}  (scope check passed, intrusive actions allowed)");
+                println!(
+                    "  spec:      {}",
+                    spec.as_deref().unwrap_or("none (probe a few common paths)")
+                );
+                println!("  max steps: {max_steps}");
+                println!(
+                    "  plan:      discover routes -> plan cases -> execute (reads and writes) -> triage -> evidence ledger"
+                );
+                return Ok(0);
+            }
             let req = agent::AgentRunRequest {
                 target: target.clone(),
                 profile: "standard".to_string(),
                 spec_url: spec,
                 custom_instructions: None,
+                max_steps: None,
                 dry_run: false,
                 thinking: true,
                 model_tier: "high".to_string(),
@@ -329,19 +451,40 @@ fn run() -> anyhow::Result<u8> {
             };
             let run_id = engine::new_run_id();
             eprintln!("readyhai agent: starting autonomous loop for {target} (run {run_id})...");
-            let report = agent::run_agentic_loop_with(&req, &run_id, agent::RunOptions::default().with_max_steps(max_steps))?;
-            let verdict = report.evidence_ledger.as_ref().map(|l| l.gate_verdict.as_str()).unwrap_or("UNKNOWN");
-            let score = report.evidence_ledger.as_ref().map(|l| l.overall_readiness).unwrap_or(0);
-            let summary = report.evidence_ledger.as_ref().map(|l| l.executive_summary.as_str()).unwrap_or("No summary");
-            println!("
-=== ReadyHai Agentic QA Report ===");
+            let report = agent::run_agentic_loop_with(
+                &req,
+                &run_id,
+                agent::RunOptions::default().with_max_steps(max_steps),
+            )?;
+            let verdict = report
+                .evidence_ledger
+                .as_ref()
+                .map(|l| l.gate_verdict.as_str())
+                .unwrap_or("UNKNOWN");
+            let score = report
+                .evidence_ledger
+                .as_ref()
+                .map(|l| l.overall_readiness)
+                .unwrap_or(0);
+            let summary = report
+                .evidence_ledger
+                .as_ref()
+                .map(|l| l.executive_summary.as_str())
+                .unwrap_or("No summary");
+            println!(
+                "
+=== ReadyHai Agentic QA Report ==="
+            );
             println!("Run ID:       {}", report.id);
             println!("Target:       {}", report.target);
             println!("Model:        {} ({})", report.model, report.provider);
             println!("Gate Verdict: {}", verdict);
             let n = report.executed_results.len();
             if n < 5 {
-                println!("Readiness:    {}% (low coverage: only {n} case(s) ran — pass --spec for API-driven testing)", score);
+                println!(
+                    "Readiness:    {}% (low coverage: only {n} case(s) ran — pass --spec for API-driven testing)",
+                    score
+                );
             } else {
                 println!("Readiness:    {}%", score);
             }
@@ -387,11 +530,23 @@ fn print_summary(run: &Run) {
             CheckStatus::NotApplicable(_) => "n/a ",
             CheckStatus::Errored(_) => "ERR ",
         };
-        let why = c.status.reason().map(|r| format!(" — {r}")).unwrap_or_default();
+        let why = c
+            .status
+            .reason()
+            .map(|r| format!(" — {r}"))
+            .unwrap_or_default();
         eprintln!("  [{mark}] {:<26} {:>3} finding(s){why}", c.id, c.findings);
     }
-    let new = run.findings.iter().filter(|f| f.status == FindingStatus::New).count();
-    let sup = run.findings.iter().filter(|f| f.status == FindingStatus::Suppressed).count();
+    let new = run
+        .findings
+        .iter()
+        .filter(|f| f.status == FindingStatus::New)
+        .count();
+    let sup = run
+        .findings
+        .iter()
+        .filter(|f| f.status == FindingStatus::Suppressed)
+        .count();
     eprintln!(
         "\n  findings: {} total · {new} new · {sup} suppressed · {} fixed since baseline",
         run.findings.len(),

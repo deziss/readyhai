@@ -36,12 +36,21 @@ mod tests;
 pub use budget::{BudgetUsage, RunBudget};
 pub use discover::{crawl_and_discover_routes, detect_target_tech, discover_routes};
 #[allow(unused_imports)]
-pub use exec::{execute_cases, execute_cases_with, Credentials, ExecOptions};
+pub use exec::{Credentials, ExecOptions, execute_cases, execute_cases_with};
 #[allow(unused_imports)]
 pub use oracle::{OracleCheck, OracleOutcome, Severity, Verdict};
 #[allow(unused_imports)]
-pub use pipeline::{run_agentic_loop, run_agentic_loop_with, run_discovery_scan, LlmMode, RunOptions};
-pub use report::{generate_agent_html_report, generate_agent_junit_report, generate_agent_markdown_report, generate_agent_report_formats, generate_agent_sarif_report};
-pub use store::{agent_runs_dir, approve_agent_run, convert_engine_run_to_agent_report, delete_agent_run, list_agent_full_runs, list_agent_runs, load_agent_run, reject_agent_run, save_agent_run, update_run_case_result};
+pub use pipeline::{
+    LlmMode, RunOptions, run_agentic_loop, run_agentic_loop_with, run_discovery_scan,
+};
+pub use report::{
+    generate_agent_html_report, generate_agent_junit_report, generate_agent_markdown_report,
+    generate_agent_report_formats, generate_agent_sarif_report,
+};
+pub use store::{
+    agent_runs_dir, approve_agent_run, convert_engine_run_to_agent_report, delete_agent_run,
+    list_agent_full_runs, list_agent_runs, load_agent_run, reject_agent_run, save_agent_run,
+    update_run_case_result,
+};
 #[allow(unused_imports)]
 pub use types::*;

@@ -171,7 +171,7 @@ readyhai agent http://localhost:3000 --max-steps 5
 # Start ReadyHai Backend API Engine (default port 8080)
 readyhai serve --bind 127.0.0.1:8080
 
-# In a separate terminal or service, launch the Next.js 15 Agent Studio (port 3000):
+# In a separate terminal or service, launch the Next.js 16 Agent Studio (port 3000):
 cd frontend && npm run dev -- -p 3000
 # Open http://127.0.0.1:3000 in your browser for the full cyber-dark studio interface.
 # (Visiting http://127.0.0.1:8080 in a browser automatically redirects you to port 3000)

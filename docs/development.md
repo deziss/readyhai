@@ -42,7 +42,7 @@ readyhai/
 | `serve.rs` | 326 | REST API, background worker, Web UI endpoints |
 | `mcp.rs` | 295 | MCP stdio server and `precheck` |
 | `llm.rs` | 544 | Provider catalog (vLLM, Ollama, cloud), reasoning token parser, token budget |
-| `agent.rs` | 639 | Autonomous multi-agent QA loop, Evidence Ledger calculation, defect triage |
+| `agent/` (mod, plan, exec, discover, triage, ledger, ...) | multi-file | Autonomous multi-agent QA loop, Evidence Ledger calculation, defect triage |
 | `web_ui.rs` | 1168 | Cyber-dark Web Studio SPA (HTML, CSS, JS) with live pipeline telemetry |
 
 ## Adding a check

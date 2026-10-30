@@ -2,9 +2,9 @@
 use crate::checks::Check;
 use crate::ctx::Ctx;
 use crate::model::{
-    sha256_hex, Category, CheckOutput, CheckStatus, Finding, Profile, Severity, TargetKind,
+    Category, CheckOutput, CheckStatus, Finding, Profile, Severity, TargetKind, sha256_hex,
 };
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -107,10 +107,10 @@ struct LockFile {
 
 /// Lock precedence: READYHAI_TOOLS_LOCK env file > <data>/tools.lock.toml (installed by `bundle import`) > embedded.
 fn pick_lock_text(env_path: Option<&str>, data: &Path) -> String {
-    if let Some(p) = env_path {
-        if let Ok(t) = std::fs::read_to_string(p) {
-            return t;
-        }
+    if let Some(p) = env_path
+        && let Ok(t) = std::fs::read_to_string(p)
+    {
+        return t;
     }
     if let Ok(t) = std::fs::read_to_string(data.join("tools.lock.toml")) {
         return t;
@@ -134,7 +134,13 @@ pub fn lock_entries() -> BTreeMap<String, LockEntry> {
 
 /// ID of a local image (`docker image inspect`), None when it is not present.
 pub fn local_image_id(reference: &str) -> Option<String> {
-    let o = run_capped(Command::new("docker").args(["image", "inspect", "--format", "{{.Id}}", reference]), DOCKER_QUICK, 8192, None).ok()?;
+    let o = run_capped(
+        Command::new("docker").args(["image", "inspect", "--format", "{{.Id}}", reference]),
+        DOCKER_QUICK,
+        8192,
+        None,
+    )
+    .ok()?;
     if !o.success() {
         return None;
     }
@@ -144,10 +150,10 @@ pub fn local_image_id(reference: &str) -> Option<String> {
 
 /// Resolve a lock entry to (reference, pinned, by_id). `exists` tells whether a ref is present locally.
 fn resolve_entry(e: &LockEntry, exists: &dyn Fn(&str) -> bool) -> (String, bool, bool) {
-    if let Some(id) = e.id.as_deref().filter(|i| i.starts_with("sha256:")) {
-        if exists(id) {
-            return (id.to_string(), true, true);
-        }
+    if let Some(id) = e.id.as_deref().filter(|i| i.starts_with("sha256:"))
+        && exists(id)
+    {
+        return (id.to_string(), true, true);
     }
     let (r, p) = ref_with_digest(&e.image, &e.digest);
     (r, p, false)
@@ -174,7 +180,9 @@ pub fn image_present(tool: &str) -> bool {
     let lock = load_lock();
     match lock.tools.get(tool) {
         Some(e) => {
-            e.id.as_deref().map(|i| local_image_id(i).is_some()).unwrap_or(false)
+            e.id.as_deref()
+                .map(|i| local_image_id(i).is_some())
+                .unwrap_or(false)
                 || local_image_id(&ref_with_digest(&e.image, &e.digest).0).is_some()
                 || local_image_id(&e.image).is_some()
         }
@@ -206,13 +214,18 @@ static PIN_WARNINGS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 fn warn_unpinned(tool: &str, image: &str) {
     if let Ok(mut g) = PIN_WARNINGS.lock() {
-        g.insert(format!("tool image {tool} unpinned ({image}) — run `readyhai tools pull --lock`"));
+        g.insert(format!(
+            "tool image {tool} unpinned ({image}) — run `readyhai tools pull --lock`"
+        ));
     }
 }
 
 /// Warnings about images that ran without a digest pin; the engine surfaces these.
 pub fn pin_warnings() -> Vec<String> {
-    PIN_WARNINGS.lock().map(|g| g.iter().cloned().collect()).unwrap_or_default()
+    PIN_WARNINGS
+        .lock()
+        .map(|g| g.iter().cloned().collect())
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------- docker runner
@@ -253,7 +266,10 @@ pub fn validate_create_policy(args: &[String]) -> Result<()> {
             "--mount" => {
                 let dst = next
                     .split(',')
-                    .find_map(|kv| kv.strip_prefix("dst=").or_else(|| kv.strip_prefix("target=")))
+                    .find_map(|kv| {
+                        kv.strip_prefix("dst=")
+                            .or_else(|| kv.strip_prefix("target="))
+                    })
                     .unwrap_or("");
                 if !ALLOWED_DST.contains(&dst) {
                     bail!("create-policy: extra mount rejected: {next}");
@@ -268,7 +284,15 @@ pub fn validate_create_policy(args: &[String]) -> Result<()> {
 }
 
 fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn abs(p: &Path) -> PathBuf {
@@ -280,13 +304,22 @@ fn mount_args(docker: &Docker, m: &Mount) -> Result<Vec<String>> {
     match &docker.mode {
         MountMode::Bind => Ok(vec![
             "-v".into(),
-            format!("{}:{}:{}", host.display(), m.dst, if m.rw { "rw" } else { "ro" }),
+            format!(
+                "{}:{}:{}",
+                host.display(),
+                m.dst,
+                if m.rw { "rw" } else { "ro" }
+            ),
         ]),
         MountMode::Volume { name, data_root } => {
             let root = abs(data_root);
-            let rel = host
-                .strip_prefix(&root)
-                .map_err(|_| anyhow!("{} is outside the data volume {}", host.display(), root.display()))?;
+            let rel = host.strip_prefix(&root).map_err(|_| {
+                anyhow!(
+                    "{} is outside the data volume {}",
+                    host.display(),
+                    root.display()
+                )
+            })?;
             let mut s = format!(
                 "type=volume,src={name},dst={},volume-subpath={}",
                 m.dst,
@@ -326,22 +359,44 @@ fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Res
         flags.extend(["--pull".to_string(), "never".to_string()]);
     }
     flags.extend(vec![
-        "--rm".into(), "--name".into(), name.clone(),
-        "--label".into(), format!("readyhai.run={run_id}"),
-        "--network".into(), if spec.network { "bridge".into() } else { "none".into() },
-        "--cap-drop".into(), "ALL".into(),
-        "--security-opt".into(), "no-new-privileges".into(),
+        "--rm".into(),
+        "--name".into(),
+        name.clone(),
+        "--label".into(),
+        format!("readyhai.run={run_id}"),
+        "--network".into(),
+        if spec.network {
+            "bridge".into()
+        } else {
+            "none".into()
+        },
+        "--cap-drop".into(),
+        "ALL".into(),
+        "--security-opt".into(),
+        "no-new-privileges".into(),
         "--read-only".into(),
-        "--tmpfs".into(), "/tmp:rw,exec,size=1g,mode=1777".into(),
+        "--tmpfs".into(),
+        "/tmp:rw,exec,size=1g,mode=1777".into(),
     ]);
     for t in &spec.tmpfs {
         flags.push("--tmpfs".into());
         flags.push(t.clone());
     }
     flags.extend(
-        ["--pids-limit", "512", "--memory", spec.memory.as_str(), "--cpus", "2",
-         "--log-driver", "none", "-e", "HOME=/tmp"]
-            .iter().map(|s| s.to_string()),
+        [
+            "--pids-limit",
+            "512",
+            "--memory",
+            spec.memory.as_str(),
+            "--cpus",
+            "2",
+            "--log-driver",
+            "none",
+            "-e",
+            "HOME=/tmp",
+        ]
+        .iter()
+        .map(|s| s.to_string()),
     );
     flags.push("--user".into());
     flags.push(spec.user.clone().unwrap_or_else(|| "65534:65534".into()));
@@ -371,7 +426,9 @@ fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Res
 
     let mut cmd = Command::new("docker");
     cmd.arg("run").args(&flags).arg(&image).args(&spec.args);
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     let mut child = cmd.spawn().context("spawning docker")?;
     let mut out = child.stdout.take().unwrap();
     let mut err = child.stderr.take().unwrap();
@@ -409,7 +466,12 @@ fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Res
             break s;
         }
         if Instant::now() >= deadline {
-            let _ = run_capped(Command::new("docker").args(["rm", "-f", &name]), DOCKER_QUICK, 4096, None);
+            let _ = run_capped(
+                Command::new("docker").args(["rm", "-f", &name]),
+                DOCKER_QUICK,
+                4096,
+                None,
+            );
             let _ = child.kill();
             let _ = child.wait();
             if run_limited {
@@ -461,7 +523,10 @@ impl Captured {
 
 const TAIL_KEEP: usize = 4096;
 
-fn drain_capped<R: Read + Send + 'static>(mut r: R, cap: usize) -> std::sync::mpsc::Receiver<(Vec<u8>, Vec<u8>, bool)> {
+fn drain_capped<R: Read + Send + 'static>(
+    mut r: R,
+    cap: usize,
+) -> std::sync::mpsc::Receiver<(Vec<u8>, Vec<u8>, bool)> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let (mut head, mut tail, mut truncated) = (Vec::new(), Vec::new(), false);
@@ -491,9 +556,18 @@ fn drain_capped<R: Read + Send + 'static>(mut r: R, cap: usize) -> std::sync::mp
 /// Run a command with a hard wall-clock limit and bounded output. stdin is null (or `input`),
 /// stdout and stderr are always piped: a child never inherits the parent's stdout, which matters
 /// for the MCP server whose stdout carries only JSON-RPC. On timeout the child is killed.
-pub fn run_capped(cmd: &mut Command, timeout: Duration, cap: usize, input: Option<&[u8]>) -> std::io::Result<Captured> {
+pub fn run_capped(
+    cmd: &mut Command,
+    timeout: Duration,
+    cap: usize,
+    input: Option<&[u8]>,
+) -> std::io::Result<Captured> {
     use std::io::Write;
-    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() });
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
     if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
@@ -520,11 +594,17 @@ pub fn run_capped(cmd: &mut Command, timeout: Duration, cap: usize, input: Optio
     let grace = Duration::from_secs(2);
     let (stdout, stdout_tail, t1) = rx_out.recv_timeout(grace).unwrap_or_default();
     let (stderr, _, t2) = rx_err.recv_timeout(grace).unwrap_or_default();
-    Ok(Captured { status, stdout, stdout_tail, stderr, truncated: t1 || t2, timed_out })
+    Ok(Captured {
+        status,
+        stdout,
+        stdout_tail,
+        stderr,
+        truncated: t1 || t2,
+        timed_out,
+    })
 }
 
 const DOCKER_QUICK: Duration = Duration::from_secs(30);
-
 
 fn mkdir_open(p: &Path) {
     let _ = std::fs::create_dir_all(p);
@@ -534,16 +614,28 @@ fn mkdir_open(p: &Path) {
 impl Docker {
     pub fn detect(data_dir: &Path) -> Docker {
         // A wedged daemon must not hang the scan (or the MCP server): 10 s, then "unavailable".
-        let available = run_capped(Command::new("docker").args(["version", "--format", "{{.Server.Version}}"]), Duration::from_secs(10), 4096, None)
-            .map(|o| o.success() && !o.stdout.is_empty())
-            .unwrap_or(false);
+        let available = run_capped(
+            Command::new("docker").args(["version", "--format", "{{.Server.Version}}"]),
+            Duration::from_secs(10),
+            4096,
+            None,
+        )
+        .map(|o| o.success() && !o.stdout.is_empty())
+        .unwrap_or(false);
         let mode = match std::env::var("READYHAI_DATA_VOLUME") {
-            Ok(name) if !name.is_empty() => MountMode::Volume { name, data_root: data_dir.to_path_buf() },
+            Ok(name) if !name.is_empty() => MountMode::Volume {
+                name,
+                data_root: data_dir.to_path_buf(),
+            },
             _ => MountMode::Bind,
         };
         let cache_dir = data_dir.join("cache");
         mkdir_open(&cache_dir);
-        Docker { available, mode, cache_dir }
+        Docker {
+            available,
+            mode,
+            cache_dir,
+        }
     }
 
     pub fn run(&self, ctx: &Ctx, spec: &ToolSpec) -> Result<ToolRun> {
@@ -551,9 +643,21 @@ impl Docker {
         mkdir_open(&out);
         mkdir_open(&self.cache_dir);
         let mounts = [
-            Mount { host: ctx.src_dir(), dst: "/src", rw: false },
-            Mount { host: out, dst: "/out", rw: true },
-            Mount { host: self.cache_dir.clone(), dst: "/cache", rw: spec.cache_rw },
+            Mount {
+                host: ctx.src_dir(),
+                dst: "/src",
+                rw: false,
+            },
+            Mount {
+                host: out,
+                dst: "/out",
+                rw: true,
+            },
+            Mount {
+                host: self.cache_dir.clone(),
+                dst: "/cache",
+                rw: spec.cache_rw,
+            },
         ];
         exec(self, &ctx.run_id, &mounts, spec)
     }
@@ -568,7 +672,17 @@ impl Docker {
         if let Some(rd) = crate::engine::run_deadline(run_id) {
             limit = limit.min(rd.saturating_duration_since(Instant::now()));
         }
-        let o = run_capped(Command::new("docker").arg("save").arg("-o").arg(dest).arg(image), limit, 8192, None).context("docker save")?;
+        let o = run_capped(
+            Command::new("docker")
+                .arg("save")
+                .arg("-o")
+                .arg(dest)
+                .arg(image),
+            limit,
+            8192,
+            None,
+        )
+        .context("docker save")?;
         if o.timed_out {
             let _ = std::fs::remove_file(dest);
             bail!("docker save {image}: timed out after {}s", limit.as_secs());
@@ -591,10 +705,26 @@ pub fn reap_run(run_id: &str) {
 }
 
 fn reap_label(filter: &str) {
-    let Ok(o) = run_capped(Command::new("docker").args(["ps", "-aq", "--filter", filter]), DOCKER_QUICK, 1 << 16, None) else { return };
-    let ids: Vec<String> = o.stdout_lossy().split_whitespace().map(String::from).collect();
+    let Ok(o) = run_capped(
+        Command::new("docker").args(["ps", "-aq", "--filter", filter]),
+        DOCKER_QUICK,
+        1 << 16,
+        None,
+    ) else {
+        return;
+    };
+    let ids: Vec<String> = o
+        .stdout_lossy()
+        .split_whitespace()
+        .map(String::from)
+        .collect();
     if !ids.is_empty() {
-        let _ = run_capped(Command::new("docker").arg("rm").arg("-f").args(&ids), DOCKER_QUICK, 4096, None);
+        let _ = run_capped(
+            Command::new("docker").arg("rm").arg("-f").args(&ids),
+            DOCKER_QUICK,
+            4096,
+            None,
+        );
     }
 }
 
@@ -603,7 +733,14 @@ fn reap_label(filter: &str) {
 /// (for example a CLI scan started by someone else) are left alone.
 pub fn reap_dead_runs(is_dead: &dyn Fn(&str) -> bool) -> usize {
     let Ok(o) = run_capped(
-        Command::new("docker").args(["ps", "-a", "--filter", "label=readyhai.run", "--format", "{{.ID}} {{.Label \"readyhai.run\"}}"]),
+        Command::new("docker").args([
+            "ps",
+            "-a",
+            "--filter",
+            "label=readyhai.run",
+            "--format",
+            "{{.ID}} {{.Label \"readyhai.run\"}}",
+        ]),
         DOCKER_QUICK,
         1 << 16,
         None,
@@ -623,7 +760,12 @@ pub fn reap_dead_runs(is_dead: &dyn Fn(&str) -> bool) -> usize {
         }
     }
     if !ids.is_empty() {
-        let _ = run_capped(Command::new("docker").arg("rm").arg("-f").args(&ids), DOCKER_QUICK, 4096, None);
+        let _ = run_capped(
+            Command::new("docker").arg("rm").arg("-f").args(&ids),
+            DOCKER_QUICK,
+            4096,
+            None,
+        );
     }
     ids.len()
 }
@@ -633,7 +775,9 @@ pub fn reap_dead_runs(is_dead: &dyn Fn(&str) -> bool) -> usize {
 fn rel(p: &str) -> String {
     let p = p.trim_start_matches("file://");
     let p = p.strip_prefix("/src/").unwrap_or(p);
-    p.trim_start_matches("./").trim_start_matches('/').to_string()
+    p.trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
 }
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -646,7 +790,9 @@ fn first_line(t: &str, max: usize) -> String {
 
 fn gate(ctx: &Ctx) -> Option<CheckOutput> {
     if !ctx.docker.available {
-        return Some(CheckOutput::status(CheckStatus::Skipped("docker not available".into())));
+        return Some(CheckOutput::status(CheckStatus::Skipped(
+            "docker not available".into(),
+        )));
     }
     None
 }
@@ -654,13 +800,16 @@ fn gate(ctx: &Ctx) -> Option<CheckOutput> {
 /// Skipped result when the tool's image is not available locally and we cannot pull (offline).
 fn missing_image(tool: &str) -> Option<CheckOutput> {
     if crate::bundle::offline() && !image_present(tool) {
-        return Some(CheckOutput::status(CheckStatus::Skipped(format!("image not in bundle: {tool}"))));
+        return Some(CheckOutput::status(CheckStatus::Skipped(format!(
+            "image not in bundle: {tool}"
+        ))));
     }
     None
 }
 
 fn read_out(ctx: &Ctx, name: &str) -> Result<String> {
-    std::fs::read_to_string(ctx.out_dir().join(name)).with_context(|| format!("tool did not write /out/{name}"))
+    std::fs::read_to_string(ctx.out_dir().join(name))
+        .with_context(|| format!("tool did not write /out/{name}"))
 }
 
 fn tool_failed(name: &str, r: &ToolRun) -> anyhow::Error {
@@ -738,7 +887,10 @@ fn partial(notes: Vec<String>, findings: Vec<Finding>) -> CheckOutput {
     if notes.is_empty() {
         CheckOutput::findings(findings)
     } else {
-        CheckOutput { status: Some(CheckStatus::Partial(notes.join("; "))), findings }
+        CheckOutput {
+            status: Some(CheckStatus::Partial(notes.join("; "))),
+            findings,
+        }
     }
 }
 
@@ -772,20 +924,34 @@ fn canonical_id(id: &str, related: &[String]) -> String {
     if id.starts_with("CVE-") {
         return id.to_string();
     }
-    related.iter().find(|r| r.starts_with("CVE-")).cloned().unwrap_or_else(|| id.to_string())
+    related
+        .iter()
+        .find(|r| r.starts_with("CVE-"))
+        .cloned()
+        .unwrap_or_else(|| id.to_string())
 }
 
 pub fn parse_grype(json: &str) -> Result<Vec<Finding>> {
     let v: Value = serde_json::from_str(json)?;
     let mut out = vec![];
-    for m in v.get("matches").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+    for m in v
+        .get("matches")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
         let vuln = m.get("vulnerability").cloned().unwrap_or(Value::Null);
         let art = m.get("artifact").cloned().unwrap_or(Value::Null);
         let id = s(&vuln, "id").to_string();
         let related: Vec<String> = m
             .get("relatedVulnerabilities")
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().map(|r| s(r, "id").to_string()).filter(|x| !x.is_empty()).collect())
+            .map(|a| {
+                a.iter()
+                    .map(|r| s(r, "id").to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
+            })
             .unwrap_or_default();
         let mut ids = vec![id.clone()];
         for r in &related {
@@ -801,7 +967,11 @@ pub fn parse_grype(json: &str) -> Result<Vec<Finding>> {
             .and_then(|l| l.first())
             .map(|l| rel(s(l, "path")))
             .unwrap_or_default();
-        let kev = vuln.get("knownExploited").and_then(|x| x.as_array()).map(|a| !a.is_empty()).unwrap_or(false);
+        let kev = vuln
+            .get("knownExploited")
+            .and_then(|x| x.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
         let epss = vuln
             .get("epss")
             .and_then(|x| x.as_array())
@@ -812,17 +982,29 @@ pub fn parse_grype(json: &str) -> Result<Vec<Finding>> {
             .get("fix")
             .and_then(|f| f.get("versions"))
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let sev = Severity::parse(match s(&vuln, "severity") {
             "Negligible" | "Unknown" | "" => "info",
             x => x,
         });
-        let loc = if path.is_empty() { name.to_string() } else { path.clone() };
+        let loc = if path.is_empty() {
+            name.to_string()
+        } else {
+            path.clone()
+        };
         let mut f = Finding::new(
             "tool.sbom_cve",
             &id,
-            if kev { Category::Security } else { Category::SupplyChain },
+            if kev {
+                Category::Security
+            } else {
+                Category::SupplyChain
+            },
             sev,
             format!("{id} in {name} {version}"),
             loc,
@@ -844,10 +1026,19 @@ pub fn parse_grype(json: &str) -> Result<Vec<Finding>> {
 pub fn parse_semgrep(json: &str) -> Result<Vec<Finding>> {
     let v: Value = serde_json::from_str(json)?;
     let mut out = vec![];
-    for r in v.get("results").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+    for r in v
+        .get("results")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
         let extra = r.get("extra").cloned().unwrap_or(Value::Null);
         let path = rel(s(&r, "path"));
-        let line = r.get("start").and_then(|x| x.get("line")).and_then(|x| x.as_u64()).unwrap_or(0);
+        let line = r
+            .get("start")
+            .and_then(|x| x.get("line"))
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
         let sev = match s(&extra, "severity") {
             "ERROR" => Severity::High,
             "WARNING" => Severity::Medium,
@@ -884,10 +1075,24 @@ pub fn parse_hadolint(json: &str) -> Result<Vec<Finding>> {
             "warning" => Severity::Medium,
             _ => Severity::Low,
         };
-        let cat = if matches!(code, "DL3002" | "DL3004" | "DL3020") { Category::Security } else { Category::Quality };
+        let cat = if matches!(code, "DL3002" | "DL3004" | "DL3020") {
+            Category::Security
+        } else {
+            Category::Quality
+        };
         out.push(
-            Finding::new("tool.hadolint", code, cat, sev, msg, format!("{file}:{line}"))
-                .fp_key(format!("{file}|{code}|{}", &sha256_hex(msg.as_bytes())[..8])),
+            Finding::new(
+                "tool.hadolint",
+                code,
+                cat,
+                sev,
+                msg,
+                format!("{file}:{line}"),
+            )
+            .fp_key(format!(
+                "{file}|{code}|{}",
+                &sha256_hex(msg.as_bytes())[..8]
+            )),
         );
     }
     Ok(out)
@@ -940,7 +1145,12 @@ pub fn parse_checkov(json: &str) -> Result<Vec<Finding>> {
 pub fn parse_dockle(json: &str, image: &str) -> Result<Vec<Finding>> {
     let v: Value = serde_json::from_str(json)?;
     let mut out = vec![];
-    for d in v.get("details").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+    for d in v
+        .get("details")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
         let sev = match s(&d, "level") {
             "FATAL" => Severity::High,
             "WARN" => Severity::Medium,
@@ -954,9 +1164,16 @@ pub fn parse_dockle(json: &str, image: &str) -> Result<Vec<Finding>> {
             .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
             .unwrap_or_default();
         out.push(
-            Finding::new("tool.dockle", code, Category::Security, sev, s(&d, "title"), image)
-                .detail(alerts.join("; "))
-                .fp_key(code),
+            Finding::new(
+                "tool.dockle",
+                code,
+                Category::Security,
+                sev,
+                s(&d, "title"),
+                image,
+            )
+            .detail(alerts.join("; "))
+            .fp_key(code),
         );
     }
     Ok(out)
@@ -964,16 +1181,25 @@ pub fn parse_dockle(json: &str, image: &str) -> Result<Vec<Finding>> {
 
 pub fn parse_image_inspect(json: &str, image: &str) -> Result<Vec<Finding>> {
     let v: Value = serde_json::from_str(json)?;
-    let i = v.get(0).cloned().ok_or_else(|| anyhow!("empty docker image inspect"))?;
+    let i = v
+        .get(0)
+        .cloned()
+        .ok_or_else(|| anyhow!("empty docker image inspect"))?;
     let cfg = i.get("Config").cloned().unwrap_or(Value::Null);
     let mut out = vec![];
     let user = s(&cfg, "User").trim();
     let uname = user.split(':').next().unwrap_or("");
     if uname.is_empty() || uname == "root" || uname == "0" {
         out.push(
-            Finding::new("image.inspect", "image.root_user", Category::Security, Severity::High,
-                "Image runs as root", image)
-                .remediation("Add a non-root USER to the Dockerfile."),
+            Finding::new(
+                "image.inspect",
+                "image.root_user",
+                Category::Security,
+                Severity::High,
+                "Image runs as root",
+                image,
+            )
+            .remediation("Add a non-root USER to the Dockerfile."),
         );
     }
     let hc = cfg.get("Healthcheck");
@@ -984,21 +1210,42 @@ pub fn parse_image_inspect(json: &str, image: &str) -> Result<Vec<Finding>> {
         .unwrap_or(false);
     if !has_hc {
         out.push(
-            Finding::new("image.inspect", "image.no_healthcheck", Category::Reliability, Severity::Medium,
-                "Image defines no HEALTHCHECK", image)
-                .remediation("Add a HEALTHCHECK instruction or rely on orchestrator probes."),
+            Finding::new(
+                "image.inspect",
+                "image.no_healthcheck",
+                Category::Reliability,
+                Severity::Medium,
+                "Image defines no HEALTHCHECK",
+                image,
+            )
+            .remediation("Add a HEALTHCHECK instruction or rely on orchestrator probes."),
         );
     }
     if i.get("Size").and_then(|x| x.as_u64()).unwrap_or(0) > 1_000_000_000 {
-        out.push(Finding::new("image.inspect", "image.large", Category::Performance, Severity::Low,
-            "Image is larger than 1 GB", image));
+        out.push(Finding::new(
+            "image.inspect",
+            "image.large",
+            Category::Performance,
+            Severity::Low,
+            "Image is larger than 1 GB",
+            image,
+        ));
     }
     let last = image.rsplit('/').next().unwrap_or(image);
-    let untagged_or_latest = !image.contains("@sha256:") && (!last.contains(':') || last.ends_with(":latest"));
+    let untagged_or_latest =
+        !image.contains("@sha256:") && (!last.contains(':') || last.ends_with(":latest"));
     if untagged_or_latest {
-        out.push(Finding::new("image.inspect", "image.latest_tag", Category::SupplyChain, Severity::Low,
-            "Image uses the mutable :latest tag", image)
-            .remediation("Reference an immutable version tag or digest."));
+        out.push(
+            Finding::new(
+                "image.inspect",
+                "image.latest_tag",
+                Category::SupplyChain,
+                Severity::Low,
+                "Image uses the mutable :latest tag",
+                image,
+            )
+            .remediation("Reference an immutable version tag or digest."),
+        );
     }
     Ok(out)
 }
@@ -1015,11 +1262,19 @@ pub struct JunitCase {
 }
 
 fn unescape(t: &str) -> String {
-    t.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+    t.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 fn attr(attrs: &str, name: &str) -> String {
-    let re = regex::Regex::new(&format!(r#"(?:^|\s){}\s*=\s*(?:"([^"]*)"|'([^']*)')"#, regex::escape(name))).unwrap();
+    let re = regex::Regex::new(&format!(
+        r#"(?:^|\s){}\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
+        regex::escape(name)
+    ))
+    .unwrap();
     re.captures(attrs)
         .and_then(|c| c.get(1).or_else(|| c.get(2)))
         .map(|m| unescape(m.as_str()))
@@ -1061,8 +1316,18 @@ pub fn parse_junit(xml: &str) -> Vec<JunitCase> {
 pub fn parse_sarif(json: &str, check: &str) -> Result<Vec<Finding>> {
     let v: Value = serde_json::from_str(json)?;
     let mut out = vec![];
-    for run in v.get("runs").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
-        for r in run.get("results").and_then(|x| x.as_array()).cloned().unwrap_or_default() {
+    for run in v
+        .get("runs")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default()
+    {
+        for r in run
+            .get("results")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default()
+        {
             let rule = s(&r, "ruleId");
             let sev = match s(&r, "level") {
                 "error" => Severity::High,
@@ -1080,7 +1345,9 @@ pub fn parse_sarif(json: &str, check: &str) -> Result<Vec<Finding>> {
             let (uri, line) = match loc {
                 Some(p) => (
                     rel(p.get("artifactLocation").map(|a| s(a, "uri")).unwrap_or("")),
-                    p.get("region").and_then(|g| g.get("startLine")).and_then(|x| x.as_u64()),
+                    p.get("region")
+                        .and_then(|g| g.get("startLine"))
+                        .and_then(|x| x.as_u64()),
                 ),
                 None => (String::new(), None),
             };
@@ -1090,8 +1357,15 @@ pub fn parse_sarif(json: &str, check: &str) -> Result<Vec<Finding>> {
                 (false, None) => uri.clone(),
             };
             out.push(
-                Finding::new(check, rule, Category::Security, sev, first_line(msg, 200), location)
-                    .fp_key(format!("{uri}|{rule}|{}", &sha256_hex(msg.as_bytes())[..8])),
+                Finding::new(
+                    check,
+                    rule,
+                    Category::Security,
+                    sev,
+                    first_line(msg, 200),
+                    location,
+                )
+                .fp_key(format!("{uri}|{rule}|{}", &sha256_hex(msg.as_bytes())[..8])),
             );
         }
     }
@@ -1109,12 +1383,28 @@ pub fn db_age_days(cache: &Path) -> Option<u64> {
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .collect();
-    let key = |n: &str| files.iter().filter(|e| e.file_name().to_str() == Some(n))
-        .filter_map(|e| e.metadata().ok()?.modified().ok()).max();
-    let newest = key("vulnerability.db").or_else(|| key("metadata.json")).or_else(|| {
-        files.iter().filter_map(|e| e.metadata().ok()?.modified().ok()).max()
-    })?;
-    Some(std::time::SystemTime::now().duration_since(newest).ok()?.as_secs() / 86400)
+    let key = |n: &str| {
+        files
+            .iter()
+            .filter(|e| e.file_name().to_str() == Some(n))
+            .filter_map(|e| e.metadata().ok()?.modified().ok())
+            .max()
+    };
+    let newest = key("vulnerability.db")
+        .or_else(|| key("metadata.json"))
+        .or_else(|| {
+            files
+                .iter()
+                .filter_map(|e| e.metadata().ok()?.modified().ok())
+                .max()
+        })?;
+    Some(
+        std::time::SystemTime::now()
+            .duration_since(newest)
+            .ok()?
+            .as_secs()
+            / 86400,
+    )
 }
 
 fn has_rules(cache: &Path) -> bool {
@@ -1136,197 +1426,384 @@ pub fn checks() -> Vec<Check> {
     let mut v = vec![];
 
     v.push(
-        Check::new("tool.gitleaks", "Secret scan (gitleaks)", &repo_like(), Profile::Quick, |ctx| {
-            if let Some(o) = gate(ctx) { return Ok(o); }
-            if let Some(o) = missing_image("gitleaks") { return Ok(o); }
-            let mut spec = ToolSpec::new("gitleaks", &[
-                "dir", "/src", "--redact", "--no-banner", "--exit-code", "0",
-                "--report-format", "json", "--report-path", "/out/gitleaks.json",
-            ]);
-            spec.timeout_secs = 300;
-            let r = ctx.docker.run(ctx, &spec)?;
-            let txt = match read_out(ctx, "gitleaks.json") {
-                Ok(t) => t,
-                Err(_) if r.exit_code != 0 => return Err(tool_failed("gitleaks", &r)),
-                Err(_) => "[]".into(),
-            };
-            let f = parse_gitleaks(&txt);
-            rewrite_scrubbed(ctx, "gitleaks.json", scrub_gitleaks);
-            Ok(CheckOutput::findings(f?))
-        })
+        Check::new(
+            "tool.gitleaks",
+            "Secret scan (gitleaks)",
+            &repo_like(),
+            Profile::Quick,
+            |ctx| {
+                if let Some(o) = gate(ctx) {
+                    return Ok(o);
+                }
+                if let Some(o) = missing_image("gitleaks") {
+                    return Ok(o);
+                }
+                let mut spec = ToolSpec::new(
+                    "gitleaks",
+                    &[
+                        "dir",
+                        "/src",
+                        "--redact",
+                        "--no-banner",
+                        "--exit-code",
+                        "0",
+                        "--report-format",
+                        "json",
+                        "--report-path",
+                        "/out/gitleaks.json",
+                    ],
+                );
+                spec.timeout_secs = 300;
+                let r = ctx.docker.run(ctx, &spec)?;
+                let txt = match read_out(ctx, "gitleaks.json") {
+                    Ok(t) => t,
+                    Err(_) if r.exit_code != 0 => return Err(tool_failed("gitleaks", &r)),
+                    Err(_) => "[]".into(),
+                };
+                let f = parse_gitleaks(&txt);
+                rewrite_scrubbed(ctx, "gitleaks.json", scrub_gitleaks);
+                Ok(CheckOutput::findings(f?))
+            },
+        )
         .tool("gitleaks"),
     );
 
     v.push(
-        Check::new("tool.sbom_cve", "SBOM + known vulnerabilities (syft + grype)",
-            &[TargetKind::Repo, TargetKind::Image], Profile::Quick, |ctx| {
-            if let Some(o) = gate(ctx) { return Ok(o); }
-            let cache = &ctx.docker.cache_dir;
-            for t in ["syft", "grype"] {
-                if let Some(o) = missing_image(t) { return Ok(o); }
-            }
-            if !cache.join("grype").is_dir() {
-                return Ok(CheckOutput::status(CheckStatus::Skipped(
-                    "vuln DB missing: run `readyhai tools update`".into())));
-            }
-            let source = if ctx.target.kind == TargetKind::Image { "docker-archive:/src/image.tar" } else { "dir:/src" };
-            let mut syft = ToolSpec::new("syft", &["scan", source, "-o", "cyclonedx-json=/out/sbom.cdx.json"]);
-            syft.env.push(("SYFT_CHECK_FOR_APP_UPDATE".into(), "false".into()));
-            let r = ctx.docker.run(ctx, &syft)?;
-            if r.exit_code != 0 { return Err(tool_failed("syft", &r)); }
-            let mut grype = ToolSpec::new("grype", &["sbom:/out/sbom.cdx.json", "-o", "json", "--file", "/out/grype.json"]);
-            grype.env = vec![
-                ("GRYPE_DB_CACHE_DIR".into(), "/cache/grype".into()),
-                ("GRYPE_DB_AUTO_UPDATE".into(), "false".into()),
-                ("GRYPE_CHECK_FOR_APP_UPDATE".into(), "false".into()),
-            ];
-            if crate::bundle::offline() {
-                // ReadyHai does its own age check below; the offline DB is legitimately old.
-                grype.env.push(("GRYPE_DB_VALIDATE_AGE".into(), "false".into()));
-            }
-            let r = ctx.docker.run(ctx, &grype)?;
-            if r.exit_code != 0 { return Err(tool_failed("grype", &r)); }
-            let findings = parse_grype(&read_out(ctx, "grype.json")?)?;
-            let mut notes = vec![];
-            if ctx.facts.unpinned_deps > 0 {
-                notes.push(format!(
-                    "{} of {} deps unpinned; CVE coverage incomplete — scan the built image",
-                    ctx.facts.unpinned_deps, ctx.facts.total_deps));
-            }
-            if let Some(d) = db_age_days(cache) {
-                if d > 7 {
-                    let how = if crate::bundle::offline() { "import a fresh bundle" } else { "run `readyhai tools update`" };
-                    notes.push(format!("vuln DB is {d} days old; {how}"));
+        Check::new(
+            "tool.sbom_cve",
+            "SBOM + known vulnerabilities (syft + grype)",
+            &[TargetKind::Repo, TargetKind::Image],
+            Profile::Quick,
+            |ctx| {
+                if let Some(o) = gate(ctx) {
+                    return Ok(o);
                 }
-                if d > 30 {
-                    add_warning(format!("vuln DB is {d} days old — CVE coverage is stale"));
+                let cache = &ctx.docker.cache_dir;
+                for t in ["syft", "grype"] {
+                    if let Some(o) = missing_image(t) {
+                        return Ok(o);
+                    }
                 }
-            }
-            Ok(partial(notes, findings))
-        })
+                if !cache.join("grype").is_dir() {
+                    return Ok(CheckOutput::status(CheckStatus::Skipped(
+                        "vuln DB missing: run `readyhai tools update`".into(),
+                    )));
+                }
+                let source = if ctx.target.kind == TargetKind::Image {
+                    "docker-archive:/src/image.tar"
+                } else {
+                    "dir:/src"
+                };
+                let mut syft = ToolSpec::new(
+                    "syft",
+                    &["scan", source, "-o", "cyclonedx-json=/out/sbom.cdx.json"],
+                );
+                syft.env
+                    .push(("SYFT_CHECK_FOR_APP_UPDATE".into(), "false".into()));
+                let r = ctx.docker.run(ctx, &syft)?;
+                if r.exit_code != 0 {
+                    return Err(tool_failed("syft", &r));
+                }
+                let mut grype = ToolSpec::new(
+                    "grype",
+                    &[
+                        "sbom:/out/sbom.cdx.json",
+                        "-o",
+                        "json",
+                        "--file",
+                        "/out/grype.json",
+                    ],
+                );
+                grype.env = vec![
+                    ("GRYPE_DB_CACHE_DIR".into(), "/cache/grype".into()),
+                    ("GRYPE_DB_AUTO_UPDATE".into(), "false".into()),
+                    ("GRYPE_CHECK_FOR_APP_UPDATE".into(), "false".into()),
+                ];
+                if crate::bundle::offline() {
+                    // ReadyHai does its own age check below; the offline DB is legitimately old.
+                    grype
+                        .env
+                        .push(("GRYPE_DB_VALIDATE_AGE".into(), "false".into()));
+                }
+                let r = ctx.docker.run(ctx, &grype)?;
+                if r.exit_code != 0 {
+                    return Err(tool_failed("grype", &r));
+                }
+                let findings = parse_grype(&read_out(ctx, "grype.json")?)?;
+                let mut notes = vec![];
+                if ctx.facts.unpinned_deps > 0 {
+                    notes.push(format!(
+                        "{} of {} deps unpinned; CVE coverage incomplete — scan the built image",
+                        ctx.facts.unpinned_deps, ctx.facts.total_deps
+                    ));
+                }
+                if let Some(d) = db_age_days(cache) {
+                    if d > 7 {
+                        let how = if crate::bundle::offline() {
+                            "import a fresh bundle"
+                        } else {
+                            "run `readyhai tools update`"
+                        };
+                        notes.push(format!("vuln DB is {d} days old; {how}"));
+                    }
+                    if d > 30 {
+                        add_warning(format!("vuln DB is {d} days old — CVE coverage is stale"));
+                    }
+                }
+                Ok(partial(notes, findings))
+            },
+        )
         .tool("grype"),
     );
 
     v.push(
-        Check::new("tool.semgrep", "Static analysis (semgrep)", &repo_like(), Profile::Quick, |ctx| {
-            if let Some(o) = gate(ctx) { return Ok(o); }
-            if let Some(o) = missing_image("semgrep") { return Ok(o); }
-            if !has_rules(&ctx.docker.cache_dir) {
-                return Ok(CheckOutput::status(CheckStatus::Skipped(
-                    "rules missing: run `readyhai tools update`".into())));
-            }
-            let mut spec = ToolSpec::new("semgrep", &[
-                "scan", "--config", "/cache/semgrep", "--metrics=off", "--disable-version-check",
-                "--json", "-o", "/out/semgrep.json", "/src",
-            ]);
-            spec.entrypoint = Some("semgrep".into());
-            spec.memory = "3g".into();
-            spec.timeout_secs = 900;
-            let r = ctx.docker.run(ctx, &spec)?;
-            let txt = read_out(ctx, "semgrep.json").map_err(|_| tool_failed("semgrep", &r))?;
-            let f = parse_semgrep(&txt);
-            rewrite_scrubbed(ctx, "semgrep.json", scrub_semgrep);
-            Ok(CheckOutput::findings(f?))
-        })
+        Check::new(
+            "tool.semgrep",
+            "Static analysis (semgrep)",
+            &repo_like(),
+            Profile::Quick,
+            |ctx| {
+                if let Some(o) = gate(ctx) {
+                    return Ok(o);
+                }
+                if let Some(o) = missing_image("semgrep") {
+                    return Ok(o);
+                }
+                if !has_rules(&ctx.docker.cache_dir) {
+                    return Ok(CheckOutput::status(CheckStatus::Skipped(
+                        "rules missing: run `readyhai tools update`".into(),
+                    )));
+                }
+                let mut spec = ToolSpec::new(
+                    "semgrep",
+                    &[
+                        "scan",
+                        "--config",
+                        "/cache/semgrep",
+                        "--metrics=off",
+                        "--disable-version-check",
+                        "--json",
+                        "-o",
+                        "/out/semgrep.json",
+                        "/src",
+                    ],
+                );
+                spec.entrypoint = Some("semgrep".into());
+                spec.memory = "3g".into();
+                spec.timeout_secs = 900;
+                let r = ctx.docker.run(ctx, &spec)?;
+                let txt = read_out(ctx, "semgrep.json").map_err(|_| tool_failed("semgrep", &r))?;
+                let f = parse_semgrep(&txt);
+                rewrite_scrubbed(ctx, "semgrep.json", scrub_semgrep);
+                Ok(CheckOutput::findings(f?))
+            },
+        )
         .tool("semgrep"),
     );
 
     v.push(
-        Check::new("tool.hadolint", "Dockerfile lint (hadolint)", &repo_like(), Profile::Quick, |ctx| {
-            if let Some(o) = gate(ctx) { return Ok(o); }
-            if let Some(o) = missing_image("hadolint") { return Ok(o); }
-            if ctx.facts.dockerfiles.is_empty() {
-                return Ok(CheckOutput::status(CheckStatus::NotApplicable("no Dockerfiles".into())));
-            }
-            let mut spec = ToolSpec::new("hadolint", &["-f", "json", "--no-fail"]);
-            spec.entrypoint = Some("/bin/hadolint".into());
-            for d in &ctx.facts.dockerfiles {
-                spec.args.push(format!("/src/{d}"));
-            }
-            let r = ctx.docker.run(ctx, &spec)?;
-            if r.stdout.trim().is_empty() && r.exit_code != 0 { return Err(tool_failed("hadolint", &r)); }
-            Ok(CheckOutput::findings(parse_hadolint(&r.stdout)?))
-        })
+        Check::new(
+            "tool.hadolint",
+            "Dockerfile lint (hadolint)",
+            &repo_like(),
+            Profile::Quick,
+            |ctx| {
+                if let Some(o) = gate(ctx) {
+                    return Ok(o);
+                }
+                if let Some(o) = missing_image("hadolint") {
+                    return Ok(o);
+                }
+                if ctx.facts.dockerfiles.is_empty() {
+                    return Ok(CheckOutput::status(CheckStatus::NotApplicable(
+                        "no Dockerfiles".into(),
+                    )));
+                }
+                let mut spec = ToolSpec::new("hadolint", &["-f", "json", "--no-fail"]);
+                spec.entrypoint = Some("/bin/hadolint".into());
+                for d in &ctx.facts.dockerfiles {
+                    spec.args.push(format!("/src/{d}"));
+                }
+                let r = ctx.docker.run(ctx, &spec)?;
+                if r.stdout.trim().is_empty() && r.exit_code != 0 {
+                    return Err(tool_failed("hadolint", &r));
+                }
+                Ok(CheckOutput::findings(parse_hadolint(&r.stdout)?))
+            },
+        )
         .tool("hadolint"),
     );
 
     v.push(
-        Check::new("tool.checkov", "IaC misconfiguration (checkov)", &repo_like(), Profile::Quick, |ctx| {
-            if let Some(o) = gate(ctx) { return Ok(o); }
-            if let Some(o) = missing_image("checkov") { return Ok(o); }
-            let f = &ctx.facts;
-            let tf = ctx.snapshot.as_ref().map(|s| s.files.iter().any(|p| p.ends_with(".tf"))).unwrap_or(false);
-            if f.k8s_files.is_empty() && f.compose_files.is_empty() && f.dockerfiles.is_empty() && !tf {
-                return Ok(CheckOutput::status(CheckStatus::NotApplicable(
-                    "no k8s/compose/Dockerfile/terraform files".into())));
-            }
-            let mut spec = ToolSpec::new("checkov", &[
-                "-d", "/src", "--skip-framework", "secrets", "--skip-download", "--quiet",
-                "--soft-fail", "-o", "json", "--output-file-path", "/out",
-            ]);
-            spec.entrypoint = Some("checkov".into());
-            spec.env.push(("CKV_IGNORE_HIDDEN_DIRECTORIES".into(), "true".into()));
-            let r = ctx.docker.run(ctx, &spec)?;
-            let txt = read_out(ctx, "results_json.json").map_err(|_| tool_failed("checkov", &r))?;
-            let found = parse_checkov(&txt);
-            rewrite_scrubbed(ctx, "results_json.json", scrub_checkov);
-            Ok(CheckOutput::findings(found?))
-        })
+        Check::new(
+            "tool.checkov",
+            "IaC misconfiguration (checkov)",
+            &repo_like(),
+            Profile::Quick,
+            |ctx| {
+                if let Some(o) = gate(ctx) {
+                    return Ok(o);
+                }
+                if let Some(o) = missing_image("checkov") {
+                    return Ok(o);
+                }
+                let f = &ctx.facts;
+                let tf = ctx
+                    .snapshot
+                    .as_ref()
+                    .map(|s| s.files.iter().any(|p| p.ends_with(".tf")))
+                    .unwrap_or(false);
+                if f.k8s_files.is_empty()
+                    && f.compose_files.is_empty()
+                    && f.dockerfiles.is_empty()
+                    && !tf
+                {
+                    return Ok(CheckOutput::status(CheckStatus::NotApplicable(
+                        "no k8s/compose/Dockerfile/terraform files".into(),
+                    )));
+                }
+                let mut spec = ToolSpec::new(
+                    "checkov",
+                    &[
+                        "-d",
+                        "/src",
+                        "--skip-framework",
+                        "secrets",
+                        "--skip-download",
+                        "--quiet",
+                        "--soft-fail",
+                        "-o",
+                        "json",
+                        "--output-file-path",
+                        "/out",
+                    ],
+                );
+                spec.entrypoint = Some("checkov".into());
+                spec.env
+                    .push(("CKV_IGNORE_HIDDEN_DIRECTORIES".into(), "true".into()));
+                let r = ctx.docker.run(ctx, &spec)?;
+                let txt =
+                    read_out(ctx, "results_json.json").map_err(|_| tool_failed("checkov", &r))?;
+                let found = parse_checkov(&txt);
+                rewrite_scrubbed(ctx, "results_json.json", scrub_checkov);
+                Ok(CheckOutput::findings(found?))
+            },
+        )
         .tool("checkov"),
     );
 
     v.push(
-        Check::new("tool.dockle", "Image best practices (dockle)", &[TargetKind::Image], Profile::Quick, |ctx| {
-            if let Some(o) = gate(ctx) { return Ok(o); }
-            if let Some(o) = missing_image("dockle") { return Ok(o); }
-            let mut spec = ToolSpec::new("dockle", &[
-                "-f", "json", "-o", "/out/dockle.json", "--input", "/src/image.tar", "--exit-code", "0",
-            ]);
-            spec.entrypoint = Some("dockle".into());
-            let r = ctx.docker.run(ctx, &spec)?;
-            let txt = read_out(ctx, "dockle.json").map_err(|_| tool_failed("dockle", &r))?;
-            let image = ctx.target.image.clone().unwrap_or_else(|| ctx.target.raw.clone());
-            Ok(CheckOutput::findings(parse_dockle(&txt, &image)?))
-        })
+        Check::new(
+            "tool.dockle",
+            "Image best practices (dockle)",
+            &[TargetKind::Image],
+            Profile::Quick,
+            |ctx| {
+                if let Some(o) = gate(ctx) {
+                    return Ok(o);
+                }
+                if let Some(o) = missing_image("dockle") {
+                    return Ok(o);
+                }
+                let mut spec = ToolSpec::new(
+                    "dockle",
+                    &[
+                        "-f",
+                        "json",
+                        "-o",
+                        "/out/dockle.json",
+                        "--input",
+                        "/src/image.tar",
+                        "--exit-code",
+                        "0",
+                    ],
+                );
+                spec.entrypoint = Some("dockle".into());
+                let r = ctx.docker.run(ctx, &spec)?;
+                let txt = read_out(ctx, "dockle.json").map_err(|_| tool_failed("dockle", &r))?;
+                let image = ctx
+                    .target
+                    .image
+                    .clone()
+                    .unwrap_or_else(|| ctx.target.raw.clone());
+                Ok(CheckOutput::findings(parse_dockle(&txt, &image)?))
+            },
+        )
         .tool("dockle"),
     );
 
     v.push(
-        Check::new("image.inspect", "Image configuration", &[TargetKind::Image], Profile::Quick, |ctx| {
-            if let Some(o) = gate(ctx) { return Ok(o); }
-            let Some(image) = ctx.target.image.clone() else {
-                return Ok(CheckOutput::status(CheckStatus::NotApplicable("no image".into())));
-            };
-            let o = run_capped(Command::new("docker").args(["image", "inspect", &image]), DOCKER_QUICK, 8 << 20, None)?;
-            if !o.success() {
-                bail!("docker image inspect {image}: {}", if o.timed_out { "timed out".to_string() } else { o.stderr_lossy().trim().to_string() });
-            }
-            Ok(CheckOutput::findings(parse_image_inspect(&o.stdout_lossy(), &image)?))
-        })
+        Check::new(
+            "image.inspect",
+            "Image configuration",
+            &[TargetKind::Image],
+            Profile::Quick,
+            |ctx| {
+                if let Some(o) = gate(ctx) {
+                    return Ok(o);
+                }
+                let Some(image) = ctx.target.image.clone() else {
+                    return Ok(CheckOutput::status(CheckStatus::NotApplicable(
+                        "no image".into(),
+                    )));
+                };
+                let o = run_capped(
+                    Command::new("docker").args(["image", "inspect", &image]),
+                    DOCKER_QUICK,
+                    8 << 20,
+                    None,
+                )?;
+                if !o.success() {
+                    bail!(
+                        "docker image inspect {image}: {}",
+                        if o.timed_out {
+                            "timed out".to_string()
+                        } else {
+                            o.stderr_lossy().trim().to_string()
+                        }
+                    );
+                }
+                Ok(CheckOutput::findings(parse_image_inspect(
+                    &o.stdout_lossy(),
+                    &image,
+                )?))
+            },
+        )
         .tool("docker"),
     );
 
-    v.push(Check::new("tests.own", "Project's own tests", &repo_like(), Profile::Standard, |ctx| {
-        if let Some(o) = gate(ctx) { return Ok(o); }
-        let Some(t) = ctx.cfg.test.clone() else {
-            return Ok(CheckOutput::status(CheckStatus::NotApplicable(
-                "add [test] image+command to readyhai.toml".into())));
-        };
-        let mut spec = ToolSpec::new("tests", &["-c", &t.command]);
-        spec.image = Some(t.image.clone());
-        spec.entrypoint = Some("sh".into());
-        spec.network = t.network;
-        spec.workdir = Some("/src".into());
-        spec.timeout_secs = t.timeout_secs;
-        // /src is read-only: tests must write caches (pytest, .pyc, node_modules/.cache) to /tmp.
-        let r = ctx.docker.run(ctx, &spec)?;
-        let Ok(xml) = read_out(ctx, "junit.xml") else {
-            return Ok(CheckOutput::status(CheckStatus::Errored(format!(
-                "no /out/junit.xml (exit {}; /src is read-only, write caches to /tmp): {}",
-                r.exit_code, first_line(r.stderr_tail.trim(), 200)))));
-        };
-        Ok(junit_output(&xml, r.exit_code))
-    }));
+    v.push(Check::new(
+        "tests.own",
+        "Project's own tests",
+        &repo_like(),
+        Profile::Standard,
+        |ctx| {
+            if let Some(o) = gate(ctx) {
+                return Ok(o);
+            }
+            let Some(t) = ctx.cfg.test.clone() else {
+                return Ok(CheckOutput::status(CheckStatus::NotApplicable(
+                    "add [test] image+command to readyhai.toml".into(),
+                )));
+            };
+            let mut spec = ToolSpec::new("tests", &["-c", &t.command]);
+            spec.image = Some(t.image.clone());
+            spec.entrypoint = Some("sh".into());
+            spec.network = t.network;
+            spec.workdir = Some("/src".into());
+            spec.timeout_secs = t.timeout_secs;
+            // /src is read-only: tests must write caches (pytest, .pyc, node_modules/.cache) to /tmp.
+            let r = ctx.docker.run(ctx, &spec)?;
+            let Ok(xml) = read_out(ctx, "junit.xml") else {
+                return Ok(CheckOutput::status(CheckStatus::Errored(format!(
+                    "no /out/junit.xml (exit {}; /src is read-only, write caches to /tmp): {}",
+                    r.exit_code,
+                    first_line(r.stderr_tail.trim(), 200)
+                ))));
+            };
+            Ok(junit_output(&xml, r.exit_code))
+        },
+    ));
 
     v
 }
@@ -1334,20 +1811,30 @@ pub fn checks() -> Vec<Check> {
 pub fn junit_output(xml: &str, exit_code: i32) -> CheckOutput {
     let cases = parse_junit(xml);
     if cases.is_empty() {
-        return CheckOutput::status(CheckStatus::Errored(format!("junit.xml has no test cases (exit {exit_code})")));
+        return CheckOutput::status(CheckStatus::Errored(format!(
+            "junit.xml has no test cases (exit {exit_code})"
+        )));
     }
     let failed: Vec<&JunitCase> = cases.iter().filter(|c| c.failed).collect();
     let errors = cases.iter().filter(|c| c.errored).count();
     if failed.is_empty() && errors > 0 {
-        return CheckOutput::status(CheckStatus::Errored(format!("{errors} test errors (environment?)")));
+        return CheckOutput::status(CheckStatus::Errored(format!(
+            "{errors} test errors (environment?)"
+        )));
     }
     let findings = failed
         .iter()
         .map(|c| {
-            Finding::new("tests.own", "tests.failed", Category::Quality, Severity::High,
-                format!("Test failed: {}", c.name), format!("{}::{}", c.suite, c.name))
-                .detail(first_line(&c.message, 300))
-                .fp_key(format!("{}::{}", c.suite, c.name))
+            Finding::new(
+                "tests.own",
+                "tests.failed",
+                Category::Quality,
+                Severity::High,
+                format!("Test failed: {}", c.name),
+                format!("{}::{}", c.suite, c.name),
+            )
+            .detail(first_line(&c.message, 300))
+            .fp_key(format!("{}::{}", c.suite, c.name))
         })
         .collect();
     CheckOutput::findings(findings)
@@ -1376,11 +1863,20 @@ struct Plugin {
 }
 
 fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
-    if let Some(o) = gate(ctx) { return Ok(o); }
+    if let Some(o) = gate(ctx) {
+        return Ok(o);
+    }
     let check = format!("plugin.{}", p.id);
     let url = ctx.target.url.clone().unwrap_or_default();
-    let args: Vec<String> = p.args.iter()
-        .map(|a| a.replace("{src}", "/src").replace("{out}", "/out").replace("{url}", &url).replace("{image_tar}", "/src/image.tar"))
+    let args: Vec<String> = p
+        .args
+        .iter()
+        .map(|a| {
+            a.replace("{src}", "/src")
+                .replace("{out}", "/out")
+                .replace("{url}", &url)
+                .replace("{image_tar}", "/src/image.tar")
+        })
         .collect();
     let mut spec = ToolSpec::new(&format!("plugin-{}", p.id), &[]);
     spec.args = args;
@@ -1396,7 +1892,9 @@ fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
     let mut findings = match p.format.as_str() {
         "sarif" => parse_sarif(&txt, &check)?,
         "junit" => match junit_output(&txt, r.exit_code) {
-            CheckOutput { status: Some(st), .. } => return Ok(CheckOutput::status(st)),
+            CheckOutput {
+                status: Some(st), ..
+            } => return Ok(CheckOutput::status(st)),
             o => o.findings,
         },
         "readyhai-json" => serde_json::from_str::<Vec<Finding>>(&txt)?,
@@ -1405,34 +1903,60 @@ fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
     for f in &mut findings {
         f.check = check.clone();
     }
-    let notes = if p.image.contains("@sha256:") { vec![] } else { vec!["plugin image unpinned".to_string()] };
+    let notes = if p.image.contains("@sha256:") {
+        vec![]
+    } else {
+        vec!["plugin image unpinned".to_string()]
+    };
     Ok(partial(notes, findings))
 }
 
 pub fn plugin_checks(dir: &Path) -> Vec<Check> {
     let mut v = vec![];
-    let Ok(rd) = std::fs::read_dir(dir) else { return v };
-    let mut dirs: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return v;
+    };
+    let mut dirs: Vec<PathBuf> = rd
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
     dirs.sort();
     for d in dirs {
-        let Ok(text) = std::fs::read_to_string(d.join("plugin.toml")) else { continue };
-        let Ok(p) = toml::from_str::<Plugin>(&text) else { continue };
-        let kinds: Vec<TargetKind> = p.kinds.iter().filter_map(|k| match k.as_str() {
-            "repo" => Some(TargetKind::Repo),
-            "image" => Some(TargetKind::Image),
-            "web" => Some(TargetKind::Web),
-            _ => None,
-        }).collect();
-        if kinds.is_empty() { continue; }
+        let Ok(text) = std::fs::read_to_string(d.join("plugin.toml")) else {
+            continue;
+        };
+        let Ok(p) = toml::from_str::<Plugin>(&text) else {
+            continue;
+        };
+        let kinds: Vec<TargetKind> = p
+            .kinds
+            .iter()
+            .filter_map(|k| match k.as_str() {
+                "repo" => Some(TargetKind::Repo),
+                "image" => Some(TargetKind::Image),
+                "web" => Some(TargetKind::Web),
+                _ => None,
+            })
+            .collect();
+        if kinds.is_empty() {
+            continue;
+        }
         let profile = match p.profile.as_str() {
             "quick" => Profile::Quick,
             "deep" => Profile::Deep,
             _ => Profile::Standard,
         };
-        let title = if p.title.is_empty() { p.id.clone() } else { p.title.clone() };
+        let title = if p.title.is_empty() {
+            p.id.clone()
+        } else {
+            p.title.clone()
+        };
         let id = format!("plugin.{}", p.id);
         let tool = p.id.clone();
-        v.push(Check::new(&id, &title, &kinds, profile, move |ctx| run_plugin(ctx, &p)).tool(&tool));
+        v.push(
+            Check::new(&id, &title, &kinds, profile, move |ctx| run_plugin(ctx, &p)).tool(&tool),
+        );
     }
     v
 }
@@ -1445,7 +1969,10 @@ pub fn tools_pull(write_lock: Option<&Path>) -> Result<()> {
 }
 
 /// Like `tools_pull`, restricted to the named tools (the rest of the lock is kept as-is).
-pub fn tools_pull_filtered(write_lock: Option<&Path>, only: Option<&BTreeSet<String>>) -> Result<()> {
+pub fn tools_pull_filtered(
+    write_lock: Option<&Path>,
+    only: Option<&BTreeSet<String>>,
+) -> Result<()> {
     if crate::bundle::offline() {
         bail!("offline mode: use `readyhai bundle import`");
     }
@@ -1455,7 +1982,10 @@ pub fn tools_pull_filtered(write_lock: Option<&Path>, only: Option<&BTreeSet<Str
             continue;
         }
         eprintln!("pulling {name}: {}", e.image);
-        let st = Command::new("docker").args(["pull", &e.image]).status().context("docker pull")?;
+        let st = Command::new("docker")
+            .args(["pull", &e.image])
+            .status()
+            .context("docker pull")?;
         if !st.success() {
             eprintln!("  pull failed for {}", e.image);
             if write_lock.is_some() {
@@ -1465,7 +1995,13 @@ pub fn tools_pull_filtered(write_lock: Option<&Path>, only: Option<&BTreeSet<Str
         }
         if write_lock.is_some() {
             let o = Command::new("docker")
-                .args(["image", "inspect", "--format", "{{index .RepoDigests 0}}", &e.image])
+                .args([
+                    "image",
+                    "inspect",
+                    "--format",
+                    "{{index .RepoDigests 0}}",
+                    &e.image,
+                ])
                 .output()?;
             let t = String::from_utf8_lossy(&o.stdout);
             if let Some((_, d)) = t.trim().split_once('@') {
@@ -1476,7 +2012,12 @@ pub fn tools_pull_filtered(write_lock: Option<&Path>, only: Option<&BTreeSet<Str
     }
     if let Some(p) = write_lock {
         let body = toml::to_string_pretty(&lock)?;
-        std::fs::write(p, format!("# Pinned tool images (digests written by `readyhai tools pull --lock`).\n{body}"))?;
+        std::fs::write(
+            p,
+            format!(
+                "# Pinned tool images (digests written by `readyhai tools pull --lock`).\n{body}"
+            ),
+        )?;
         eprintln!("wrote {}", p.display());
     }
     Ok(())
@@ -1499,7 +2040,11 @@ pub fn tools_update(docker: &Docker) -> Result<()> {
             ("GRYPE_DB_CACHE_DIR".into(), "/cache/grype".into()),
             ("GRYPE_CHECK_FOR_APP_UPDATE".into(), "false".into()),
         ];
-        let mounts = [Mount { host: docker.cache_dir.clone(), dst: "/cache", rw: true }];
+        let mounts = [Mount {
+            host: docker.cache_dir.clone(),
+            dst: "/cache",
+            rw: true,
+        }];
         let r = exec(docker, "update", &mounts, &spec)?;
         if r.exit_code != 0 {
             bail!("grype db update failed: {}", r.stderr_tail.trim());
@@ -1512,7 +2057,10 @@ pub fn tools_update(docker: &Docker) -> Result<()> {
         .timeout(Duration::from_secs(180))
         .user_agent("readyhai")
         .build()?;
-    let resp = client.get("https://semgrep.dev/c/p/default").send()?.error_for_status()?;
+    let resp = client
+        .get("https://semgrep.dev/c/p/default")
+        .send()?
+        .error_for_status()?;
     let body = resp.text()?;
     if body.trim().is_empty() {
         bail!("empty semgrep ruleset");
@@ -1537,7 +2085,13 @@ mod tests {
     #[test]
     fn run_capped_kills_on_timeout() {
         let t0 = Instant::now();
-        let o = run_capped(Command::new("sh").args(["-c", "sleep 30"]), Duration::from_millis(300), 1024, None).unwrap();
+        let o = run_capped(
+            Command::new("sh").args(["-c", "sleep 30"]),
+            Duration::from_millis(300),
+            1024,
+            None,
+        )
+        .unwrap();
         assert!(o.timed_out && !o.success() && o.status.is_none());
         assert!(t0.elapsed() < Duration::from_secs(5), "{:?}", t0.elapsed());
     }
@@ -1545,7 +2099,13 @@ mod tests {
     #[test]
     fn run_capped_bounds_output_and_keeps_the_tail() {
         // ~2 MiB of output with cap 1 KiB: head capped, tail retained, child not blocked
-        let o = run_capped(Command::new("sh").args(["-c", "yes abcdefgh | head -c 2000000; echo END-MARKER"]), Duration::from_secs(20), 1024, None).unwrap();
+        let o = run_capped(
+            Command::new("sh").args(["-c", "yes abcdefgh | head -c 2000000; echo END-MARKER"]),
+            Duration::from_secs(20),
+            1024,
+            None,
+        )
+        .unwrap();
         assert!(o.success() && o.truncated);
         assert_eq!(o.stdout.len(), 1024);
         assert!(String::from_utf8_lossy(&o.stdout_tail).contains("END-MARKER"));
@@ -1556,18 +2116,51 @@ mod tests {
         // `cat` would hang on an inherited terminal/pipe; with null stdin it returns at once
         let o = run_capped(&mut Command::new("cat"), Duration::from_secs(5), 1024, None).unwrap();
         assert!(o.success() && o.stdout.is_empty());
-        let o = run_capped(&mut Command::new("cat"), Duration::from_secs(5), 1024, Some(b"piped in")).unwrap();
+        let o = run_capped(
+            &mut Command::new("cat"),
+            Duration::from_secs(5),
+            1024,
+            Some(b"piped in"),
+        )
+        .unwrap();
         assert_eq!(o.stdout_lossy(), "piped in");
-        let o = run_capped(Command::new("sh").args(["-c", "echo out; echo err >&2; exit 3"]), Duration::from_secs(5), 1024, None).unwrap();
-        assert_eq!((o.stdout_lossy().trim(), o.stderr_lossy().trim(), o.status.and_then(|s| s.code())), ("out", "err", Some(3)));
-        assert!(run_capped(&mut Command::new("/nonexistent/binary"), Duration::from_secs(1), 10, None).is_err());
+        let o = run_capped(
+            Command::new("sh").args(["-c", "echo out; echo err >&2; exit 3"]),
+            Duration::from_secs(5),
+            1024,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            (
+                o.stdout_lossy().trim(),
+                o.stderr_lossy().trim(),
+                o.status.and_then(|s| s.code())
+            ),
+            ("out", "err", Some(3))
+        );
+        assert!(
+            run_capped(
+                &mut Command::new("/nonexistent/binary"),
+                Duration::from_secs(1),
+                10,
+                None
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn run_capped_does_not_wait_for_a_grandchild_holding_the_pipe() {
         // the shell exits at once but leaves `sleep` holding stdout open
         let t0 = Instant::now();
-        let o = run_capped(Command::new("sh").args(["-c", "sleep 20 & echo started"]), Duration::from_secs(10), 1024, None).unwrap();
+        let o = run_capped(
+            Command::new("sh").args(["-c", "sleep 20 & echo started"]),
+            Duration::from_secs(10),
+            1024,
+            None,
+        )
+        .unwrap();
         assert!(o.success());
         assert!(t0.elapsed() < Duration::from_secs(6), "{:?}", t0.elapsed());
     }
@@ -1592,23 +2185,42 @@ mod tests {
 
     #[test]
     fn policy_rejects_bad_args() {
-        let v = |a: &[&str]| validate_create_policy(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let v = |a: &[&str]| {
+            validate_create_policy(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+        };
         assert!(v(&["--privileged"]).is_err());
         assert!(v(&["--network", "host"]).is_err());
         assert!(v(&["--network=host"]).is_err());
         assert!(v(&["-v", "/var/run/docker.sock:/var/run/docker.sock"]).is_err());
         assert!(v(&["-v", "/etc:/etc:ro"]).is_err());
         assert!(v(&["--mount", "type=bind,src=/,dst=/host"]).is_err());
-        assert!(v(&["-v", "/a/b:/src:ro", "--network", "none", "--cap-drop", "ALL"]).is_ok());
+        assert!(
+            v(&[
+                "-v",
+                "/a/b:/src:ro",
+                "--network",
+                "none",
+                "--cap-drop",
+                "ALL"
+            ])
+            .is_ok()
+        );
     }
 
     #[test]
     fn lock_loads_and_pins() {
         let (img, pinned) = image_for("grype");
-        assert!(img.starts_with("anchore/grype"));
-        assert!(!pinned);
-        assert_eq!(ref_with_digest("a/b:1.0", "sha256:abc"), ("a/b@sha256:abc".to_string(), true));
-        assert_eq!(ref_with_digest("localhost:5000/b:1.0", "sha256:abc").0, "localhost:5000/b@sha256:abc");
+        // tools.lock.toml pins grype by digest
+        assert!(img.starts_with("anchore/grype@sha256:"), "{img}");
+        assert!(pinned);
+        assert_eq!(
+            ref_with_digest("a/b:1.0", "sha256:abc"),
+            ("a/b@sha256:abc".to_string(), true)
+        );
+        assert_eq!(
+            ref_with_digest("localhost:5000/b:1.0", "sha256:abc").0,
+            "localhost:5000/b@sha256:abc"
+        );
     }
 
     #[test]
@@ -1697,7 +2309,12 @@ mod tests {
         let j = r#"[{"Size":2000000000,"Config":{"User":"","Healthcheck":null}}]"#;
         let f = parse_image_inspect(j, "myapp:latest").unwrap();
         let rules: Vec<&str> = f.iter().map(|x| x.rule.as_str()).collect();
-        for r in ["image.root_user", "image.no_healthcheck", "image.large", "image.latest_tag"] {
+        for r in [
+            "image.root_user",
+            "image.no_healthcheck",
+            "image.large",
+            "image.latest_tag",
+        ] {
             assert!(rules.contains(&r), "{r}");
         }
         let ok = r#"[{"Size":10,"Config":{"User":"1000","Healthcheck":{"Test":["CMD","true"]}}}]"#;
@@ -1718,7 +2335,10 @@ mod tests {
         assert_eq!(o.findings[0].rule, "tests.failed");
         assert_eq!(o.findings[0].location, "tests.test_a::test_bad");
         let errs = r#"<testsuite><testcase classname="a" name="b"><error message="x"/></testcase></testsuite>"#;
-        assert!(matches!(junit_output(errs, 1).status, Some(CheckStatus::Errored(_))));
+        assert!(matches!(
+            junit_output(errs, 1).status,
+            Some(CheckStatus::Errored(_))
+        ));
     }
 
     #[test]
@@ -1736,7 +2356,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("readyhai-plug-{:08x}", rand::random::<u32>()));
         let p = dir.join("demo");
         std::fs::create_dir_all(&p).unwrap();
-        std::fs::write(p.join("plugin.toml"), r#"
+        std::fs::write(
+            p.join("plugin.toml"),
+            r#"
 id = "demo"
 title = "Demo plugin"
 kinds = ["repo", "image"]
@@ -1746,7 +2368,9 @@ args = ["--src", "{src}", "--out", "{out}/demo.sarif"]
 network = false
 output = "/out/demo.sarif"
 format = "sarif"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         std::fs::create_dir_all(dir.join("bad")).unwrap();
         std::fs::write(dir.join("bad").join("plugin.toml"), "not toml [").unwrap();
         let c = plugin_checks(&dir);
@@ -1764,7 +2388,11 @@ format = "sarif"
         // embedded
         assert!(pick_lock_text(None, &d).contains("anchore/grype"));
         // data dir lock beats embedded
-        std::fs::write(d.join("tools.lock.toml"), "[tools.grype]\nimage=\"data/grype:1\"\n").unwrap();
+        std::fs::write(
+            d.join("tools.lock.toml"),
+            "[tools.grype]\nimage=\"data/grype:1\"\n",
+        )
+        .unwrap();
         assert!(pick_lock_text(None, &d).contains("data/grype:1"));
         // env beats data dir
         let e = d.join("env.toml");
@@ -1787,18 +2415,33 @@ format = "sarif"
         assert_eq!((r.as_str(), pinned, by_id), ("sha256:bbb", true, true));
         // id not loaded -> falls back to digest ref
         let (r, pinned, by_id) = resolve_entry(&e, &|_| false);
-        assert_eq!((r.as_str(), pinned, by_id), ("anchore/grype@sha256:aaa", true, false));
+        assert_eq!(
+            (r.as_str(), pinned, by_id),
+            ("anchore/grype@sha256:aaa", true, false)
+        );
         // no id -> tag, unpinned
-        let e2 = LockEntry { image: "a/b:1".into(), ..Default::default() };
-        assert_eq!(resolve_entry(&e2, &|_| true), ("a/b:1".to_string(), false, false));
+        let e2 = LockEntry {
+            image: "a/b:1".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_entry(&e2, &|_| true),
+            ("a/b:1".to_string(), false, false)
+        );
     }
 
     #[test]
     fn offline_refuses_pull_and_update() {
-        let _g = crate::bundle::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::bundle::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::set_var("READYHAI_OFFLINE", "1") };
         let e1 = tools_pull(None).unwrap_err().to_string();
-        let d = Docker { available: false, mode: MountMode::Bind, cache_dir: std::env::temp_dir().join("rh-off-cache") };
+        let d = Docker {
+            available: false,
+            mode: MountMode::Bind,
+            cache_dir: std::env::temp_dir().join("rh-off-cache"),
+        };
         let e2 = tools_update(&d).unwrap_err().to_string();
         unsafe { std::env::remove_var("READYHAI_OFFLINE") };
         assert!(e1.contains("bundle import"), "{e1}");
@@ -1818,7 +2461,16 @@ format = "sarif"
     #[test]
     fn builtin_checks_registered() {
         let ids: Vec<String> = checks().into_iter().map(|c| c.id).collect();
-        for i in ["tool.gitleaks", "tool.sbom_cve", "tool.semgrep", "tool.hadolint", "tool.checkov", "tool.dockle", "image.inspect", "tests.own"] {
+        for i in [
+            "tool.gitleaks",
+            "tool.sbom_cve",
+            "tool.semgrep",
+            "tool.hadolint",
+            "tool.checkov",
+            "tool.dockle",
+            "image.inspect",
+            "tests.own",
+        ] {
             assert!(ids.iter().any(|x| x == i), "{i}");
         }
     }

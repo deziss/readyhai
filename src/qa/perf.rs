@@ -28,9 +28,15 @@ static SEQ: AtomicUsize = AtomicUsize::new(1);
 
 pub fn checks() -> Vec<Check> {
     vec![
-        Check::new("qa.perf", "Performance smoke + baseline (k6, nonprod)", &[TargetKind::Web], Profile::Standard, run)
-            .qa()
-            .tool("k6"),
+        Check::new(
+            "qa.perf",
+            "Performance smoke + baseline (k6, nonprod)",
+            &[TargetKind::Web],
+            Profile::Standard,
+            run,
+        )
+        .qa()
+        .tool("k6"),
     ]
 }
 
@@ -43,11 +49,18 @@ pub struct Limits {
 
 pub fn effective_limits(o: Option<&PerfLimits>) -> Limits {
     let heavy = o.map(|p| p.allow_heavy).unwrap_or(false);
-    let (cv, cd) = if heavy { (u32::MAX, u32::MAX) } else { (MAX_VUS, MAX_DURATION) };
+    let (cv, cd) = if heavy {
+        (u32::MAX, u32::MAX)
+    } else {
+        (MAX_VUS, MAX_DURATION)
+    };
     Limits {
         vus: o.and_then(|p| p.vus).unwrap_or(5).clamp(1, cv),
         duration_secs: o.and_then(|p| p.duration_secs).unwrap_or(60).clamp(5, cd),
-        max_error_rate: o.and_then(|p| p.max_error_rate).unwrap_or(0.05).clamp(0.001, 0.5),
+        max_error_rate: o
+            .and_then(|p| p.max_error_rate)
+            .unwrap_or(0.05)
+            .clamp(0.001, 0.5),
     }
 }
 
@@ -71,9 +84,21 @@ pub struct Endpoint {
 
 fn has_required_input(doc: &Value, path: &str) -> bool {
     let params = |v: Option<&Value>| v.and_then(|p| p.as_array()).cloned().unwrap_or_default();
-    let item = doc.pointer(&format!("/paths/{}", path.replace('~', "~0").replace('/', "~1")));
-    let all: Vec<Value> = params(item.and_then(|i| i.get("parameters"))).into_iter().chain(params(item.and_then(|i| i.pointer("/get/parameters")))).collect();
-    all.iter().any(|p| p.get("required").and_then(|r| r.as_bool()).unwrap_or(false) && matches!(p.get("in").and_then(|i| i.as_str()), Some("query" | "header" | "cookie")))
+    let item = doc.pointer(&format!(
+        "/paths/{}",
+        path.replace('~', "~0").replace('/', "~1")
+    ));
+    let all: Vec<Value> = params(item.and_then(|i| i.get("parameters")))
+        .into_iter()
+        .chain(params(item.and_then(|i| i.pointer("/get/parameters"))))
+        .collect();
+    all.iter().any(|p| {
+        p.get("required").and_then(|r| r.as_bool()).unwrap_or(false)
+            && matches!(
+                p.get("in").and_then(|i| i.as_str()),
+                Some("query" | "header" | "cookie")
+            )
+    })
 }
 
 /// Top-N GET endpoints without path parameters or required inputs, spec order (each prefixed with
@@ -83,23 +108,35 @@ pub fn pick_endpoint_set(spec: Option<&Value>, health: Option<&str>) -> Vec<Endp
     if let Some(doc) = spec {
         let base = super::api::spec::base_path_of(doc);
         for op in super::plan::ops_from_doc(doc) {
-            if !op.method.eq_ignore_ascii_case("get") || op.path.contains('{') || has_required_input(doc, &op.path) {
+            if !op.method.eq_ignore_ascii_case("get")
+                || op.path.contains('{')
+                || has_required_input(doc, &op.path)
+            {
                 continue;
             }
             let path = format!("{base}{}", op.path);
             if !v.iter().any(|e| e.path == path) {
-                v.push(Endpoint { path, public: !op.secured });
+                v.push(Endpoint {
+                    path,
+                    public: !op.secured,
+                });
             }
         }
     }
     v.truncate(MAX_ENDPOINTS - 1);
-    if let Some(h) = health {
-        if !v.iter().any(|e| e.path == h) {
-            v.push(Endpoint { path: h.to_string(), public: true });
-        }
+    if let Some(h) = health
+        && !v.iter().any(|e| e.path == h)
+    {
+        v.push(Endpoint {
+            path: h.to_string(),
+            public: true,
+        });
     }
     if v.is_empty() {
-        v.push(Endpoint { path: "/".into(), public: true });
+        v.push(Endpoint {
+            path: "/".into(),
+            public: true,
+        });
     }
     v.truncate(MAX_ENDPOINTS);
     v
@@ -107,7 +144,10 @@ pub fn pick_endpoint_set(spec: Option<&Value>, health: Option<&str>) -> Vec<Endp
 
 /// Paths only (see `pick_endpoint_set`).
 pub fn pick_endpoints(spec: Option<&Value>, health: Option<&str>) -> Vec<String> {
-    pick_endpoint_set(spec, health).into_iter().map(|e| e.path).collect()
+    pick_endpoint_set(spec, health)
+        .into_iter()
+        .map(|e| e.path)
+        .collect()
 }
 
 fn js(s: &str) -> String {
@@ -127,10 +167,18 @@ pub fn gen_script(base: &str, personas: &[Persona], l: &Limits) -> String {
             }
         }
     }
-    let mut s = String::from("import http from 'k6/http';\nimport { sleep } from 'k6';\n\nhttp.setResponseCallback(http.expectedStatuses({ min: 200, max: 399 })); // 4xx/5xx and network errors count as failed\n\n");
-    s.push_str(&format!("const BASE = {};\n", js(base.trim_end_matches('/'))));
+    let mut s = String::from(
+        "import http from 'k6/http';\nimport { sleep } from 'k6';\n\nhttp.setResponseCallback(http.expectedStatuses({ min: 200, max: 399 })); // 4xx/5xx and network errors count as failed\n\n",
+    );
+    s.push_str(&format!(
+        "const BASE = {};\n",
+        js(base.trim_end_matches('/'))
+    ));
     for (i, p) in personas.iter().enumerate() {
-        s.push_str(&format!("const EPS{i} = {};\n", serde_json::to_string(&p.endpoints).unwrap_or("[]".into())));
+        s.push_str(&format!(
+            "const EPS{i} = {};\n",
+            serde_json::to_string(&p.endpoints).unwrap_or("[]".into())
+        ));
     }
     s.push_str("export const options = {\n  scenarios: {\n");
     for i in 0..personas.len() {
@@ -146,13 +194,24 @@ pub fn gen_script(base: &str, personas: &[Persona], l: &Limits) -> String {
     ));
     s.push_str("    http_req_duration: ['p(95)<3600000'],\n");
     for e in &all {
-        s.push_str(&format!("    {}: ['p(95)<3600000'],\n", js(&format!("http_req_duration{{name:{e}}}"))));
+        s.push_str(&format!(
+            "    {}: ['p(95)<3600000'],\n",
+            js(&format!("http_req_duration{{name:{e}}}"))
+        ));
     }
     s.push_str("  },\n};\n\n");
     s.push_str("function hit(i, eps) {\n  const h = __ENV['RH_HV_' + i] ? { [__ENV['RH_HN_' + i]]: __ENV['RH_HV_' + i] } : {};\n");
     s.push_str("  for (const e of eps) {\n    http.get(BASE + e, { headers: h, tags: { name: e } });\n    sleep(0.2);\n  }\n}\n");
     for (i, p) in personas.iter().enumerate() {
-        s.push_str(&format!("export function persona{i}() {{ hit({}, EPS{i}); }} // {}\n", if p.has_auth { i.to_string() } else { "-1".into() }, p.name));
+        s.push_str(&format!(
+            "export function persona{i}() {{ hit({}, EPS{i}); }} // {}\n",
+            if p.has_auth {
+                i.to_string()
+            } else {
+                "-1".into()
+            },
+            p.name
+        ));
     }
     s
 }
@@ -171,7 +230,9 @@ pub struct PerfMetrics {
 }
 
 fn num(m: &Value, k: &str) -> Option<f64> {
-    m.get(k).or_else(|| m.get("values").and_then(|v| v.get(k))).and_then(|x| x.as_f64())
+    m.get(k)
+        .or_else(|| m.get("values").and_then(|v| v.get(k)))
+        .and_then(|x| x.as_f64())
 }
 
 /// Parse a `k6 run --summary-export` file (legacy flat or `values`-nested layout).
@@ -185,17 +246,22 @@ pub fn parse_summary(text: &str) -> Result<PerfMetrics> {
         p90: num(d, "p(90)").unwrap_or(0.0),
         p95: num(d, "p(95)").unwrap_or(0.0),
         p99: num(d, "p(99)").unwrap_or(0.0),
-        error_rate: m.get("http_req_failed").and_then(|f| num(f, "value").or_else(|| num(f, "rate"))).unwrap_or(0.0),
+        error_rate: m
+            .get("http_req_failed")
+            .and_then(|f| num(f, "value").or_else(|| num(f, "rate")))
+            .unwrap_or(0.0),
         rps: reqs.and_then(|r| num(r, "rate")).unwrap_or(0.0),
         requests: reqs.and_then(|r| num(r, "count")).unwrap_or(0.0) as u64,
         endpoints_p95: BTreeMap::new(),
     };
     if let Some(o) = m.as_object() {
         for (k, val) in o {
-            if let Some(n) = k.strip_prefix("http_req_duration{name:").and_then(|x| x.strip_suffix('}')) {
-                if let Some(p) = num(val, "p(95)") {
-                    out.endpoints_p95.insert(n.to_string(), p);
-                }
+            if let Some(n) = k
+                .strip_prefix("http_req_duration{name:")
+                .and_then(|x| x.strip_suffix('}'))
+                && let Some(p) = num(val, "p(95)")
+            {
+                out.endpoints_p95.insert(n.to_string(), p);
             }
         }
     }
@@ -204,29 +270,45 @@ pub fn parse_summary(text: &str) -> Result<PerfMetrics> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PerfIssue {
-    Regression { old: f64, new: f64, worst: Vec<(String, f64, f64)> },
-    Errors { rate: f64 },
-    Slow { p95: f64 },
+    Regression {
+        old: f64,
+        new: f64,
+        worst: Vec<(String, f64, f64)>,
+    },
+    Errors {
+        rate: f64,
+    },
+    Slow {
+        p95: f64,
+    },
 }
 
 /// Baseline compare. `old = None` means no baseline yet (only absolute checks apply).
 pub fn compare(old: Option<&PerfMetrics>, new: &PerfMetrics) -> Vec<PerfIssue> {
     let mut v = vec![];
-    if let Some(o) = old {
-        if o.p95 > 0.0 && new.p95 > o.p95 * REGRESSION && new.p95 - o.p95 >= MIN_DELTA_MS {
-            let mut worst: Vec<(String, f64, f64)> = new
-                .endpoints_p95
-                .iter()
-                .filter_map(|(k, n)| o.endpoints_p95.get(k).map(|ov| (k.clone(), *ov, *n)))
-                .filter(|(_, ov, n)| *n > *ov * REGRESSION)
-                .collect();
-            worst.sort_by(|a, b| (b.2 - b.1).total_cmp(&(a.2 - a.1)));
-            worst.truncate(3);
-            v.push(PerfIssue::Regression { old: o.p95, new: new.p95, worst });
-        }
+    if let Some(o) = old
+        && o.p95 > 0.0
+        && new.p95 > o.p95 * REGRESSION
+        && new.p95 - o.p95 >= MIN_DELTA_MS
+    {
+        let mut worst: Vec<(String, f64, f64)> = new
+            .endpoints_p95
+            .iter()
+            .filter_map(|(k, n)| o.endpoints_p95.get(k).map(|ov| (k.clone(), *ov, *n)))
+            .filter(|(_, ov, n)| *n > *ov * REGRESSION)
+            .collect();
+        worst.sort_by(|a, b| (b.2 - b.1).total_cmp(&(a.2 - a.1)));
+        worst.truncate(3);
+        v.push(PerfIssue::Regression {
+            old: o.p95,
+            new: new.p95,
+            worst,
+        });
     }
     if new.error_rate > ERR_DEFECT {
-        v.push(PerfIssue::Errors { rate: new.error_rate });
+        v.push(PerfIssue::Errors {
+            rate: new.error_rate,
+        });
     }
     if new.p95 > SLOW_MS {
         v.push(PerfIssue::Slow { p95: new.p95 });
@@ -268,8 +350,14 @@ pub fn container_base(url: &str) -> (String, bool) {
         None => (rest, ""),
     };
     let host = crate::scope::url_host(url).unwrap_or_default();
-    if matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "0.0.0.0") || host.ends_with(".localhost") {
-        let port = if host == "::1" { auth.rsplit_once("]:").map(|x| x.1) } else { auth.rsplit_once(':').map(|x| x.1) };
+    if matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "0.0.0.0")
+        || host.ends_with(".localhost")
+    {
+        let port = if host == "::1" {
+            auth.rsplit_once("]:").map(|x| x.1)
+        } else {
+            auth.rsplit_once(':').map(|x| x.1)
+        };
         let port = port.filter(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()));
         let a = match port {
             Some(p) => format!("host.docker.internal:{p}"),
@@ -284,14 +372,23 @@ pub fn container_base(url: &str) -> (String, bool) {
 fn run(ctx: &Ctx) -> Result<CheckOutput> {
     let qa = ctx.qa.as_ref().context("not a QA run")?;
     if !qa.nonprod {
-        return Ok(CheckOutput::status(CheckStatus::NotApplicable("perf tests run only on nonprod hosts".into())));
+        return Ok(CheckOutput::status(CheckStatus::NotApplicable(
+            "perf tests run only on nonprod hosts".into(),
+        )));
     }
     let Some(url) = ctx.target.url.clone() else {
-        return Ok(CheckOutput::status(CheckStatus::NotApplicable("no web target".into())));
+        return Ok(CheckOutput::status(CheckStatus::NotApplicable(
+            "no web target".into(),
+        )));
     };
     let host = crate::scope::url_host(&url)?;
     let scope = crate::scope::active();
-    let limits = effective_limits(scope.as_ref().and_then(|s| s.find(&host)).and_then(|h| h.perf.as_ref()));
+    let limits = effective_limits(
+        scope
+            .as_ref()
+            .and_then(|s| s.find(&host))
+            .and_then(|h| h.perf.as_ref()),
+    );
 
     // Endpoints: spec GETs (no path params) + health.
     let spec = super::plan::load_spec(ctx).ok().flatten();
@@ -310,27 +407,49 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
     let endpoints: Vec<String> = endpoint_set.iter().map(|e| e.path.clone()).collect();
 
     // Personas: anonymous (public endpoints only) + first role with credentials (all endpoints).
-    let public: Vec<String> = endpoint_set.iter().filter(|e| e.public).map(|e| e.path.clone()).collect();
+    let public: Vec<String> = endpoint_set
+        .iter()
+        .filter(|e| e.public)
+        .map(|e| e.path.clone())
+        .collect();
     let mut personas: Vec<Persona> = vec![];
     if !public.is_empty() {
-        personas.push(Persona { name: "anonymous".into(), has_auth: false, endpoints: public });
+        personas.push(Persona {
+            name: "anonymous".into(),
+            has_auth: false,
+            endpoints: public,
+        });
     }
     let mut env: Vec<(String, String)> = vec![];
-    if let Some(r) = qa.roles.roles.iter().find(|r| r.credential().is_some()) {
-        if let Some((hn, hv)) = r.credential() {
-            let i = personas.len();
-            env.push((format!("RH_HN_{i}"), hn));
-            env.push((format!("RH_HV_{i}"), hv));
-            personas.push(Persona { name: r.name.clone(), has_auth: true, endpoints: endpoints.clone() });
-        }
+    if let Some(r) = qa.roles.roles.iter().find(|r| r.credential().is_some())
+        && let Some((hn, hv)) = r.credential()
+    {
+        let i = personas.len();
+        env.push((format!("RH_HN_{i}"), hn));
+        env.push((format!("RH_HV_{i}"), hv));
+        personas.push(Persona {
+            name: r.name.clone(),
+            has_auth: true,
+            endpoints: endpoints.clone(),
+        });
     }
     if personas.is_empty() {
-        qa.with(|c| c.untested.push("performance: every endpoint is secured and no role credential is available".into()));
-        return Ok(CheckOutput::status(CheckStatus::Skipped("no endpoint reachable without credentials and no role credential set".into())));
+        qa.with(|c| {
+            c.untested.push(
+                "performance: every endpoint is secured and no role credential is available".into(),
+            )
+        });
+        return Ok(CheckOutput::status(CheckStatus::Skipped(
+            "no endpoint reachable without credentials and no role credential set".into(),
+        )));
     }
     let skipped_secured = endpoint_set.iter().filter(|e| !e.public).count();
     if skipped_secured > 0 && !personas.iter().any(|p| p.has_auth) {
-        qa.with(|c| c.notes.push(format!("perf: {skipped_secured} secured endpoint(s) not load-tested (no role credential)")));
+        qa.with(|c| {
+            c.notes.push(format!(
+                "perf: {skipped_secured} secured endpoint(s) not load-tested (no role credential)"
+            ))
+        });
     }
 
     let (cbase, local) = container_base(&base);
@@ -342,8 +461,16 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
 
     let mut spec_t = ToolSpec::new(
         "k6",
-        &["run", "--quiet", "--no-usage-report", "--summary-trend-stats", "avg,min,med,max,p(90),p(95),p(99)",
-          "--summary-export", "/out/k6-summary.json", "/out/perf.js"],
+        &[
+            "run",
+            "--quiet",
+            "--no-usage-report",
+            "--summary-trend-stats",
+            "avg,min,med,max,p(90),p(95),p(99)",
+            "--summary-export",
+            "/out/k6-summary.json",
+            "/out/perf.js",
+        ],
     );
     spec_t.network = true;
     spec_t.host_gateway = local;
@@ -358,8 +485,13 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
     let tr = ctx.docker.run(ctx, &spec_t)?;
     let ms = started.elapsed().as_millis();
     let summary_p = out.join("k6-summary.json");
-    let text = std::fs::read_to_string(&summary_p)
-        .with_context(|| format!("k6 produced no summary (exit {}): {}", tr.exit_code, tr.stderr_tail.lines().last().unwrap_or("")))?;
+    let text = std::fs::read_to_string(&summary_p).with_context(|| {
+        format!(
+            "k6 produced no summary (exit {}): {}",
+            tr.exit_code,
+            tr.stderr_tail.lines().last().unwrap_or("")
+        )
+    })?;
     let m = parse_summary(&text)?;
     let aborted = tr.exit_code == 99 && m.error_rate > limits.max_error_rate;
 
@@ -367,7 +499,11 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
     let ev_dir = ctx.run_dir.join("artifacts").join("perf");
     std::fs::create_dir_all(&ev_dir)?;
     std::fs::write(ev_dir.join("k6-summary.json"), &text)?;
-    let evidence = vec![Evidence { kind: EvidenceKind::K6Summary, path: "perf/k6-summary.json".into(), note: String::new() }];
+    let evidence = vec![Evidence {
+        kind: EvidenceKind::K6Summary,
+        path: "perf/k6-summary.json".into(),
+        note: String::new(),
+    }];
 
     let data = crate::engine::data_dir();
     let key = crate::engine::target_key(&ctx.target);
@@ -375,17 +511,30 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
     let issues = compare(old.as_ref(), &m);
     let _ = std::fs::create_dir_all(data.join("baselines"));
     if !aborted && m.error_rate <= limits.max_error_rate && m.requests > 0 {
-        let _ = std::fs::write(data.join("baselines").join(format!("{key}.perf.last.json")), serde_json::to_string_pretty(&m)?);
+        let _ = std::fs::write(
+            data.join("baselines").join(format!("{key}.perf.last.json")),
+            serde_json::to_string_pretty(&m)?,
+        );
     }
     let mut note = format!(
         "perf: {} req, {:.1} rps, p50 {:.0} ms, p95 {:.0} ms, p99 {:.0} ms, errors {:.2}% ({} VUs, {} s, {} personas)",
-        m.requests, m.rps, m.p50, m.p95, m.p99, m.error_rate * 100.0, limits.vus, limits.duration_secs, personas.len()
+        m.requests,
+        m.rps,
+        m.p50,
+        m.p95,
+        m.p99,
+        m.error_rate * 100.0,
+        limits.vus,
+        limits.duration_secs,
+        personas.len()
     );
     if old.is_none() && !aborted && m.error_rate <= limits.max_error_rate && m.requests > 0 {
         store_baseline(&data, &key, &m)?;
         note.push_str("; perf baseline recorded");
     } else if old.is_none() {
-        note.push_str("; no baseline recorded (unhealthy run; is the target reachable from the container?)");
+        note.push_str(
+            "; no baseline recorded (unhealthy run; is the target reachable from the container?)",
+        );
     }
     if aborted {
         note.push_str("; ABORTED: error rate above threshold");
@@ -398,18 +547,38 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
     for iss in &issues {
         let (rule, sev, cat, title, actual) = match iss {
             PerfIssue::Regression { old, new, worst } => {
-                let mut a = format!("p95 {old:.0} ms -> {new:.0} ms (+{:.0}%)", (new / old - 1.0) * 100.0);
+                let mut a = format!(
+                    "p95 {old:.0} ms -> {new:.0} ms (+{:.0}%)",
+                    (new / old - 1.0) * 100.0
+                );
                 for (e, o, n) in worst {
                     a.push_str(&format!("; {e}: {o:.0} -> {n:.0} ms"));
                 }
-                ("qa.perf.regression", Severity::Medium, Category::Performance, "Latency regression versus baseline (p95 > +20%)", a)
+                (
+                    "qa.perf.regression",
+                    Severity::Medium,
+                    Category::Performance,
+                    "Latency regression versus baseline (p95 > +20%)",
+                    a,
+                )
             }
             PerfIssue::Errors { rate } => (
-                "qa.perf.errors", Severity::High, Category::Reliability,
-                "Errors under light load (> 1%)", format!("error rate {:.2}%{}", rate * 100.0, if aborted { " (run aborted)" } else { "" }),
+                "qa.perf.errors",
+                Severity::High,
+                Category::Reliability,
+                "Errors under light load (> 1%)",
+                format!(
+                    "error rate {:.2}%{}",
+                    rate * 100.0,
+                    if aborted { " (run aborted)" } else { "" }
+                ),
             ),
             PerfIssue::Slow { p95 } => (
-                "qa.perf.slow", Severity::Low, Category::Performance, "p95 latency above 1000 ms", format!("p95 {p95:.0} ms"),
+                "qa.perf.slow",
+                Severity::Low,
+                Category::Performance,
+                "p95 latency above 1000 ms",
+                format!("p95 {p95:.0} ms"),
             ),
         };
         let id = format!("D-PERF-{:03}", SEQ.fetch_add(1, Ordering::SeqCst));
@@ -438,19 +607,44 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
     }
     qa.with(|c| {
         c.cases.push(TestCase {
-            id: case_id.clone(), area: Area::Perf, technique: Technique::PerfBaseline,
-            title: "Light load (smoke) latency/error baseline".into(), priority: Priority::P2,
-            component: comp.clone(), role: None,
-            steps: vec![format!("k6 {} VUs x {} s over {} endpoint(s)", limits.vus, limits.duration_secs, endpoints.len())],
-            expected: "p95 within +20% of baseline, errors <= 1%, p95 <= 1000 ms".into(), source: CaseSource::Deterministic,
+            id: case_id.clone(),
+            area: Area::Perf,
+            technique: Technique::PerfBaseline,
+            title: "Light load (smoke) latency/error baseline".into(),
+            priority: Priority::P2,
+            component: comp.clone(),
+            role: None,
+            steps: vec![format!(
+                "k6 {} VUs x {} s over {} endpoint(s)",
+                limits.vus,
+                limits.duration_secs,
+                endpoints.len()
+            )],
+            expected: "p95 within +20% of baseline, errors <= 1%, p95 <= 1000 ms".into(),
+            source: CaseSource::Deterministic,
         });
         c.results.push(TestResult {
             case_id: case_id.clone(),
-            status: if issues.is_empty() { ResultStatus::Pass } else { ResultStatus::Fail },
-            actual: note.clone(), duration_ms: ms, attempts: 1, evidence: evidence.clone(),
+            status: if issues.is_empty() {
+                ResultStatus::Pass
+            } else {
+                ResultStatus::Fail
+            },
+            actual: note.clone(),
+            duration_ms: ms,
+            attempts: 1,
+            evidence: evidence.clone(),
             defect_id: defect_ids.first().cloned(),
         });
-        c.coverage.set(&comp, "perf_baseline", if issues.is_empty() { Cell::Pass } else { Cell::Fail });
+        c.coverage.set(
+            &comp,
+            "perf_baseline",
+            if issues.is_empty() {
+                Cell::Pass
+            } else {
+                Cell::Fail
+            },
+        );
         c.notes.push(note.clone());
     });
     Ok(CheckOutput::findings(findings))
@@ -458,7 +652,10 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
 
 fn origin(url: &str) -> String {
     let (scheme, rest) = url.split_once("://").unwrap_or(("http", url));
-    format!("{scheme}://{}", rest.split(['/', '?', '#']).next().unwrap_or(""))
+    format!(
+        "{scheme}://{}",
+        rest.split(['/', '?', '#']).next().unwrap_or("")
+    )
 }
 
 #[cfg(test)]
@@ -468,12 +665,24 @@ mod tests {
     const SUMMARY: &str = include_str!("../../tests/fixtures/qa-perf/k6-summary.json");
 
     fn pl(vus: Option<u32>, d: Option<u32>, heavy: bool) -> PerfLimits {
-        PerfLimits { vus, duration_secs: d, max_error_rate: None, allow_heavy: heavy }
+        PerfLimits {
+            vus,
+            duration_secs: d,
+            max_error_rate: None,
+            allow_heavy: heavy,
+        }
     }
 
     #[test]
     fn caps() {
-        assert_eq!(effective_limits(None), Limits { vus: 5, duration_secs: 60, max_error_rate: 0.05 });
+        assert_eq!(
+            effective_limits(None),
+            Limits {
+                vus: 5,
+                duration_secs: 60,
+                max_error_rate: 0.05
+            }
+        );
         let l = effective_limits(Some(&pl(Some(500), Some(3600), false)));
         assert_eq!((l.vus, l.duration_secs), (10, 120));
         let l = effective_limits(Some(&pl(Some(50), Some(300), true)));
@@ -483,11 +692,26 @@ mod tests {
     #[test]
     fn script_has_thresholds_and_no_secret() {
         let personas = vec![
-            Persona { name: "anonymous".into(), has_auth: false, endpoints: vec!["/health".into()] },
-            Persona { name: "admin".into(), has_auth: true, endpoints: vec!["/health".into(), "/api/x".into()] },
+            Persona {
+                name: "anonymous".into(),
+                has_auth: false,
+                endpoints: vec!["/health".into()],
+            },
+            Persona {
+                name: "admin".into(),
+                has_auth: true,
+                endpoints: vec!["/health".into(), "/api/x".into()],
+            },
         ];
-        let s = gen_script("http://host.docker.internal:8080/", &personas, &effective_limits(None));
-        assert!(s.contains("const EPS0 = [\"/health\"]") && s.contains("const EPS1 = [\"/health\",\"/api/x\"]"));
+        let s = gen_script(
+            "http://host.docker.internal:8080/",
+            &personas,
+            &effective_limits(None),
+        );
+        assert!(
+            s.contains("const EPS0 = [\"/health\"]")
+                && s.contains("const EPS1 = [\"/health\",\"/api/x\"]")
+        );
         // 401/403/404 on spec endpoints must count as failed requests
         assert!(s.contains("min: 200, max: 399") && !s.contains("max: 499"));
         assert!(s.contains("abortOnFail: true") && s.contains("rate<0.05"));
@@ -518,12 +742,17 @@ mod tests {
         worse.p95 = base.p95 * 1.25;
         worse.endpoints_p95.insert("/api/orders".into(), 600.0);
         let v = compare(Some(&base), &worse);
-        assert!(matches!(&v[0], PerfIssue::Regression { worst, .. } if worst[0].0 == "/api/orders"));
+        assert!(
+            matches!(&v[0], PerfIssue::Regression { worst, .. } if worst[0].0 == "/api/orders")
+        );
         let mut e = base.clone();
         e.error_rate = 0.02;
         e.p95 = 1500.0;
         let v = compare(None, &e);
-        assert!(v.contains(&PerfIssue::Errors { rate: 0.02 }) && v.contains(&PerfIssue::Slow { p95: 1500.0 }));
+        assert!(
+            v.contains(&PerfIssue::Errors { rate: 0.02 })
+                && v.contains(&PerfIssue::Slow { p95: 1500.0 })
+        );
         let mut ok = base.clone();
         ok.p95 = base.p95 * 1.15;
         assert!(compare(Some(&base), &ok).is_empty());
@@ -537,7 +766,11 @@ mod tests {
         assert!(accept_baseline_in(&d, "k").is_err());
         store_baseline(&d, "k", &m).unwrap();
         assert_eq!(load_baseline(&d, "k").unwrap(), m);
-        std::fs::write(d.join("baselines/k.perf.last.json"), serde_json::to_string(&PerfMetrics { p95: 9.0, ..m }).unwrap()).unwrap();
+        std::fs::write(
+            d.join("baselines/k.perf.last.json"),
+            serde_json::to_string(&PerfMetrics { p95: 9.0, ..m }).unwrap(),
+        )
+        .unwrap();
         accept_baseline_in(&d, "k").unwrap();
         assert_eq!(load_baseline(&d, "k").unwrap().p95, 9.0);
         let _ = std::fs::remove_dir_all(d);
@@ -550,16 +783,32 @@ mod tests {
                       "/needs-q": {"get": {"parameters":[{"name":"q","in":"query","required":true}]}}}});
         let e = pick_endpoint_set(Some(&doc), Some("/health"));
         let got: Vec<(&str, bool)> = e.iter().map(|x| (x.path.as_str(), x.public)).collect();
-        assert_eq!(got, vec![("/api/v1/a", false), ("/api/v1/pub", true), ("/health", true)]);
-        assert_eq!(pick_endpoints(Some(&doc), None), vec!["/api/v1/a", "/api/v1/pub"]);
+        assert_eq!(
+            got,
+            vec![
+                ("/api/v1/a", false),
+                ("/api/v1/pub", true),
+                ("/health", true)
+            ]
+        );
+        assert_eq!(
+            pick_endpoints(Some(&doc), None),
+            vec!["/api/v1/a", "/api/v1/pub"]
+        );
     }
 
     #[test]
     fn endpoints_and_rewrite() {
         let doc: Value = serde_json::json!({"paths": {"/a": {"get": {}}, "/b/{id}": {"get": {}}, "/c": {"post": {}}, "/health": {"get": {}}}});
-        assert_eq!(pick_endpoints(Some(&doc), Some("/health")), vec!["/a", "/health"]);
+        assert_eq!(
+            pick_endpoints(Some(&doc), Some("/health")),
+            vec!["/a", "/health"]
+        );
         assert_eq!(pick_endpoints(None, None), vec!["/"]);
-        assert_eq!(container_base("http://localhost:18095/x"), ("http://host.docker.internal:18095/x".into(), true));
-        assert_eq!(container_base("https://app.example.com").1, false);
+        assert_eq!(
+            container_base("http://localhost:18095/x"),
+            ("http://host.docker.internal:18095/x".into(), true)
+        );
+        assert!(!container_base("https://app.example.com").1);
     }
 }

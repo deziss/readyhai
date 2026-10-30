@@ -137,7 +137,11 @@ mod tests {
     #[test]
     fn groups_other_families() {
         let c = cluster(&load());
-        let find = |s: &str| c.iter().find(|x| x.signature.contains(s)).unwrap_or_else(|| panic!("{s}: {c:#?}"));
+        let find = |s: &str| {
+            c.iter()
+                .find(|x| x.signature.contains(s))
+                .unwrap_or_else(|| panic!("{s}: {c:#?}"))
+        };
         assert_eq!(find("invalid literal for int()").count, 2);
         assert_eq!(find("open()").count, 2);
         assert_eq!(find("failed to start worker-").count, 2);
@@ -146,21 +150,37 @@ mod tests {
     #[test]
     fn redacts_secrets() {
         let c = cluster(&load());
-        let a = c.iter().find(|x| x.example.contains("Auth failed")).unwrap();
-        for bad in ["bob@example.com", "hunter2", "AKIAABCDEFGHIJKLMNOP", "abc.def.ghi"] {
+        let a = c
+            .iter()
+            .find(|x| x.example.contains("Auth failed"))
+            .unwrap();
+        for bad in [
+            "bob@example.com",
+            "hunter2",
+            "AKIAABCDEFGHIJKLMNOP",
+            "abc.def.ghi",
+        ] {
             assert!(!a.example.contains(bad), "{bad} leaked: {}", a.example);
         }
         assert!(a.example.contains("[EMAIL]"));
         assert!(a.example.contains("[REDACTED]"));
         let jwt = "tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk x";
         assert!(!redact(jwt).contains("eyJhbGci"));
-        assert!(!redact("blob 0123456789abcdef0123456789abcdef0123456789").contains("0123456789abcdef"));
+        assert!(
+            !redact("blob 0123456789abcdef0123456789abcdef0123456789").contains("0123456789abcdef")
+        );
     }
 
     #[test]
     fn caps_and_truncates() {
-        let lines: Vec<(String, String)> =
-            (0..80).map(|i| ("s".to_string(), format!("unique error kind{}x {}", "z".repeat(i), "y".repeat(500)))).collect();
+        let lines: Vec<(String, String)> = (0..80)
+            .map(|i| {
+                (
+                    "s".to_string(),
+                    format!("unique error kind{}x {}", "z".repeat(i), "y".repeat(500)),
+                )
+            })
+            .collect();
         let c = cluster(&lines);
         assert!(c.len() <= 50);
         assert!(c.iter().all(|x| x.example.chars().count() <= 300));

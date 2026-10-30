@@ -3,7 +3,7 @@ use crate::model::*;
 use anyhow::Result;
 use minijinja::{AutoEscape, Environment};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -40,7 +40,10 @@ pub struct IndexLine {
 fn parse_p95(notes: &[String]) -> Option<f64> {
     for n in notes {
         if let Some(i) = n.find("perf p95=") {
-            let t: String = n[i + 9..].chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+            let t: String = n[i + 9..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
             if let Ok(v) = t.parse() {
                 return Some(v);
             }
@@ -52,7 +55,11 @@ fn parse_p95(notes: &[String]) -> Option<f64> {
 pub fn index_line(run: &Run) -> IndexLine {
     let mut c = Counts::default();
     let mut new = 0;
-    for f in run.findings.iter().filter(|f| f.status != FindingStatus::Suppressed) {
+    for f in run
+        .findings
+        .iter()
+        .filter(|f| f.status != FindingStatus::Suppressed)
+    {
         match f.severity {
             Severity::Critical => c.critical += 1,
             Severity::High => c.high += 1,
@@ -76,14 +83,19 @@ pub fn index_line(run: &Run) -> IndexLine {
         kind: format!("{:?}", run.target.kind).to_lowercase(),
         date: run.started.clone(),
         verdict: format!("{:?}", run.verdict).to_uppercase(),
-        recommendation: q.map(|q| match q.recommendation {
-            crate::qa::model::Recommendation::Go => "GO",
-            crate::qa::model::Recommendation::ConditionalGo => "CONDITIONAL GO",
-            crate::qa::model::Recommendation::NoGo => "NO-GO",
-        }.to_string()),
+        recommendation: q.map(|q| {
+            match q.recommendation {
+                crate::qa::model::Recommendation::Go => "GO",
+                crate::qa::model::Recommendation::ConditionalGo => "CONDITIONAL GO",
+                crate::qa::model::Recommendation::NoGo => "NO-GO",
+            }
+            .to_string()
+        }),
         counts: c,
         new,
-        pass_rate: q.filter(|q| q.counts.executed > 0).map(|q| q.counts.passed as f64 / q.counts.executed as f64),
+        pass_rate: q
+            .filter(|q| q.counts.executed > 0)
+            .map(|q| q.counts.passed as f64 / q.counts.executed as f64),
         defects: q.map(|q| q.defects.len()),
         p95: parse_p95(&notes),
     }
@@ -99,7 +111,10 @@ fn append_to(p: &Path, l: &IndexLine) -> Result<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d)?;
     }
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(p)?;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(p)?;
     writeln!(f, "{}", serde_json::to_string(l)?)?;
     Ok(())
 }
@@ -124,12 +139,28 @@ fn spark(vals: &[f64], max: f64) -> Option<String> {
     }
     let max = if max <= 0.0 { 1.0 } else { max };
     let step = 116.0 / (vals.len() - 1) as f64;
-    Some(vals.iter().enumerate().map(|(i, v)| format!("{:.1},{:.1}", 2.0 + i as f64 * step, 26.0 - (v / max).clamp(0.0, 1.0) * 24.0)).collect::<Vec<_>>().join(" "))
+    Some(
+        vals.iter()
+            .enumerate()
+            .map(|(i, v)| {
+                format!(
+                    "{:.1},{:.1}",
+                    2.0 + i as f64 * step,
+                    26.0 - (v / max).clamp(0.0, 1.0) * 24.0
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 fn row(l: &IndexLine, data: &Path) -> Value {
     let rep = data.join("runs").join(&l.id).join("report");
-    let link = if rep.is_dir() && l.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    let link = if rep.is_dir()
+        && l.id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         Some(format!("{}/", rep.display()))
     } else {
         None
@@ -145,7 +176,10 @@ fn row(l: &IndexLine, data: &Path) -> Value {
 pub fn render(lines: &[IndexLine], data: &Path) -> Result<String> {
     let mut env = Environment::new();
     env.set_auto_escape_callback(|_| AutoEscape::Html);
-    env.add_template("dashboard.html.j2", include_str!("../templates/dashboard.html.j2"))?;
+    env.add_template(
+        "dashboard.html.j2",
+        include_str!("../templates/dashboard.html.j2"),
+    )?;
     let mut by: BTreeMap<&str, Vec<&IndexLine>> = BTreeMap::new();
     for l in lines {
         by.entry(&l.target_key).or_default().push(l);
@@ -187,9 +221,21 @@ mod tests {
 
     fn line(id: &str, d: &str, f: usize) -> IndexLine {
         IndexLine {
-            id: id.into(), target: "http://<b>x</b>".into(), target_key: "k1".into(), kind: "web".into(), date: d.into(),
-            verdict: "FAIL".into(), recommendation: Some("NO-GO".into()),
-            counts: Counts { high: f, ..Default::default() }, new: f, pass_rate: Some(0.75), defects: Some(2), p95: Some(120.0),
+            id: id.into(),
+            target: "http://<b>x</b>".into(),
+            target_key: "k1".into(),
+            kind: "web".into(),
+            date: d.into(),
+            verdict: "FAIL".into(),
+            recommendation: Some("NO-GO".into()),
+            counts: Counts {
+                high: f,
+                ..Default::default()
+            },
+            new: f,
+            pass_rate: Some(0.75),
+            defects: Some(2),
+            p95: Some(120.0),
         }
     }
 
@@ -199,7 +245,10 @@ mod tests {
         let s = serde_json::to_string(&l).unwrap();
         assert!(!s.contains('\n'));
         assert_eq!(serde_json::from_str::<IndexLine>(&s).unwrap(), l);
-        assert_eq!(parse_p95(&["x".into(), "perf p95=123ms rps=4".into()]), Some(123.0));
+        assert_eq!(
+            parse_p95(&["x".into(), "perf p95=123ms rps=4".into()]),
+            Some(123.0)
+        );
         assert_eq!(parse_p95(&[]), None);
         let p = std::env::temp_dir().join(format!("rh-idx-{}.jsonl", std::process::id()));
         let _ = std::fs::remove_file(&p);
@@ -221,7 +270,11 @@ mod tests {
 
     #[test]
     fn dashboard_renders_escaped() {
-        let h = render(&[line("r1", "2026-10-25", 3), line("r2", "2026-10-26", 1)], Path::new("/nonexistent")).unwrap();
+        let h = render(
+            &[line("r1", "2026-10-25", 3), line("r2", "2026-10-26", 1)],
+            Path::new("/nonexistent"),
+        )
+        .unwrap();
         assert!(h.contains("&lt;b&gt;x&lt;") && !h.contains("<b>x"));
         assert!(!h.contains("<b>x</b>"));
         assert!(h.contains("<polyline"));

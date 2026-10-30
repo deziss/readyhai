@@ -39,8 +39,8 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/readyhai dist/
-          tar -czf dist/readyhai-${GITHUB_REF_NAME}-linux-x86_64.tar.gz -C dist readyhai
-          (cd dist && sha256sum readyhai-${GITHUB_REF_NAME}-linux-x86_64.tar.gz > readyhai-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256)
+          tar -czf dist/readyhai-linux-x86_64.tar.gz -C dist readyhai
+          (cd dist && sha256sum readyhai-linux-x86_64.tar.gz > readyhai-linux-x86_64.tar.gz.sha256)
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -49,6 +49,6 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            dist/readyhai-${{ github.ref_name }}-linux-x86_64.tar.gz
-            dist/readyhai-${{ github.ref_name }}-linux-x86_64.tar.gz.sha256
+            dist/readyhai-linux-x86_64.tar.gz
+            dist/readyhai-linux-x86_64.tar.gz.sha256
           generate_release_notes: true

@@ -29,14 +29,40 @@ jobs:
 
       - name: Check code formatting
         run: cargo fmt -- --check
-        continue-on-error: true
 
       - name: Run clippy
         run: cargo clippy -- -D warnings
-        continue-on-error: true
 
       - name: Run test suite
         run: cargo test --verbose
 
       - name: Build release binary
         run: cargo build --release
+
+  frontend:
+    name: Frontend lint & typecheck
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc --noEmit
+
+  python:
+    name: Context retriever tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run unit tests
+        run: python -m unittest discover -s runners/context_retriever/tests -t . -v

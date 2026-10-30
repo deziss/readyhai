@@ -27,7 +27,7 @@ A declarative stage to paste into a pipeline. It replaces steps like `if command
 Workflow `readyhai` on push and pull request, `permissions: contents read, security-events write`.
 
 1. `actions/checkout@v4`.
-2. Install: `curl -sSfL <release-url> | sudo tar xz -C /usr/local/bin`. **`<release-url>` is a TODO**: no release is published yet. Replace it with your tarball, or build from source.
+2. Install: `curl -sSfL https://github.com/deziss/readyhai/releases/latest/download/readyhai-linux-x86_64.tar.gz | sudo tar xz -C /usr/local/bin`. The release workflow (`.github/workflows/release.yml`) publishes exactly this version-independent asset name (plus a `.sha256` file) on every `v*` tag; before the first tag exists, build from source.
 3. `readyhai tools update` (needs Docker, which hosted runners have).
 4. Scan with `set +e`, capture the exit code into `steps.scan.outputs.code`.
 5. `github/codeql-action/upload-sarif@v3` with `readyhai-report/readyhai-report.sarif` (`if: always()`); results appear under Code scanning, with `partialFingerprints["readyhai/v1"]` for dedup.

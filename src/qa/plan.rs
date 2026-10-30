@@ -23,13 +23,22 @@ impl Op {
 }
 
 pub fn checks() -> Vec<Check> {
-    vec![Check::new("qa.plan", "QA risk-based test plan", &[TargetKind::Web], Profile::Quick, run).qa()]
+    vec![
+        Check::new(
+            "qa.plan",
+            "QA risk-based test plan",
+            &[TargetKind::Web],
+            Profile::Quick,
+            run,
+        )
+        .qa(),
+    ]
 }
 
 const METHODS: [&str; 7] = ["get", "put", "post", "delete", "options", "head", "patch"];
 const KEYWORDS: [&str; 14] = [
-    "auth", "login", "password", "admin", "payment", "pay", "order", "invoice", "user", "account", "token",
-    "upload", "delete", "billing",
+    "auth", "login", "password", "admin", "payment", "pay", "order", "invoice", "user", "account",
+    "token", "upload", "delete", "billing",
 ];
 const TOTAL_BUDGET: usize = 2000;
 const ITEM_CAP: usize = 60;
@@ -41,7 +50,9 @@ pub fn load_spec(ctx: &Ctx) -> Result<Option<Value>> {
     let src = match &qa.spec {
         Some(s) => s.clone(),
         None => {
-            let Some(base) = ctx.target.url.as_deref() else { return Ok(None) };
+            let Some(base) = ctx.target.url.as_deref() else {
+                return Ok(None);
+            };
             qa.throttle()?;
             match crate::web::discover_openapi(base) {
                 Some(u) => u,
@@ -51,7 +62,9 @@ pub fn load_spec(ctx: &Ctx) -> Result<Option<Value>> {
     };
     let text = if src.starts_with("http://") || src.starts_with("https://") {
         qa.throttle()?;
-        let c = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(20)).build()?;
+        let c = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .build()?;
         let r = c.get(&src).send()?.error_for_status()?;
         r.text()?
     } else {
@@ -71,7 +84,9 @@ pub fn parse_doc(text: &str) -> Result<Value> {
 pub fn ops_from_doc(doc: &Value) -> Vec<Op> {
     let top_secured = sec_nonempty(doc.get("security"));
     let mut out = vec![];
-    let Some(paths) = doc.get("paths").and_then(|p| p.as_object()) else { return out };
+    let Some(paths) = doc.get("paths").and_then(|p| p.as_object()) else {
+        return out;
+    };
     for (path, item) in paths {
         for m in METHODS {
             let Some(op) = item.get(m) else { continue };
@@ -82,7 +97,10 @@ pub fn ops_from_doc(doc: &Value) -> Vec<Op> {
             out.push(Op {
                 method: m.to_ascii_uppercase(),
                 path: path.clone(),
-                operation_id: op.get("operationId").and_then(|v| v.as_str()).map(String::from),
+                operation_id: op
+                    .get("operationId")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
                 secured,
                 has_body: op.get("requestBody").is_some(),
             });
@@ -93,14 +111,18 @@ pub fn ops_from_doc(doc: &Value) -> Vec<Op> {
 
 fn sec_nonempty(v: Option<&Value>) -> bool {
     match v.and_then(|v| v.as_array()) {
-        Some(a) => a.iter().any(|r| r.as_object().map(|o| !o.is_empty()).unwrap_or(false)),
+        Some(a) => a
+            .iter()
+            .any(|r| r.as_object().map(|o| !o.is_empty()).unwrap_or(false)),
         None => false,
     }
 }
 
 #[allow(dead_code)]
 pub fn spec_ops(ctx: &Ctx) -> Result<Vec<Op>> {
-    Ok(load_spec(ctx)?.map(|d| ops_from_doc(&d)).unwrap_or_default())
+    Ok(load_spec(ctx)?
+        .map(|d| ops_from_doc(&d))
+        .unwrap_or_default())
 }
 
 fn is_write(m: &str) -> bool {
@@ -147,13 +169,27 @@ pub fn score(op: &Op, has_tests: Option<bool>, is_new: bool) -> (u8, Vec<String>
 
 /// Plan risk of an operation known only by its parts (used when the plan has no item for it).
 pub fn risk_of(method: &str, path: &str, secured: bool, has_body: bool) -> u8 {
-    score(&Op { method: method.to_ascii_uppercase(), path: path.to_string(), operation_id: None, secured, has_body }, None, false).0
+    score(
+        &Op {
+            method: method.to_ascii_uppercase(),
+            path: path.to_string(),
+            operation_id: None,
+            secured,
+            has_body,
+        },
+        None,
+        false,
+    )
+    .0
 }
 
 /// Proportional budgets (min 1, capped per item) summing to about `total`.
 pub fn budgets(risks: &[u8], total: usize) -> Vec<usize> {
     let sum: usize = risks.iter().map(|r| *r as usize).sum::<usize>().max(1);
-    risks.iter().map(|r| (total * *r as usize / sum).clamp(1, ITEM_CAP)).collect()
+    risks
+        .iter()
+        .map(|r| (total * *r as usize / sum).clamp(1, ITEM_CAP))
+        .collect()
 }
 
 fn static_prefix(path: &str) -> String {
@@ -176,11 +212,11 @@ fn test_corpus(ctx: &Ctx) -> Option<String> {
         if !(l.contains("test") || l.contains("spec") || l.contains("e2e")) {
             continue;
         }
-        if let Ok(t) = std::fs::read_to_string(snap.root.join(f)) {
-            if t.len() < 512 * 1024 {
-                buf.push_str(&t.to_ascii_lowercase());
-                buf.push('\n');
-            }
+        if let Ok(t) = std::fs::read_to_string(snap.root.join(f))
+            && t.len() < 512 * 1024
+        {
+            buf.push_str(&t.to_ascii_lowercase());
+            buf.push('\n');
         }
         if buf.len() > 32 * 1024 * 1024 {
             break;
@@ -202,7 +238,9 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
 /// `run` with an explicit data dir (baselines), so tests never touch the real one.
 pub(crate) fn run_in(ctx: &Ctx, data: &std::path::Path) -> Result<CheckOutput> {
     let Some(qa) = ctx.qa.as_ref() else {
-        return Ok(CheckOutput::status(CheckStatus::NotApplicable("not a QA run".into())));
+        return Ok(CheckOutput::status(CheckStatus::NotApplicable(
+            "not a QA run".into(),
+        )));
     };
     let (doc, err) = match load_spec(ctx) {
         Ok(d) => (d, None),
@@ -213,20 +251,30 @@ pub(crate) fn run_in(ctx: &Ctx, data: &std::path::Path) -> Result<CheckOutput> {
 
     // Baseline spec: seeded when none exists. This run's operation list is always staged in the
     // run dir; `baseline accept <run>` promotes it (api::accept_spec_baseline).
-    let bpath = data.join("baselines").join(format!("{}.spec.json", crate::engine::target_key(&ctx.target)));
-    let baseline: Option<Vec<String>> =
-        std::fs::read_to_string(&bpath).ok().and_then(|t| serde_json::from_str(&t).ok());
+    let bpath = data.join("baselines").join(format!(
+        "{}.spec.json",
+        crate::engine::target_key(&ctx.target)
+    ));
+    let baseline: Option<Vec<String>> = std::fs::read_to_string(&bpath)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
     if !ops.is_empty() {
         let st = super::api::stage_dir(&ctx.run_dir);
         if std::fs::create_dir_all(&st).is_ok() {
-            let _ = std::fs::write(st.join("spec-ops.json"), serde_json::to_string_pretty(&op_keys(&ops)).unwrap_or_default());
+            let _ = std::fs::write(
+                st.join("spec-ops.json"),
+                serde_json::to_string_pretty(&op_keys(&ops)).unwrap_or_default(),
+            );
         }
     }
     if baseline.is_none() && !ops.is_empty() {
         if let Some(dir) = bpath.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(&bpath, serde_json::to_string_pretty(&op_keys(&ops)).unwrap_or_default());
+        let _ = std::fs::write(
+            &bpath,
+            serde_json::to_string_pretty(&op_keys(&ops)).unwrap_or_default(),
+        );
     }
 
     let risks_n: Vec<(Op, u8, Vec<String>)> = ops
@@ -236,7 +284,10 @@ pub(crate) fn run_in(ctx: &Ctx, data: &std::path::Path) -> Result<CheckOutput> {
                 let p = static_prefix(&o.path);
                 p.is_empty() || c.contains(&p.to_ascii_lowercase())
             });
-            let is_new = baseline.as_ref().map(|b| !b.contains(&o.component())).unwrap_or(false);
+            let is_new = baseline
+                .as_ref()
+                .map(|b| !b.contains(&o.component()))
+                .unwrap_or(false);
             let (r, why) = score(o, has_tests, is_new);
             (o.clone(), r, why)
         })

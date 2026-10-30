@@ -1,9 +1,9 @@
 //! Per-run context handed to every check.
+use crate::config::TargetConfig;
 use crate::facts::Facts;
 use crate::model::{Profile, Target};
 use crate::snapshot::Snapshot;
 use crate::tools::Docker;
-use crate::config::TargetConfig;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -31,10 +31,10 @@ pub struct Ctx {
 impl Ctx {
     /// Record a runtime error line (source, line) for clustering. Redact before calling.
     pub fn error_line(&self, source: &str, line: &str) {
-        if let Ok(mut v) = self.error_lines.lock() {
-            if v.len() < 20_000 {
-                v.push((source.to_string(), line.to_string()));
-            }
+        if let Ok(mut v) = self.error_lines.lock()
+            && v.len() < 20_000
+        {
+            v.push((source.to_string(), line.to_string()));
         }
     }
 
