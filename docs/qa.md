@@ -142,7 +142,7 @@ compose_project = "shop"
 services = ["postgres", "redis"]      # max 4 used
 ```
 
-A container is touched only if it carries both the compose project label and an allow-listed service label, and the lookup must match exactly one container. It is `docker pause`d for 30 s while the health endpoint (`/health`, `/healthz`, `/api/health`, `/ready`) and an API path are probed every 3 s; it is unpaused by a Drop guard even on panic or early return, then recovery is awaited up to 60 s.
+A container is touched only if it carries both the compose project label and an allow-listed service label, and the lookup must match exactly one container. It is `docker pause`d for 30 s while the health endpoint (`/health`, `/healthz`, `/api/health`, `/ready`) and an API path are probed every 3 s; it is unpaused by a Drop guard even on panic or early return, and by a signal thread on SIGINT/SIGTERM/SIGHUP (verified live), then recovery is awaited up to 60 s.
 
 | Rule | Severity |
 |---|---|
@@ -267,4 +267,6 @@ The fixtures contain fake tokens (`alice-token`, ...) that may trip secret scann
 - AI-proposed API cases are only listed as report notes.
 - `baseline accept <run>` promotes the spec, visual and perf baselines through `qa::accept_baselines` (spec/visual need that call in `main.rs`; perf is already wired).
 - The default policy's `hard_fail` list has `api.server_error`, which never matches the QA rule `qa.api.server_error`; add the `qa.api.` names to `policies/default.toml` to hard-fail on them.
-- UI, PDF and resilience have not been run live; see [status-and-competition.md](status-and-competition.md).
+- UI and PDF have not been run live (resilience has: `tests/fixtures/resilience`); see [status-and-competition.md](status-and-competition.md).
+
+Runner image: `READYHAI_PLAYWRIGHT_IMAGE`, else local `readyhai/playwright-runner:local`, else `ghcr.io/deziss/readyhai-playwright-runner:latest`. Targets on `host.docker.internal` get the Docker host-gateway mapping. The PDF is rendered as the output dir owner (a fixed uid 65534 could not write it).

@@ -32,6 +32,7 @@ mod rules;
 mod scope;
 mod serve;
 mod snapshot;
+mod supply;
 mod tools;
 mod web;
 

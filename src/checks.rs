@@ -61,6 +61,7 @@ pub fn all(plugin_dir: Option<&std::path::Path>) -> Vec<Check> {
     v.extend(crate::host::checks());
     v.extend(crate::android::checks());
     v.extend(crate::qa::checks());
+    v.extend(crate::supply::checks());
     if let Some(d) = plugin_dir {
         v.extend(crate::tools::plugin_checks(d));
     }

@@ -779,13 +779,22 @@ pub fn write_formats(run: &Run, dir: &Path, formats: &[String]) -> Result<Vec<Pa
     Ok(out)
 }
 
+fn owner_user(dir: &Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(m) = std::fs::metadata(dir) {
+            return format!("{}:{}", m.uid(), m.gid());
+        }
+    }
+    let _ = dir;
+    "65534:65534".into()
+}
+
 /// Render dir/qa-report.html to dir/qa-report.pdf with the playwright runner image (offline, read-only).
 fn render_pdf(dir: &Path) -> Result<PathBuf> {
     use std::process::{Command, Stdio};
-    let (image, _) = crate::tools::image_for("playwright");
-    if crate::tools::local_image_id(&image).is_none() {
-        return Err(anyhow!("playwright image '{image}' not available locally"));
-    }
+    let image = crate::qa::ui::playwright_image();
     let dir = std::fs::canonicalize(dir)?;
     let o = Command::new("docker")
         .args([
@@ -801,9 +810,10 @@ fn render_pdf(dir: &Path) -> Result<PathBuf> {
             "--tmpfs",
             "/tmp:rw,mode=1777",
             "--user",
-            "65534:65534",
-            "-v",
         ])
+        // The output dir belongs to the invoking user; 65534 could not write the PDF there.
+        .arg(owner_user(&dir))
+        .arg("-v")
         .arg(format!("{}:/out", dir.display()))
         .arg(&image)
         .args([
@@ -830,6 +840,13 @@ fn render_pdf(dir: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn pdf_runs_as_dir_owner() {
+        let d = std::env::temp_dir();
+        let u = owner_user(&d);
+        assert!(u.contains(':') && u.split(':').all(|p| p.parse::<u32>().is_ok()));
+    }
     use crate::model::{Category, FindingStatus, Severity};
 
     pub(crate) fn sample_qa(rec: Recommendation) -> QaReport {

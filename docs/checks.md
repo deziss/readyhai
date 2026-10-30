@@ -1,6 +1,6 @@
 # Check catalog
 
-List the live registry with `readyhai checks` (columns: id, kinds, min profile, tool or `native`, title, `[intrusive]`). 23 built-in checks; plugins add more. Columns below: **Tool** is the container image key in `tools.lock.toml`, or `native`.
+List the live registry with `readyhai checks` (columns: id, kinds, min profile, tool or `native`, title, `[intrusive]`). 28 built-in checks; plugins add more. Columns below: **Tool** is the container image key in `tools.lock.toml`, or `native`.
 
 ## Check index
 
@@ -17,6 +17,11 @@ List the live registry with `readyhai checks` (columns: id, kinds, min profile, 
 | `tool.semgrep` | repo | quick | semgrep | SAST with the cached rule pack |
 | `tool.hadolint` | repo | quick | hadolint | Dockerfile lint |
 | `tool.checkov` | repo | quick | checkov | IaC misconfiguration (k8s, compose, Dockerfile, terraform) |
+| `tool.osv_reachability` | repo | standard | osv-scanner | Known CVEs annotated reachable / unreachable / unknown (Go call analysis); unreachable lowers severity one level, unknown never lowers |
+| `tool.scorecard` | repo | standard | scorecard | OpenSSF Scorecard for a github.com `origin` (checks scoring < 5) |
+| `tool.spectral` | repo | quick | spectral | OpenAPI lint (`spectral:oas` ruleset) |
+| `tool.oasdiff` | repo | quick | oasdiff | OpenAPI breaking changes vs the accepted spec baseline |
+| `qa.suite.mutation` | repo | quick | native | Mutation score from existing reports (qa only) |
 | `tool.dockle` | image | quick | dockle | CIS-style image checks |
 | `image.inspect` | image | quick | docker | Root user, no healthcheck, size, `:latest` tag |
 | `tests.own` | repo | standard | target image | The project's own tests (JUnit) |
@@ -32,6 +37,18 @@ List the live registry with `readyhai checks` (columns: id, kinds, min profile, 
 | `plugin.<id>` | as declared | as declared | as declared | See [configuration.md](configuration.md#plugins) |
 
 Note: `host.probe` and `host.lynis` have no `tool` set, so `--no-tools` does not skip them. `host.cve` and `image.inspect` do have one and are skipped.
+
+## Supply-chain and API-contract checks
+
+**`tool.osv_reachability`** runs OSV-Scanner v2 (`scan source --offline-vulnerabilities --call-analysis=go`) with the network off. It reads the DB from `<cache>/osv-scanner`, populated by `readyhai tools update`; without it the check is `skipped(osv vuln DB missing)`. Each finding carries `Reachability: reachable|unreachable|unknown` in the title and detail. `unreachable` (call analysis ran and no path exists) lowers severity one level with a note; `unknown` (no analysis: non-Go ecosystem, or no Go modules available in the sandbox) never lowers. Severity comes from the CVSS score, else the advisory rating. Only Go call analysis is enabled (Rust analysis runs build scripts). Exit 128 (nothing to scan) is `not_applicable`.
+
+**`tool.scorecard`** needs a `github.com` remote in `.git/config` (else `not_applicable`) and `READYHAI_GITHUB_TOKEN` (else `skipped`); the token is passed to the container as `GITHUB_AUTH_TOKEN`, so it is visible in the local docker process list while the check runs. It is the only one of the five with network access (`skipped` when `READYHAI_OFFLINE=1`). One finding per Scorecard check scoring 0-4 (inconclusive `-1` is ignored). Severity is Scorecard's risk level one notch down: Dangerous-Workflow High; Binary-Artifacts, Branch-Protection, Code-Review, Dependency-Update-Tool, Maintained, Signed-Releases, Token-Permissions, Vulnerabilities Medium; Pinned-Dependencies, SAST, Security-Policy, Fuzzing, Packaging Low.
+
+**`tool.spectral`** lints every OpenAPI 3 / Swagger 2 file found in the snapshot (up to 20; `*.baseline.*` files are skipped) with the built-in `spectral:oas` ruleset. Spectral error -> Medium, warn -> Low, info/hint -> Info. `not_applicable` when the repo has no spec.
+
+**`tool.oasdiff`** runs `oasdiff breaking` between each spec and its accepted baseline, a file next to it named `<spec>.baseline.<yaml|yml|json>` (for example `openapi.yaml` and `openapi.baseline.yaml`). Breaking error -> High, warn -> Medium. No baseline -> `not_applicable`. A failed diff for one spec makes the check `partial`.
+
+**`qa.suite.mutation`** never runs mutation tests. It reads existing reports: cargo-mutants `mutants.out/outcomes.json`, Stryker `reports/mutation/mutation.json`, mutmut 3 `mutants/**/*.meta`. Score = detected / (detected + survived); unviable, compile-error and unchecked mutants are excluded, timeouts count as detected. A score below 60% is a Medium finding (`qa.suite.low_mutation_score`). With only a config, or nothing, the check is `not_applicable` with a hint; the mutmut 2 SQLite `.mutmut-cache` is detected but not parsed. The mutation goldens in `tests/fixtures/tool-outputs/mutation-*.json` are format-faithful hand-built files, not captured runs.
 
 ## Status semantics
 
@@ -159,7 +176,7 @@ Comment lines (`#`, `//`) are ignored. The stage checks are repo-wide (all CI fi
 | Check | Rule ids | Severity / category |
 |---|---|---|
 | `web.smoke` | `web.5xx` (high, reliability; also used for "target unreachable"), `web.4xx` (medium, reliability), `web.slow` (low, performance, over 2 s), `web.no_tls` (medium, security, plain HTTP on a non-local host), `web.missing_headers` (medium, security: HSTS on https, CSP, X-Content-Type-Options, X-Frame-Options or `frame-ancestors`, Referrer-Policy), `web.version_disclosure` (low, security: `Server`/`X-Powered-By` with digits), `web.insecure_cookie` (medium, security: missing Secure/HttpOnly/SameSite), `web.cors_permissive` (medium, security: reflected arbitrary Origin or `*` with credentials), `web.no_health` (low, reliability: none of `/health`, `/healthz`, `/api/health`, `/ready` returns 2xx) | Only the start URL is requested (plus the CORS probe and health paths). Follows up to 5 redirects. **TLS certificate expiry and protocol versions are not checked.** |
-| `tool.schemathesis` | `api.server_error` (high, reliability, hard-fail), `api.schema`, `api.content_type`, `api.status_code`, `api.check` (medium, quality) | From JUnit written to `/out`; classification is by keywords in the failure message. `not_applicable` without a spec |
+| `tool.schemathesis` | `api.server_error` (high, reliability, hard-fail), `api.auth_not_enforced` (high, security; ST401/ST203), `api.undeclared_method` (low; ST204, e.g. TRACE -> 501), `api.invalid_input_accepted`, `api.schema`, `api.content_type`, `api.status_code`, `api.check` (medium, quality) | Verified live against Schemathesis v4 (`run --report junit --report-dir /out`, file `junit-<ts>.xml`). The JUnit `message` carries only check codes (`ST101, ST204`); classification uses those codes and the failure body text. `not_applicable` without a spec |
 | `tool.zap_baseline` | `zap.<pluginid>` | ZAP risk: 3 high, 2 medium, 1 low, else info; security. Passive baseline only, `-I` so ZAP warnings do not fail the run |
 | `tool.playwright` | `web.page_error` (high, quality), `web.console_error` (medium, quality), `web.broken_link` (medium, quality), `web.5xx` (high, reliability), `web.4xx` (low, reliability) | Same-origin crawl, up to 20 pages, GET/HEAD only. Needs the locally built runner image |
 
@@ -181,7 +198,7 @@ Journal/oslog/event-log error lines go to the error clusters (`host.journal`, `h
 
 | Check | Rule ids | Severity / category |
 |---|---|---|
-| `android.mobsf` | `mobsf.manifest_analysis.<key>` (special keys `debuggable` high, `allow_backup` medium, `cleartext_traffic` medium), `mobsf.code_analysis.<id>` (carries CWE ids), `mobsf.binary_analysis.*`, `mobsf.network_security.*`, `mobsf.certificate.*`, `mobsf.permissions.dangerous` (low), `mobsf.trackers.detected` (low), `mobsf.secrets.hardcoded` (medium, values withheld), `mobsf.target_sdk.outdated` (medium, supply_chain, targetSdk below 33) | Severity from MobSF; security unless noted. Report scrubbed into `out/mobsf.json`. **MobSF API response shapes were not verified live.** |
+| `android.mobsf` | `mobsf.manifest_analysis.<key>` (special keys `debuggable` high, `allow_backup` medium, `cleartext_traffic` medium), `mobsf.code_analysis.<id>` (carries CWE ids), `mobsf.binary_analysis.*`, `mobsf.network_security.*`, `mobsf.certificate.*`, `mobsf.permissions.dangerous` (low), `mobsf.trackers.detected` (low), `mobsf.secrets.hardcoded` (medium, values withheld), `mobsf.target_sdk.outdated` (medium, supply_chain, targetSdk below 33) | Severity from MobSF; security unless noted. Report scrubbed into `out/mobsf.json`. Verified live (MobSF v4.6.3, InsecureBankv2.apk: 11 findings, secrets count-only). The stock image ships no `semgrep`, so `code_analysis` is empty (no `mobsf.code_analysis.*`) even though JADX decompiles; JADX itself is downloaded from GitHub at scan time, so the scan needs internet. |
 | `android.runtime` | `android.crash`, `android.anr` | high, reliability. Installs the APK, launches it with `monkey`, waits 20 s, reads `logcat -d *:E`. In `deep` on an emulator only, 1500 monkey events. Uninstalls if it installed the app |
 
 ### Plugins
@@ -204,7 +221,7 @@ Registered with `.qa()`: they run only under `readyhai qa`, not `scan`. Details 
 | `qa.api.stateful` | standard | native | `qa.api.bola` (Critical), `qa.api.persistence_failure` (Medium), `qa.api.delete_not_effective` (High), `qa.api.idempotency` (Low) |
 | `qa.ui` | quick (forms/journeys/visual need standard) | playwright | `qa.ui.responsive_overflow` (Low), `qa.ui.a11y` (Medium for critical/serious, else Low), `qa.ui.slow_page` (Medium LCP / Low CLS), `qa.ui.validation_gap` (Medium), `qa.ui.journey_failed` (High), `qa.ui.visual_change` (Low) |
 | `qa.perf` | standard | k6 | `qa.perf.regression` (Medium), `qa.perf.errors` (High), `qa.perf.slow` (Low) |
-| `qa.resilience` | deep | native (docker) | `qa.resilience.hang` (High), `.no_degraded_status` (Medium), `.no_recovery` (Critical), `.health_lies` (Medium) |
+| `qa.resilience` | deep | native (docker); verified live with `tests/fixtures/resilience` (SIGINT/SIGTERM/SIGHUP also unpause) | `qa.resilience.hang` (High), `.no_degraded_status` (Medium), `.no_recovery` (Critical), `.health_lies` (Medium) |
 | `qa.suite.coverage` | quick | native | `qa.suite.low_coverage` (Medium), `qa.suite.critical_uncovered` (Medium) |
 | `qa.suite.routes` | quick | native | `qa.suite.untested_routes` (Medium) |
 | `qa.suite.smells` | quick | native | `qa.suite.test_smells` (Low) |
@@ -212,4 +229,4 @@ Registered with `.qa()`: they run only under `readyhai qa`, not `scan`. Details 
 | `qa.release.migrations` | standard | docker | `qa.release.migration_failure` (High) |
 | `qa.release.licenses` | quick | native | `qa.release.license` (High) |
 
-Status rules: a QA check that cannot run (no Docker, no runner image, no coverage file, nonprod-only work on a non-nonprod host) is `Skipped` or records its cases as `untested`/`blocked`, never as passed. These checks are listed by `readyhai checks` together with the 23 built-ins.
+Status rules: a QA check that cannot run (no Docker, no runner image, no coverage file, nonprod-only work on a non-nonprod host) is `Skipped` or records its cases as `untested`/`blocked`, never as passed. These checks are listed by `readyhai checks` together with the other built-in checks.

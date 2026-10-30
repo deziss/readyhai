@@ -1,0 +1,14 @@
+# Resilience fixture: `docker compose up -d`, app on http://127.0.0.1:18095.
+# RH_MODE=storm docker compose up -d  -> app answers 500 (not 503) when redis is down.
+name: rh-resil
+services:
+  redis:
+    image: redis:7-alpine
+  app:
+    image: python:3.12-slim
+    command: ["python", "/app/app.py"]
+    environment:
+      RH_MODE: ${RH_MODE:-ok}
+    volumes: ["./app.py:/app/app.py:ro"]
+    ports: ["127.0.0.1:18095:8080"]
+    depends_on: [redis]

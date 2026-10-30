@@ -152,19 +152,84 @@ pub fn analyze(during: &[Probe], recovered_after: Option<u64>) -> Vec<ResIssue> 
     v
 }
 
-/// Unpauses on drop, even on panic/early return.
+/// Containers currently paused by this process; the signal thread unpauses them on SIGINT/SIGTERM/SIGHUP
+/// (a Drop guard alone cannot run when the process is killed by a signal).
+static PAUSED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+static SIG_ONCE: std::sync::Once = std::sync::Once::new();
+
+fn unpause_id(id: &str) -> bool {
+    for _ in 0..3 {
+        let r = Command::new("docker")
+            .args(["unpause", id])
+            .stdin(Stdio::null())
+            .output();
+        if r.map(|o| o.status.success()).unwrap_or(false) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    false
+}
+
+fn install_signal_unpause() {
+    SIG_ONCE.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("rh-resilience-sig".into())
+            .spawn(|| {
+                let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
+                    return;
+                };
+                rt.block_on(async {
+                    use tokio::signal::unix::{SignalKind, signal};
+                    let (Ok(mut a), Ok(mut b), Ok(mut c)) = (
+                        signal(SignalKind::interrupt()),
+                        signal(SignalKind::terminate()),
+                        signal(SignalKind::hangup()),
+                    ) else {
+                        return;
+                    };
+                    let code = tokio::select! { _ = a.recv() => 130, _ = b.recv() => 143, _ = c.recv() => 129 };
+                    let ids: Vec<String> = PAUSED.lock().map(|g| g.clone()).unwrap_or_default();
+                    for id in ids {
+                        unpause_id(&id);
+                    }
+                    std::process::exit(code);
+                });
+            });
+    });
+}
+
+/// Unpauses on drop, even on panic/early return (and on SIGINT/SIGTERM/SIGHUP via the signal thread).
 struct PauseGuard {
     id: String,
     paused: bool,
 }
 impl PauseGuard {
     fn pause(id: &str) -> Result<Self> {
+        install_signal_unpause();
+        // register BEFORE pausing so a signal in between still unpauses
+        if let Ok(mut g) = PAUSED.lock() {
+            g.push(id.to_string());
+        }
+        let forget = |id: &str| {
+            if let Ok(mut g) = PAUSED.lock() {
+                g.retain(|x| x != id);
+            }
+        };
         let o = Command::new("docker")
             .args(["pause", id])
             .stdin(Stdio::null())
             .output()
-            .context("docker pause")?;
+            .context("docker pause");
+        let o = match o {
+            Ok(o) => o,
+            Err(e) => {
+                forget(id);
+                return Err(e);
+            }
+        };
         if !o.status.success() {
+            forget(id);
             anyhow::bail!(
                 "docker pause failed: {}",
                 String::from_utf8_lossy(&o.stderr).trim()
@@ -176,17 +241,10 @@ impl PauseGuard {
         })
     }
     fn unpause(&mut self) {
-        if self.paused {
-            for _ in 0..3 {
-                let r = Command::new("docker")
-                    .args(["unpause", &self.id])
-                    .stdin(Stdio::null())
-                    .output();
-                if r.map(|o| o.status.success()).unwrap_or(false) {
-                    self.paused = false;
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(500));
+        if self.paused && unpause_id(&self.id) {
+            self.paused = false;
+            if let Ok(mut g) = PAUSED.lock() {
+                g.retain(|x| x != &self.id);
             }
         }
     }
