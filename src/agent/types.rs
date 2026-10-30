@@ -31,8 +31,11 @@ pub struct AgentRunRequest {
     pub profile: String,
     #[serde(default)]
     pub spec_url: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "directives")]
     pub custom_instructions: Option<String>,
+    /// Optional cap on exploration steps (the server clamps it to 1..=50).
+    #[serde(default)]
+    pub max_steps: Option<usize>,
     /// Never send state-changing methods (POST/PUT/PATCH/DELETE); such cases are recorded as SKIPPED.
     #[serde(default)]
     pub dry_run: bool,

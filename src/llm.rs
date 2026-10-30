@@ -27,17 +27,56 @@ pub struct ProviderDescriptor {
 }
 
 pub const CATALOG: &[ProviderDescriptor] = &[
-    ProviderDescriptor { id: "ollama", transport: Transport::OpenAiChat, base_url: "http://localhost:11434/v1", base_url_env: None, api_key_env: None, default_model: "qwen2.5-coder", local: true },
-    ProviderDescriptor { id: "vllm", transport: Transport::OpenAiChat, base_url: "", base_url_env: Some("READYHAI_VLLM_URL"), api_key_env: None, default_model: "qwen3.8-flash-next", local: true },
-    ProviderDescriptor { id: "openai", transport: Transport::OpenAiChat, base_url: "https://api.openai.com/v1", base_url_env: None, api_key_env: Some("OPENAI_API_KEY"), default_model: "gpt-4.1", local: false },
-    ProviderDescriptor { id: "anthropic", transport: Transport::AnthropicMessages, base_url: "https://api.anthropic.com", base_url_env: None, api_key_env: Some("ANTHROPIC_API_KEY"), default_model: "claude-sonnet-5-5", local: false },
-    ProviderDescriptor { id: "openrouter", transport: Transport::OpenAiChat, base_url: "https://openrouter.ai/api/v1", base_url_env: None, api_key_env: Some("OPENROUTER_API_KEY"), default_model: "anthropic/claude-sonnet-5-5", local: false },
+    ProviderDescriptor {
+        id: "ollama",
+        transport: Transport::OpenAiChat,
+        base_url: "http://localhost:11434/v1",
+        base_url_env: None,
+        api_key_env: None,
+        default_model: "qwen2.5-coder",
+        local: true,
+    },
+    ProviderDescriptor {
+        id: "vllm",
+        transport: Transport::OpenAiChat,
+        base_url: "",
+        base_url_env: Some("READYHAI_VLLM_URL"),
+        api_key_env: None,
+        default_model: "qwen3.8-flash-next",
+        local: true,
+    },
+    ProviderDescriptor {
+        id: "openai",
+        transport: Transport::OpenAiChat,
+        base_url: "https://api.openai.com/v1",
+        base_url_env: None,
+        api_key_env: Some("OPENAI_API_KEY"),
+        default_model: "gpt-4.1",
+        local: false,
+    },
+    ProviderDescriptor {
+        id: "anthropic",
+        transport: Transport::AnthropicMessages,
+        base_url: "https://api.anthropic.com",
+        base_url_env: None,
+        api_key_env: Some("ANTHROPIC_API_KEY"),
+        default_model: "claude-sonnet-5-5",
+        local: false,
+    },
+    ProviderDescriptor {
+        id: "openrouter",
+        transport: Transport::OpenAiChat,
+        base_url: "https://openrouter.ai/api/v1",
+        base_url_env: None,
+        api_key_env: Some("OPENROUTER_API_KEY"),
+        default_model: "anthropic/claude-sonnet-5-5",
+        local: false,
+    },
 ];
 
 pub fn provider(id: &str) -> Option<&'static ProviderDescriptor> {
     CATALOG.iter().find(|p| p.id == id)
 }
-
 
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
@@ -61,29 +100,49 @@ impl LlmConfig {
         Self::resolve(
             Some(&provider_id),
             std::env::var("READYHAI_LLM_MODEL").ok().as_deref(),
-            matches!(std::env::var("READYHAI_LLM_ALLOW_CLOUD").as_deref(), Ok("1") | Ok("true")),
+            matches!(
+                std::env::var("READYHAI_LLM_ALLOW_CLOUD").as_deref(),
+                Ok("1") | Ok("true")
+            ),
         )
     }
 
-    pub fn resolve(provider_id: Option<&str>, model: Option<&str>, allow_cloud: bool) -> Result<Self> {
-        let Some(id) = provider_id else { bail!("READYHAI_LLM_PROVIDER not set") };
-        let Some(p) = provider(id) else { bail!("unknown LLM provider '{id}'") };
+    pub fn resolve(
+        provider_id: Option<&str>,
+        model: Option<&str>,
+        allow_cloud: bool,
+    ) -> Result<Self> {
+        let Some(id) = provider_id else {
+            bail!("READYHAI_LLM_PROVIDER not set")
+        };
+        let Some(p) = provider(id) else {
+            bail!("unknown LLM provider '{id}'")
+        };
         if !p.local && !allow_cloud {
-            bail!("provider '{id}' is a cloud provider; set READYHAI_LLM_ALLOW_CLOUD=1 to allow sending (redacted) findings off-box");
+            bail!(
+                "provider '{id}' is a cloud provider; set READYHAI_LLM_ALLOW_CLOUD=1 to allow sending (redacted) findings off-box"
+            );
         }
-        Ok(LlmConfig { provider: p, model: model.unwrap_or(p.default_model).to_string(), allow_cloud, base_override: None, cache_dir: None, max_attempts: 3, retry_base_ms: 500 })
+        Ok(LlmConfig {
+            provider: p,
+            model: model.unwrap_or(p.default_model).to_string(),
+            allow_cloud,
+            base_override: None,
+            cache_dir: None,
+            max_attempts: 3,
+            retry_base_ms: 500,
+        })
     }
 
     pub fn base_url(&self) -> Result<String> {
         if let Some(b) = &self.base_override {
             return Ok(b.clone());
         }
-        if let Some(e) = self.provider.base_url_env {
-            if let Ok(v) = std::env::var(e) {
-                if !v.trim().is_empty() {
-                    return Ok(v);
-                }
-            }
+        if let Some(e) = self.provider.base_url_env
+            && let Ok(v) = std::env::var(e)
+            && !v.trim().is_empty()
+        {
+            return Ok(v);
         }
         if !self.provider.base_url.is_empty() {
             return Ok(self.provider.base_url.to_string());
@@ -103,7 +162,9 @@ impl LlmConfig {
     /// caller should log when it falls back to deterministic behaviour.
     pub fn connect_from_env() -> std::result::Result<Self, String> {
         let cfg = Self::from_env().map_err(|e| format!("LLM not configured: {e}"))?;
-        let base = cfg.base_url().map_err(|e| format!("LLM not configured: {e}"))?;
+        let base = cfg
+            .base_url()
+            .map_err(|e| format!("LLM not configured: {e}"))?;
         if probe(&cfg) {
             Ok(cfg)
         } else {
@@ -159,7 +220,11 @@ pub fn client(cfg: LlmConfig) -> Box<dyn ChatClient> {
 impl OpenAiClient {
     pub fn body(&self, system: &str, messages: &[Msg], tools: &[ToolDef]) -> Value {
         let mut msgs = vec![json!({"role": "system", "content": system})];
-        msgs.extend(messages.iter().map(|m| json!({"role": m.role, "content": m.content})));
+        msgs.extend(
+            messages
+                .iter()
+                .map(|m| json!({"role": m.role, "content": m.content})),
+        );
         let mut b = json!({"model": self.cfg.model, "messages": msgs});
         if !tools.is_empty() {
             b["tools"] = tools
@@ -188,13 +253,17 @@ impl AnthropicClient {
 
 fn key(cfg: &LlmConfig) -> Result<Option<String>> {
     match cfg.provider.api_key_env {
-        Some(e) => Ok(Some(std::env::var(e).map_err(|_| anyhow::anyhow!("{e} not set"))?)),
+        Some(e) => Ok(Some(
+            std::env::var(e).map_err(|_| anyhow::anyhow!("{e} not set"))?,
+        )),
         None => Ok(None),
     }
 }
 
 fn http(timeout: Duration) -> Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder().timeout(timeout).build()?)
+    Ok(reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()?)
 }
 
 // ---------------------------------------------------------------- retry with backoff
@@ -207,16 +276,24 @@ fn retryable_status(code: u16) -> bool {
 /// Delay before attempt `attempt + 1` (0-based): Retry-After if sane, else base * 2^attempt (+ jitter).
 fn backoff(cfg: &LlmConfig, attempt: u32, retry_after: Option<&str>) -> Duration {
     if let Some(secs) = retry_after.and_then(|v| v.trim().parse::<u64>().ok()) {
-        return Duration::from_secs(secs.min(30)).max(Duration::from_millis(cfg.retry_base_ms.min(1)));
+        return Duration::from_secs(secs.min(30))
+            .max(Duration::from_millis(cfg.retry_base_ms.min(1)));
     }
     let base = cfg.retry_base_ms.saturating_mul(1u64 << attempt.min(6));
-    let jitter = if base >= 2 { rand::random_range(0..=base / 4) } else { 0 };
+    let jitter = if base >= 2 {
+        rand::random_range(0..=base / 4)
+    } else {
+        0
+    };
     Duration::from_millis(base.saturating_add(jitter))
 }
 
 /// Send the request built by `build`, retrying 429/5xx/timeouts with exponential backoff.
 /// Connection refusals and 4xx (except 408/425/429) fail immediately: they will not heal by waiting.
-fn send_retrying(cfg: &LlmConfig, build: impl Fn() -> reqwest::blocking::RequestBuilder) -> Result<reqwest::blocking::Response> {
+fn send_retrying(
+    cfg: &LlmConfig,
+    build: impl Fn() -> reqwest::blocking::RequestBuilder,
+) -> Result<reqwest::blocking::Response> {
     let attempts = cfg.max_attempts.max(1);
     let mut last: Option<anyhow::Error> = None;
     for attempt in 0..attempts {
@@ -227,12 +304,18 @@ fn send_retrying(cfg: &LlmConfig, build: impl Fn() -> reqwest::blocking::Request
                 if !retryable_status(code) || attempt + 1 == attempts {
                     return Ok(r);
                 }
-                delay = backoff(cfg, attempt, r.headers().get("retry-after").and_then(|v| v.to_str().ok()));
+                delay = backoff(
+                    cfg,
+                    attempt,
+                    r.headers().get("retry-after").and_then(|v| v.to_str().ok()),
+                );
                 last = Some(anyhow::anyhow!("HTTP {code}"));
             }
             Err(e) if e.is_timeout() => {
                 if attempt + 1 == attempts {
-                    return Err(anyhow::anyhow!("LLM request timed out after {attempts} attempts: {e}"));
+                    return Err(anyhow::anyhow!(
+                        "LLM request timed out after {attempts} attempts: {e}"
+                    ));
                 }
                 delay = backoff(cfg, attempt, None);
                 last = Some(e.into());
@@ -246,7 +329,10 @@ fn send_retrying(cfg: &LlmConfig, build: impl Fn() -> reqwest::blocking::Request
 
 impl ChatClient for OpenAiClient {
     fn chat(&self, system: &str, messages: &[Msg], tools: &[ToolDef]) -> Result<Reply> {
-        let url = format!("{}/chat/completions", self.cfg.base_url()?.trim_end_matches('/'));
+        let url = format!(
+            "{}/chat/completions",
+            self.cfg.base_url()?.trim_end_matches('/')
+        );
         let body = self.body(system, messages, tools);
         let key = key(&self.cfg)?;
         let c = http(Duration::from_secs(120))?;
@@ -259,12 +345,16 @@ impl ChatClient for OpenAiClient {
         })?;
         let v: Value = r.error_for_status()?.json()?;
         let m = &v["choices"][0]["message"];
-        let mut r = Reply { text: m["content"].as_str().unwrap_or("").to_string(), tool_calls: vec![] };
+        let mut r = Reply {
+            text: m["content"].as_str().unwrap_or("").to_string(),
+            tool_calls: vec![],
+        };
         for tc in m["tool_calls"].as_array().into_iter().flatten() {
             r.tool_calls.push(ToolCall {
                 id: tc["id"].as_str().unwrap_or("").into(),
                 name: tc["function"]["name"].as_str().unwrap_or("").into(),
-                args: serde_json::from_str(tc["function"]["arguments"].as_str().unwrap_or("{}")).unwrap_or(json!({})),
+                args: serde_json::from_str(tc["function"]["arguments"].as_str().unwrap_or("{}"))
+                    .unwrap_or(json!({})),
             });
         }
         Ok(r)
@@ -278,7 +368,10 @@ impl ChatClient for AnthropicClient {
         let key = key(&self.cfg)?;
         let c = http(Duration::from_secs(120))?;
         let r = send_retrying(&self.cfg, || {
-            let rq = c.post(&url).header("anthropic-version", "2023-06-01").json(&body);
+            let rq = c
+                .post(&url)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body);
             match &key {
                 Some(k) => rq.header("x-api-key", k),
                 None => rq,
@@ -306,27 +399,54 @@ impl ChatClient for AnthropicClient {
 /// Key names whose values are credentials. Matches by suffix/substring so `DB_PASSWORD`,
 /// `stripe_secret`, `x-api-key`, `accessKey`, `Authorization` and `Set-Cookie` all count.
 pub fn is_sensitive_key(name: &str) -> bool {
-    let low = name.trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace()).to_ascii_lowercase();
+    let low = name
+        .trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace())
+        .to_ascii_lowercase();
     if low.is_empty() {
         return false;
     }
     let compact: String = low.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
     const CONTAINS: [&str; 14] = [
-        "password", "passwd", "passphrase", "secret", "token", "apikey", "accesskey", "privatekey", "credential",
-        "authorization", "cookie", "sessionid", "signature", "bearer",
+        "password",
+        "passwd",
+        "passphrase",
+        "secret",
+        "token",
+        "apikey",
+        "accesskey",
+        "privatekey",
+        "credential",
+        "authorization",
+        "cookie",
+        "sessionid",
+        "signature",
+        "bearer",
     ];
     if CONTAINS.iter().any(|k| compact.contains(k)) {
         return true;
     }
-    if low == "key" || low == "pwd" || low == "pass" || low == "auth" || low == "session" || low == "sid" {
+    if low == "key"
+        || low == "pwd"
+        || low == "pass"
+        || low == "auth"
+        || low == "session"
+        || low == "sid"
+    {
         return true;
     }
-    if low.ends_with("_key") || low.ends_with("-key") || low.ends_with("_pwd") || low.ends_with("_pass") || low.ends_with("_auth") {
+    if low.ends_with("_key")
+        || low.ends_with("-key")
+        || low.ends_with("_pwd")
+        || low.ends_with("_pass")
+        || low.ends_with("_auth")
+    {
         return true;
     }
     // camelCase ...Key (e.g. stripeKey) from the original spelling
     let orig = name.trim_matches(|c: char| c == '"' || c == '\'' || c.is_whitespace());
-    orig.len() > 3 && orig.ends_with("Key") && orig.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+    orig.len() > 3
+        && orig.ends_with("Key")
+        && orig.chars().next().is_some_and(|c| c.is_ascii_lowercase())
 }
 
 struct Redactors {
@@ -360,15 +480,14 @@ pub fn redact_for_llm(text: &str) -> String {
     for (re, rep) in &r.plain {
         s = re.replace_all(&s, *rep).into_owned();
     }
-    r.kv
-        .replace_all(&s, |c: &regex::Captures| {
-            if is_sensitive_key(&c[2]) {
-                format!("{}{}{}\"[REDACTED]\"", &c[1], &c[2], &c[3])
-            } else {
-                c[0].to_string()
-            }
-        })
-        .into_owned()
+    r.kv.replace_all(&s, |c: &regex::Captures| {
+        if is_sensitive_key(&c[2]) {
+            format!("{}{}{}\"[REDACTED]\"", &c[1], &c[2], &c[3])
+        } else {
+            c[0].to_string()
+        }
+    })
+    .into_owned()
 }
 
 /// Redact a JSON value structurally: values under credential-looking key names are replaced
@@ -382,9 +501,15 @@ pub fn redact_value_capped(v: &Value, max_leaf: usize) -> Value {
     match v {
         Value::String(s) => {
             let r = redact_for_llm(s);
-            if r.chars().count() > max_leaf { Value::String(r.chars().take(max_leaf).collect()) } else { Value::String(r) }
+            if r.chars().count() > max_leaf {
+                Value::String(r.chars().take(max_leaf).collect())
+            } else {
+                Value::String(r)
+            }
         }
-        Value::Array(a) => Value::Array(a.iter().map(|x| redact_value_capped(x, max_leaf)).collect()),
+        Value::Array(a) => {
+            Value::Array(a.iter().map(|x| redact_value_capped(x, max_leaf)).collect())
+        }
         Value::Object(o) => Value::Object(
             o.iter()
                 .map(|(k, val)| {
@@ -404,8 +529,12 @@ pub fn redact_value_capped(v: &Value, max_leaf: usize) -> Value {
 
 /// Reachability probe: GET {base}/models with a 2s timeout. True on any HTTP answer < 500.
 pub fn probe(cfg: &LlmConfig) -> bool {
-    let Ok(base) = cfg.base_url() else { return false };
-    let Ok(c) = http(Duration::from_secs(2)) else { return false };
+    let Ok(base) = cfg.base_url() else {
+        return false;
+    };
+    let Ok(c) = http(Duration::from_secs(2)) else {
+        return false;
+    };
     let mut rq = c.get(format!("{}/models", base.trim_end_matches('/')));
     if let Ok(Some(k)) = key(cfg) {
         rq = rq.bearer_auth(k);
@@ -436,7 +565,12 @@ pub struct Budget {
 
 impl Budget {
     pub fn new(max_calls: usize, max_total: Duration) -> Self {
-        Budget { max_calls, max_total, calls: 0, started: std::time::Instant::now() }
+        Budget {
+            max_calls,
+            max_total,
+            calls: 0,
+            started: std::time::Instant::now(),
+        }
     }
     pub fn per_run() -> Self {
         Self::new(20, Duration::from_secs(300))
@@ -470,11 +604,14 @@ pub fn strip_think(s: &str) -> String {
 /// Parse the first JSON object in model text (after stripping think blocks and code fences).
 pub fn parse_json_object(text: &str) -> Result<Value> {
     let t = strip_think(text);
-    let (Some(a), Some(b)) = (t.find('{'), t.rfind('}')) else { bail!("no JSON object in reply") };
+    let (Some(a), Some(b)) = (t.find('{'), t.rfind('}')) else {
+        bail!("no JSON object in reply")
+    };
     if b < a {
         bail!("no JSON object in reply");
     }
-    let v: Value = serde_json::from_str(&t[a..=b]).map_err(|e| anyhow::anyhow!("malformed JSON: {e}"))?;
+    let v: Value =
+        serde_json::from_str(&t[a..=b]).map_err(|e| anyhow::anyhow!("malformed JSON: {e}"))?;
     if !v.is_object() {
         bail!("reply is not a JSON object");
     }
@@ -484,10 +621,21 @@ pub fn parse_json_object(text: &str) -> Result<Value> {
 fn cache_path(cfg: &LlmConfig, system: &str, prompt: &str) -> std::path::PathBuf {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    for part in [cfg.provider.id, "\0", cfg.model.as_str(), "\0", system, "\0", prompt] {
+    for part in [
+        cfg.provider.id,
+        "\0",
+        cfg.model.as_str(),
+        "\0",
+        system,
+        "\0",
+        prompt,
+    ] {
         h.update(part.as_bytes());
     }
-    let dir = cfg.cache_dir.clone().unwrap_or_else(|| crate::engine::data_dir().join("llm-cache"));
+    let dir = cfg
+        .cache_dir
+        .clone()
+        .unwrap_or_else(|| crate::engine::data_dir().join("llm-cache"));
     dir.join(format!("{}.json", hex::encode(h.finalize())))
 }
 
@@ -498,8 +646,15 @@ pub fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()>
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = path.with_file_name(format!(".{name}.{}.{}.tmp", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::write(&tmp, bytes)?;
     std::fs::rename(&tmp, path).inspect_err(|_| {
         let _ = std::fs::remove_file(&tmp);
@@ -512,9 +667,15 @@ fn openai_answer(v: &Value) -> Result<String> {
     let msg = &v["choices"][0]["message"];
     let content = msg["content"].as_str().unwrap_or("").to_string();
     if content.trim().is_empty() {
-        let reasoning_only = msg["reasoning"].as_str().or_else(|| msg["reasoning_content"].as_str()).is_some_and(|r| !r.trim().is_empty());
+        let reasoning_only = msg["reasoning"]
+            .as_str()
+            .or_else(|| msg["reasoning_content"].as_str())
+            .is_some_and(|r| !r.trim().is_empty());
         if reasoning_only {
-            bail!("LLM returned reasoning but no answer content (finish_reason={})", v["choices"][0]["finish_reason"].as_str().unwrap_or("?"));
+            bail!(
+                "LLM returned reasoning but no answer content (finish_reason={})",
+                v["choices"][0]["finish_reason"].as_str().unwrap_or("?")
+            );
         }
         bail!("LLM returned empty content");
     }
@@ -554,19 +715,34 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
         }
         Transport::AnthropicMessages => {
             let a = AnthropicClient { cfg: cfg.clone() };
-            let mut b = a.body(system, &[Msg { role: "user".into(), content: prompt.into() }], &[]);
+            let mut b = a.body(
+                system,
+                &[Msg {
+                    role: "user".into(),
+                    content: prompt.into(),
+                }],
+                &[],
+            );
             b["max_tokens"] = json!(2048);
             b["temperature"] = json!(0.1);
             let url = format!("{}/v1/messages", base.trim_end_matches('/'));
             let r = send_retrying(cfg, || {
-                let rq = c.post(&url).header("anthropic-version", "2023-06-01").json(&b);
+                let rq = c
+                    .post(&url)
+                    .header("anthropic-version", "2023-06-01")
+                    .json(&b);
                 match &key {
                     Some(k) => rq.header("x-api-key", k),
                     None => rq,
                 }
             })?;
             let v: Value = r.error_for_status()?.json()?;
-            let text = v["content"].as_array().into_iter().flatten().filter_map(|c| c["text"].as_str()).collect::<String>();
+            let text = v["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c["text"].as_str())
+                .collect::<String>();
             if text.trim().is_empty() {
                 bail!("LLM returned empty content");
             }
@@ -584,16 +760,25 @@ pub fn ask_json(cfg: &LlmConfig, budget: &mut Budget, system: &str, prompt: &str
 
 /// As [`ask_json`], but `validate` is the schema check. Output that fails it is an error, is NEVER
 /// written to the cache, and a cached entry that no longer passes it is ignored and re-asked.
-pub fn ask_json_with(cfg: &LlmConfig, budget: &mut Budget, system: &str, prompt: &str, validate: impl Fn(&Value) -> Result<()>) -> Result<Value> {
+pub fn ask_json_with(
+    cfg: &LlmConfig,
+    budget: &mut Budget,
+    system: &str,
+    prompt: &str,
+    validate: impl Fn(&Value) -> Result<()>,
+) -> Result<Value> {
     if !cfg.provider.local && !cfg.allow_cloud {
-        bail!("cloud provider '{}' refused (READYHAI_LLM_ALLOW_CLOUD not set)", cfg.provider.id);
+        bail!(
+            "cloud provider '{}' refused (READYHAI_LLM_ALLOW_CLOUD not set)",
+            cfg.provider.id
+        );
     }
     let path = cache_path(cfg, system, prompt);
     if let Ok(s) = std::fs::read_to_string(&path) {
-        if let Ok(v) = parse_json_object(&s) {
-            if validate(&v).is_ok() {
-                return Ok(v);
-            }
+        if let Ok(v) = parse_json_object(&s)
+            && validate(&v).is_ok()
+        {
+            return Ok(v);
         }
         let _ = std::fs::remove_file(&path);
     }
@@ -641,24 +826,42 @@ mod tests {
     #[test]
     fn no_hardcoded_lan_address_in_catalog() {
         for p in CATALOG {
-            assert!(!p.base_url.contains("10.10."), "{} bakes in a LAN address", p.id);
+            assert!(
+                !p.base_url.contains("10.10."),
+                "{} bakes in a LAN address",
+                p.id
+            );
         }
         assert_eq!(provider("vllm").unwrap().base_url, "");
-        assert_eq!(provider("vllm").unwrap().base_url_env, Some("READYHAI_VLLM_URL"));
+        assert_eq!(
+            provider("vllm").unwrap().base_url_env,
+            Some("READYHAI_VLLM_URL")
+        );
     }
 
     fn tool() -> ToolDef {
-        ToolDef { name: "t".into(), description: "d".into(), schema: json!({"type": "object"}) }
+        ToolDef {
+            name: "t".into(),
+            description: "d".into(),
+            schema: json!({"type": "object"}),
+        }
     }
 
     #[test]
     fn body_shapes() {
-        let msgs = [Msg { role: "user".into(), content: "hi".into() }];
-        let o = OpenAiClient { cfg: LlmConfig::resolve(Some("ollama"), None, false).unwrap() };
+        let msgs = [Msg {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+        let o = OpenAiClient {
+            cfg: LlmConfig::resolve(Some("ollama"), None, false).unwrap(),
+        };
         let b = o.body("sys", &msgs, &[tool()]);
         assert_eq!(b["messages"][0]["role"], "system");
         assert_eq!(b["tools"][0]["function"]["name"], "t");
-        let a = AnthropicClient { cfg: LlmConfig::resolve(Some("anthropic"), None, true).unwrap() };
+        let a = AnthropicClient {
+            cfg: LlmConfig::resolve(Some("anthropic"), None, true).unwrap(),
+        };
         let b = a.body("sys", &msgs, &[tool()]);
         assert_eq!(b["system"], "sys");
         assert_eq!(b["tools"][0]["input_schema"]["type"], "object");
@@ -688,7 +891,12 @@ mod tests {
         let mut c = LlmConfig::resolve(Some("anthropic"), None, true).unwrap();
         c.allow_cloud = false;
         let mut b = Budget::per_run();
-        assert!(ask_json(&c, &mut b, "s", "p").unwrap_err().to_string().contains("refused"));
+        assert!(
+            ask_json(&c, &mut b, "s", "p")
+                .unwrap_err()
+                .to_string()
+                .contains("refused")
+        );
     }
 
     #[test]
@@ -702,7 +910,12 @@ mod tests {
         assert_eq!(ask_json(&c, &mut b, "s", "p1").unwrap()["ok"], true);
         assert_eq!(m.chat_hits.load(Ordering::SeqCst), 1);
         assert!(ask_json(&c, &mut b, "s", "p2").is_ok());
-        assert!(ask_json(&c, &mut b, "s", "p3").unwrap_err().to_string().contains("budget"));
+        assert!(
+            ask_json(&c, &mut b, "s", "p3")
+                .unwrap_err()
+                .to_string()
+                .contains("budget")
+        );
         assert_eq!(m.chat_hits.load(Ordering::SeqCst), 2);
     }
 
@@ -726,7 +939,11 @@ mod tests {
         let c = mock::cfg(&m.base, &tmpdir("retry"));
         let mut b = Budget::per_run();
         assert_eq!(ask_json(&c, &mut b, "s", "p").unwrap()["ok"], true);
-        assert_eq!(m.chat_hits.load(Ordering::SeqCst), 3, "two transient failures then success");
+        assert_eq!(
+            m.chat_hits.load(Ordering::SeqCst),
+            3,
+            "two transient failures then success"
+        );
         assert_eq!(b.calls, 1, "retries are one logical call");
     }
 
@@ -760,7 +977,13 @@ mod tests {
         c.max_attempts = 2;
         let cfg = c.clone();
         let t = std::time::Instant::now();
-        let r = send_retrying(&cfg, || reqwest::blocking::Client::builder().timeout(Duration::from_millis(150)).build().unwrap().get(format!("{base}/models")));
+        let r = send_retrying(&cfg, || {
+            reqwest::blocking::Client::builder()
+                .timeout(Duration::from_millis(150))
+                .build()
+                .unwrap()
+                .get(format!("{base}/models"))
+        });
         assert!(r.is_err() && r.unwrap_err().to_string().contains("timed out"));
         assert_eq!(accepted.load(Ordering::SeqCst), 2);
         assert!(t.elapsed() < Duration::from_secs(5));
@@ -773,28 +996,66 @@ mod tests {
         });
         let d = tmpdir("reasoning");
         let c = mock::cfg(&m.base, &d);
-        let e = ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap_err().to_string();
+        let e = ask_json(&c, &mut Budget::per_run(), "s", "p")
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("reasoning"), "{e}");
-        assert!(!d.exists() || std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0) == 0, "nothing cached");
+        assert!(
+            !d.exists() || std::fs::read_dir(&d).map(|r| r.count()).unwrap_or(0) == 0,
+            "nothing cached"
+        );
     }
 
     #[test]
     fn schema_invalid_output_is_not_cached_and_valid_is() {
-        let m = mock::start_status(|hit, _| if hit == 0 { (200, ok_body("{\"wrong\": 1}")) } else { (200, ok_body("{\"summary\": \"fine\"}")) });
+        let m = mock::start_status(|hit, _| {
+            if hit == 0 {
+                (200, ok_body("{\"wrong\": 1}"))
+            } else {
+                (200, ok_body("{\"summary\": \"fine\"}"))
+            }
+        });
         let d = tmpdir("schema");
         let c = mock::cfg(&m.base, &d);
-        let need_summary = |v: &Value| if v["summary"].is_string() { Ok(()) } else { bail!("summary missing") };
+        let need_summary = |v: &Value| {
+            if v["summary"].is_string() {
+                Ok(())
+            } else {
+                bail!("summary missing")
+            }
+        };
         let mut b = Budget::per_run();
-        let e = ask_json_with(&c, &mut b, "s", "p", need_summary).unwrap_err().to_string();
+        let e = ask_json_with(&c, &mut b, "s", "p", need_summary)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("schema"), "{e}");
-        assert!(!d.exists() || std::fs::read_dir(&d).unwrap().count() == 0, "invalid output must not be cached");
+        assert!(
+            !d.exists() || std::fs::read_dir(&d).unwrap().count() == 0,
+            "invalid output must not be cached"
+        );
         // same prompt again: asks the model again (nothing was cached), now valid, now cached
-        assert_eq!(ask_json_with(&c, &mut b, "s", "p", need_summary).unwrap()["summary"], "fine");
+        assert_eq!(
+            ask_json_with(&c, &mut b, "s", "p", need_summary).unwrap()["summary"],
+            "fine"
+        );
         assert_eq!(m.chat_hits.load(Ordering::SeqCst), 2);
-        assert_eq!(ask_json_with(&c, &mut b, "s", "p", need_summary).unwrap()["summary"], "fine");
-        assert_eq!(m.chat_hits.load(Ordering::SeqCst), 2, "valid output served from cache");
+        assert_eq!(
+            ask_json_with(&c, &mut b, "s", "p", need_summary).unwrap()["summary"],
+            "fine"
+        );
+        assert_eq!(
+            m.chat_hits.load(Ordering::SeqCst),
+            2,
+            "valid output served from cache"
+        );
         // a cached entry that fails a stricter validator is ignored and re-asked
-        let strict = |v: &Value| if v["other"].is_string() { Ok(()) } else { bail!("other missing") };
+        let strict = |v: &Value| {
+            if v["other"].is_string() {
+                Ok(())
+            } else {
+                bail!("other missing")
+            }
+        };
         assert!(ask_json_with(&c, &mut b, "s", "p", strict).is_err());
         assert_eq!(m.chat_hits.load(Ordering::SeqCst), 3);
     }
@@ -811,7 +1072,14 @@ mod tests {
         assert!(ask_typed::<Out>(&c, &mut Budget::per_run(), "s", "p", |_| Ok(())).is_err());
         let m = mock::start(|_| "{\"items\": [\"a\"]}".into());
         let c = mock::cfg(&m.base, &tmpdir("typed2"));
-        let o = ask_typed::<Out>(&c, &mut Budget::per_run(), "s", "p", |o| if o.items.is_empty() { bail!("empty") } else { Ok(()) }).unwrap();
+        let o = ask_typed::<Out>(&c, &mut Budget::per_run(), "s", "p", |o| {
+            if o.items.is_empty() {
+                bail!("empty")
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap();
         assert_eq!(o.items, ["a"]);
     }
 
@@ -819,7 +1087,12 @@ mod tests {
     fn redaction() {
         let t = "key sk-abcdef0123456789ABCD jwt eyJhbGciOiJIUzI1.eyJzdWIiOiIxMjM0.abcdefgh12345 password=hunter22x hash 0123456789abcdef0123456789abcdef ok";
         let r = redact_for_llm(t);
-        assert!(!r.contains("sk-abc") && !r.contains("eyJ") && !r.contains("hunter22") && !r.contains("0123456789abcdef0123"));
+        assert!(
+            !r.contains("sk-abc")
+                && !r.contains("eyJ")
+                && !r.contains("hunter22")
+                && !r.contains("0123456789abcdef0123")
+        );
         assert!(r.contains("ok"));
     }
 
@@ -827,10 +1100,22 @@ mod tests {
     fn redaction_by_key_name_suffix_in_text() {
         let t = "DB_PASSWORD=s3cr3tvalue\nSTRIPE_SECRET: abc123\nAPP_KEY=base64:zzzz\n{\"admin_password\": \"p@ss\", \"user\": \"bob\"}\nAuthorization: Bearer abcdef.ghijkl.mnopqr\npostgres://svc:pw1234@db.internal/x\nplain: value";
         let r = redact_for_llm(t);
-        for leak in ["s3cr3tvalue", "abc123", "base64:zzzz", "p@ss", "abcdef.ghijkl", "pw1234"] {
+        for leak in [
+            "s3cr3tvalue",
+            "abc123",
+            "base64:zzzz",
+            "p@ss",
+            "abcdef.ghijkl",
+            "pw1234",
+        ] {
             assert!(!r.contains(leak), "leaked {leak} in {r}");
         }
-        assert!(r.contains("\"user\": \"bob\"") && r.contains("plain: value") && r.contains("db.internal"), "{r}");
+        assert!(
+            r.contains("\"user\": \"bob\"")
+                && r.contains("plain: value")
+                && r.contains("db.internal"),
+            "{r}"
+        );
     }
 
     #[test]
@@ -843,7 +1128,13 @@ mod tests {
         assert_eq!(r["arr"][0]["api_key"], "[REDACTED]");
         assert!(!r["arr"][1].as_str().unwrap().contains("abcdef123456"));
         assert_eq!(r["n"], 5);
-        assert!(is_sensitive_key("x-api-key") && is_sensitive_key("stripeKey") && is_sensitive_key("MY_SECRET") && !is_sensitive_key("monkey") && !is_sensitive_key("title"));
+        assert!(
+            is_sensitive_key("x-api-key")
+                && is_sensitive_key("stripeKey")
+                && is_sensitive_key("MY_SECRET")
+                && !is_sensitive_key("monkey")
+                && !is_sensitive_key("title")
+        );
     }
 
     #[test]
@@ -853,7 +1144,13 @@ mod tests {
         write_atomic(&p, b"one").unwrap();
         write_atomic(&p, b"two-two").unwrap();
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "two-two");
-        assert!(std::fs::read_dir(p.parent().unwrap()).unwrap().all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".tmp")));
+        assert!(
+            std::fs::read_dir(p.parent().unwrap()).unwrap().all(|e| !e
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .ends_with(".tmp"))
+        );
     }
 
     #[test]
@@ -882,7 +1179,9 @@ pub mod mock {
 
     /// `handler(request_body) -> assistant message content`; /models answers 200.
     pub fn start(handler: impl Fn(&str) -> String + Send + 'static) -> Mock {
-        start_status(move |_, body| (200, serde_json::json!({"choices": [{"message": {"role": "assistant", "content": handler(body)}}]}).to_string()))
+        start_status(move |_, body| {
+            (200, serde_json::json!({"choices": [{"message": {"role": "assistant", "content": handler(body)}}]}).to_string())
+        })
     }
 
     /// `handler(hit_index, request_body) -> (http_status, response_body)` for the chat endpoint.
@@ -906,7 +1205,14 @@ pub mod mock {
                     buf.extend_from_slice(&tmp[..n]);
                     let t = String::from_utf8_lossy(&buf).to_string();
                     if let Some(i) = t.find("\r\n\r\n") {
-                        let cl = t[..i].lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").and_then(|v| v.trim().parse::<usize>().ok())).unwrap_or(0);
+                        let cl = t[..i]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or(0);
                         break (i + 4, cl);
                     }
                 };
@@ -926,11 +1232,24 @@ pub mod mock {
                     let i = h2.fetch_add(1, Ordering::SeqCst);
                     handler(i, &body)
                 };
-                let extra = if code == 429 { "Retry-After: 0\r\n" } else { "" };
-                let _ = write!(s, "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{}", resp.len(), resp);
+                let extra = if code == 429 {
+                    "Retry-After: 0\r\n"
+                } else {
+                    ""
+                };
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    resp.len(),
+                    resp
+                );
             }
         });
-        Mock { base, chat_hits: hits, requests }
+        Mock {
+            base,
+            chat_hits: hits,
+            requests,
+        }
     }
 
     pub fn cfg(base: &str, dir: &std::path::Path) -> super::LlmConfig {

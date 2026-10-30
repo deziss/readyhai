@@ -1,6 +1,6 @@
 //! Response contract checks: schema-subset validator, documented status, error leakage, breaking changes.
-use super::synth::{flatten, schema_type};
 use super::spec::{Op, Spec};
+use super::synth::{flatten, schema_type};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -9,7 +9,11 @@ use std::sync::OnceLock;
 fn type_ok(t: &str, v: &Value) -> bool {
     match t {
         "string" => v.is_string(),
-        "integer" => v.is_i64() || v.is_u64() || v.as_f64().map(|f| f.fract() == 0.0).unwrap_or(false) && v.is_number(),
+        "integer" => {
+            v.is_i64()
+                || v.is_u64()
+                || v.as_f64().map(|f| f.fract() == 0.0).unwrap_or(false) && v.is_number()
+        }
         "number" => v.is_number(),
         "boolean" => v.is_boolean(),
         "array" => v.is_array(),
@@ -21,18 +25,26 @@ fn type_ok(t: &str, v: &Value) -> bool {
 
 fn format_ok(f: &str, s: &str) -> bool {
     match f {
-        "email" => s.contains('@') && s.split('@').nth(1).map(|d| d.contains('.')).unwrap_or(false),
+        "email" => {
+            s.contains('@')
+                && s.split('@')
+                    .nth(1)
+                    .map(|d| d.contains('.'))
+                    .unwrap_or(false)
+        }
         "uuid" => {
             static R: OnceLock<Regex> = OnceLock::new();
             R.get_or_init(|| Regex::new(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$").unwrap()).is_match(s)
         }
         "date-time" => {
             static R: OnceLock<Regex> = OnceLock::new();
-            R.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}").unwrap()).is_match(s)
+            R.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2}[Tt ]\d{2}:\d{2}").unwrap())
+                .is_match(s)
         }
         "date" => {
             static R: OnceLock<Regex> = OnceLock::new();
-            R.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap()).is_match(s)
+            R.get_or_init(|| Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap())
+                .is_match(s)
         }
         "uri" | "url" => s.contains("://") || s.starts_with('/'),
         _ => true,
@@ -42,17 +54,30 @@ fn format_ok(f: &str, s: &str) -> bool {
 /// Validate `v` against the schema subset. Returns the first mismatch as "$.path: message".
 pub fn validate(schema: &Value, v: &Value, path: &str) -> Option<String> {
     let s = flatten(schema);
-    if let Some(alts) = s.get("oneOf").or_else(|| s.get("anyOf")).and_then(|a| a.as_array()) {
+    if let Some(alts) = s
+        .get("oneOf")
+        .or_else(|| s.get("anyOf"))
+        .and_then(|a| a.as_array())
+    {
         if alts.is_empty() || alts.iter().any(|a| validate(a, v, path).is_none()) {
             return None;
         }
-        return Some(format!("{path}: matches none of the oneOf/anyOf alternatives"));
+        return Some(format!(
+            "{path}: matches none of the oneOf/anyOf alternatives"
+        ));
     }
     if v.is_null() {
         let nullable = s.get("nullable").and_then(|n| n.as_bool()).unwrap_or(false)
-            || s.get("type").and_then(|t| t.as_array()).map(|a| a.iter().any(|x| x == "null")).unwrap_or(false)
+            || s.get("type")
+                .and_then(|t| t.as_array())
+                .map(|a| a.iter().any(|x| x == "null"))
+                .unwrap_or(false)
             || s.get("type").is_none();
-        return if nullable { None } else { Some(format!("{path}: null not allowed")) };
+        return if nullable {
+            None
+        } else {
+            Some(format!("{path}: null not allowed"))
+        };
     }
     if s.get("type").is_some() || s.get("properties").is_some() {
         let t = schema_type(&s);
@@ -60,15 +85,15 @@ pub fn validate(schema: &Value, v: &Value, path: &str) -> Option<String> {
             return Some(format!("{path}: expected {t}, got {}", kind(v)));
         }
     }
-    if let Some(e) = s.get("enum").and_then(|e| e.as_array()) {
-        if !e.contains(v) {
-            return Some(format!("{path}: value not in enum"));
-        }
+    if let Some(e) = s.get("enum").and_then(|e| e.as_array())
+        && !e.contains(v)
+    {
+        return Some(format!("{path}: value not in enum"));
     }
-    if let (Some(f), Some(st)) = (s.get("format").and_then(|f| f.as_str()), v.as_str()) {
-        if !format_ok(f, st) {
-            return Some(format!("{path}: not a valid {f}"));
-        }
+    if let (Some(f), Some(st)) = (s.get("format").and_then(|f| f.as_str()), v.as_str())
+        && !format_ok(f, st)
+    {
+        return Some(format!("{path}: not a valid {f}"));
     }
     if let Some(o) = v.as_object() {
         if let Some(req) = s.get("required").and_then(|r| r.as_array()) {
@@ -80,10 +105,10 @@ pub fn validate(schema: &Value, v: &Value, path: &str) -> Option<String> {
         }
         if let Some(props) = s.get("properties").and_then(|p| p.as_object()) {
             for (k, ps) in props {
-                if let Some(x) = o.get(k) {
-                    if let Some(m) = validate(ps, x, &format!("{path}.{k}")) {
-                        return Some(m);
-                    }
+                if let Some(x) = o.get(k)
+                    && let Some(m) = validate(ps, x, &format!("{path}.{k}"))
+                {
+                    return Some(m);
                 }
             }
         }
@@ -113,11 +138,12 @@ fn kind(v: &Value) -> &'static str {
 pub fn normalize_mismatch(m: &str) -> String {
     static R: OnceLock<Regex> = OnceLock::new();
     let r = R.get_or_init(|| Regex::new(r"\[\d+\]").unwrap());
-    r.replace_all(m.split(':').next().unwrap_or(m), "[]").into_owned()
+    r.replace_all(m.split(':').next().unwrap_or(m), "[]")
+        .into_owned()
 }
 
 /// Schema for a status code: exact, then "2XX", then "default".
-pub fn schema_for<'a>(op: &'a Op, status: u16) -> Option<Option<&'a Value>> {
+pub fn schema_for(op: &Op, status: u16) -> Option<Option<&Value>> {
     let exact = status.to_string();
     let class = format!("{}XX", status / 100);
     for k in [exact.as_str(), class.as_str(), "DEFAULT"] {
@@ -135,7 +161,10 @@ pub fn status_documented(op: &Op, status: u16) -> bool {
 /// HTML attribute values (`href="/home/x"`) are navigation, never an error disclosure.
 fn strip_attrs(body: &str) -> std::borrow::Cow<'_, str> {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r#"(?i)\b(?:href|src|action|data-[\w-]+)\s*=\s*(?:"[^"]*"|'[^']*')"#).unwrap()).replace_all(body, "")
+    R.get_or_init(|| {
+        Regex::new(r#"(?i)\b(?:href|src|action|data-[\w-]+)\s*=\s*(?:"[^"]*"|'[^']*')"#).unwrap()
+    })
+    .replace_all(body, "")
 }
 
 /// Returns the leak label if the body shows an internal error disclosure. Callers only run it on
@@ -179,8 +208,20 @@ pub fn body_fingerprint(body: &str) -> String {
     }
     let mut text = t.to_string();
     if let Ok(v) = serde_json::from_str::<Value>(t) {
-        for k in ["message", "error", "detail", "title", "exception", "msg", "error_description"] {
-            if let Some(m) = v.get(k).and_then(|x| x.as_str().map(String::from).or_else(|| x.get("message").and_then(|y| y.as_str()).map(String::from))) {
+        for k in [
+            "message",
+            "error",
+            "detail",
+            "title",
+            "exception",
+            "msg",
+            "error_description",
+        ] {
+            if let Some(m) = v.get(k).and_then(|x| {
+                x.as_str()
+                    .map(String::from)
+                    .or_else(|| x.get("message").and_then(|y| y.as_str()).map(String::from))
+            }) {
                 text = m;
                 break;
             }
@@ -190,7 +231,9 @@ pub fn body_fingerprint(body: &str) -> String {
     let line = stripped
         .lines()
         .map(|l| l.trim())
-        .find(|l| !l.is_empty() && !l.starts_with('<') && !l.starts_with('{') && !l.starts_with('['))
+        .find(|l| {
+            !l.is_empty() && !l.starts_with('<') && !l.starts_with('{') && !l.starts_with('[')
+        })
         .map(str::to_string)
         .unwrap_or_else(|| stripped.split_whitespace().collect::<Vec<_>>().join(" "));
     let mut out: String = line.chars().take(120).collect();
@@ -202,10 +245,10 @@ pub fn body_fingerprint(body: &str) -> String {
 
 fn response_fields(op: &Op, out: &mut BTreeSet<String>) {
     for (st, sch) in &op.responses {
-        if st.starts_with('2') {
-            if let Some(s) = sch {
-                collect(s, "$", &format!("{st}"), out, 0);
-            }
+        if st.starts_with('2')
+            && let Some(s) = sch
+        {
+            collect(s, "$", &st.to_string(), out, 0);
         }
     }
 }
@@ -232,11 +275,11 @@ fn required_request_fields(op: &Op) -> BTreeSet<String> {
     for p in op.params.iter().filter(|p| p.required) {
         s.insert(format!("{}:{}", p.loc, p.name));
     }
-    if let Some(b) = &op.body {
-        if let Some(r) = flatten(b).get("required").and_then(|r| r.as_array()) {
-            for x in r.iter().filter_map(|x| x.as_str()) {
-                s.insert(format!("body:{x}"));
-            }
+    if let Some(b) = &op.body
+        && let Some(r) = flatten(b).get("required").and_then(|r| r.as_array())
+    {
+        for x in r.iter().filter_map(|x| x.as_str()) {
+            s.insert(format!("body:{x}"));
         }
     }
     s
@@ -255,18 +298,34 @@ pub struct Breaking {
 pub fn breaking_changes(old: &Spec, new: &Spec) -> Vec<Breaking> {
     let mut out = vec![];
     for o in &old.ops {
-        match new.ops.iter().find(|n| n.method == o.method && n.path == o.path) {
-            None => out.push(Breaking { op: o.key(), what: "operation removed".into(), key: format!("{}|removed_op", o.key()) }),
+        match new
+            .ops
+            .iter()
+            .find(|n| n.method == o.method && n.path == o.path)
+        {
+            None => out.push(Breaking {
+                op: o.key(),
+                what: "operation removed".into(),
+                key: format!("{}|removed_op", o.key()),
+            }),
             Some(n) => {
                 let (mut of, mut nf) = (BTreeSet::new(), BTreeSet::new());
                 response_fields(o, &mut of);
                 response_fields(n, &mut nf);
                 for f in of.difference(&nf) {
-                    out.push(Breaking { op: o.key(), what: format!("response field removed: {f}"), key: format!("{}|removed_field|{f}", o.key()) });
+                    out.push(Breaking {
+                        op: o.key(),
+                        what: format!("response field removed: {f}"),
+                        key: format!("{}|removed_field|{f}", o.key()),
+                    });
                 }
                 let (or, nr) = (required_request_fields(o), required_request_fields(n));
                 for f in nr.difference(&or) {
-                    out.push(Breaking { op: o.key(), what: format!("new required request field: {f}"), key: format!("{}|new_required|{f}", o.key()) });
+                    out.push(Breaking {
+                        op: o.key(),
+                        what: format!("new required request field: {f}"),
+                        key: format!("{}|new_required|{f}", o.key()),
+                    });
                 }
             }
         }
@@ -286,22 +345,56 @@ mod tests {
             "email":{"type":"string","format":"email"},"tags":{"type":"array","items":{"type":"string"}},
             "opt":{"type":"string","nullable":true}}});
         assert!(validate(&s, &json!({"id":1,"total":2.5,"status":"new","email":"a@b.co","tags":["x"],"opt":null}), "$").is_none());
-        assert_eq!(validate(&s, &json!({"id":1}), "$").unwrap(), "$.total: required property missing");
-        assert!(validate(&s, &json!({"id":"x","total":1}), "$").unwrap().starts_with("$.id: expected integer"));
-        assert!(validate(&s, &json!({"id":1,"total":1,"status":"zzz"}), "$").unwrap().contains("enum"));
-        assert!(validate(&s, &json!({"id":1,"total":1,"email":"nope"}), "$").unwrap().contains("email"));
-        assert!(validate(&s, &json!({"id":1,"total":1,"tags":[1]}), "$").unwrap().starts_with("$.tags[0]"));
-        assert_eq!(normalize_mismatch("$.items[3].total: required property missing"), "$.items[].total");
+        assert_eq!(
+            validate(&s, &json!({"id":1}), "$").unwrap(),
+            "$.total: required property missing"
+        );
+        assert!(
+            validate(&s, &json!({"id":"x","total":1}), "$")
+                .unwrap()
+                .starts_with("$.id: expected integer")
+        );
+        assert!(
+            validate(&s, &json!({"id":1,"total":1,"status":"zzz"}), "$")
+                .unwrap()
+                .contains("enum")
+        );
+        assert!(
+            validate(&s, &json!({"id":1,"total":1,"email":"nope"}), "$")
+                .unwrap()
+                .contains("email")
+        );
+        assert!(
+            validate(&s, &json!({"id":1,"total":1,"tags":[1]}), "$")
+                .unwrap()
+                .starts_with("$.tags[0]")
+        );
+        assert_eq!(
+            normalize_mismatch("$.items[3].total: required property missing"),
+            "$.items[].total"
+        );
     }
 
     #[test]
     fn leak_detection() {
-        assert_eq!(leak_kind("Traceback (most recent call last):\n File \"/x/app.py\", line 3"), Some("python_traceback"));
+        assert_eq!(
+            leak_kind("Traceback (most recent call last):\n File \"/x/app.py\", line 3"),
+            Some("python_traceback")
+        );
         assert_eq!(leak_kind("ORA-00942: table"), Some("oracle"));
         assert_eq!(leak_kind("{\"error\":\"bad request\"}"), None);
-        assert_eq!(leak_kind("\tat com.acme.shop.OrderService.load(OrderService.java:42)"), Some("java_frame"));
-        assert_eq!(leak_kind("    at handler (/srv/app/server.js:10:5)"), Some("node_frame"));
-        assert_eq!(leak_kind("error in /home/deploy/app/main.py near x"), Some("server_path"));
+        assert_eq!(
+            leak_kind("\tat com.acme.shop.OrderService.load(OrderService.java:42)"),
+            Some("java_frame")
+        );
+        assert_eq!(
+            leak_kind("    at handler (/srv/app/server.js:10:5)"),
+            Some("node_frame")
+        );
+        assert_eq!(
+            leak_kind("error in /home/deploy/app/main.py near x"),
+            Some("server_path")
+        );
         assert_eq!(leak_kind("{\"stackTrace\": \"x\"}"), Some("stack_trace"));
         assert_eq!(leak_kind("{\"stack_trace\": \"x\"}"), Some("stack_trace"));
     }
@@ -318,12 +411,19 @@ mod tests {
 
     #[test]
     fn body_fingerprint_is_stable_and_specific() {
-        let a = body_fingerprint("{\"message\":\"relation \\\"orders\\\" does not exist\",\"code\":500}");
+        let a = body_fingerprint(
+            "{\"message\":\"relation \\\"orders\\\" does not exist\",\"code\":500}",
+        );
         let b = body_fingerprint("{\"message\":\"division by zero\"}");
         assert_ne!(a, b);
         assert!(a.contains("relation"));
         assert_eq!(body_fingerprint(""), "");
-        assert!(body_fingerprint("Traceback (most recent call last):\n  File \"/a/b.py\", line 3\nValueError: x").starts_with("[python_traceback]"));
+        assert!(
+            body_fingerprint(
+                "Traceback (most recent call last):\n  File \"/a/b.py\", line 3\nValueError: x"
+            )
+            .starts_with("[python_traceback]")
+        );
     }
 
     #[test]
@@ -333,10 +433,19 @@ mod tests {
               "/a":{"get":{"responses":{"200":{"description":"","content":{"application/json":{"schema":{"type":"object","properties":extra}}}}}}},
               "/b":{"post":{"requestBody":{"content":{"application/json":{"schema":{"type":"object","required":req,"properties":{"x":{"type":"string"}}}}}},"responses":{}}}}})).unwrap()
         };
-        let old = mk(json!({"id":{"type":"integer"},"gone":{"type":"string"}}), json!([]));
+        let old = mk(
+            json!({"id":{"type":"integer"},"gone":{"type":"string"}}),
+            json!([]),
+        );
         let new = mk(json!({"id":{"type":"integer"}}), json!(["x"]));
         let d = breaking_changes(&old, &new);
-        assert!(d.iter().any(|b| b.what.contains("response field removed: 200 $.gone")));
-        assert!(d.iter().any(|b| b.what.contains("new required request field: body:x")));
+        assert!(
+            d.iter()
+                .any(|b| b.what.contains("response field removed: 200 $.gone"))
+        );
+        assert!(
+            d.iter()
+                .any(|b| b.what.contains("new required request field: body:x"))
+        );
     }
 }

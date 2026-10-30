@@ -186,10 +186,17 @@ impl Defect {
                 detail.push_str(&format!("{}. {s}\n", i + 1));
             }
         }
-        Finding::new(check, &self.rule, self.category, self.severity, self.title.clone(), self.component.clone())
-            .detail(detail.trim_end().to_string())
-            .remediation(self.remediation.clone())
-            .fp_key(self.fp_key.clone())
+        Finding::new(
+            check,
+            &self.rule,
+            self.category,
+            self.severity,
+            self.title.clone(),
+            self.component.clone(),
+        )
+        .detail(detail.trim_end().to_string())
+        .remediation(self.remediation.clone())
+        .fp_key(self.fp_key.clone())
     }
 }
 

@@ -28,7 +28,10 @@ pub fn system(role: &str) -> String {
 
 /// Strip control chars (keep space), collapse whitespace, cap length (in chars).
 pub fn clean(s: &str, max: usize) -> String {
-    let t: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let t: String = s
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
     t.chars().take(max).collect()
 }
@@ -78,9 +81,22 @@ pub fn fence_text(s: &str, max_chars: usize) -> String {
 pub fn looks_injected(s: &str) -> bool {
     let l = s.to_ascii_lowercase();
     [
-        "ignore previous", "ignore all previous", "ignore the above", "disregard previous", "disregard the above",
-        "forget your instructions", "new instructions:", "system prompt", "you are now", "override the verdict",
-        "set the verdict", "set recommendation", "mark this as pass", "return go", "gate_verdict", "act as ",
+        "ignore previous",
+        "ignore all previous",
+        "ignore the above",
+        "disregard previous",
+        "disregard the above",
+        "forget your instructions",
+        "new instructions:",
+        "system prompt",
+        "you are now",
+        "override the verdict",
+        "set the verdict",
+        "set recommendation",
+        "mark this as pass",
+        "return go",
+        "gate_verdict",
+        "act as ",
     ]
     .iter()
     .any(|p| l.contains(p))

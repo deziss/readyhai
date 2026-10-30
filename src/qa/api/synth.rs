@@ -47,11 +47,21 @@ pub struct Case {
 
 /// Merge `allOf` members into one schema (properties/required unioned).
 pub fn flatten(s: &Value) -> Value {
-    let Some(all) = s.get("allOf").and_then(|a| a.as_array()) else { return s.clone() };
+    let Some(all) = s.get("allOf").and_then(|a| a.as_array()) else {
+        return s.clone();
+    };
     let mut out = s.as_object().cloned().unwrap_or_default();
     out.remove("allOf");
-    let mut props = out.get("properties").and_then(|p| p.as_object()).cloned().unwrap_or_default();
-    let mut req: Vec<Value> = out.get("required").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+    let mut props = out
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let mut req: Vec<Value> = out
+        .get("required")
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
     for m in all {
         let m = flatten(m);
         if let Some(p) = m.get("properties").and_then(|p| p.as_object()) {
@@ -91,7 +101,10 @@ pub fn schema_type(s: &Value) -> &str {
         if let Some(t) = t.as_str() {
             return t;
         }
-        if let Some(t) = t.as_array().and_then(|a| a.iter().filter_map(|x| x.as_str()).find(|x| *x != "null")) {
+        if let Some(t) = t
+            .as_array()
+            .and_then(|a| a.iter().filter_map(|x| x.as_str()).find(|x| *x != "null"))
+        {
             return t;
         }
     }
@@ -134,28 +147,53 @@ pub fn synth(schema: &Value, name: &str, tag: &str, depth: usize) -> Value {
     if let Some(d) = s.get("default") {
         return d.clone();
     }
-    if let Some(e) = s.get("enum").and_then(|e| e.as_array()).and_then(|e| e.first()) {
+    if let Some(e) = s
+        .get("enum")
+        .and_then(|e| e.as_array())
+        .and_then(|e| e.first())
+    {
         return e.clone();
     }
     match schema_type(&s) {
         "integer" => {
-            let lo = num(&s, "minimum").unwrap_or(1.0).max(1.0).min(num(&s, "maximum").unwrap_or(f64::MAX));
+            let lo = num(&s, "minimum")
+                .unwrap_or(1.0)
+                .max(1.0)
+                .min(num(&s, "maximum").unwrap_or(f64::MAX));
             json!(lo as i64)
         }
         "number" => {
-            let lo = num(&s, "minimum").unwrap_or(1.0).max(1.0).min(num(&s, "maximum").unwrap_or(f64::MAX));
+            let lo = num(&s, "minimum")
+                .unwrap_or(1.0)
+                .max(1.0)
+                .min(num(&s, "maximum").unwrap_or(f64::MAX));
             json!(lo)
         }
         "boolean" => json!(true),
         "array" => {
             let it = s.get("items").cloned().unwrap_or(json!({}));
             let n = num(&s, "minItems").unwrap_or(1.0).max(1.0) as usize;
-            Value::Array((0..n.min(3)).map(|_| synth(&it, name, tag, depth + 1)).collect())
+            Value::Array(
+                (0..n.min(3))
+                    .map(|_| synth(&it, name, tag, depth + 1))
+                    .collect(),
+            )
         }
         "object" => {
-            let props = s.get("properties").and_then(|p| p.as_object()).cloned().unwrap_or_default();
-            let req: Vec<String> =
-                s.get("required").and_then(|r| r.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+            let props = s
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .cloned()
+                .unwrap_or_default();
+            let req: Vec<String> = s
+                .get("required")
+                .and_then(|r| r.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
             let mut m = Map::new();
             for (k, v) in &props {
                 if req.contains(k) || req.is_empty() {
@@ -198,7 +236,12 @@ pub fn pct(s: &str) -> String {
 }
 
 /// Base URL + path template with values + query.
-pub fn build_url(base: &str, path: &str, vals: &HashMap<String, String>, query: &[(String, String)]) -> String {
+pub fn build_url(
+    base: &str,
+    path: &str,
+    vals: &HashMap<String, String>,
+    query: &[(String, String)],
+) -> String {
     let mut p = String::new();
     for (i, seg) in path.split('/').enumerate() {
         if i > 0 {
@@ -212,23 +255,36 @@ pub fn build_url(base: &str, path: &str, vals: &HashMap<String, String>, query: 
     }
     let mut u = format!("{}{}", base.trim_end_matches('/'), p);
     if !query.is_empty() {
-        let q: Vec<String> = query.iter().map(|(k, v)| format!("{}={}", pct(k), pct(v))).collect();
+        let q: Vec<String> = query
+            .iter()
+            .map(|(k, v)| format!("{}={}", pct(k), pct(v)))
+            .collect();
         u.push('?');
         u.push_str(&q.join("&"));
     }
     u
 }
 
-fn base_vals(op: &Op, tag: &str, ids: &HashMap<String, String>) -> (HashMap<String, String>, Vec<(String, String)>) {
+fn base_vals(
+    op: &Op,
+    tag: &str,
+    ids: &HashMap<String, String>,
+) -> (HashMap<String, String>, Vec<(String, String)>) {
     let mut pv = HashMap::new();
     let mut q = vec![];
     for p in &op.params {
         match p.loc.as_str() {
             "path" => {
-                let v = ids.get(&p.name).cloned().unwrap_or_else(|| value_str(&synth(&p.schema, &p.name, "", 0)));
+                let v = ids
+                    .get(&p.name)
+                    .cloned()
+                    .unwrap_or_else(|| value_str(&synth(&p.schema, &p.name, "", 0)));
                 pv.insert(p.name.clone(), v);
             }
-            "query" if p.required => q.push((p.name.clone(), value_str(&synth(&p.schema, &p.name, tag, 0)))),
+            "query" if p.required => q.push((
+                p.name.clone(),
+                value_str(&synth(&p.schema, &p.name, tag, 0)),
+            )),
             _ => {}
         }
     }
@@ -237,8 +293,20 @@ fn base_vals(op: &Op, tag: &str, ids: &HashMap<String, String>) -> (HashMap<Stri
 
 fn body_props(op: &Op) -> (Value, Vec<String>, Map<String, Value>) {
     let s = op.body.as_ref().map(flatten).unwrap_or(json!({}));
-    let req = s.get("required").and_then(|r| r.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
-    let props = s.get("properties").and_then(|p| p.as_object()).cloned().unwrap_or_default();
+    let req = s
+        .get("required")
+        .and_then(|r| r.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let props = s
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .cloned()
+        .unwrap_or_default();
     (s, req, props)
 }
 
@@ -287,7 +355,13 @@ pub fn generate(op: &Op, tag: &str, deep: bool, ids: &HashMap<String, String>) -
     let (pv, q) = base_vals(op, tag, ids);
     let (bschema, req, props) = body_props(op);
     let base_body: Option<Value> = op.body.as_ref().map(|b| synth(b, "body", tag, 0));
-    let mk = |kind: String, tech: Technique, title: String, q: Vec<(String, String)>, body: Option<Value>, expect: Expect, marker: bool| Case {
+    let mk = |kind: String,
+              tech: Technique,
+              title: String,
+              q: Vec<(String, String)>,
+              body: Option<Value>,
+              expect: Expect,
+              marker: bool| Case {
         kind,
         technique: tech,
         title,
@@ -297,7 +371,15 @@ pub fn generate(op: &Op, tag: &str, deep: bool, ids: &HashMap<String, String>) -
         expect,
         marker,
     };
-    let mut cases = vec![mk("positive".into(), Technique::Positive, "valid request".into(), q.clone(), base_body.clone(), Expect::Success, false)];
+    let mut cases = vec![mk(
+        "positive".into(),
+        Technique::Positive,
+        "valid request".into(),
+        q.clone(),
+        base_body.clone(),
+        Expect::Success,
+        false,
+    )];
     let mut bcount = 0;
     // Body boundaries: optional props are added so their limits can be probed.
     if let (Some(Value::Object(bb)), true) = (&base_body, !props.is_empty()) {
@@ -309,7 +391,15 @@ pub fn generate(op: &Op, tag: &str, deep: bool, ids: &HashMap<String, String>) -
                 bcount += 1;
                 let mut b = bb.clone();
                 b.insert(k.clone(), bad);
-                cases.push(mk(format!("boundary.{kind}.{k}"), Technique::Boundary, format!("{k}: {kind} violation"), q.clone(), Some(Value::Object(b)), Expect::Reject, false));
+                cases.push(mk(
+                    format!("boundary.{kind}.{k}"),
+                    Technique::Boundary,
+                    format!("{k}: {kind} violation"),
+                    q.clone(),
+                    Some(Value::Object(b)),
+                    Expect::Reject,
+                    false,
+                ));
             }
         }
     }
@@ -321,7 +411,15 @@ pub fn generate(op: &Op, tag: &str, deep: bool, ids: &HashMap<String, String>) -
             bcount += 1;
             let mut qq: Vec<_> = q.iter().filter(|x| x.0 != p.name).cloned().collect();
             qq.push((p.name.clone(), value_str(&bad)));
-            cases.push(mk(format!("boundary.{kind}.{}", p.name), Technique::Boundary, format!("query {}: {kind} violation", p.name), qq, base_body.clone(), Expect::Reject, false));
+            cases.push(mk(
+                format!("boundary.{kind}.{}", p.name),
+                Technique::Boundary,
+                format!("query {}: {kind} violation", p.name),
+                qq,
+                base_body.clone(),
+                Expect::Reject,
+                false,
+            ));
         }
     }
     // Negative: missing required body props, wrong type, null, extra prop, 1MB (deep).
@@ -329,31 +427,89 @@ pub fn generate(op: &Op, tag: &str, deep: bool, ids: &HashMap<String, String>) -
         for k in req.iter().take(2) {
             let mut b = bb.clone();
             b.remove(k);
-            cases.push(mk(format!("negative.missing.{k}"), Technique::Negative, format!("missing required '{k}'"), q.clone(), Some(Value::Object(b)), Expect::Reject, false));
+            cases.push(mk(
+                format!("negative.missing.{k}"),
+                Technique::Negative,
+                format!("missing required '{k}'"),
+                q.clone(),
+                Some(Value::Object(b)),
+                Expect::Reject,
+                false,
+            ));
         }
-        if let Some((k, ps)) = props.iter().find(|(k, _)| req.contains(k)).or_else(|| props.iter().next()) {
+        if let Some((k, ps)) = props
+            .iter()
+            .find(|(k, _)| req.contains(k))
+            .or_else(|| props.iter().next())
+        {
             let mut b = bb.clone();
             b.insert(k.clone(), wrong_type(ps));
-            cases.push(mk(format!("negative.wrongtype.{k}"), Technique::Negative, format!("'{k}' has the wrong type"), q.clone(), Some(Value::Object(b)), Expect::Reject, false));
+            cases.push(mk(
+                format!("negative.wrongtype.{k}"),
+                Technique::Negative,
+                format!("'{k}' has the wrong type"),
+                q.clone(),
+                Some(Value::Object(b)),
+                Expect::Reject,
+                false,
+            ));
             let mut b = bb.clone();
             b.insert(k.clone(), Value::Null);
-            cases.push(mk(format!("negative.null.{k}"), Technique::Negative, format!("'{k}' is null"), q.clone(), Some(Value::Object(b)), Expect::Reject, false));
+            cases.push(mk(
+                format!("negative.null.{k}"),
+                Technique::Negative,
+                format!("'{k}' is null"),
+                q.clone(),
+                Some(Value::Object(b)),
+                Expect::Reject,
+                false,
+            ));
         }
         let mut b = bb.clone();
         b.insert("readyhai_extra".into(), json!("x"));
-        cases.push(mk("negative.extra".into(), Technique::Negative, "unknown extra property".into(), q.clone(), Some(Value::Object(b)), Expect::NoServerError, false));
-        if deep {
-            if let Some((k, _)) = props.iter().find(|(_, p)| schema_type(&flatten(p)) == "string") {
-                let mut b = bb.clone();
-                b.insert(k.clone(), Value::String("A".repeat(1_000_000)));
-                cases.push(mk(format!("negative.1mb.{k}"), Technique::Negative, format!("1 MB string in '{k}'"), q.clone(), Some(Value::Object(b)), Expect::NoServerError, false));
-            }
+        cases.push(mk(
+            "negative.extra".into(),
+            Technique::Negative,
+            "unknown extra property".into(),
+            q.clone(),
+            Some(Value::Object(b)),
+            Expect::NoServerError,
+            false,
+        ));
+        if deep
+            && let Some((k, _)) = props
+                .iter()
+                .find(|(_, p)| schema_type(&flatten(p)) == "string")
+        {
+            let mut b = bb.clone();
+            b.insert(k.clone(), Value::String("A".repeat(1_000_000)));
+            cases.push(mk(
+                format!("negative.1mb.{k}"),
+                Technique::Negative,
+                format!("1 MB string in '{k}'"),
+                q.clone(),
+                Some(Value::Object(b)),
+                Expect::NoServerError,
+                false,
+            ));
         }
         // Inert marker in the first string property.
-        if let Some((k, _)) = props.iter().find(|(_, p)| schema_type(&flatten(p)) == "string" && p.get("enum").is_none() && p.get("format").is_none()) {
+        if let Some((k, _)) = props.iter().find(|(_, p)| {
+            schema_type(&flatten(p)) == "string"
+                && p.get("enum").is_none()
+                && p.get("format").is_none()
+        }) {
             let mut b = bb.clone();
             b.insert(k.clone(), json!(MARKER));
-            cases.push(mk(format!("marker.body.{k}"), Technique::Negative, format!("inert marker in '{k}'"), q.clone(), Some(Value::Object(b)), Expect::NoServerError, true));
+            cases.push(mk(
+                format!("marker.body.{k}"),
+                Technique::Negative,
+                format!("inert marker in '{k}'"),
+                q.clone(),
+                Some(Value::Object(b)),
+                Expect::NoServerError,
+                true,
+            ));
         }
     }
     let _ = bschema;
@@ -361,17 +517,48 @@ pub fn generate(op: &Op, tag: &str, deep: bool, ids: &HashMap<String, String>) -
     let qparams: Vec<&Param> = op.params.iter().filter(|p| p.loc == "query").collect();
     for p in qparams.iter().filter(|p| p.required).take(2) {
         let qq: Vec<_> = q.iter().filter(|x| x.0 != p.name).cloned().collect();
-        cases.push(mk(format!("negative.missing.{}", p.name), Technique::Negative, format!("missing required query '{}'", p.name), qq, base_body.clone(), Expect::Reject, false));
+        cases.push(mk(
+            format!("negative.missing.{}", p.name),
+            Technique::Negative,
+            format!("missing required query '{}'", p.name),
+            qq,
+            base_body.clone(),
+            Expect::Reject,
+            false,
+        ));
     }
-    if let Some(p) = qparams.iter().find(|p| matches!(schema_type(&flatten(&p.schema)), "integer" | "number")) {
+    if let Some(p) = qparams
+        .iter()
+        .find(|p| matches!(schema_type(&flatten(&p.schema)), "integer" | "number"))
+    {
         let mut qq: Vec<_> = q.iter().filter(|x| x.0 != p.name).cloned().collect();
         qq.push((p.name.clone(), "not-a-number".into()));
-        cases.push(mk(format!("negative.wrongtype.{}", p.name), Technique::Negative, format!("query '{}' not a number", p.name), qq, base_body.clone(), Expect::Reject, false));
+        cases.push(mk(
+            format!("negative.wrongtype.{}", p.name),
+            Technique::Negative,
+            format!("query '{}' not a number", p.name),
+            qq,
+            base_body.clone(),
+            Expect::Reject,
+            false,
+        ));
     }
-    if let Some(p) = qparams.iter().find(|p| schema_type(&flatten(&p.schema)) == "string" && p.schema.get("enum").is_none() && p.schema.get("format").is_none()) {
+    if let Some(p) = qparams.iter().find(|p| {
+        schema_type(&flatten(&p.schema)) == "string"
+            && p.schema.get("enum").is_none()
+            && p.schema.get("format").is_none()
+    }) {
         let mut qq: Vec<_> = q.iter().filter(|x| x.0 != p.name).cloned().collect();
         qq.push((p.name.clone(), MARKER.into()));
-        cases.push(mk(format!("marker.query.{}", p.name), Technique::Negative, format!("inert marker in query '{}'", p.name), qq, base_body.clone(), Expect::NoServerError, true));
+        cases.push(mk(
+            format!("marker.query.{}", p.name),
+            Technique::Negative,
+            format!("inert marker in query '{}'", p.name),
+            qq,
+            base_body.clone(),
+            Expect::NoServerError,
+            true,
+        ));
     }
     cases
 }
@@ -380,7 +567,10 @@ pub fn generate(op: &Op, tag: &str, deep: bool, ids: &HashMap<String, String>) -
 pub fn pagination_probes(op: &Op) -> Vec<(String, String)> {
     let mut v = vec![];
     for p in op.params.iter().filter(|p| p.loc == "query") {
-        if matches!(p.name.to_ascii_lowercase().as_str(), "page" | "limit" | "offset" | "per_page" | "size") {
+        if matches!(
+            p.name.to_ascii_lowercase().as_str(),
+            "page" | "limit" | "offset" | "per_page" | "size"
+        ) {
             for val in ["0", "-1", "1000000"] {
                 v.push((p.name.clone(), val.to_string()));
             }
@@ -409,7 +599,10 @@ mod tests {
         assert!((12..=14).contains(&n.len()), "{n}");
         assert!(v.get("opt").is_none());
         assert_eq!(synth(&json!({"enum":["a","b"]}), "x", "", 0), "a");
-        assert_eq!(synth(&json!({"type":"string","format":"date-time"}), "x", "", 0), "2024-01-01T00:00:00Z");
+        assert_eq!(
+            synth(&json!({"type":"string","format":"date-time"}), "x", "", 0),
+            "2024-01-01T00:00:00Z"
+        );
     }
 
     #[test]
@@ -418,9 +611,11 @@ mod tests {
             method: "POST".into(),
             path: "/orders".into(),
             params: vec![],
-            body: Some(json!({"type":"object","required":["item","qty"],"properties":{
+            body: Some(
+                json!({"type":"object","required":["item","qty"],"properties":{
                 "item":{"type":"string"},"qty":{"type":"integer","minimum":1,"maximum":100},
-                "note":{"type":"string","maxLength":100}}})),
+                "note":{"type":"string","maxLength":100}}}),
+            ),
             body_required: true,
             responses: Default::default(),
             secured: true,
@@ -436,12 +631,20 @@ mod tests {
         let c = generate(&op, "t", true, &HashMap::new());
         assert!(c.iter().any(|c| c.kind.contains("1mb")));
         let m = c.iter().find(|c| c.kind == "boundary.maxlen.note").unwrap();
-        assert_eq!(m.body.as_ref().unwrap()["note"].as_str().unwrap().len(), 101);
+        assert_eq!(
+            m.body.as_ref().unwrap()["note"].as_str().unwrap().len(),
+            101
+        );
     }
 
     #[test]
     fn string_lengths_are_capped() {
-        let s = synth(&json!({"type":"string","minLength":2147483647_u64,"maxLength":4294967295_u64}), "x", "t-", 0);
+        let s = synth(
+            &json!({"type":"string","minLength":2147483647_u64,"maxLength":4294967295_u64}),
+            "x",
+            "t-",
+            0,
+        );
         assert_eq!(s.as_str().unwrap().len(), MAX_STR);
         let v = violations(&json!({"type":"string","maxLength":10_000_000}));
         assert!(v.is_empty(), "no >64KB violation string is generated");

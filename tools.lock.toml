@@ -1,59 +1,70 @@
-# Pinned tool images. `readyhai tools pull --lock` fills `digest` (sha256:...).
-# Empty digest => image runs but is reported as UNPINNED. Tags marked "latest"
-# were not verified against a registry at authoring time.
+# Pinned tool images (resolved 2026-10-30 from the registries; digests are the multi-arch index digests).
+# `readyhai tools pull --lock` re-resolves them. Review the diff: pinning is trust-on-first-use.
+# Where the registry exposes no concrete version tag for the digest, the tag stays latest/stable.
 [tools.syft]
-image = "anchore/syft:latest"
-digest = ""
-version = "latest"
+image = "anchore/syft:v1.55.0"
+digest = "sha256:4cc92b64ca74ffca4c94d4c8fcc01f217731375300be14d0b6eeb2e82eaa110a"
+version = "v1.55.0"
+
 [tools.grype]
-image = "anchore/grype:latest"
-digest = ""
-version = "latest"
+image = "anchore/grype:v0.121.0"
+digest = "sha256:621d56d1d68106b787022c81546f7e0a36202a25d1239f0c20195fab8c16f7ea"
+version = "v0.121.0"
+
 [tools.gitleaks]
-image = "zricethezav/gitleaks:latest"
-digest = ""
-version = "latest"
+image = "zricethezav/gitleaks:v8.30.1"
+digest = "sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
+version = "v8.30.1"
+
 [tools.semgrep]
-image = "semgrep/semgrep:latest"
-digest = ""
-version = "latest"
+image = "semgrep/semgrep:1.182.1"
+digest = "sha256:451b3d875c00dac7ed5db5293e584a07de11449a409c10b3c2d2652f429630b6"
+version = "1.182.1"
+
 [tools.hadolint]
-image = "hadolint/hadolint:latest"
-digest = ""
-version = "latest"
+image = "hadolint/hadolint:v2.15.1"
+digest = "sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d"
+version = "v2.15.1"
+
 [tools.checkov]
-image = "bridgecrew/checkov:latest"
-digest = ""
-version = "latest"
+image = "bridgecrew/checkov:3.4.0"
+digest = "sha256:ece5efac4443084ca273072909985dce988a81e8cc94faa305aeda0df27c68f9"
+version = "3.4.0"
+
 [tools.dockle]
-image = "goodwithtech/dockle:latest"
-digest = ""
-version = "latest"
+image = "goodwithtech/dockle:v0.4.15"
+digest = "sha256:eade932f793742de0aa8755406c7677cd7696f8675b6180926f7eeffa7abe6b9"
+version = "v0.4.15"
+
 [tools.zap]
 image = "ghcr.io/zaproxy/zaproxy:stable"
-digest = ""
+digest = "sha256:030d3df57735dacbb83464854758e674dd9ad01d79d12a129a8e58b1fd384238"
 version = "stable"
+
 [tools.schemathesis]
 image = "schemathesis/schemathesis:latest"
-digest = ""
+digest = "sha256:d4602c71e1bdbba2d45edacd8ad550b56af20399dacae3bc26852ed31cbf3057"
 version = "latest"
+
 [tools.git]
-image = "alpine/git:latest"
-digest = ""
-version = "latest"
+image = "alpine/git:v2.54.0"
+digest = "sha256:e8ceedc73bd80992ae8d58a7d24c58b8322146c354f1d2e81a97db4452068ec0"
+version = "v2.54.0"
+
 [tools.mobsf]
 image = "opensecurity/mobile-security-framework-mobsf:latest"
-digest = ""
+digest = "sha256:4e895e4e20223de61e07dd52abcf728cbee932470c64bc5aea4c701ed9ed825b"
 version = "latest"
+
+[tools.k6]
+image = "grafana/k6:latest"
+digest = "sha256:3e4186aea62e11a45560bfc51e19eeafe82fc07ce069c78aff44b7ff893d9a5e"
+version = "latest"
+
 # Built locally: docker build -t readyhai/playwright-runner:local runners/playwright
 # (base mcr.microsoft.com/playwright:v1.56.0-noble; pin its digest in the Dockerfile).
-# No registry digest exists for a :local image, so it is reported UNPINNED.
+# Intentionally unpinned: no registry digest exists for a :local image.
 [tools.playwright]
 image = "readyhai/playwright-runner:local"
 digest = ""
 version = "1.56.0"
-
-[tools.k6]
-image = "grafana/k6:latest"
-digest = ""
-version = "latest"

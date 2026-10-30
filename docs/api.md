@@ -23,17 +23,17 @@ export T=your-token-here-16+chars; H="Authorization: Bearer $T"
 Everything the server does to a target over HTTP goes through one guard (`serve.rs::guard`, backed by `scope::egress_guard`):
 
 1. The URL must be `http://` or `https://` and parses with the same parser the HTTP client uses. The request is made to the **normalised** URL, so `http://evil.example\@allowed.example/` is judged (and requested) as host `evil.example`.
-2. The host must be listed in the scope file (`READYHAI_SCOPE`). **No scope file means every target is refused.** When several entries match, an exact entry beats a wildcard and `prod` beats `nonprod`.
-3. *Intrusive* actions additionally require `env = "nonprod"`.
+2. **Internal** hosts (loopback, RFC1918, link-local/metadata, CGNAT, unique-local v6) must be listed in the scope file (`READYHAI_SCOPE`); with no scope file they are refused. **Public** hosts are allowed without an entry but are read-only. When several entries match, an exact entry beats a wildcard and `prod` beats `nonprod`.
+3. *Intrusive* actions additionally require the host to be listed with `env = "nonprod"`; unlisted public hosts are refused for them. Remote git clones use the `[git]` allowlist.
 
 | Route | Guarded as |
 |---|---|
 | `POST /api/agent/run` (and its `spec_url`) | intrusive: nonprod only |
 | `POST /api/agent/retest` | intrusive when the case uses a write method, a payload, or the `injection` technique |
-| `GET/POST /api/agent/discover`, `/api/agent/crawl` (and `spec`/`spec_url`) | in scope, any env |
+| `GET/POST /api/agent/discover`, `/api/agent/crawl` (and `spec`/`spec_url`) | allowed (read-only ok) |
 | `POST /api/network/regress` | intrusive when the method is not GET/HEAD/OPTIONS, a payload is sent, or `iterations` > 25 |
 | `POST /api/network/curl` | intrusive when the method is not GET/HEAD/OPTIONS or a payload is sent |
-| `POST /api/network/deep-audit`, `/multi-region` | in scope, any env |
+| `POST /api/network/deep-audit`, `/multi-region` | allowed (read-only ok) |
 | `POST /api/scans`, `POST /runs` | `mcp::precheck` (below); the engine gates intrusive checks per check |
 
 A refused target returns `403 {"error": ...}` (`400` for the two scan routes). Concurrent agent/network probes are capped at 4; the fifth gets `429`.

@@ -65,13 +65,18 @@ static REQUESTER_IP_CACHE: OnceLock<RequesterIpInfo> = OnceLock::new();
 
 /// GET, HEAD and OPTIONS do not change state; everything else is an intrusive action.
 pub fn is_safe_method(m: &str) -> bool {
-    matches!(m.trim().to_ascii_uppercase().as_str(), "GET" | "HEAD" | "OPTIONS")
+    matches!(
+        m.trim().to_ascii_uppercase().as_str(),
+        "GET" | "HEAD" | "OPTIONS"
+    )
 }
 
 fn parse_method(m: &str) -> Result<reqwest::Method> {
     let up = m.trim().to_ascii_uppercase();
     match up.as_str() {
-        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" => Ok(reqwest::Method::from_bytes(up.as_bytes())?),
+        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" => {
+            Ok(reqwest::Method::from_bytes(up.as_bytes())?)
+        }
         _ => bail!("method must be one of GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"),
     }
 }
@@ -87,11 +92,19 @@ pub fn parse_target(raw: &str) -> Result<reqwest::Url> {
 
 /// Host without IPv6 brackets.
 fn host_of(u: &reqwest::Url) -> String {
-    u.host_str().unwrap_or("").trim_start_matches('[').trim_end_matches(']').to_string()
+    u.host_str()
+        .unwrap_or("")
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string()
 }
 
 fn hostport(host: &str, port: u16) -> String {
-    if host.contains(':') { format!("[{host}]:{port}") } else { format!("{host}:{port}") }
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 fn port_of(u: &reqwest::Url) -> u16 {
@@ -103,11 +116,19 @@ fn validate_headers(h: &HashMap<String, String>) -> Result<()> {
         bail!("at most {MAX_HEADERS} headers");
     }
     for (k, v) in h {
-        let name_ok = !k.is_empty() && k.len() <= 128 && k.bytes().all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
+        let name_ok = !k.is_empty()
+            && k.len() <= 128
+            && k.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b));
         // no CR/LF/NUL/DEL: header injection into the request or the curl argv
-        let value_ok = v.len() <= MAX_HEADER_BYTES && v.bytes().all(|b| b == b'\t' || (0x20..0x7f).contains(&b) || b >= 0x80);
+        let value_ok = v.len() <= MAX_HEADER_BYTES
+            && v.bytes()
+                .all(|b| b == b'\t' || (0x20..0x7f).contains(&b) || b >= 0x80);
         if !name_ok || !value_ok {
-            bail!("invalid header '{}'", k.chars().take(40).collect::<String>());
+            bail!(
+                "invalid header '{}'",
+                k.chars().take(40).collect::<String>()
+            );
         }
     }
     Ok(())
@@ -150,8 +171,14 @@ fn count_capped(resp: reqwest::blocking::Response, cap: usize) -> usize {
 /// bounce the probe to an internal address.
 fn same_host_redirects() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|a| {
-        let first = a.previous().first().and_then(|u| u.host_str().map(str::to_owned));
-        if a.previous().len() >= MAX_REDIRECTS || first.as_deref() != a.url().host_str() || !matches!(a.url().scheme(), "http" | "https") {
+        let first = a
+            .previous()
+            .first()
+            .and_then(|u| u.host_str().map(str::to_owned));
+        if a.previous().len() >= MAX_REDIRECTS
+            || first.as_deref() != a.url().host_str()
+            || !matches!(a.url().scheme(), "http" | "https")
+        {
             a.stop()
         } else {
             a.follow()
@@ -201,15 +228,25 @@ fn resolve_public_ip() -> RequesterIpInfo {
     let now = crate::engine::now();
 
     // 1. User manual override via ENV
-    if let Ok(env_ip) = std::env::var("READYHAI_PUBLIC_IP").or_else(|_| std::env::var("READYHAI_EGRESS_IP")) {
+    if let Ok(env_ip) =
+        std::env::var("READYHAI_PUBLIC_IP").or_else(|_| std::env::var("READYHAI_EGRESS_IP"))
+    {
         let trimmed = env_ip.trim();
         if !trimmed.is_empty() {
             let is_priv = is_private_ip(trimmed);
             return RequesterIpInfo {
                 egress_public_ip: trimmed.to_string(),
-                ip_type: if is_priv { "Private Intranet (Manual)" } else { "Public Egress (Manual)" }.to_string(),
+                ip_type: if is_priv {
+                    "Private Intranet (Manual)"
+                } else {
+                    "Public Egress (Manual)"
+                }
+                .to_string(),
                 is_private: is_priv,
-                allowlist_guidance: format!("Add `{}/32` to target firewall allowlist, AWS Security Group, Cloudflare WAF, or iptables.", trimmed),
+                allowlist_guidance: format!(
+                    "Add `{}/32` to target firewall allowlist, AWS Security Group, Cloudflare WAF, or iptables.",
+                    trimmed
+                ),
                 detected_via: "Environment Variable (READYHAI_PUBLIC_IP)".to_string(),
                 detected_at: now,
             };
@@ -231,22 +268,33 @@ fn resolve_public_ip() -> RequesterIpInfo {
 
     if let Some(c) = client {
         for (name, url) in providers {
-            if let Ok(resp) = c.get(url).send() {
-                if resp.status().is_success() {
-                    if let Ok(text) = resp.text() {
-                        let ip = text.trim();
-                        if (ip.contains('.') || ip.contains(':')) && ip.len() >= 7 && ip.len() <= 45 && !ip.contains('<') {
-                            let is_priv = is_private_ip(ip);
-                            return RequesterIpInfo {
-                                egress_public_ip: ip.to_string(),
-                                ip_type: if is_priv { "Private Network (RFC1918)" } else { "Public Egress (Direct)" }.to_string(),
-                                is_private: is_priv,
-                                allowlist_guidance: format!("Add `{}/32` to your target's firewall, AWS Security Group, Cloudflare WAF, or iptables to allow ReadyHai automated QA probes.", ip),
-                                detected_via: name.to_string(),
-                                detected_at: now,
-                            };
+            if let Ok(resp) = c.get(url).send()
+                && resp.status().is_success()
+                && let Ok(text) = resp.text()
+            {
+                let ip = text.trim();
+                if (ip.contains('.') || ip.contains(':'))
+                    && ip.len() >= 7
+                    && ip.len() <= 45
+                    && !ip.contains('<')
+                {
+                    let is_priv = is_private_ip(ip);
+                    return RequesterIpInfo {
+                        egress_public_ip: ip.to_string(),
+                        ip_type: if is_priv {
+                            "Private Network (RFC1918)"
+                        } else {
+                            "Public Egress (Direct)"
                         }
-                    }
+                        .to_string(),
+                        is_private: is_priv,
+                        allowlist_guidance: format!(
+                            "Add `{}/32` to your target's firewall, AWS Security Group, Cloudflare WAF, or iptables to allow ReadyHai automated QA probes.",
+                            ip
+                        ),
+                        detected_via: name.to_string(),
+                        detected_at: now,
+                    };
                 }
             }
         }
@@ -264,9 +312,17 @@ fn resolve_public_ip() -> RequesterIpInfo {
     let is_priv = is_private_ip(&local_ip);
     RequesterIpInfo {
         egress_public_ip: local_ip.clone(),
-        ip_type: if is_priv { "Private Intranet (RFC1918)" } else { "Local Egress" }.to_string(),
+        ip_type: if is_priv {
+            "Private Intranet (RFC1918)"
+        } else {
+            "Local Egress"
+        }
+        .to_string(),
         is_private: is_priv,
-        allowlist_guidance: format!("Add `{}/32` to your local firewall or internal gateway allowlist.", local_ip),
+        allowlist_guidance: format!(
+            "Add `{}/32` to your local firewall or internal gateway allowlist.",
+            local_ip
+        ),
         detected_via: "Local Network Interface Socket".to_string(),
         detected_at: now,
     }
@@ -275,18 +331,16 @@ fn resolve_public_ip() -> RequesterIpInfo {
 pub fn is_private_ip(ip: &str) -> bool {
     if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
         match addr {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback() || v4.is_private() || v4.is_link_local()
-            }
-            std::net::IpAddr::V6(v6) => {
-                v6.is_loopback()
-            }
+            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+            std::net::IpAddr::V6(v6) => v6.is_loopback(),
         }
     } else {
-        ip.starts_with("10.") || ip.starts_with("192.168.") || ip.starts_with("172.") || ip.starts_with("127.")
+        ip.starts_with("10.")
+            || ip.starts_with("192.168.")
+            || ip.starts_with("172.")
+            || ip.starts_with("127.")
     }
 }
-
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct RegressRequest {
@@ -311,12 +365,24 @@ pub struct RegressRequest {
     pub delay_between_ms: u64,
 }
 
-fn default_method() -> String { "GET".to_string() }
-fn default_iterations() -> usize { 10 }
-fn default_timeout_ms() -> u64 { 5000 }
-fn default_throttle() -> String { "unthrottled".to_string() }
-fn default_true() -> bool { true }
-fn default_delay_ms() -> u64 { 50 }
+fn default_method() -> String {
+    "GET".to_string()
+}
+fn default_iterations() -> usize {
+    10
+}
+fn default_timeout_ms() -> u64 {
+    5000
+}
+fn default_throttle() -> String {
+    "unthrottled".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_delay_ms() -> u64 {
+    50
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IterationResult {
@@ -643,7 +709,9 @@ pub struct MultiRegionReport {
 impl RegressRequest {
     /// Anything but a handful of safe-method probes is load/state change, not observation.
     pub fn is_intrusive(&self) -> bool {
-        !is_safe_method(&self.method) || self.payload.is_some() || self.iterations > READONLY_MAX_ITERATIONS
+        !is_safe_method(&self.method)
+            || self.payload.is_some()
+            || self.iterations > READONLY_MAX_ITERATIONS
     }
 
     /// Validate, clamp every numeric field to its maximum and replace `target` with the
@@ -690,7 +758,11 @@ impl DeepAuditRequest {
 impl MultiRegionRequest {
     pub fn sanitize(&mut self) -> Result<reqwest::Url> {
         let url = parse_target(&self.target)?;
-        self.timeout_ms = Some(self.timeout_ms.unwrap_or(4000).clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS));
+        self.timeout_ms = Some(
+            self.timeout_ms
+                .unwrap_or(4000)
+                .clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS),
+        );
         self.target = url.to_string();
         Ok(url)
     }
@@ -717,7 +789,12 @@ pub fn run_regress_test(req: &RegressRequest) -> Result<RegressReport> {
     let mut failed_count = 0;
     let run_started = Instant::now();
     let mut stopped_early = false;
-    let curl_cmd = generate_curl(&req.method, url.as_str(), &req.headers, req.payload.as_deref());
+    let curl_cmd = generate_curl(
+        &req.method,
+        url.as_str(),
+        &req.headers,
+        req.payload.as_deref(),
+    );
 
     for i in 1..=iterations {
         if run_started.elapsed() >= Duration::from_millis(MAX_REGRESS_BUDGET_MS) {
@@ -732,7 +809,13 @@ pub fn run_regress_test(req: &RegressRequest) -> Result<RegressReport> {
         let injected_latency = match req.throttle_profile.as_str() {
             "fast_3g" => 75 + (i % 25) as u64,
             "slow_3g" => 250 + (i % 50) as u64,
-            "flaky" => if i % 3 == 0 { 400 } else { 20 },
+            "flaky" => {
+                if i % 3 == 0 {
+                    400
+                } else {
+                    20
+                }
+            }
             "custom" => req.simulated_latency_ms,
             _ => 0,
         };
@@ -752,7 +835,8 @@ pub fn run_regress_test(req: &RegressRequest) -> Result<RegressReport> {
         // 2. Measure TCP Connect
         let tcp_t0 = Instant::now();
         if let Some(addr) = addrs.first() {
-            let _ = TcpStream::connect_timeout(addr, Duration::from_millis(req.timeout_ms.min(3000)));
+            let _ =
+                TcpStream::connect_timeout(addr, Duration::from_millis(req.timeout_ms.min(3000)));
         }
         let tcp_connect_ms = tcp_t0.elapsed().as_millis();
 
@@ -787,7 +871,10 @@ pub fn run_regress_test(req: &RegressRequest) -> Result<RegressReport> {
                 // bounded read, then a char-boundary-safe cut (a byte slice could split a
                 // multi-byte character and panic)
                 let (bytes, _) = read_capped(resp, BODY_READ_CAP);
-                let body_snippet = Some(truncate_chars(&String::from_utf8_lossy(&bytes), BODY_SNIPPET_CHARS));
+                let body_snippet = Some(truncate_chars(
+                    &String::from_utf8_lossy(&bytes),
+                    BODY_SNIPPET_CHARS,
+                ));
                 let total_duration_ms = t_start.elapsed().as_millis();
 
                 // only 2xx is a success: a 3xx that was not followed, a 4xx or a 5xx is a failure
@@ -811,7 +898,11 @@ pub fn run_regress_test(req: &RegressRequest) -> Result<RegressReport> {
                     ttfb_ms,
                     status_code: status,
                     success: is_success,
-                    error_message: if is_success { None } else { Some(format!("HTTP Status {status}")) },
+                    error_message: if is_success {
+                        None
+                    } else {
+                        Some(format!("HTTP Status {status}"))
+                    },
                     curl_command: curl_cmd.clone(),
                     response_headers: resp_headers,
                     response_body_snippet: body_snippet,
@@ -876,7 +967,14 @@ pub fn run_regress_test(req: &RegressRequest) -> Result<RegressReport> {
         0.0
     };
 
-    let diagnosis = diagnose(&results, availability_percentage, p50_latency_ms, p99_latency_ms, jitter_ms, req.timeout_ms);
+    let diagnosis = diagnose(
+        &results,
+        availability_percentage,
+        p50_latency_ms,
+        p99_latency_ms,
+        jitter_ms,
+        req.timeout_ms,
+    );
 
     let ip_info = detect_requester_public_ip();
     Ok(RegressReport {
@@ -915,26 +1013,39 @@ pub fn diagnose(
     jitter: u128,
     timeout_ms: u64,
 ) -> AgentDiagnosis {
-    let sample_curl = results.first().map(|r| r.curl_command.clone()).unwrap_or_default();
+    let sample_curl = results
+        .first()
+        .map(|r| r.curl_command.clone())
+        .unwrap_or_default();
 
     if availability < 100.0 {
-        let timeout_failures = results.iter().filter(|r| {
-            if let Some(ref e) = r.error_message {
-                e.to_lowercase().contains("timed out") || e.to_lowercase().contains("timeout")
-            } else {
-                false
-            }
-        }).count();
+        let timeout_failures = results
+            .iter()
+            .filter(|r| {
+                if let Some(ref e) = r.error_message {
+                    e.to_lowercase().contains("timed out") || e.to_lowercase().contains("timeout")
+                } else {
+                    false
+                }
+            })
+            .count();
 
-        let conn_refused_failures = results.iter().filter(|r| {
-            if let Some(ref e) = r.error_message {
-                e.to_lowercase().contains("connection refused") || e.to_lowercase().contains("reset")
-            } else {
-                false
-            }
-        }).count();
+        let conn_refused_failures = results
+            .iter()
+            .filter(|r| {
+                if let Some(ref e) = r.error_message {
+                    e.to_lowercase().contains("connection refused")
+                        || e.to_lowercase().contains("reset")
+                } else {
+                    false
+                }
+            })
+            .count();
 
-        let gateway_flaps = results.iter().filter(|r| r.status_code == 502 || r.status_code == 503 || r.status_code == 504).count();
+        let gateway_flaps = results
+            .iter()
+            .filter(|r| r.status_code == 502 || r.status_code == 503 || r.status_code == 504)
+            .count();
 
         if timeout_failures > 0 {
             return AgentDiagnosis {
@@ -1014,10 +1125,19 @@ pub fn diagnose(
 
         // Everything else that failed: plain non-2xx answers (3xx not followed, 4xx, other 5xx)
         // or errors with no response. Never fall through to "STABLE" with failures on record.
-        let c3 = results.iter().filter(|r| (300..400).contains(&r.status_code)).count();
-        let c4 = results.iter().filter(|r| (400..500).contains(&r.status_code)).count();
+        let c3 = results
+            .iter()
+            .filter(|r| (300..400).contains(&r.status_code))
+            .count();
+        let c4 = results
+            .iter()
+            .filter(|r| (400..500).contains(&r.status_code))
+            .count();
         let c5 = results.iter().filter(|r| r.status_code >= 500).count();
-        let other = results.iter().filter(|r| !r.success && r.status_code == 0).count();
+        let other = results
+            .iter()
+            .filter(|r| !r.success && r.status_code == 0)
+            .count();
         let failed = results.iter().filter(|r| !r.success).count();
         return AgentDiagnosis {
             flakiness_detected: true,
@@ -1050,14 +1170,24 @@ pub fn diagnose(
             root_cause_type: "HIGH_JITTER".to_string(),
             severity: "MEDIUM".to_string(),
             title: "Severe Network Latency Jitter Detected".to_string(),
-            summary: format!("P50 latency is {}ms while P99 latency spikes to {}ms (Jitter: {}ms).", p50, p99, jitter),
+            summary: format!(
+                "P50 latency is {}ms while P99 latency spikes to {}ms (Jitter: {}ms).",
+                p50, p99, jitter
+            ),
             how_agent_found_it: vec![
-                format!("Compared median latency ({}ms) against 99th percentile ({}ms).", p50, p99),
-                format!("Detected a latency deviation of {}ms between cold sessions.", jitter),
+                format!(
+                    "Compared median latency ({}ms) against 99th percentile ({}ms).",
+                    p50, p99
+                ),
+                format!(
+                    "Detected a latency deviation of {}ms between cold sessions.",
+                    jitter
+                ),
             ],
             technical_breakdown: vec![
                 "Garbage collection (GC) pauses or CPU throttling in container.".to_string(),
-                "Noisy neighbor on shared hosting or packet retransmission on network link.".to_string(),
+                "Noisy neighbor on shared hosting or packet retransmission on network link."
+                    .to_string(),
             ],
             reproduction_curl: sample_curl,
             remediation_checklist: vec![
@@ -1072,9 +1202,18 @@ pub fn diagnose(
         root_cause_type: "STABLE".to_string(),
         severity: "STABLE".to_string(),
         title: "Network Connection is Deterministic and Resilient".to_string(),
-        summary: format!("100% of {} iterations succeeded. P50: {}ms, P99: {}ms, Jitter: {}ms.", results.len(), p50, p99, jitter),
+        summary: format!(
+            "100% of {} iterations succeeded. P50: {}ms, P99: {}ms, Jitter: {}ms.",
+            results.len(),
+            p50,
+            p99,
+            jitter
+        ),
         how_agent_found_it: vec![
-            format!("Verified {} independent HTTP sessions with clean connection setup.", results.len()),
+            format!(
+                "Verified {} independent HTTP sessions with clean connection setup.",
+                results.len()
+            ),
             "Confirmed consistent DNS resolution and sub-second TCP 3-way handshakes.".to_string(),
             "Observed uniform HTTP status codes without dropped packets or timeouts.".to_string(),
         ],
@@ -1084,7 +1223,8 @@ pub fn diagnose(
         ],
         reproduction_curl: sample_curl,
         remediation_checklist: vec![
-            "Continue periodic continuous regression monitoring to detect drift over time.".to_string(),
+            "Continue periodic continuous regression monitoring to detect drift over time."
+                .to_string(),
         ],
     }
 }
@@ -1122,12 +1262,25 @@ fn curl_command(req: &CurlTestRequest, url: &reqwest::Url, timeout_s: u64) -> Co
 pub fn execute_curl_test(req: &CurlTestRequest) -> Result<CurlTestResponse> {
     let mut req = req.clone();
     let url = req.sanitize()?;
-    let timeout_s = req.timeout_ms.div_ceil(1000).clamp(1, MAX_TIMEOUT_MS / 1000);
-    let full_curl_cmd = generate_curl(&req.method, url.as_str(), &req.headers, req.payload.as_deref());
+    let timeout_s = req
+        .timeout_ms
+        .div_ceil(1000)
+        .clamp(1, MAX_TIMEOUT_MS / 1000);
+    let full_curl_cmd = generate_curl(
+        &req.method,
+        url.as_str(),
+        &req.headers,
+        req.payload.as_deref(),
+    );
     let mut cmd = curl_command(&req, &url, timeout_s);
 
     // hard wall-clock limit slightly above curl's own --max-time, bounded output
-    match run_capped(&mut cmd, Duration::from_secs(timeout_s * 2 + 5), MAX_CAPTURE_BYTES, None) {
+    match run_capped(
+        &mut cmd,
+        Duration::from_secs(timeout_s * 2 + 5),
+        MAX_CAPTURE_BYTES,
+        None,
+    ) {
         Ok(out) => {
             let mut stderr_str = out.stderr_lossy();
             if out.timed_out {
@@ -1145,7 +1298,9 @@ pub fn execute_curl_test(req: &CurlTestRequest) -> Result<CurlTestResponse> {
                 parse_curl_output(&out.stdout_lossy())
             };
             if out.truncated {
-                clean_stdout.push_str(&format!("\n[output truncated at {MAX_CAPTURE_BYTES} bytes]"));
+                clean_stdout.push_str(&format!(
+                    "\n[output truncated at {MAX_CAPTURE_BYTES} bytes]"
+                ));
             }
             let secs = |k: &str| timings.get(k).and_then(|v| v.parse().ok()).unwrap_or(0.0);
 
@@ -1154,7 +1309,10 @@ pub fn execute_curl_test(req: &CurlTestRequest) -> Result<CurlTestResponse> {
                 exit_code: out.status.and_then(|s| s.code()).unwrap_or(-1),
                 stdout: clean_stdout,
                 stderr: truncate_chars(&stderr_str, 64 * 1024),
-                status_code: timings.get("http_code").and_then(|v| v.parse().ok()).unwrap_or(0),
+                status_code: timings
+                    .get("http_code")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
                 dns_lookup_s: secs("namelookup"),
                 connect_s: secs("connect"),
                 appconnect_s: secs("appconnect"),
@@ -1171,7 +1329,12 @@ pub fn execute_curl_test(req: &CurlTestRequest) -> Result<CurlTestResponse> {
 /// curl could not be run: measure what the native client can measure, and say what it cannot.
 /// Nothing is invented: DNS/connect/TLS handshake timings are not observable here, so they are
 /// zero and listed in `not_measured`.
-fn native_curl_fallback(req: &CurlTestRequest, url: &reqwest::Url, command: String, why: &str) -> Result<CurlTestResponse> {
+fn native_curl_fallback(
+    req: &CurlTestRequest,
+    url: &reqwest::Url,
+    command: String,
+    why: &str,
+) -> Result<CurlTestResponse> {
     let t0 = Instant::now();
     let client = http_client(req.timeout_ms, true);
     let method = parse_method(&req.method)?;
@@ -1196,14 +1359,18 @@ fn native_curl_fallback(req: &CurlTestRequest, url: &reqwest::Url, command: Stri
                 command,
                 exit_code: 0,
                 stdout: String::from_utf8_lossy(&bytes).into_owned(),
-                stderr: format!("(Fallback execution via native HTTP client; curl could not be run: {why})"),
+                stderr: format!(
+                    "(Fallback execution via native HTTP client; curl could not be run: {why})"
+                ),
                 status_code: code,
                 dns_lookup_s: 0.0,
                 connect_s: 0.0,
                 appconnect_s: 0.0,
                 starttransfer_s: headers_s,
                 total_s,
-                not_measured: ["dns_lookup_s", "connect_s", "appconnect_s"].map(String::from).to_vec(),
+                not_measured: ["dns_lookup_s", "connect_s", "appconnect_s"]
+                    .map(String::from)
+                    .to_vec(),
                 truncated,
             })
         }
@@ -1218,7 +1385,14 @@ fn native_curl_fallback(req: &CurlTestRequest, url: &reqwest::Url, command: Stri
             appconnect_s: 0.0,
             starttransfer_s: 0.0,
             total_s: t0.elapsed().as_secs_f64(),
-            not_measured: ["dns_lookup_s", "connect_s", "appconnect_s", "starttransfer_s"].map(String::from).to_vec(),
+            not_measured: [
+                "dns_lookup_s",
+                "connect_s",
+                "appconnect_s",
+                "starttransfer_s",
+            ]
+            .map(String::from)
+            .to_vec(),
             truncated: false,
         }),
     }
@@ -1226,10 +1400,17 @@ fn native_curl_fallback(req: &CurlTestRequest, url: &reqwest::Url, command: Stri
 
 /// Reproduction command for the report: every value single-quoted so a header or payload cannot
 /// break out of the command when someone pastes it into a shell.
-pub fn generate_curl(method: &str, target: &str, headers: &HashMap<String, String>, payload: Option<&str>) -> String {
+pub fn generate_curl(
+    method: &str,
+    target: &str,
+    headers: &HashMap<String, String>,
+    payload: Option<&str>,
+) -> String {
     let mut parts = vec![format!(
         "curl -s -o /dev/null -w {} -X {}",
-        sh_quote("DNS: %{time_namelookup}s | Connect: %{time_connect}s | TTFB: %{time_starttransfer}s | Total: %{time_total}s | Status: %{http_code}\\n"),
+        sh_quote(
+            "DNS: %{time_namelookup}s | Connect: %{time_connect}s | TTFB: %{time_starttransfer}s | Total: %{time_total}s | Status: %{http_code}\\n"
+        ),
         sh_quote(&method.to_uppercase())
     )];
     for (k, v) in headers {
@@ -1308,7 +1489,10 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> Result<DeepAuditReport> {
 
     if subresources.broken_count > 0 {
         score -= (subresources.broken_count as i32 * 10).min(30);
-        risks.push(format!("{} sub-resource asset(s) did not return a 2xx response.", subresources.broken_count));
+        risks.push(format!(
+            "{} sub-resource asset(s) did not return a 2xx response.",
+            subresources.broken_count
+        ));
         remedies.push("Verify asset paths and ensure build assets / bundles are properly uploaded to your web server / CDN.".to_string());
     }
 
@@ -1319,7 +1503,14 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> Result<DeepAuditReport> {
     }
 
     if !tls_chain.measured && tls_chain.is_https {
-        not_measured.push(format!("tls_chain ({})", tls_chain.not_measured.first().map(String::as_str).unwrap_or("openssl unavailable")));
+        not_measured.push(format!(
+            "tls_chain ({})",
+            tls_chain
+                .not_measured
+                .first()
+                .map(String::as_str)
+                .unwrap_or("openssl unavailable")
+        ));
     }
     if tls_chain.is_intermediate_missing {
         score -= 25;
@@ -1330,11 +1521,16 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> Result<DeepAuditReport> {
         if days < 0 {
             score -= 30;
             risks.push(format!("TLS certificate expired {} day(s) ago.", -days));
-            remedies.push("Renew the certificate immediately and automate renewal (ACME / cert-manager).".to_string());
+            remedies.push(
+                "Renew the certificate immediately and automate renewal (ACME / cert-manager)."
+                    .to_string(),
+            );
         } else if days <= 14 {
             score -= 15;
             risks.push(format!("TLS certificate expires in {days} day(s)."));
-            remedies.push("Renew the certificate and verify that automated renewal is working.".to_string());
+            remedies.push(
+                "Renew the certificate and verify that automated renewal is working.".to_string(),
+            );
         }
     }
 
@@ -1362,9 +1558,16 @@ pub fn run_deep_audit(req: &DeepAuditRequest) -> Result<DeepAuditReport> {
     let summary = if risks.is_empty() && not_measured.is_empty() {
         "All 6 deep network and protocol pillars were measured and look healthy.".to_string()
     } else if risks.is_empty() {
-        format!("No problems found in the measured pillars; not measured: {}.", not_measured.join(", "))
+        format!(
+            "No problems found in the measured pillars; not measured: {}.",
+            not_measured.join(", ")
+        )
     } else {
-        format!("Detected {} network vulnerability/flakiness vector(s). Overall Network Health Score: {}/100.", risks.len(), final_score)
+        format!(
+            "Detected {} network vulnerability/flakiness vector(s). Overall Network Health Score: {}/100.",
+            risks.len(),
+            final_score
+        )
     };
 
     let ip_info = detect_requester_public_ip();
@@ -1409,12 +1612,12 @@ fn audit_dual_stack(host: &str, port: u16, timeout_ms: u64) -> DualStackAudit {
 
             // Test IPv4 connection
             let mut v4_latency = None;
-            if let Some(first_v4) = v4_addrs.first() {
-                if let Ok(sock) = format!("{}:{}", first_v4, port).parse::<SocketAddr>() {
-                    let t0 = Instant::now();
-                    if TcpStream::connect_timeout(&sock, connect_timeout).is_ok() {
-                        v4_latency = Some(t0.elapsed().as_millis());
-                    }
+            if let Some(first_v4) = v4_addrs.first()
+                && let Ok(sock) = format!("{}:{}", first_v4, port).parse::<SocketAddr>()
+            {
+                let t0 = Instant::now();
+                if TcpStream::connect_timeout(&sock, connect_timeout).is_ok() {
+                    v4_latency = Some(t0.elapsed().as_millis());
                 }
             }
 
@@ -1423,20 +1626,19 @@ fn audit_dual_stack(host: &str, port: u16, timeout_ms: u64) -> DualStackAudit {
             let mut ipv6_status = "NOT_CONFIGURED".to_string();
             let mut happy_eyeballs_risk = false;
 
-            if has_ipv6 {
-                if let Some(first_v6) = v6_addrs.first() {
-                    if let Ok(sock) = format!("[{}]:{}", first_v6, port).parse::<SocketAddr>() {
-                        let t0 = Instant::now();
-                        match TcpStream::connect_timeout(&sock, connect_timeout) {
-                            Ok(_) => {
-                                v6_latency = Some(t0.elapsed().as_millis());
-                                ipv6_status = "HEALTHY".to_string();
-                            }
-                            Err(_) => {
-                                ipv6_status = "BROKEN_OR_BLACKHOLE".to_string();
-                                happy_eyeballs_risk = true;
-                            }
-                        }
+            if has_ipv6
+                && let Some(first_v6) = v6_addrs.first()
+                && let Ok(sock) = format!("[{}]:{}", first_v6, port).parse::<SocketAddr>()
+            {
+                let t0 = Instant::now();
+                match TcpStream::connect_timeout(&sock, connect_timeout) {
+                    Ok(_) => {
+                        v6_latency = Some(t0.elapsed().as_millis());
+                        ipv6_status = "HEALTHY".to_string();
+                    }
+                    Err(_) => {
+                        ipv6_status = "BROKEN_OR_BLACKHOLE".to_string();
+                        happy_eyeballs_risk = true;
                     }
                 }
             }
@@ -1490,11 +1692,19 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
 
     let res = client.get(base_url.as_str()).send();
     if let Ok(resp) = res {
-        let content_type = resp.headers().get("content-type").and_then(|h| h.to_str().ok()).unwrap_or("").to_lowercase();
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("")
+            .to_lowercase();
         let (bytes, _) = read_capped(resp, HTML_BYTES_CAP);
         let body = String::from_utf8_lossy(&bytes).into_owned();
 
-        if content_type.contains("text/html") || body.contains("<html") || body.contains("<!doctype") {
+        if content_type.contains("text/html")
+            || body.contains("<html")
+            || body.contains("<!doctype")
+        {
             // Extract sub-resources
             let mut discovered_urls = Vec::new();
 
@@ -1507,7 +1717,8 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
             }
 
             // Styles: <link ... rel="stylesheet" ... href="..." or vice versa
-            let re_style = regex::Regex::new(r#"(?i)<link[^>]+href=["']([^"']+\.css[^"']*)["']"#).unwrap();
+            let re_style =
+                regex::Regex::new(r#"(?i)<link[^>]+href=["']([^"']+\.css[^"']*)["']"#).unwrap();
             for cap in re_style.captures_iter(&body) {
                 if let Some(m) = cap.get(1) {
                     discovered_urls.push((m.as_str().to_string(), "stylesheet"));
@@ -1515,7 +1726,9 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
             }
 
             // Preload: <link rel="preload" href="..."
-            let re_preload = regex::Regex::new(r#"(?i)<link[^>]+rel=["']preload["'][^>]+href=["']([^"']+)["']"#).unwrap();
+            let re_preload =
+                regex::Regex::new(r#"(?i)<link[^>]+rel=["']preload["'][^>]+href=["']([^"']+)["']"#)
+                    .unwrap();
             for cap in re_preload.captures_iter(&body) {
                 if let Some(m) = cap.get(1) {
                     discovered_urls.push((m.as_str().to_string(), "preload"));
@@ -1529,7 +1742,12 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
                 // The page is untrusted input: only probe assets on the audited host, never a
                 // URL the page points at (internal addresses, other hosts, non-http schemes).
                 let resolved = match base_url.join(&raw_url) {
-                    Ok(u) if matches!(u.scheme(), "http" | "https") && u.host_str().map(str::to_ascii_lowercase) == base_host => u,
+                    Ok(u)
+                        if matches!(u.scheme(), "http" | "https")
+                            && u.host_str().map(str::to_ascii_lowercase) == base_host =>
+                    {
+                        u
+                    }
                     _ => {
                         skipped_cross_host += 1;
                         continue;
@@ -1545,7 +1763,12 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
                 match asset_res {
                     Ok(a_resp) => {
                         let status = a_resp.status().as_u16();
-                        let a_ct = a_resp.headers().get("content-type").and_then(|h| h.to_str().ok()).unwrap_or("").to_lowercase();
+                        let a_ct = a_resp
+                            .headers()
+                            .get("content-type")
+                            .and_then(|h| h.to_str().ok())
+                            .unwrap_or("")
+                            .to_lowercase();
                         let a_bytes = count_capped(a_resp, SUBRESOURCE_BYTES_CAP);
                         total_size_bytes += a_bytes;
 
@@ -1557,7 +1780,9 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
                         // Check SPA Fallback Mismatch
                         // If file is named .js or .mjs, but server sent text/html!
                         let path = resolved.path();
-                        let is_spa_fallback_error = (path.ends_with(".js") || path.ends_with(".mjs")) && a_ct.contains("text/html");
+                        let is_spa_fallback_error = (path.ends_with(".js")
+                            || path.ends_with(".mjs"))
+                            && a_ct.contains("text/html");
                         if is_spa_fallback_error {
                             spa_fallback_count += 1;
                         }
@@ -1571,7 +1796,11 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
                             size_bytes: a_bytes,
                             is_spa_fallback_error,
                             is_broken,
-                            error: if is_broken { Some(format!("HTTP {status}")) } else { None },
+                            error: if is_broken {
+                                Some(format!("HTTP {status}"))
+                            } else {
+                                None
+                            },
                         });
                     }
                     Err(err) => {
@@ -1594,16 +1823,23 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
     }
 
     let diagnosis = if spa_fallback_count > 0 {
-        format!("CRITICAL: Detected {spa_fallback_count} JavaScript chunk(s) returning HTML index shells! This causes fatal syntax errors and blank screens on first load.")
+        format!(
+            "CRITICAL: Detected {spa_fallback_count} JavaScript chunk(s) returning HTML index shells! This causes fatal syntax errors and blank screens on first load."
+        )
     } else if broken_count > 0 {
         format!("WARNING: {broken_count} sub-resource asset(s) did not return a 2xx response.")
     } else if items.is_empty() {
         "Target is an API endpoint or non-HTML resource, or has no same-host sub-resources; nothing to probe.".to_string()
     } else {
-        format!("All {} discovered sub-resources loaded successfully with correct MIME types.", items.len())
+        format!(
+            "All {} discovered sub-resources loaded successfully with correct MIME types.",
+            items.len()
+        )
     };
     let diagnosis = if skipped_cross_host > 0 {
-        format!("{diagnosis} ({skipped_cross_host} cross-host or non-http asset(s) were not probed: only the audited host is contacted.)")
+        format!(
+            "{diagnosis} ({skipped_cross_host} cross-host or non-http asset(s) were not probed: only the audited host is contacted.)"
+        )
     } else {
         diagnosis
     };
@@ -1625,7 +1861,17 @@ fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> SubresourceAu
 /// could not be run or reached nothing.
 fn curl_protocol_probe(flag: &str, target: &str, timeout_s: u64) -> Option<(String, u16)> {
     let mut cmd = Command::new("curl");
-    cmd.args(["-q", "-s", "-o", "/dev/null", "-w", "%{http_version}:%{http_code}", "--proto", "=http,https", flag]);
+    cmd.args([
+        "-q",
+        "-s",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_version}:%{http_code}",
+        "--proto",
+        "=http,https",
+        flag,
+    ]);
     cmd.arg("--connect-timeout").arg(timeout_s.to_string());
     cmd.arg("--max-time").arg(timeout_s.to_string());
     cmd.arg("--").arg(target);
@@ -1680,10 +1926,10 @@ fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
     // 3. HTTP/3 is only detected through the Alt-Svc header; no QUIC connection is attempted.
     let client = http_client(timeout_ms, false);
     let mut alt_svc = None;
-    if let Ok(res) = client.get(target).send() {
-        if let Some(h) = res.headers().get("alt-svc") {
-            alt_svc = h.to_str().ok().map(|s| truncate_chars(s, 512));
-        }
+    if let Ok(res) = client.get(target).send()
+        && let Some(h) = res.headers().get("alt-svc")
+    {
+        alt_svc = h.to_str().ok().map(|s| truncate_chars(s, 512));
     }
 
     let http3_advertised = alt_svc.as_ref().map(|s| s.contains("h3")).unwrap_or(false);
@@ -1712,7 +1958,8 @@ fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMatrixAudit {
     } else if sup_11 {
         "STANDARD: Server operates on HTTP/1.1 without multiplexing. Multiple concurrent assets require separate TCP sockets.".to_string()
     } else {
-        "No protocol probe got an HTTP response (target unreachable, or curl is not installed).".to_string()
+        "No protocol probe got an HTTP response (target unreachable, or curl is not installed)."
+            .to_string()
     };
 
     ProtocolMatrixAudit {
@@ -1746,11 +1993,11 @@ fn parse_s_client(text: &str) -> SClient {
         let l = line.trim();
         if let Some(rest) = l.strip_prefix("New, ") {
             // "New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384"
-            if let Some((ver, cipher)) = rest.split_once(", Cipher is ") {
-                if !cipher.contains("(NONE)") {
-                    s.version = Some(ver.trim().to_string());
-                    s.cipher = Some(cipher.trim().to_string());
-                }
+            if let Some((ver, cipher)) = rest.split_once(", Cipher is ")
+                && !cipher.contains("(NONE)")
+            {
+                s.version = Some(ver.trim().to_string());
+                s.cipher = Some(cipher.trim().to_string());
             }
         } else if let Some(rest) = l.strip_prefix("Verify return code:") {
             // "Verify return code: 20 (unable to get local issuer certificate)"
@@ -1804,9 +2051,18 @@ fn parse_openssl_date(s: &str) -> Option<i64> {
     let mon = it.next()?;
     let day: i64 = it.next()?.parse().ok()?;
     let mut hms = it.next()?.split(':');
-    let (h, mi, sec): (i64, i64, i64) = (hms.next()?.parse().ok()?, hms.next()?.parse().ok()?, hms.next()?.parse().ok()?);
+    let (h, mi, sec): (i64, i64, i64) = (
+        hms.next()?.parse().ok()?,
+        hms.next()?.parse().ok()?,
+        hms.next()?.parse().ok()?,
+    );
     let year: i64 = it.next()?.parse().ok()?;
-    let m = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].iter().position(|x| *x == mon)? as i64 + 1;
+    let m = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ]
+    .iter()
+    .position(|x| *x == mon)? as i64
+        + 1;
     Some(days_from_civil(year, m, day) * 86_400 + h * 3600 + mi * 60 + sec)
 }
 
@@ -1830,10 +2086,13 @@ fn parse_x509(text: &str) -> LeafInfo {
             leaf.issuer = Some(v.trim().to_string());
         } else if let Some(v) = l.strip_prefix("notAfter=") {
             leaf.not_after = Some(v.trim().to_string());
-        } else if l.starts_with("X509v3 Subject Alternative Name") {
-            if let Some(next) = lines.next() {
-                leaf.sans = next.split(',').filter_map(|e| e.trim().strip_prefix("DNS:").map(str::to_string)).collect();
-            }
+        } else if l.starts_with("X509v3 Subject Alternative Name")
+            && let Some(next) = lines.next()
+        {
+            leaf.sans = next
+                .split(',')
+                .filter_map(|e| e.trim().strip_prefix("DNS:").map(str::to_string))
+                .collect();
         }
     }
     leaf
@@ -1884,7 +2143,10 @@ fn audit_tls_chain(url: &reqwest::Url, host: &str, port: u16, timeout_ms: u64) -
 
     let limit = Duration::from_millis(timeout_ms.clamp(2000, 10_000));
     let mut cmd = Command::new("openssl");
-    cmd.arg("s_client").arg("-connect").arg(hostport(host, port)).args(["-status", "-showcerts"]);
+    cmd.arg("s_client")
+        .arg("-connect")
+        .arg(hostport(host, port))
+        .args(["-status", "-showcerts"]);
     if host.parse::<std::net::IpAddr>().is_err() {
         cmd.arg("-servername").arg(host);
     }
@@ -1906,23 +2168,40 @@ fn audit_tls_chain(url: &reqwest::Url, host: &str, port: u16, timeout_ms: u64) -
         let run_x509 = |args: &[&str]| {
             let mut c = Command::new("openssl");
             c.arg("x509").arg("-noout").args(args);
-            run_capped(&mut c, Duration::from_secs(5), 64 * 1024, Some(pem.as_bytes())).ok().filter(|o| o.success())
+            run_capped(
+                &mut c,
+                Duration::from_secs(5),
+                64 * 1024,
+                Some(pem.as_bytes()),
+            )
+            .ok()
+            .filter(|o| o.success())
         };
-        let o = run_x509(&["-subject", "-issuer", "-enddate", "-ext", "subjectAltName"]).or_else(|| run_x509(&["-subject", "-issuer", "-enddate"]));
+        let o = run_x509(&["-subject", "-issuer", "-enddate", "-ext", "subjectAltName"])
+            .or_else(|| run_x509(&["-subject", "-issuer", "-enddate"]));
         if let Some(o) = o {
             leaf = parse_x509(&o.stdout_lossy());
         }
     }
 
-    let days_remaining = leaf.not_after.as_deref().and_then(parse_openssl_date).map(|exp| {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-        (exp - now).div_euclid(86_400)
-    });
+    let days_remaining = leaf
+        .not_after
+        .as_deref()
+        .and_then(parse_openssl_date)
+        .map(|exp| {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            (exp - now).div_euclid(86_400)
+        });
     let code = sc.verify_code;
-    let is_self_signed = matches!(code, Some(18 | 19)) || (leaf.subject.is_some() && leaf.subject == leaf.issuer);
+    let is_self_signed =
+        matches!(code, Some(18 | 19)) || (leaf.subject.is_some() && leaf.subject == leaf.issuer);
     // 21 = "unable to verify the first certificate"; 20 with a single certificate sent means the
     // server did not send the intermediate. With a longer chain, 20 is an untrusted root instead.
-    let is_intermediate_missing = !is_self_signed && (code == Some(21) || (code == Some(20) && sc.chain_len <= 1));
+    let is_intermediate_missing =
+        !is_self_signed && (code == Some(21) || (code == Some(20) && sc.chain_len <= 1));
 
     let mut not_measured = Vec::new();
     if leaf.subject.is_none() {
@@ -1964,10 +2243,14 @@ fn audit_tls_chain(url: &reqwest::Url, host: &str, port: u16, timeout_ms: u64) -
 fn audit_cors_preflight(target: &str, timeout_ms: u64) -> CorsAudit {
     let client = http_client(timeout_ms, false);
 
-    let res = client.request(reqwest::Method::OPTIONS, target)
+    let res = client
+        .request(reqwest::Method::OPTIONS, target)
         .header("Origin", "https://qa-probe.readyhai.internal")
         .header("Access-Control-Request-Method", "POST")
-        .header("Access-Control-Request-Headers", "authorization, content-type, x-readyhai-probe")
+        .header(
+            "Access-Control-Request-Headers",
+            "authorization, content-type, x-readyhai-probe",
+        )
         .send();
 
     match res {
@@ -1975,18 +2258,35 @@ fn audit_cors_preflight(target: &str, timeout_ms: u64) -> CorsAudit {
             let status = resp.status().as_u16();
             let headers = resp.headers();
 
-            let allow_orig = headers.get("access-control-allow-origin").and_then(|h| h.to_str().ok()).map(|s| s.to_string());
-            let allow_meth = headers.get("access-control-allow-methods").and_then(|h| h.to_str().ok()).map(|s| s.to_string());
-            let allow_head = headers.get("access-control-allow-headers").and_then(|h| h.to_str().ok()).map(|s| s.to_string());
-            let allow_cred = headers.get("access-control-allow-credentials").and_then(|h| h.to_str().ok()).map(|s| s.to_string());
+            let allow_orig = headers
+                .get("access-control-allow-origin")
+                .and_then(|h| h.to_str().ok())
+                .map(|s| s.to_string());
+            let allow_meth = headers
+                .get("access-control-allow-methods")
+                .and_then(|h| h.to_str().ok())
+                .map(|s| s.to_string());
+            let allow_head = headers
+                .get("access-control-allow-headers")
+                .and_then(|h| h.to_str().ok())
+                .map(|s| s.to_string());
+            let allow_cred = headers
+                .get("access-control-allow-credentials")
+                .and_then(|h| h.to_str().ok())
+                .map(|s| s.to_string());
 
-            let has_wildcard_with_creds = allow_orig.as_deref() == Some("*") && allow_cred.as_deref() == Some("true");
-            let preflight_passed = (status == 200 || status == 204) && allow_orig.is_some() && !has_wildcard_with_creds;
+            let has_wildcard_with_creds =
+                allow_orig.as_deref() == Some("*") && allow_cred.as_deref() == Some("true");
+            let preflight_passed = (status == 200 || status == 204)
+                && allow_orig.is_some()
+                && !has_wildcard_with_creds;
 
             let diagnosis = if has_wildcard_with_creds {
                 "FAIL: Wildcard Access-Control-Allow-Origin '*' with Access-Control-Allow-Credentials 'true' is rejected by browser CORS specifications.".to_string()
             } else if !preflight_passed {
-                format!("FAIL: CORS Preflight returned HTTP status {status} without a usable Access-Control-Allow-Origin. Browsers will reject cross-origin requests before sending data.")
+                format!(
+                    "FAIL: CORS Preflight returned HTTP status {status} without a usable Access-Control-Allow-Origin. Browsers will reject cross-origin requests before sending data."
+                )
             } else {
                 "PASS: Preflight OPTIONS is accepted with valid Access-Control headers.".to_string()
             };
@@ -2027,7 +2327,16 @@ fn is_black_hole_error(e: &reqwest::Error) -> bool {
         return true;
     }
     let s = format!("{e:?}").to_lowercase();
-    ["reset", "broken pipe", "closed before", "incomplete", "unexpected eof", "connection closed"].iter().any(|p| s.contains(p))
+    [
+        "reset",
+        "broken pipe",
+        "closed before",
+        "incomplete",
+        "unexpected eof",
+        "connection closed",
+    ]
+    .iter()
+    .any(|p| s.contains(p))
 }
 
 /// A payload size counts as black-holed only when a request that got NO HTTP response at all
@@ -2035,7 +2344,10 @@ fn is_black_hole_error(e: &reqwest::Error) -> bool {
 /// packets arrived.
 fn mtu_black_hole(results: &[MtuSweepItem]) -> bool {
     let baseline_delivered = results.first().is_some_and(|r| r.delivered);
-    baseline_delivered && results.iter().any(|r| r.payload_bytes >= 1400 && !r.delivered && r.transport_failure)
+    baseline_delivered
+        && results
+            .iter()
+            .any(|r| r.payload_bytes >= 1400 && !r.delivered && r.transport_failure)
 }
 
 fn audit_mtu_sweep(target: &str, timeout_ms: u64) -> MtuSweepAudit {
@@ -2058,7 +2370,10 @@ fn audit_mtu_sweep(target: &str, timeout_ms: u64) -> MtuSweepAudit {
         let padding = "A".repeat(size);
         let attempt = || {
             let t0 = Instant::now();
-            let res = client.get(target).header("X-MTU-Sweep-Padding", padding.clone()).send();
+            let res = client
+                .get(target)
+                .header("X-MTU-Sweep-Padding", padding.clone())
+                .send();
             (res, t0.elapsed().as_millis())
         };
         let (mut res, mut dur) = attempt();
@@ -2116,9 +2431,13 @@ fn audit_mtu_sweep(target: &str, timeout_ms: u64) -> MtuSweepAudit {
     } else if baseline_failed {
         "Baseline request got no HTTP response; the target is unreachable, so the MTU sweep is inconclusive.".to_string()
     } else if header_limit_seen {
-        format!("No black hole: every probe got an HTTP response. The server rejects large headers (HTTP 400/413/414/431) above {max_safe} bytes; that is a header-size limit, not a network fault.")
+        format!(
+            "No black hole: every probe got an HTTP response. The server rejects large headers (HTTP 400/413/414/431) above {max_safe} bytes; that is a header-size limit, not a network fault."
+        )
     } else {
-        format!("All MTU packet size sweeps got HTTP responses up to {max_delivered} bytes without drops.")
+        format!(
+            "All MTU packet size sweeps got HTTP responses up to {max_delivered} bytes without drops."
+        )
     };
 
     MtuSweepAudit {
@@ -2154,7 +2473,10 @@ struct Sample {
 
 fn local_sample(url: &reqwest::Url, host: &str, port: u16, timeout_ms: u64) -> Option<Sample> {
     let dns_t0 = Instant::now();
-    let addrs: Vec<SocketAddr> = hostport(host, port).to_socket_addrs().map(|i| i.collect()).unwrap_or_default();
+    let addrs: Vec<SocketAddr> = hostport(host, port)
+        .to_socket_addrs()
+        .map(|i| i.collect())
+        .unwrap_or_default();
     let dns_ms = dns_t0.elapsed().as_millis() as u64;
     let addr = *addrs.first()?;
 
@@ -2170,11 +2492,23 @@ fn local_sample(url: &reqwest::Url, host: &str, port: u16, timeout_ms: u64) -> O
     let headers = resp
         .headers()
         .iter()
-        .filter_map(|(k, v)| v.to_str().ok().map(|v| (k.as_str().to_string(), truncate_chars(v, 200))))
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|v| (k.as_str().to_string(), truncate_chars(v, 200)))
+        })
         .collect();
     let _ = count_capped(resp, SUBRESOURCE_BYTES_CAP);
     let total_ms = t0.elapsed().as_millis() as u64;
-    Some(Sample { dns_ms, connect_ms, ttfb_ms, total_ms, status, resolved_ip: Some(addr.ip().to_string()), headers })
+    Some(Sample {
+        dns_ms,
+        connect_ms,
+        ttfb_ms,
+        total_ms,
+        status,
+        resolved_ip: Some(addr.ip().to_string()),
+        headers,
+    })
 }
 
 pub fn run_multi_region_audit(req: &MultiRegionRequest) -> Result<MultiRegionReport> {
@@ -2200,7 +2534,11 @@ pub fn run_multi_region_audit(req: &MultiRegionRequest) -> Result<MultiRegionRep
         }
     }
     let attempted = samples.len() + failures;
-    let loss = if attempted > 0 { failures as f32 / attempted as f32 * 100.0 } else { 100.0 };
+    let loss = if attempted > 0 {
+        failures as f32 / attempted as f32 * 100.0
+    } else {
+        100.0
+    };
 
     let median = |f: fn(&Sample) -> u64| -> u64 {
         let mut v: Vec<u64> = samples.iter().map(f).collect();
@@ -2208,17 +2546,31 @@ pub fn run_multi_region_audit(req: &MultiRegionRequest) -> Result<MultiRegionRep
         v.get(v.len() / 2).copied().unwrap_or(0)
     };
     let totals: Vec<u64> = samples.iter().map(|s| s.total_ms).collect();
-    let jitter = totals.iter().max().copied().unwrap_or(0).saturating_sub(totals.iter().min().copied().unwrap_or(0));
+    let jitter = totals
+        .iter()
+        .max()
+        .copied()
+        .unwrap_or(0)
+        .saturating_sub(totals.iter().min().copied().unwrap_or(0));
     let last = samples.last();
     let (cf_ray, pop_hdr, server_hdr) = match last {
         Some(s) => (
             s.headers.get("cf-ray").cloned(),
-            s.headers.get("x-amz-cf-pop").or_else(|| s.headers.get("x-served-by")).cloned(),
+            s.headers
+                .get("x-amz-cf-pop")
+                .or_else(|| s.headers.get("x-served-by"))
+                .cloned(),
             s.headers.get("server").cloned(),
         ),
         None => (None, None, None),
     };
-    let cdn_edge_active = cf_ray.is_some() || pop_hdr.is_some() || server_hdr.as_deref().unwrap_or("").to_lowercase().contains("cloudflare");
+    let cdn_edge_active = cf_ray.is_some()
+        || pop_hdr.is_some()
+        || server_hdr
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("cloudflare");
     let total_ms = median(|s| s.total_ms);
 
     let (label, notes) = if samples.is_empty() {
@@ -2226,9 +2578,16 @@ pub fn run_multi_region_audit(req: &MultiRegionRequest) -> Result<MultiRegionRep
     } else if total_ms < 150 {
         ("OPTIMAL", "Low latency from this host.".to_string())
     } else if total_ms < 300 {
-        ("ELEVATED", "Moderate latency from this host; verify asset compression and HTTP/2 multiplexing.".to_string())
+        (
+            "ELEVATED",
+            "Moderate latency from this host; verify asset compression and HTTP/2 multiplexing."
+                .to_string(),
+        )
     } else {
-        ("DEGRADED", "High round-trip time from this host.".to_string())
+        (
+            "DEGRADED",
+            "High round-trip time from this host.".to_string(),
+        )
     };
 
     let region = RegionProbeResult {
@@ -2236,13 +2595,18 @@ pub fn run_multi_region_audit(req: &MultiRegionRequest) -> Result<MultiRegionRep
         region_name: "This host (measured)".to_string(),
         flag: String::new(),
         location: "Machine running ReadyHai".to_string(),
-        resolved_ip: last.and_then(|s| s.resolved_ip.clone()).unwrap_or_else(|| NOT_MEASURED.to_string()),
+        resolved_ip: last
+            .and_then(|s| s.resolved_ip.clone())
+            .unwrap_or_else(|| NOT_MEASURED.to_string()),
         dns_time_ms: median(|s| s.dns_ms),
         tcp_connect_ms: median(|s| s.connect_ms),
         ttfb_ms: median(|s| s.ttfb_ms),
         total_time_ms: total_ms,
         http_status: last.map(|s| s.status).unwrap_or(0),
-        edge_pop: pop_hdr.clone().or(cf_ray.clone()).unwrap_or_else(|| "not detected".to_string()),
+        edge_pop: pop_hdr
+            .clone()
+            .or(cf_ray.clone())
+            .unwrap_or_else(|| "not detected".to_string()),
         status: label.to_string(),
         jitter_ms: jitter,
         packet_loss_pct: loss,
@@ -2252,11 +2616,18 @@ pub fn run_multi_region_audit(req: &MultiRegionRequest) -> Result<MultiRegionRep
 
     let note = "ReadyHai has no remote probe nodes: only this host was measured. Regional latency, geo-DNS behaviour and per-region edge selection were not measured.".to_string();
     let verdict = if samples.is_empty() {
-        "CRITICAL: Target is unreachable from this host: no request got an HTTP response.".to_string()
+        "CRITICAL: Target is unreachable from this host: no request got an HTTP response."
+            .to_string()
     } else if cdn_edge_active {
-        format!("REACHABLE from this host in {total_ms}ms (median of {} sample(s)); CDN/edge response headers are present. {note}", samples.len())
+        format!(
+            "REACHABLE from this host in {total_ms}ms (median of {} sample(s)); CDN/edge response headers are present. {note}",
+            samples.len()
+        )
     } else {
-        format!("REACHABLE from this host in {total_ms}ms (median of {} sample(s)); no CDN/edge response headers seen. {note}", samples.len())
+        format!(
+            "REACHABLE from this host in {total_ms}ms (median of {} sample(s)); no CDN/edge response headers seen. {note}",
+            samples.len()
+        )
     };
 
     Ok(MultiRegionReport {
@@ -2281,11 +2652,15 @@ pub fn generate_har_from_regress(report: &RegressReport) -> serde_json::Value {
     let mut entries = Vec::new();
 
     for it in &report.iterations {
-        let headers: Vec<serde_json::Value> = it.response_headers.iter()
+        let headers: Vec<serde_json::Value> = it
+            .response_headers
+            .iter()
             .map(|(k, v)| json!({"name": k, "value": v}))
             .collect();
 
-        let mime = it.response_headers.get("content-type")
+        let mime = it
+            .response_headers
+            .get("content-type")
             .cloned()
             .unwrap_or_else(|| "text/html; charset=utf-8".into());
 
@@ -2408,15 +2783,24 @@ mod tests {
     }
 
     fn reply(status: &str, body: &str) -> Option<String> {
-        Some(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()))
+        Some(format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ))
     }
 
     fn reply_html(status: &str, body: &str) -> Option<String> {
-        Some(format!("HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()))
+        Some(format!(
+            "HTTP/1.1 {status}\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ))
     }
 
     fn base_regress(target: &str) -> RegressRequest {
-        serde_json::from_value(json!({"target": target, "iterations": 3, "delay_between_ms": 0, "timeout_ms": 2000})).unwrap()
+        serde_json::from_value(
+            json!({"target": target, "iterations": 3, "delay_between_ms": 0, "timeout_ms": 2000}),
+        )
+        .unwrap()
     }
 
     fn iteration(status: u16, err: Option<&str>) -> IterationResult {
@@ -2443,13 +2827,36 @@ mod tests {
 
     #[test]
     fn targets_must_be_http_or_https() {
-        for bad in ["ftp://x/", "file:///etc/passwd", "gopher://x/", "javascript:alert(1)", "x", "", "-oProxyCommand=x", "http://user:pw@x/"] {
+        for bad in [
+            "ftp://x/",
+            "file:///etc/passwd",
+            "gopher://x/",
+            "javascript:alert(1)",
+            "x",
+            "",
+            "-oProxyCommand=x",
+            "http://user:pw@x/",
+        ] {
             assert!(parse_target(bad).is_err(), "{bad}");
         }
-        assert_eq!(parse_target("HTTP://Example.com").unwrap().as_str(), "http://example.com/");
+        assert_eq!(
+            parse_target("HTTP://Example.com").unwrap().as_str(),
+            "http://example.com/"
+        );
         // the backslash form is normalised before anything (curl included) sees it
-        assert_eq!(parse_target("http://app.example\\@evil.example/x").unwrap().as_str(), "http://app.example/@evil.example/x");
-        let mut c = CurlTestRequest { target: "file:///etc/passwd".into(), method: "GET".into(), headers: HashMap::new(), payload: None, timeout_ms: 1000 };
+        assert_eq!(
+            parse_target("http://app.example\\@evil.example/x")
+                .unwrap()
+                .as_str(),
+            "http://app.example/@evil.example/x"
+        );
+        let mut c = CurlTestRequest {
+            target: "file:///etc/passwd".into(),
+            method: "GET".into(),
+            headers: HashMap::new(),
+            payload: None,
+            timeout_ms: 1000,
+        };
         assert!(c.sanitize().is_err());
         assert!(execute_curl_test(&c).is_err());
     }
@@ -2459,7 +2866,8 @@ mod tests {
         let mut r: RegressRequest = serde_json::from_value(json!({
             "target": "http://x.example", "iterations": 10_000_000u64, "timeout_ms": u64::MAX,
             "simulated_latency_ms": u64::MAX, "delay_between_ms": u64::MAX, "method": "post"
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(r.is_intrusive());
         r.sanitize().unwrap();
         assert_eq!(r.iterations, MAX_ITERATIONS);
@@ -2468,39 +2876,70 @@ mod tests {
         assert_eq!(r.delay_between_ms, MAX_DELAY_MS);
         assert_eq!(r.method, "POST");
         assert_eq!(r.target, "http://x.example/");
-        let mut r: RegressRequest = serde_json::from_value(json!({"target": "http://x.example", "iterations": 0, "timeout_ms": 0})).unwrap();
+        let mut r: RegressRequest = serde_json::from_value(
+            json!({"target": "http://x.example", "iterations": 0, "timeout_ms": 0}),
+        )
+        .unwrap();
         r.sanitize().unwrap();
         assert_eq!((r.iterations, r.timeout_ms), (1, MIN_TIMEOUT_MS));
     }
 
     #[test]
     fn other_requests_are_clamped() {
-        let mut c = CurlTestRequest { target: "http://x.example".into(), method: "GET".into(), headers: HashMap::new(), payload: None, timeout_ms: u64::MAX };
+        let mut c = CurlTestRequest {
+            target: "http://x.example".into(),
+            method: "GET".into(),
+            headers: HashMap::new(),
+            payload: None,
+            timeout_ms: u64::MAX,
+        };
         c.sanitize().unwrap();
         assert_eq!(c.timeout_ms, MAX_TIMEOUT_MS);
-        let mut d = DeepAuditRequest { target: "http://x.example".into(), timeout_ms: u64::MAX };
+        let mut d = DeepAuditRequest {
+            target: "http://x.example".into(),
+            timeout_ms: u64::MAX,
+        };
         d.sanitize().unwrap();
         assert_eq!(d.timeout_ms, MAX_TIMEOUT_MS);
         d.timeout_ms = 0;
         d.sanitize().unwrap();
         assert_eq!(d.timeout_ms, MIN_TIMEOUT_MS);
-        let mut m = MultiRegionRequest { target: "http://x.example".into(), timeout_ms: Some(u64::MAX) };
+        let mut m = MultiRegionRequest {
+            target: "http://x.example".into(),
+            timeout_ms: Some(u64::MAX),
+        };
         m.sanitize().unwrap();
         assert_eq!(m.timeout_ms, Some(MAX_TIMEOUT_MS));
-        let mut m = MultiRegionRequest { target: "http://x.example".into(), timeout_ms: None };
+        let mut m = MultiRegionRequest {
+            target: "http://x.example".into(),
+            timeout_ms: None,
+        };
         m.sanitize().unwrap();
         assert_eq!(m.timeout_ms, Some(4000));
     }
 
     #[test]
     fn methods_headers_and_payload_are_validated() {
-        let ok = |m: &str| RegressRequest { method: m.into(), ..base_regress("http://x.example") }.sanitize().is_ok();
+        let ok = |m: &str| {
+            RegressRequest {
+                method: m.into(),
+                ..base_regress("http://x.example")
+            }
+            .sanitize()
+            .is_ok()
+        };
         assert!(ok("get") && ok("PATCH") && ok("options"));
         assert!(!ok("TRACE") && !ok("CONNECT") && !ok("GET --upload-file /etc/passwd") && !ok(""));
         let mut r = base_regress("http://x.example");
         r.headers.insert("X-Ok".into(), "v".into());
         assert!(r.clone().sanitize().is_ok());
-        for (k, v) in [("X\nBad", "v"), ("X-A", "a\r\nInjected: 1"), ("@/etc/passwd", "x"), ("", "v"), ("X-A", "nul\0")] {
+        for (k, v) in [
+            ("X\nBad", "v"),
+            ("X-A", "a\r\nInjected: 1"),
+            ("@/etc/passwd", "x"),
+            ("", "v"),
+            ("X-A", "nul\0"),
+        ] {
             let mut r = base_regress("http://x.example");
             r.headers.insert(k.into(), v.into());
             assert!(r.sanitize().is_err(), "{k:?}");
@@ -2540,8 +2979,15 @@ mod tests {
         };
         let url = req.sanitize().unwrap();
         let cmd = curl_command(&req, &url, 2);
-        let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
-        let pos = |s: &str| args.iter().position(|a| a == s).unwrap_or_else(|| panic!("{s} missing in {args:?}"));
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let pos = |s: &str| {
+            args.iter()
+                .position(|a| a == s)
+                .unwrap_or_else(|| panic!("{s} missing in {args:?}"))
+        };
         assert_eq!(args[0], "-q", "ignore ~/.curlrc");
         assert_eq!(args[pos("--proto") + 1], "=http,https");
         assert_eq!(args[args.len() - 2], "--");
@@ -2551,7 +2997,13 @@ mod tests {
         assert_eq!(args[pos("--data-raw") + 1], "@/etc/passwd");
         assert!(!args.iter().any(|a| a == "-d"));
         // the protocol probes carry the same protection
-        assert!(include_str!("network.rs").matches("\"--proto\", \"=http,https\"").count() >= 1);
+        assert!(
+            // formatting-independent: every curl invocation pins the protocol list
+            include_str!("network.rs")
+                .matches("\"=http,https\"")
+                .count()
+                >= 3
+        );
     }
 
     #[test]
@@ -2570,23 +3022,50 @@ mod tests {
         // 3 MiB of body, cap 1 MiB: the -w trailer must still be parsed from the retained tail
         let body = "x".repeat(3 * 1024 * 1024);
         let url = stub(move |_| reply("200 OK", &body));
-        let r = execute_curl_test(&CurlTestRequest { target: url, method: "GET".into(), headers: HashMap::new(), payload: None, timeout_ms: 5000 }).unwrap();
+        let r = execute_curl_test(&CurlTestRequest {
+            target: url,
+            method: "GET".into(),
+            headers: HashMap::new(),
+            payload: None,
+            timeout_ms: 5000,
+        })
+        .unwrap();
         if Command::new("curl").arg("--version").output().is_err() {
             return; // no curl: the fallback path is covered by fallback_reports_unmeasured_fields
         }
-        assert!(r.not_measured.is_empty(), "curl was available but the fallback ran: {}", r.stderr);
+        assert!(
+            r.not_measured.is_empty(),
+            "curl was available but the fallback ran: {}",
+            r.stderr
+        );
         assert_eq!(r.exit_code, 0, "{}", r.stderr);
         assert!(r.truncated, "{}", r.stdout.len());
-        assert!(r.stdout.len() < MAX_CAPTURE_BYTES + 200, "{}", r.stdout.len());
+        assert!(
+            r.stdout.len() < MAX_CAPTURE_BYTES + 200,
+            "{}",
+            r.stdout.len()
+        );
         assert!(r.stdout.contains("[output truncated"));
-        assert_eq!(r.status_code, 200, "timings trailer must survive truncation");
+        assert_eq!(
+            r.status_code, 200,
+            "timings trailer must survive truncation"
+        );
         assert!(r.total_s > 0.0);
     }
 
     #[test]
     fn curl_refuses_non_http_schemes_even_if_it_reached_curl() {
         // belt and braces: --proto limits curl itself, independent of our URL parsing
-        let out = Command::new("curl").args(["-q", "-sS", "--proto", "=http,https", "--", "file:///etc/hostname"]).output();
+        let out = Command::new("curl")
+            .args([
+                "-q",
+                "-sS",
+                "--proto",
+                "=http,https",
+                "--",
+                "file:///etc/hostname",
+            ])
+            .output();
         if let Ok(o) = out {
             assert!(!o.status.success());
         }
@@ -2601,18 +3080,47 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (key, crt) = (dir.join("k.pem"), dir.join("c.pem"));
         let keygen = Command::new("openssl")
-            .args(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-days", "30", "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost", "-keyout"])
-            .arg(&key).arg("-out").arg(&crt)
+            .args([
+                "req",
+                "-x509",
+                "-newkey",
+                "ec",
+                "-pkeyopt",
+                "ec_paramgen_curve:prime256v1",
+                "-nodes",
+                "-days",
+                "30",
+                "-subj",
+                "/CN=localhost",
+                "-addext",
+                "subjectAltName=DNS:localhost",
+                "-keyout",
+            ])
+            .arg(&key)
+            .arg("-out")
+            .arg(&crt)
             .output()
             .unwrap();
-        assert!(keygen.status.success(), "{}", String::from_utf8_lossy(&keygen.stderr));
+        assert!(
+            keygen.status.success(),
+            "{}",
+            String::from_utf8_lossy(&keygen.stderr)
+        );
         let port = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             l.local_addr().unwrap().port()
         };
         let mut server = Command::new("openssl")
-            .args(["s_server", "-accept"]).arg(port.to_string()).arg("-cert").arg(&crt).arg("-key").arg(&key).arg("-www")
-            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .args(["s_server", "-accept"])
+            .arg(port.to_string())
+            .arg("-cert")
+            .arg(&crt)
+            .arg("-key")
+            .arg(&key)
+            .arg("-www")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
         for _ in 0..60 {
@@ -2635,9 +3143,17 @@ mod tests {
         assert_eq!(t.cert_sans, vec!["localhost"]);
         assert!(t.is_self_signed, "{t:?}");
         assert!(!t.is_intermediate_missing);
-        assert!(matches!(t.days_remaining, Some(29 | 30)), "{:?}", t.days_remaining);
+        assert!(
+            matches!(t.days_remaining, Some(29 | 30)),
+            "{:?}",
+            t.days_remaining
+        );
         assert!(t.not_after.as_deref().is_some_and(|d| d.ends_with("GMT")));
-        assert_eq!(t.ocsp_stapled, Some(false), "a plain s_server staples nothing");
+        assert_eq!(
+            t.ocsp_stapled,
+            Some(false),
+            "a plain s_server staples nothing"
+        );
         assert_eq!(t.chain_length, Some(1));
     }
 
@@ -2649,7 +3165,10 @@ mod tests {
         };
         let url = parse_target(&format!("https://127.0.0.1:{port}/")).unwrap();
         let t = audit_tls_chain(&url, "127.0.0.1", port, 2000);
-        assert!(!t.measured && t.ocsp_stapled.is_none() && t.days_remaining.is_none(), "{t:?}");
+        assert!(
+            !t.measured && t.ocsp_stapled.is_none() && t.days_remaining.is_none(),
+            "{t:?}"
+        );
         assert_eq!(t.cert_issuer, "not measured");
     }
 
@@ -2658,18 +3177,42 @@ mod tests {
         // the native-client fallback must not invent DNS/connect timings
         let url = stub(|_| reply("200 OK", "hi"));
         let u = parse_target(&url).unwrap();
-        let req = CurlTestRequest { target: url, method: "GET".into(), headers: HashMap::new(), payload: None, timeout_ms: 2000 };
+        let req = CurlTestRequest {
+            target: url,
+            method: "GET".into(),
+            headers: HashMap::new(),
+            payload: None,
+            timeout_ms: 2000,
+        };
         let r = native_curl_fallback(&req, &u, "curl ...".into(), "no curl").unwrap();
         assert_eq!((r.status_code, r.stdout.as_str()), (200, "hi"));
-        assert_eq!((r.dns_lookup_s, r.connect_s, r.appconnect_s), (0.0, 0.0, 0.0));
-        assert_eq!(r.not_measured, vec!["dns_lookup_s", "connect_s", "appconnect_s"]);
+        assert_eq!(
+            (r.dns_lookup_s, r.connect_s, r.appconnect_s),
+            (0.0, 0.0, 0.0)
+        );
+        assert_eq!(
+            r.not_measured,
+            vec!["dns_lookup_s", "connect_s", "appconnect_s"]
+        );
         assert!(r.starttransfer_s > 0.0 && r.total_s >= r.starttransfer_s);
         // and a dead target lists everything as unmeasured
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let dead = format!("http://127.0.0.1:{}/", l.local_addr().unwrap().port());
         drop(l);
-        let req = CurlTestRequest { target: dead.clone(), method: "GET".into(), headers: HashMap::new(), payload: None, timeout_ms: 1000 };
-        let r = native_curl_fallback(&req, &parse_target(&dead).unwrap(), "curl ...".into(), "no curl").unwrap();
+        let req = CurlTestRequest {
+            target: dead.clone(),
+            method: "GET".into(),
+            headers: HashMap::new(),
+            payload: None,
+            timeout_ms: 1000,
+        };
+        let r = native_curl_fallback(
+            &req,
+            &parse_target(&dead).unwrap(),
+            "curl ...".into(),
+            "no curl",
+        )
+        .unwrap();
         assert_eq!(r.exit_code, 1);
         assert_eq!(r.not_measured.len(), 4);
     }
@@ -2678,7 +3221,12 @@ mod tests {
 
     #[test]
     fn non_2xx_counts_as_failure() {
-        for (status, line) in [(200, "200 OK"), (404, "404 Not Found"), (500, "500 Internal Server Error"), (401, "401 Unauthorized")] {
+        for (status, line) in [
+            (200, "200 OK"),
+            (404, "404 Not Found"),
+            (500, "500 Internal Server Error"),
+            (401, "401 Unauthorized"),
+        ] {
             let url = stub(move |_| reply(line, "body"));
             let rep = run_regress_test(&base_regress(&url)).unwrap();
             assert_eq!(rep.total_iterations, 3);
@@ -2687,22 +3235,42 @@ mod tests {
                 assert_eq!(rep.availability_percentage, 100.0);
                 assert_eq!(rep.diagnosis.root_cause_type, "STABLE");
             } else {
-                assert_eq!((rep.successful_iterations, rep.failed_iterations), (0, 3), "{status}");
+                assert_eq!(
+                    (rep.successful_iterations, rep.failed_iterations),
+                    (0, 3),
+                    "{status}"
+                );
                 assert_eq!(rep.availability_percentage, 0.0);
-                assert_ne!(rep.diagnosis.root_cause_type, "STABLE", "{status} must not be reported as stable");
+                assert_ne!(
+                    rep.diagnosis.root_cause_type, "STABLE",
+                    "{status} must not be reported as stable"
+                );
                 assert!(rep.diagnosis.flakiness_detected);
             }
-            assert!(rep.iterations.iter().all(|i| i.resolved_ip.as_deref() == Some("127.0.0.1")));
-            assert!(rep.iterations.iter().all(|i| i.session_id.starts_with("sess-")));
+            assert!(
+                rep.iterations
+                    .iter()
+                    .all(|i| i.resolved_ip.as_deref() == Some("127.0.0.1"))
+            );
+            assert!(
+                rep.iterations
+                    .iter()
+                    .all(|i| i.session_id.starts_with("sess-"))
+            );
         }
     }
 
     #[test]
     fn redirects_are_failures_and_never_leave_the_host() {
-        let url = stub(|_| Some("HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into()));
+        let url = stub(|_| {
+            Some("HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".into())
+        });
         let rep = run_regress_test(&base_regress(&url)).unwrap();
         assert_eq!(rep.failed_iterations, 3);
-        assert_eq!(rep.iterations[0].status_code, 302, "the redirect must not be followed to another host");
+        assert_eq!(
+            rep.iterations[0].status_code, 302,
+            "the redirect must not be followed to another host"
+        );
     }
 
     #[test]
@@ -2721,19 +3289,34 @@ mod tests {
 
     #[test]
     fn diagnose_non_2xx_is_not_stable() {
-        let rs = vec![iteration(404, Some("HTTP Status 404")), iteration(404, Some("HTTP Status 404"))];
+        let rs = vec![
+            iteration(404, Some("HTTP Status 404")),
+            iteration(404, Some("HTTP Status 404")),
+        ];
         let d = diagnose(&rs, 0.0, 50, 55, 5, 5000);
         assert_eq!(d.root_cause_type, "HTTP_ERRORS");
         assert!(d.flakiness_detected);
         let rs = vec![iteration(301, Some("HTTP Status 301"))];
-        assert_eq!(diagnose(&rs, 0.0, 50, 55, 5, 5000).root_cause_type, "HTTP_ERRORS");
+        assert_eq!(
+            diagnose(&rs, 0.0, 50, 55, 5, 5000).root_cause_type,
+            "HTTP_ERRORS"
+        );
     }
 
     #[test]
     fn jitter_needs_an_absolute_spread_not_just_a_ratio() {
-        assert_eq!(diagnose(&[iteration(200, None)], 100.0, 1, 4, 3, 5000).root_cause_type, "STABLE");
-        assert_eq!(diagnose(&[iteration(200, None)], 100.0, 30, 120, 90, 5000).root_cause_type, "HIGH_JITTER");
-        assert_eq!(diagnose(&[iteration(200, None)], 100.0, 500, 900, 400, 5000).root_cause_type, "HIGH_JITTER");
+        assert_eq!(
+            diagnose(&[iteration(200, None)], 100.0, 1, 4, 3, 5000).root_cause_type,
+            "STABLE"
+        );
+        assert_eq!(
+            diagnose(&[iteration(200, None)], 100.0, 30, 120, 90, 5000).root_cause_type,
+            "HIGH_JITTER"
+        );
+        assert_eq!(
+            diagnose(&[iteration(200, None)], 100.0, 500, 900, 400, 5000).root_cause_type,
+            "HIGH_JITTER"
+        );
     }
 
     #[test]
@@ -2752,7 +3335,12 @@ mod tests {
 
     // ------------------------------------------------------------ MTU
 
-    fn mtu_item(size: usize, delivered: bool, transport_failure: bool, status: u16) -> MtuSweepItem {
+    fn mtu_item(
+        size: usize,
+        delivered: bool,
+        transport_failure: bool,
+        status: u16,
+    ) -> MtuSweepItem {
         MtuSweepItem {
             payload_bytes: size,
             label: String::new(),
@@ -2770,32 +3358,63 @@ mod tests {
     fn mtu_rule_distinguishes_header_limits_from_black_holes() {
         // 431 / 400 / 413 / 414 on large probes: packets arrived, server said no
         for st in [400, 413, 414, 431] {
-            let r = vec![mtu_item(512, true, false, 200), mtu_item(1400, true, false, st), mtu_item(4096, true, false, st), mtu_item(8192, true, false, st)];
+            let r = vec![
+                mtu_item(512, true, false, 200),
+                mtu_item(1400, true, false, st),
+                mtu_item(4096, true, false, st),
+                mtu_item(8192, true, false, st),
+            ];
             assert!(!mtu_black_hole(&r), "HTTP {st} is not a black hole");
         }
         // timeout on large after a good baseline: black hole
-        let r = vec![mtu_item(512, true, false, 200), mtu_item(1400, false, true, 0)];
+        let r = vec![
+            mtu_item(512, true, false, 200),
+            mtu_item(1400, false, true, 0),
+        ];
         assert!(mtu_black_hole(&r));
         // dead target (baseline fails too) or a refused connection is not a black hole
-        assert!(!mtu_black_hole(&[mtu_item(512, false, true, 0), mtu_item(1400, false, true, 0)]));
-        assert!(!mtu_black_hole(&[mtu_item(512, true, false, 200), mtu_item(1400, false, false, 0)]));
+        assert!(!mtu_black_hole(&[
+            mtu_item(512, false, true, 0),
+            mtu_item(1400, false, true, 0)
+        ]));
+        assert!(!mtu_black_hole(&[
+            mtu_item(512, true, false, 200),
+            mtu_item(1400, false, false, 0)
+        ]));
     }
 
     #[test]
     fn mtu_sweep_with_a_431_server_reports_no_black_hole() {
-        let url = stub(|req| if req.len() > 1000 { reply("431 Request Header Fields Too Large", "") } else { reply("200 OK", "ok") });
+        let url = stub(|req| {
+            if req.len() > 1000 {
+                reply("431 Request Header Fields Too Large", "")
+            } else {
+                reply("200 OK", "ok")
+            }
+        });
         let a = audit_mtu_sweep(&url, 2000);
         assert!(!a.black_hole_detected, "{}", a.diagnosis);
         assert_eq!(a.maximum_safe_bytes, 512);
         assert_eq!(a.maximum_delivered_bytes, 8192);
-        assert!(a.sweep_results.iter().skip(1).all(|r| r.header_limit_hit && r.delivered && !r.success));
+        assert!(
+            a.sweep_results
+                .iter()
+                .skip(1)
+                .all(|r| r.header_limit_hit && r.delivered && !r.success)
+        );
         assert!(a.diagnosis.contains("header-size limit"), "{}", a.diagnosis);
     }
 
     #[test]
     fn mtu_sweep_flags_a_real_black_hole() {
         // large requests are swallowed (no response at all), small ones answered
-        let url = stub(|req| if req.len() > 1000 { None } else { reply("200 OK", "ok") });
+        let url = stub(|req| {
+            if req.len() > 1000 {
+                None
+            } else {
+                reply("200 OK", "ok")
+            }
+        });
         let a = audit_mtu_sweep(&url, 800);
         assert!(a.black_hole_detected, "{}", a.diagnosis);
         assert_eq!(a.maximum_safe_bytes, 512);
@@ -2810,28 +3429,60 @@ mod tests {
                 Some("HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: https://qa-probe.readyhai.internal\r\nConnection: close\r\n\r\n".into())
             } else {
                 // every path, /app.js included, answers with the HTML shell (a broken SPA fallback)
-                reply_html("200 OK", "<html><script src=\"/app.js\"></script><script src=\"http://169.254.169.254/x.js\"></script></html>")
+                reply_html(
+                    "200 OK",
+                    "<html><script src=\"/app.js\"></script><script src=\"http://169.254.169.254/x.js\"></script></html>",
+                )
             }
         });
-        let rep = run_deep_audit(&DeepAuditRequest { target: url, timeout_ms: 2000 }).unwrap();
+        let rep = run_deep_audit(&DeepAuditRequest {
+            target: url,
+            timeout_ms: 2000,
+        })
+        .unwrap();
         assert!(rep.health_score > 0);
         assert!(!rep.overall_verdict.is_empty());
         // plain http: no TLS fabrication
         assert!(!rep.tls_chain.is_https);
-        assert!(rep.tls_chain.ocsp_stapled.is_none() && rep.tls_chain.days_remaining.is_none() && rep.tls_chain.not_after.is_none());
+        assert!(
+            rep.tls_chain.ocsp_stapled.is_none()
+                && rep.tls_chain.days_remaining.is_none()
+                && rep.tls_chain.not_after.is_none()
+        );
         // the cross-host asset was not fetched, only recorded as skipped
         assert_eq!(rep.subresources.skipped_cross_host, 1);
-        assert!(rep.subresources.items.iter().all(|i| i.url.contains("127.0.0.1")));
-        assert_eq!(rep.subresources.spa_fallback_mismatches, 1, "{:?}", rep.subresources);
-        assert!(rep.identified_risks.iter().any(|r| r.contains("SPA Routing Flaw")));
-        assert!(rep.protocol_matrix.protocols.iter().any(|p| p.protocol.starts_with("HTTP/3") && p.status_code == 0));
+        assert!(
+            rep.subresources
+                .items
+                .iter()
+                .all(|i| i.url.contains("127.0.0.1"))
+        );
+        assert_eq!(
+            rep.subresources.spa_fallback_mismatches, 1,
+            "{:?}",
+            rep.subresources
+        );
+        assert!(
+            rep.identified_risks
+                .iter()
+                .any(|r| r.contains("SPA Routing Flaw"))
+        );
+        assert!(
+            rep.protocol_matrix
+                .protocols
+                .iter()
+                .any(|p| p.protocol.starts_with("HTTP/3") && p.status_code == 0)
+        );
     }
 
     #[test]
     fn deep_audit_non_2xx_assets_are_broken() {
         let url = stub(|req| {
             if req.starts_with("GET / ") {
-                reply("200 OK", "<html><script src=\"/missing.js\"></script></html>")
+                reply(
+                    "200 OK",
+                    "<html><script src=\"/missing.js\"></script></html>",
+                )
             } else {
                 reply("404 Not Found", "nope")
             }
@@ -2844,7 +3495,13 @@ mod tests {
 
     #[test]
     fn deep_audit_rejects_non_http_targets() {
-        assert!(run_deep_audit(&DeepAuditRequest { target: "file:///etc/passwd".into(), timeout_ms: 1000 }).is_err());
+        assert!(
+            run_deep_audit(&DeepAuditRequest {
+                target: "file:///etc/passwd".into(),
+                timeout_ms: 1000
+            })
+            .is_err()
+        );
     }
 
     // ------------------------------------------------------------ TLS parsing (no hard-coded values)
@@ -2873,28 +3530,53 @@ New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
         assert_eq!(s.version.as_deref(), Some("TLSv1.3"));
         assert_eq!(s.cipher.as_deref(), Some("TLS_AES_256_GCM_SHA384"));
         assert_eq!(s.verify_code, Some(0));
-        assert_eq!(s.ocsp_stapled, Some(false), "'no response sent' means NOT stapled (it used to be hard-coded true)");
+        assert_eq!(
+            s.ocsp_stapled,
+            Some(false),
+            "'no response sent' means NOT stapled (it used to be hard-coded true)"
+        );
         assert_eq!(s.chain_len, 2);
         let pem = s.leaf_pem.unwrap();
         assert!(pem.contains("MIIAAA==") && !pem.contains("MIIBBB=="));
-        assert_eq!(parse_s_client("OCSP Response Status: successful (0x0)").ocsp_stapled, Some(true));
+        assert_eq!(
+            parse_s_client("OCSP Response Status: successful (0x0)").ocsp_stapled,
+            Some(true)
+        );
         assert_eq!(parse_s_client("nothing relevant").ocsp_stapled, None);
         let failed = parse_s_client("New, (NONE), Cipher is (NONE)");
         assert!(failed.version.is_none() && failed.cipher.is_none());
-        assert_eq!(parse_s_client("Verify return code: 21 (unable to verify the first certificate)").verify_code, Some(21));
+        assert_eq!(
+            parse_s_client("Verify return code: 21 (unable to verify the first certificate)")
+                .verify_code,
+            Some(21)
+        );
     }
 
     #[test]
     fn x509_and_dates_are_parsed() {
-        let leaf = parse_x509("subject=CN = example.com\nissuer=C = US, O = Let's Encrypt, CN = R3\nnotAfter=Jan  1 00:00:00 2027 GMT\nX509v3 Subject Alternative Name: \n    DNS:example.com, DNS:www.example.com\n");
+        let leaf = parse_x509(
+            "subject=CN = example.com\nissuer=C = US, O = Let's Encrypt, CN = R3\nnotAfter=Jan  1 00:00:00 2027 GMT\nX509v3 Subject Alternative Name: \n    DNS:example.com, DNS:www.example.com\n",
+        );
         assert_eq!(leaf.subject.as_deref(), Some("CN = example.com"));
-        assert_eq!(leaf.issuer.as_deref(), Some("C = US, O = Let's Encrypt, CN = R3"));
+        assert_eq!(
+            leaf.issuer.as_deref(),
+            Some("C = US, O = Let's Encrypt, CN = R3")
+        );
         assert_eq!(leaf.sans, vec!["example.com", "www.example.com"]);
         assert_eq!(days_from_civil(1970, 1, 1), 0);
         assert_eq!(days_from_civil(2000, 1, 1), 10_957);
-        assert_eq!(parse_openssl_date("Jan  1 00:00:00 2027 GMT"), Some(1_798_761_600));
-        assert_eq!(parse_openssl_date("Feb 29 12:30:15 2028 GMT"), Some(days_from_civil(2028, 2, 29) * 86_400 + 12 * 3600 + 30 * 60 + 15));
-        assert_eq!(days_from_civil(2028, 3, 1) - days_from_civil(2028, 2, 29), 1);
+        assert_eq!(
+            parse_openssl_date("Jan  1 00:00:00 2027 GMT"),
+            Some(1_798_761_600)
+        );
+        assert_eq!(
+            parse_openssl_date("Feb 29 12:30:15 2028 GMT"),
+            Some(days_from_civil(2028, 2, 29) * 86_400 + 12 * 3600 + 30 * 60 + 15)
+        );
+        assert_eq!(
+            days_from_civil(2028, 3, 1) - days_from_civil(2028, 2, 29),
+            1
+        );
         assert_eq!(parse_openssl_date("garbage"), None);
         assert_eq!(parse_openssl_date("Foo  1 00:00:00 2027 GMT"), None);
     }
@@ -2902,7 +3584,12 @@ New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
     #[test]
     fn unmeasured_tls_says_so() {
         let t = unmeasured_tls(true, "openssl is not available");
-        assert!(!t.measured && t.ocsp_stapled.is_none() && t.days_remaining.is_none() && t.not_after.is_none());
+        assert!(
+            !t.measured
+                && t.ocsp_stapled.is_none()
+                && t.days_remaining.is_none()
+                && t.not_after.is_none()
+        );
         assert_eq!(t.cert_issuer, "not measured");
         assert_eq!(t.tls_version, "not measured");
         assert!(t.cert_sans.is_empty());
@@ -2914,7 +3601,11 @@ New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
     #[test]
     fn multi_region_reports_only_the_local_measurement() {
         let url = stub(|_| reply("200 OK", "ok"));
-        let rep = run_multi_region_audit(&MultiRegionRequest { target: url, timeout_ms: Some(2000) }).unwrap();
+        let rep = run_multi_region_audit(&MultiRegionRequest {
+            target: url,
+            timeout_ms: Some(2000),
+        })
+        .unwrap();
         assert_eq!(rep.regions.len(), 1);
         let r = &rep.regions[0];
         assert!(r.measured && r.region_id == "local");
@@ -2922,7 +3613,10 @@ New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
         assert_eq!(r.resolved_ip, "127.0.0.1");
         assert_eq!(r.packet_loss_pct, 0.0);
         assert_eq!(rep.not_measured_regions.len(), 4);
-        assert!(rep.geo_dns_consistent.is_none(), "geo-DNS consistency cannot be known from one vantage point");
+        assert!(
+            rep.geo_dns_consistent.is_none(),
+            "geo-DNS consistency cannot be known from one vantage point"
+        );
         assert!(rep.measurement_note.contains("no remote probe nodes"));
         assert_eq!(rep.fastest_region, "not measured");
     }
@@ -2933,7 +3627,11 @@ New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = l.local_addr().unwrap().port();
         drop(l);
-        let rep = run_multi_region_audit(&MultiRegionRequest { target: format!("http://127.0.0.1:{port}/"), timeout_ms: Some(800) }).unwrap();
+        let rep = run_multi_region_audit(&MultiRegionRequest {
+            target: format!("http://127.0.0.1:{port}/"),
+            timeout_ms: Some(800),
+        })
+        .unwrap();
         assert_eq!(rep.regions[0].status, "OFFLINE");
         assert_eq!(rep.regions[0].packet_loss_pct, 100.0);
         assert!(rep.agent_verdict.starts_with("CRITICAL"));
@@ -2972,10 +3670,16 @@ New, TLSv1.3, Cipher is TLS_AES_256_GCM_SHA384
         assert_eq!(har["log"]["version"], "1.2");
         let entries = har["log"]["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0]["request"]["method"], "POST", "method comes from the report, not a constant");
+        assert_eq!(
+            entries[0]["request"]["method"], "POST",
+            "method comes from the report, not a constant"
+        );
         assert_eq!(entries[0]["serverIPAddress"], "10.1.2.3");
         assert_eq!(entries[0]["response"]["httpVersion"], "HTTP/2.0");
-        assert!(entries[1].get("serverIPAddress").is_none(), "no invented 127.0.0.1");
+        assert!(
+            entries[1].get("serverIPAddress").is_none(),
+            "no invented 127.0.0.1"
+        );
         assert_eq!(entries[1]["response"]["httpVersion"], "");
         assert_eq!(entries[0]["timings"]["ssl"], -1);
     }

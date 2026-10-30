@@ -57,12 +57,13 @@ fn pointer_unescape(s: &str) -> String {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'%' && i + 3 <= b.len() {
-            if let Some(Ok(v)) = s.get(i + 1..i + 3).map(|h| u8::from_str_radix(h, 16)) {
-                out.push(v as char);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 3 <= b.len()
+            && let Some(Ok(v)) = s.get(i + 1..i + 3).map(|h| u8::from_str_radix(h, 16))
+        {
+            out.push(v as char);
+            i += 3;
+            continue;
         }
         out.push(b[i] as char);
         i += 1;
@@ -107,26 +108,36 @@ fn resolve_inner(root: &Value, v: &Value, depth: usize, stack: &mut Vec<String>)
                     None => Value::Object(Map::new()),
                 };
             }
-            Value::Object(m.iter().map(|(k, x)| (k.clone(), resolve_inner(root, x, depth, stack))).collect())
+            Value::Object(
+                m.iter()
+                    .map(|(k, x)| (k.clone(), resolve_inner(root, x, depth, stack)))
+                    .collect(),
+            )
         }
-        Value::Array(a) => Value::Array(a.iter().map(|x| resolve_inner(root, x, depth, stack)).collect()),
+        Value::Array(a) => Value::Array(
+            a.iter()
+                .map(|x| resolve_inner(root, x, depth, stack))
+                .collect(),
+        ),
         _ => v.clone(),
     }
 }
 
 fn json_schema_of(content: Option<&Value>) -> Option<Value> {
     let c = content?.as_object()?;
-    let m = c
-        .iter()
-        .find(|(k, _)| k.contains("json"))
-        .map(|x| x.1)?;
+    let m = c.iter().find(|(k, _)| k.contains("json")).map(|x| x.1)?;
     m.get("schema").cloned()
 }
 
 fn is_secured(op: &Value, global: &Value) -> bool {
     let sec = op.get("security").unwrap_or(global);
     match sec {
-        Value::Array(a) => !a.is_empty() && !a.iter().any(|r| r.as_object().map(|o| o.is_empty()).unwrap_or(false)),
+        Value::Array(a) => {
+            !a.is_empty()
+                && !a
+                    .iter()
+                    .any(|r| r.as_object().map(|o| o.is_empty()).unwrap_or(false))
+        }
         _ => false,
     }
 }
@@ -137,55 +148,112 @@ pub fn base_path_of(doc: &Value) -> String {
         .pointer("/servers/0/url")
         .and_then(|u| u.as_str())
         .map(|u| {
-            let rest = u.split_once("://").map(|x| x.1.split_once('/').map(|y| format!("/{}", y.1)).unwrap_or_default()).unwrap_or_else(|| u.to_string());
+            let rest = u
+                .split_once("://")
+                .map(|x| {
+                    x.1.split_once('/')
+                        .map(|y| format!("/{}", y.1))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_else(|| u.to_string());
             rest.trim_end_matches('/').to_string()
         })
         .unwrap_or_default();
-    if base.is_empty() || base.starts_with('/') { base } else { format!("/{base}") }
+    if base.is_empty() || base.starts_with('/') {
+        base
+    } else {
+        format!("/{base}")
+    }
 }
 
 pub fn parse(doc: Value) -> Result<Spec> {
-    if doc.get("openapi").and_then(|v| v.as_str()).map(|s| s.starts_with('3')) != Some(true) {
+    if doc
+        .get("openapi")
+        .and_then(|v| v.as_str())
+        .map(|s| s.starts_with('3'))
+        != Some(true)
+    {
         bail!("not an OpenAPI 3.x document");
     }
-    let paths = doc.get("paths").and_then(|p| p.as_object()).cloned().unwrap_or_default();
+    let paths = doc
+        .get("paths")
+        .and_then(|p| p.as_object())
+        .cloned()
+        .unwrap_or_default();
     let global_sec = doc.get("security").cloned().unwrap_or(Value::Null);
     let base_path = base_path_of(&doc);
     let mut ops = vec![];
     let mut untested = vec![];
     for (path, item) in &paths {
         let item = resolve(&doc, item);
-        let shared: Vec<Value> = item.get("parameters").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+        let shared: Vec<Value> = item
+            .get("parameters")
+            .and_then(|p| p.as_array())
+            .cloned()
+            .unwrap_or_default();
         for m in METHODS {
             let Some(o) = item.get(m) else { continue };
             if ops.len() >= MAX_OPS {
-                untested.push(format!("{} {path}: over the {MAX_OPS}-operation cap", m.to_uppercase()));
+                untested.push(format!(
+                    "{} {path}: over the {MAX_OPS}-operation cap",
+                    m.to_uppercase()
+                ));
                 continue;
             }
             let mut params: Vec<Param> = vec![];
-            let own = o.get("parameters").and_then(|p| p.as_array()).cloned().unwrap_or_default();
+            let own = o
+                .get("parameters")
+                .and_then(|p| p.as_array())
+                .cloned()
+                .unwrap_or_default();
             for p in shared.iter().chain(own.iter()) {
-                let Some(name) = p.get("name").and_then(|n| n.as_str()) else { continue };
-                let loc = p.get("in").and_then(|n| n.as_str()).unwrap_or("query").to_string();
-                let required = p.get("required").and_then(|b| b.as_bool()).unwrap_or(false) || loc == "path";
-                let schema = p.get("schema").cloned().unwrap_or_else(|| serde_json::json!({"type": "string"}));
+                let Some(name) = p.get("name").and_then(|n| n.as_str()) else {
+                    continue;
+                };
+                let loc = p
+                    .get("in")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("query")
+                    .to_string();
+                let required =
+                    p.get("required").and_then(|b| b.as_bool()).unwrap_or(false) || loc == "path";
+                let schema = p
+                    .get("schema")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({"type": "string"}));
                 params.retain(|x| !(x.name == name && x.loc == loc));
-                params.push(Param { name: name.to_string(), loc, required, schema });
+                params.push(Param {
+                    name: name.to_string(),
+                    loc,
+                    required,
+                    schema,
+                });
             }
             // Path template params without a declaration: assume string.
             for seg in path.split('/') {
-                if let Some(n) = seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-                    if !params.iter().any(|p| p.name == n && p.loc == "path") {
-                        params.push(Param { name: n.into(), loc: "path".into(), required: true, schema: serde_json::json!({"type":"string"}) });
-                    }
+                if let Some(n) = seg.strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                    && !params.iter().any(|p| p.name == n && p.loc == "path")
+                {
+                    params.push(Param {
+                        name: n.into(),
+                        loc: "path".into(),
+                        required: true,
+                        schema: serde_json::json!({"type":"string"}),
+                    });
                 }
             }
             let rb = o.get("requestBody");
             let body = rb.and_then(|r| json_schema_of(r.get("content")));
             if rb.is_some() && body.is_none() {
-                untested.push(format!("{} {path}: non-JSON request body", m.to_uppercase()));
+                untested.push(format!(
+                    "{} {path}: non-JSON request body",
+                    m.to_uppercase()
+                ));
             }
-            let body_required = rb.and_then(|r| r.get("required")).and_then(|b| b.as_bool()).unwrap_or(false);
+            let body_required = rb
+                .and_then(|r| r.get("required"))
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
             let mut responses = BTreeMap::new();
             if let Some(rs) = o.get("responses").and_then(|r| r.as_object()) {
                 for (st, r) in rs {
@@ -193,7 +261,10 @@ pub fn parse(doc: Value) -> Result<Spec> {
                 }
             }
             if o.to_string().contains("\"oneOf\"") || o.to_string().contains("\"anyOf\"") {
-                untested.push(format!("{} {path}: oneOf/anyOf only partially exercised", m.to_uppercase()));
+                untested.push(format!(
+                    "{} {path}: oneOf/anyOf only partially exercised",
+                    m.to_uppercase()
+                ));
             }
             ops.push(Op {
                 method: m.to_uppercase(),
@@ -206,7 +277,12 @@ pub fn parse(doc: Value) -> Result<Spec> {
             });
         }
     }
-    Ok(Spec { base_path, ops, untested, raw: doc })
+    Ok(Spec {
+        base_path,
+        ops,
+        untested,
+        raw: doc,
+    })
 }
 
 pub fn parse_text(text: &str) -> Result<Value> {
@@ -229,7 +305,10 @@ pub fn load(ctx: &Ctx) -> Result<Option<Spec>> {
     let text = if loc.starts_with("http://") || loc.starts_with("https://") {
         qa.throttle()?;
         let c = super::exec::client()?;
-        let r = c.get(&loc).send().with_context(|| format!("fetch spec {loc}"))?;
+        let r = c
+            .get(&loc)
+            .send()
+            .with_context(|| format!("fetch spec {loc}"))?;
         if !r.status().is_success() {
             bail!("spec fetch {loc}: HTTP {}", r.status());
         }

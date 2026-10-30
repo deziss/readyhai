@@ -23,7 +23,10 @@ pub(crate) fn html_escape(s: &str) -> String {
 
 /// XML 1.0: escape the five specials and drop characters that are not legal at all.
 pub(crate) fn xml_escape(s: &str) -> String {
-    let legal = |c: &char| matches!(*c, '\t' | '\n' | '\r') || (*c as u32) >= 0x20 && !matches!(*c as u32, 0xFFFE | 0xFFFF);
+    let legal = |c: &char| {
+        matches!(*c, '\t' | '\n' | '\r')
+            || (*c as u32) >= 0x20 && !matches!(*c as u32, 0xFFFE | 0xFFFF)
+    };
     html_escape(&s.chars().filter(legal).collect::<String>()).replace('\n', "&#10;")
 }
 
@@ -50,7 +53,16 @@ pub(crate) fn md_text(s: &str) -> String {
 /// Inline code span that cannot be broken out of (and is safe inside a table cell).
 pub(crate) fn md_code(s: &str) -> String {
     // '<' and '>' are swapped for look-alikes so no renderer or sanitizer can ever see a raw tag
-    let t: String = s.chars().filter(|c| !c.is_control()).map(|c| match c { '`' => '\'', '<' => '\u{2039}', '>' => '\u{203a}', c => c }).collect();
+    let t: String = s
+        .chars()
+        .filter(|c| !c.is_control())
+        .map(|c| match c {
+            '`' => '\'',
+            '<' => '\u{2039}',
+            '>' => '\u{203a}',
+            c => c,
+        })
+        .collect();
     format!("`{}`", t.replace('|', "\\|"))
 }
 
@@ -80,19 +92,30 @@ fn verdict_of(rep: &AgentRunReport) -> (&str, Option<u32>) {
 }
 
 fn score_text(s: Option<u32>) -> String {
-    s.map(|v| format!("{v}%")).unwrap_or_else(|| "not evaluated".into())
+    s.map(|v| format!("{v}%"))
+        .unwrap_or_else(|| "not evaluated".into())
 }
 
 fn opt(v: &Option<String>) -> &str {
-    v.as_deref().filter(|s| !s.is_empty()).unwrap_or("not detected")
+    v.as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("not detected")
 }
 
 fn count(rep: &AgentRunReport, st: &str) -> usize {
-    rep.executed_results.iter().filter(|r| r.status == st).count()
+    rep.executed_results
+        .iter()
+        .filter(|r| r.status == st)
+        .count()
 }
 
 fn llm_line(rep: &AgentRunReport) -> String {
-    let stages = rep.stage_sources.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(", ");
+    let stages = rep
+        .stage_sources
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     match (&rep.llm_status, stages.is_empty()) {
         (Some(s), false) => format!("{s} [{stages}]"),
         (Some(s), true) => s.clone(),
@@ -105,14 +128,24 @@ fn budget_line(rep: &AgentRunReport) -> String {
     match &rep.budget {
         Some(b) => format!(
             "steps {}/{}, requests {}/{}, {} ms{}",
-            b.steps, b.max_steps, b.requests, b.max_requests, b.elapsed_ms, b.stopped.as_ref().map(|s| format!(", STOPPED: {s}")).unwrap_or_default()
+            b.steps,
+            b.max_steps,
+            b.requests,
+            b.max_requests,
+            b.elapsed_ms,
+            b.stopped
+                .as_ref()
+                .map(|s| format!(", STOPPED: {s}"))
+                .unwrap_or_default()
         ),
         None => "not recorded".into(),
     }
 }
 
 fn status_code_text(c: &CaseExecutionResult) -> String {
-    c.status_code.map(|s| s.to_string()).unwrap_or_else(|| "-".into())
+    c.status_code
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "-".into())
 }
 
 // ---------------------------------------------------------------- HTML
@@ -137,16 +170,31 @@ code{font-family:monospace;color:#cbd5e1}.mut{color:var(--mut);font-size:12px}.p
 "#;
 
 fn cites(case_ids: &[String], files: &[String]) -> String {
-    let c = if case_ids.is_empty() { "none".to_string() } else { case_ids.join(", ") };
-    let f = if files.is_empty() { "none".to_string() } else { files.join(", ") };
-    format!("<div class=\"mut\">cases: {} &middot; evidence: {}</div>", html_escape(&c), html_escape(&f))
+    let c = if case_ids.is_empty() {
+        "none".to_string()
+    } else {
+        case_ids.join(", ")
+    };
+    let f = if files.is_empty() {
+        "none".to_string()
+    } else {
+        files.join(", ")
+    };
+    format!(
+        "<div class=\"mut\">cases: {} &middot; evidence: {}</div>",
+        html_escape(&c),
+        html_escape(&f)
+    )
 }
 
 fn html_ledger(l: &EvidenceLedger) -> String {
     let mut h = String::new();
     h.push_str("<div class=\"card\"><h2>Evidence ledger (computed from results)</h2>");
     h.push_str(&format!("<p>{}</p>", html_escape(&l.executive_summary)));
-    h.push_str(&format!("<p class=\"mut\">Verdict basis: {}</p>", html_escape(&l.verdict_basis)));
+    h.push_str(&format!(
+        "<p class=\"mut\">Verdict basis: {}</p>",
+        html_escape(&l.verdict_basis)
+    ));
     if let Some(a) = &l.llm_advisory {
         h.push_str(&format!(
             "<p class=\"mut\">LLM advisory (does not change the gate): verdict {}, overall {}, value {}, authority {}, safety {}, evidence {}</p>",
@@ -154,7 +202,10 @@ fn html_ledger(l: &EvidenceLedger) -> String {
         ));
     }
     if let Some(s) = &l.ai_summary {
-        h.push_str(&format!("<p><span class=\"badge badge-ne\">AI-generated, advisory</span> {}</p>", html_escape(s)));
+        h.push_str(&format!(
+            "<p><span class=\"badge badge-ne\">AI-generated, advisory</span> {}</p>",
+            html_escape(s)
+        ));
     }
     h.push_str("<div class=\"pillars\">");
     for p in &l.pillars {
@@ -176,12 +227,21 @@ fn html_ledger(l: &EvidenceLedger) -> String {
 
     h.push_str("<div class=\"card\"><h2>Claims and exit criteria</h2><div class=\"wrap\"><table><thead><tr><th>Claim</th><th>Status</th><th>Cited cases / evidence</th></tr></thead><tbody>");
     for c in &l.claims {
-        h.push_str(&format!("<tr><td>{}</td><td>{}</td><td>{}</td></tr>", html_escape(&c.claim), html_escape(&c.status), cites(&c.case_ids, &c.evidence_files)));
+        h.push_str(&format!(
+            "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+            html_escape(&c.claim),
+            html_escape(&c.status),
+            cites(&c.case_ids, &c.evidence_files)
+        ));
     }
     for e in &l.exit_criteria_checklist {
         h.push_str(&format!(
             "<tr><td>{} <span class=\"mut\">{}</span></td><td class=\"{}\">{}</td><td>{}</td></tr>",
-            html_escape(&e.criterion), html_escape(&e.details), if e.met { "st-PASS" } else { "st-FAIL" }, if e.met { "met" } else { "not met" }, cites(&e.case_ids, &e.evidence_files)
+            html_escape(&e.criterion),
+            html_escape(&e.details),
+            if e.met { "st-PASS" } else { "st-FAIL" },
+            if e.met { "met" } else { "not met" },
+            cites(&e.case_ids, &e.evidence_files)
         ));
     }
     h.push_str("</tbody></table></div></div>");
@@ -196,7 +256,11 @@ pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
         "NO_GO" => "badge-nogo",
         _ => "badge-ne",
     };
-    let approval = rep.approval_status.as_deref().unwrap_or("pending").to_ascii_uppercase();
+    let approval = rep
+        .approval_status
+        .as_deref()
+        .unwrap_or("pending")
+        .to_ascii_uppercase();
     let mut h = String::new();
     h.push_str("<!DOCTYPE html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>");
     h.push_str(&format!("<title>ReadyHai Executive QA &amp; Security Gate Report - {}</title><style>{STYLE}</style></head><body><div class=\"container\">", html_escape(&rep.target)));
@@ -207,28 +271,60 @@ pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
     ));
     let items: Vec<(&str, String)> = vec![
         ("Run ID", rep.id.clone()),
-        ("Architecture", rep.app_architecture.clone().unwrap_or_else(|| "not detected".into())),
-        ("Provider / model", format!("{} / {}", rep.provider, rep.model)),
+        (
+            "Architecture",
+            rep.app_architecture
+                .clone()
+                .unwrap_or_else(|| "not detected".into()),
+        ),
+        (
+            "Provider / model",
+            format!("{} / {}", rep.provider, rep.model),
+        ),
         ("LLM usage", llm_line(rep)),
         ("Started", rep.started_at.clone()),
-        ("Finished", rep.finished_at.clone().unwrap_or_else(|| "in progress".into())),
-        ("Mode", if rep.dry_run { "dry-run (no state-changing requests)".into() } else { "live".into() }),
+        (
+            "Finished",
+            rep.finished_at
+                .clone()
+                .unwrap_or_else(|| "in progress".into()),
+        ),
+        (
+            "Mode",
+            if rep.dry_run {
+                "dry-run (no state-changing requests)".into()
+            } else {
+                "live".into()
+            },
+        ),
         ("Budget", budget_line(rep)),
         ("Sign-off", approval.clone()),
         ("Requester egress IP", opt(&rep.requester_ip).to_string()),
-        ("Allowlist guidance", opt(&rep.allowlist_guidance).to_string()),
+        (
+            "Allowlist guidance",
+            opt(&rep.allowlist_guidance).to_string(),
+        ),
     ];
     h.push_str("<div class=\"grid\" style=\"margin-top:16px\">");
     for (k, v) in items {
-        h.push_str(&format!("<div class=\"item\"><div class=\"lbl\">{}</div><div>{}</div></div>", html_escape(k), html_escape(&v)));
+        h.push_str(&format!(
+            "<div class=\"item\"><div class=\"lbl\">{}</div><div>{}</div></div>",
+            html_escape(k),
+            html_escape(&v)
+        ));
     }
     h.push_str("</div>");
     h.push_str(&format!(
         "<p class=\"mut\">Sign-off: {} by {} &mdash; {}</p>",
-        html_escape(&approval), html_escape(rep.approved_by.as_deref().unwrap_or("nobody yet")), html_escape(rep.approval_notes.as_deref().unwrap_or("no notes"))
+        html_escape(&approval),
+        html_escape(rep.approved_by.as_deref().unwrap_or("nobody yet")),
+        html_escape(rep.approval_notes.as_deref().unwrap_or("no notes"))
     ));
     if let Some(e) = &rep.error {
-        h.push_str(&format!("<p class=\"st-FAIL\">Run error: {}</p>", html_escape(e)));
+        h.push_str(&format!(
+            "<p class=\"st-FAIL\">Run error: {}</p>",
+            html_escape(e)
+        ));
     }
     h.push_str("</div>");
 
@@ -239,7 +335,17 @@ pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
 
     h.push_str(&format!("<div class=\"card\"><h2>Executed cases ({})</h2><div class=\"wrap\"><table><thead><tr><th>Case</th><th>Request</th><th>Technique</th><th>Status</th></tr></thead><tbody>", rep.executed_results.len()));
     for c in &rep.executed_results {
-        let checks = c.oracle.as_ref().map(|o| o.checks.iter().map(|k| format!("{} {}: {}", k.verdict.label(), k.code, k.detail)).collect::<Vec<_>>().join("\n")).unwrap_or_default();
+        let checks = c
+            .oracle
+            .as_ref()
+            .map(|o| {
+                o.checks
+                    .iter()
+                    .map(|k| format!("{} {}: {}", k.verdict.label(), k.code, k.detail))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
         h.push_str(&format!(
             "<tr><td><code>{}</code><div class=\"mut\">{}</div></td><td><code>{} {}</code><div class=\"mut\">HTTP {}</div></td><td>{}</td><td><b class=\"st-{}\">{}</b>{}<div class=\"mut\">{} ms</div></td></tr>",
             html_escape(&c.case_id), html_escape(&c.title), html_escape(&c.method), html_escape(&c.component), status_code_text(c), html_escape(&c.technique),
@@ -247,15 +353,37 @@ pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
         ));
         h.push_str(&format!(
             "<tr><td colspan=\"4\"><div class=\"mut\"><b>Assertion:</b> {}</div>{}{}{}</td></tr>",
-            html_escape(c.failure_reason.as_deref().unwrap_or(if c.status == "PASS" { "all assertions held" } else { "no reason recorded" })),
-            if checks.is_empty() { String::new() } else { format!("<pre>{}</pre>", html_escape(&checks)) },
-            if c.reproduction_curl.is_empty() { String::new() } else { format!("<pre>{}</pre>", html_escape(&c.reproduction_curl)) },
-            c.evidence_file.as_ref().map(|f| format!("<div class=\"mut\">evidence: {}</div>", html_escape(f))).unwrap_or_default()
+            html_escape(
+                c.failure_reason
+                    .as_deref()
+                    .unwrap_or(if c.status == "PASS" {
+                        "all assertions held"
+                    } else {
+                        "no reason recorded"
+                    })
+            ),
+            if checks.is_empty() {
+                String::new()
+            } else {
+                format!("<pre>{}</pre>", html_escape(&checks))
+            },
+            if c.reproduction_curl.is_empty() {
+                String::new()
+            } else {
+                format!("<pre>{}</pre>", html_escape(&c.reproduction_curl))
+            },
+            c.evidence_file
+                .as_ref()
+                .map(|f| format!("<div class=\"mut\">evidence: {}</div>", html_escape(f)))
+                .unwrap_or_default()
         ));
     }
     h.push_str("</tbody></table></div></div>");
 
-    h.push_str(&format!("<div class=\"card\"><h2>Defects ({})</h2>", rep.triaged_defects.len()));
+    h.push_str(&format!(
+        "<div class=\"card\"><h2>Defects ({})</h2>",
+        rep.triaged_defects.len()
+    ));
     if rep.triaged_defects.is_empty() {
         let evaluated = rep.evidence_ledger.as_ref().is_some_and(|l| l.evaluated);
         h.push_str(&format!("<p class=\"mut\">{}</p>", if evaluated { "No failed assertions among the executed cases (this is not proof of absence of defects)." } else { "No defects recorded; the run did not evaluate enough to conclude anything." }));
@@ -287,7 +415,11 @@ pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
         for s in &rep.steps {
             h.push_str(&format!(
                 "<tr><td class=\"mut\">{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-                html_escape(&s.timestamp), html_escape(&s.agent), html_escape(&s.action), html_escape(s.source.as_deref().unwrap_or("")), html_escape(&s.details)
+                html_escape(&s.timestamp),
+                html_escape(&s.agent),
+                html_escape(&s.action),
+                html_escape(s.source.as_deref().unwrap_or("")),
+                html_escape(&s.details)
             ));
         }
         h.push_str("</tbody></table></div>");
@@ -306,11 +438,36 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
     let (verdict, score) = verdict_of(rep);
     let mut md = String::new();
     md.push_str("# ReadyHai Autonomous QA & Security Gate Report\n\n");
-    md.push_str(&format!("**Target:** {}  \n**Run ID:** {}  \n", md_code(&rep.target), md_code(&rep.id)));
-    md.push_str(&format!("**Architecture:** {}  \n", md_text(rep.app_architecture.as_deref().unwrap_or("not detected"))));
-    md.push_str(&format!("**Gate verdict:** **{}**  \n**Readiness:** **{}**  \n", md_text(verdict), md_text(&score_text(score))));
-    md.push_str(&format!("**Provider / model:** {} / {}  \n**LLM usage:** {}  \n", md_text(&rep.provider), md_text(&rep.model), md_text(&llm_line(rep))));
-    md.push_str(&format!("**Mode:** {}  \n**Budget:** {}  \n**Started:** {}  \n\n", if rep.dry_run { "dry-run (no state-changing requests)" } else { "live" }, md_text(&budget_line(rep)), md_text(&rep.started_at)));
+    md.push_str(&format!(
+        "**Target:** {}  \n**Run ID:** {}  \n",
+        md_code(&rep.target),
+        md_code(&rep.id)
+    ));
+    md.push_str(&format!(
+        "**Architecture:** {}  \n",
+        md_text(rep.app_architecture.as_deref().unwrap_or("not detected"))
+    ));
+    md.push_str(&format!(
+        "**Gate verdict:** **{}**  \n**Readiness:** **{}**  \n",
+        md_text(verdict),
+        md_text(&score_text(score))
+    ));
+    md.push_str(&format!(
+        "**Provider / model:** {} / {}  \n**LLM usage:** {}  \n",
+        md_text(&rep.provider),
+        md_text(&rep.model),
+        md_text(&llm_line(rep))
+    ));
+    md.push_str(&format!(
+        "**Mode:** {}  \n**Budget:** {}  \n**Started:** {}  \n\n",
+        if rep.dry_run {
+            "dry-run (no state-changing requests)"
+        } else {
+            "live"
+        },
+        md_text(&budget_line(rep)),
+        md_text(&rep.started_at)
+    ));
     md.push_str(&format!(
         "| Metric | Value |\n| :--- | :--- |\n| Routes discovered | {} |\n| Cases | {} |\n| PASS / FAIL / WARN | {} / {} / {} |\n| INCONCLUSIVE / BLOCKED / SKIPPED | {} / {} / {} |\n| Defects | {} |\n| Sign-off | {} |\n| Requester egress IP | {} |\n\n",
         rep.discovered_routes.len(), rep.executed_results.len(), count(rep, "PASS"), count(rep, "FAIL"), count(rep, "WARN"), count(rep, "INCONCLUSIVE"), count(rep, "BLOCKED"), count(rep, "SKIPPED"),
@@ -322,25 +479,60 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
 
     if let Some(l) = &rep.evidence_ledger {
         md.push_str("## Evidence ledger\n\n");
-        md.push_str(&format!("{}\n\n_Verdict basis: {}_\n\n", md_text(&l.executive_summary), md_text(&l.verdict_basis)));
+        md.push_str(&format!(
+            "{}\n\n_Verdict basis: {}_\n\n",
+            md_text(&l.executive_summary),
+            md_text(&l.verdict_basis)
+        ));
         if let Some(s) = &l.ai_summary {
             md.push_str(&format!("> AI-generated, advisory: {}\n\n", md_text(s)));
         }
-        md.push_str("| Pillar | Score | Claim | Cases | Evidence |\n| :--- | :--- | :--- | :--- | :--- |\n");
+        md.push_str(
+            "| Pillar | Score | Claim | Cases | Evidence |\n| :--- | :--- | :--- | :--- | :--- |\n",
+        );
         for p in &l.pillars {
-            md.push_str(&format!("| {} | {} | {} | {} | {} |\n", md_text(&p.name), md_text(&score_text(p.score)), md_text(&p.claim), md_text(&p.case_ids.join(", ")), md_text(&p.evidence_files.join(", "))));
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                md_text(&p.name),
+                md_text(&score_text(p.score)),
+                md_text(&p.claim),
+                md_text(&p.case_ids.join(", ")),
+                md_text(&p.evidence_files.join(", "))
+            ));
         }
         md.push_str("\n| Technique | Planned | Pass | Warn | Fail | Inconclusive | Blocked | Not run | Flaky |\n| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
         for c in &l.coverage {
-            md.push_str(&format!("| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n", md_code(&c.technique), c.planned, c.pass, c.warn, c.fail, c.inconclusive, c.blocked, c.skipped, c.flaky));
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                md_code(&c.technique),
+                c.planned,
+                c.pass,
+                c.warn,
+                c.fail,
+                c.inconclusive,
+                c.blocked,
+                c.skipped,
+                c.flaky
+            ));
         }
         md.push_str("\n### Claims\n\n");
         for c in &l.claims {
-            md.push_str(&format!("- **{}** {} (cases: {}; evidence: {})\n", md_text(&c.status), md_text(&c.claim), md_text(&c.case_ids.join(", ")), md_text(&c.evidence_files.join(", "))));
+            md.push_str(&format!(
+                "- **{}** {} (cases: {}; evidence: {})\n",
+                md_text(&c.status),
+                md_text(&c.claim),
+                md_text(&c.case_ids.join(", ")),
+                md_text(&c.evidence_files.join(", "))
+            ));
         }
         md.push_str("\n### Exit criteria\n\n");
         for e in &l.exit_criteria_checklist {
-            md.push_str(&format!("- [{}] {} - {}\n", if e.met { "x" } else { " " }, md_text(&e.criterion), md_text(&e.details)));
+            md.push_str(&format!(
+                "- [{}] {} - {}\n",
+                if e.met { "x" } else { " " },
+                md_text(&e.criterion),
+                md_text(&e.details)
+            ));
         }
         md.push('\n');
     }
@@ -349,12 +541,23 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
     for c in &rep.executed_results {
         md.push_str(&format!(
             "| {} | {} | {} | {} | **{}**{} | {} | {} ms |\n",
-            md_code(&c.case_id), md_code(&c.method), md_code(&c.component), md_code(&c.technique), md_text(&c.status), if c.flaky { " (flaky)" } else { "" }, status_code_text(c), c.latency_ms
+            md_code(&c.case_id),
+            md_code(&c.method),
+            md_code(&c.component),
+            md_code(&c.technique),
+            md_text(&c.status),
+            if c.flaky { " (flaky)" } else { "" },
+            status_code_text(c),
+            c.latency_ms
         ));
     }
     md.push_str("\n### Assertions and reproduction commands\n\n");
     for c in &rep.executed_results {
-        md.push_str(&format!("**{} - {}**\n\n", md_text(&c.case_id), md_text(&c.title)));
+        md.push_str(&format!(
+            "**{} - {}**\n\n",
+            md_text(&c.case_id),
+            md_text(&c.title)
+        ));
         if let Some(r) = &c.failure_reason {
             md.push_str(&format!("{}\n\n", md_text(r)));
         }
@@ -369,11 +572,20 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
         for d in &rep.triaged_defects {
             md.push_str(&format!(
                 "| **{}** {} | {} | {} | {} | {} |\n",
-                md_text(&d.severity.to_uppercase()), md_text(&d.priority), md_text(&d.title), md_text(&d.owasp_category), md_text(&d.case_ids.join(", ")), md_text(&d.recommended_fix)
+                md_text(&d.severity.to_uppercase()),
+                md_text(&d.priority),
+                md_text(&d.title),
+                md_text(&d.owasp_category),
+                md_text(&d.case_ids.join(", ")),
+                md_text(&d.recommended_fix)
             ));
         }
         for d in rep.triaged_defects.iter().filter(|d| d.ai_note.is_some()) {
-            md.push_str(&format!("\n> AI note on {} (advisory): {}\n", md_text(&d.id), md_text(d.ai_note.as_deref().unwrap_or(""))));
+            md.push_str(&format!(
+                "\n> AI note on {} (advisory): {}\n",
+                md_text(&d.id),
+                md_text(d.ai_note.as_deref().unwrap_or(""))
+            ));
         }
         md.push('\n');
     }
@@ -382,7 +594,15 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
     for r in &rep.discovered_routes {
         md.push_str(&format!(
             "| {} | {} | {} | {} | {} |\n",
-            md_code(&r.method), md_code(&r.path), md_text(r.title.as_deref().unwrap_or("-")), if r.status_code == 0 { "not probed".to_string() } else { r.status_code.to_string() }, md_text(&r.source)
+            md_code(&r.method),
+            md_code(&r.path),
+            md_text(r.title.as_deref().unwrap_or("-")),
+            if r.status_code == 0 {
+                "not probed".to_string()
+            } else {
+                r.status_code.to_string()
+            },
+            md_text(&r.source)
         ));
     }
     md.push_str("\n---\n*Generated by ReadyHai.*\n");
@@ -403,7 +623,17 @@ pub fn generate_agent_sarif_report(rep: &AgentRunReport) -> serde_json::Value {
     let mut rules: Vec<serde_json::Value> = vec![];
     let mut results = vec![];
     for d in &rep.triaged_defects {
-        let slug: String = d.owasp_category.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '-' }).collect();
+        let slug: String = d
+            .owasp_category
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_uppercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect();
         let rule_id = format!("READYHAI-{}", slug.trim_matches('-'));
         let idx = match rules.iter().position(|r| r["id"] == rule_id) {
             Some(i) => i,
@@ -447,7 +677,10 @@ pub fn generate_agent_junit_report(rep: &AgentRunReport) -> String {
     let rs = &rep.executed_results;
     let failures = rs.iter().filter(|c| c.status == "FAIL").count();
     let errors = rs.iter().filter(|c| c.status == "BLOCKED").count();
-    let skipped = rs.iter().filter(|c| c.status == "SKIPPED" || c.status == "INCONCLUSIVE").count();
+    let skipped = rs
+        .iter()
+        .filter(|c| c.status == "SKIPPED" || c.status == "INCONCLUSIVE")
+        .count();
     let time: f64 = rs.iter().map(|c| c.latency_ms as f64 / 1000.0).sum();
     let mut xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuite name=\"ReadyHai QA Agent\" tests=\"{}\" failures=\"{failures}\" errors=\"{errors}\" skipped=\"{skipped}\" time=\"{time:.3}\">\n",
@@ -460,22 +693,49 @@ pub fn generate_agent_junit_report(rep: &AgentRunReport) -> String {
     if let Some(g) = rep.allowlist_guidance.as_deref().filter(|s| !s.is_empty()) {
         sysout.push(format!("allowlist guidance: {g}"));
     }
-    xml.push_str(&format!("  <system-out>{}</system-out>\n", xml_escape(&sysout.join("\n"))));
+    xml.push_str(&format!(
+        "  <system-out>{}</system-out>\n",
+        xml_escape(&sysout.join("\n"))
+    ));
     for c in rs {
         let name = xml_escape(&format!("{}: {}", c.case_id, c.title));
         let class = xml_escape(&c.technique);
         let time = c.latency_ms as f64 / 1000.0;
         let reason = c.failure_reason.as_deref().unwrap_or("");
         let body = match c.status.as_str() {
-            "FAIL" => format!("<failure message=\"{}\" type=\"{}\">{}</failure>", xml_escape(if reason.is_empty() { "assertion failed" } else { reason }), xml_escape(c.oracle.as_ref().and_then(|o| o.first_fail()).map(|k| k.code.as_str()).unwrap_or("assertion")), xml_escape(&c.reproduction_curl)),
-            "BLOCKED" => format!("<error message=\"{}\" type=\"transport\">{}</error>", xml_escape(reason), xml_escape(&c.reproduction_curl)),
+            "FAIL" => format!(
+                "<failure message=\"{}\" type=\"{}\">{}</failure>",
+                xml_escape(if reason.is_empty() {
+                    "assertion failed"
+                } else {
+                    reason
+                }),
+                xml_escape(
+                    c.oracle
+                        .as_ref()
+                        .and_then(|o| o.first_fail())
+                        .map(|k| k.code.as_str())
+                        .unwrap_or("assertion")
+                ),
+                xml_escape(&c.reproduction_curl)
+            ),
+            "BLOCKED" => format!(
+                "<error message=\"{}\" type=\"transport\">{}</error>",
+                xml_escape(reason),
+                xml_escape(&c.reproduction_curl)
+            ),
             "SKIPPED" => format!("<skipped message=\"{}\"/>", xml_escape(reason)),
-            "INCONCLUSIVE" => format!("<skipped message=\"{}\"/>", xml_escape(&format!("inconclusive: {reason}"))),
+            "INCONCLUSIVE" => format!(
+                "<skipped message=\"{}\"/>",
+                xml_escape(&format!("inconclusive: {reason}"))
+            ),
             _ if !reason.is_empty() => format!("<system-out>{}</system-out>", xml_escape(reason)),
             _ => String::new(),
         };
         if body.is_empty() {
-            xml.push_str(&format!("  <testcase classname=\"{class}\" name=\"{name}\" time=\"{time:.3}\"/>\n"));
+            xml.push_str(&format!(
+                "  <testcase classname=\"{class}\" name=\"{name}\" time=\"{time:.3}\"/>\n"
+            ));
         } else {
             xml.push_str(&format!("  <testcase classname=\"{class}\" name=\"{name}\" time=\"{time:.3}\">\n    {body}\n  </testcase>\n"));
         }
@@ -484,7 +744,11 @@ pub fn generate_agent_junit_report(rep: &AgentRunReport) -> String {
     xml
 }
 
-pub fn generate_agent_report_formats(rep: &AgentRunReport, dir: &std::path::Path, formats: &[String]) -> anyhow::Result<Vec<std::path::PathBuf>> {
+pub fn generate_agent_report_formats(
+    rep: &AgentRunReport,
+    dir: &std::path::Path,
+    formats: &[String],
+) -> anyhow::Result<Vec<std::path::PathBuf>> {
     std::fs::create_dir_all(dir)?;
     let mut out = vec![];
     for f in formats {
@@ -492,8 +756,14 @@ pub fn generate_agent_report_formats(rep: &AgentRunReport, dir: &std::path::Path
             "html" => ("readyhai-report.html", generate_agent_html_report(rep)),
             "json" => ("readyhai-report.json", serde_json::to_string_pretty(rep)?),
             "markdown" | "md" => ("readyhai-report.md", generate_agent_markdown_report(rep)),
-            "sarif" => ("readyhai-report.sarif", serde_json::to_string_pretty(&generate_agent_sarif_report(rep))?),
-            "junit" | "xml" => ("readyhai-report.junit.xml", generate_agent_junit_report(rep)),
+            "sarif" => (
+                "readyhai-report.sarif",
+                serde_json::to_string_pretty(&generate_agent_sarif_report(rep))?,
+            ),
+            "junit" | "xml" => (
+                "readyhai-report.junit.xml",
+                generate_agent_junit_report(rep),
+            ),
             _ => continue,
         };
         let p = dir.join(name);

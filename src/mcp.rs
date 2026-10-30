@@ -34,7 +34,10 @@ fn isolate_stdio() -> Result<(std::fs::File, std::fs::File)> {
     let (rpc_in, rpc_out) = unsafe {
         let (i, o) = (dup(0), dup(1));
         if i < 0 || o < 0 {
-            bail!("cannot duplicate stdio: {}", std::io::Error::last_os_error());
+            bail!(
+                "cannot duplicate stdio: {}",
+                std::io::Error::last_os_error()
+            );
         }
         (std::fs::File::from_raw_fd(i), std::fs::File::from_raw_fd(o))
     };
@@ -76,7 +79,11 @@ fn rpc_err(id: Value, code: i64, msg: &str) -> Value {
 }
 
 pub fn handle(st: &mut State, req: Value) -> Option<Value> {
-    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+    let method = req
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
     let Some(id) = req.get("id").cloned() else {
         // notification (or malformed): never reply
         if method == "notifications/initialized" {
@@ -87,8 +94,15 @@ pub fn handle(st: &mut State, req: Value) -> Option<Value> {
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     let result = match method.as_str() {
         "initialize" => {
-            let want = params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or("");
-            let v = if SUPPORTED.contains(&want) { want } else { SUPPORTED[0] };
+            let want = params
+                .get("protocolVersion")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let v = if SUPPORTED.contains(&want) {
+                want
+            } else {
+                SUPPORTED[0]
+            };
             json!({
                 "protocolVersion": v,
                 "serverInfo": {"name": "readyhai", "version": engine::VERSION},
@@ -102,7 +116,9 @@ pub fn handle(st: &mut State, req: Value) -> Option<Value> {
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             match call_tool(name, &args) {
                 Ok(text) => json!({"content": [{"type": "text", "text": text}], "isError": false}),
-                Err(e) => json!({"content": [{"type": "text", "text": format!("error: {e:#}")}], "isError": true}),
+                Err(e) => {
+                    json!({"content": [{"type": "text", "text": format!("error: {e:#}")}], "isError": true})
+                }
             }
         }
         _ => return Some(rpc_err(id, -32601, &format!("method not found: {method}"))),
@@ -155,7 +171,9 @@ fn call_tool(name: &str, args: &Value) -> Result<String> {
 
 fn under_roots(p: &std::path::Path, roots: &[PathBuf]) -> bool {
     let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    roots.iter().any(|r| r.canonicalize().map(|r| p.starts_with(r)).unwrap_or(false))
+    roots
+        .iter()
+        .any(|r| r.canonicalize().map(|r| p.starts_with(r)).unwrap_or(false))
 }
 
 /// Server-like restrictions shared by MCP and the REST API (`/runs` and `/api/scans`): path/apk
@@ -170,7 +188,10 @@ pub fn precheck(opts: &ScanOpts) -> Result<()> {
     }
     // `openapi` is a URL or a local file; a local file is copied into the run, so it is a read
     // primitive unless it is confined like every other path.
-    let spec_is_url = t.openapi.as_deref().is_some_and(|o| o.starts_with("http://") || o.starts_with("https://"));
+    let spec_is_url = t
+        .openapi
+        .as_deref()
+        .is_some_and(|o| o.starts_with("http://") || o.starts_with("https://"));
     if let Some(o) = t.openapi.as_deref().filter(|_| !spec_is_url) {
         let p = std::path::Path::new(o);
         if p.canonicalize().is_err() || !under_roots(p, &opts.allowed_roots) {
@@ -212,26 +233,45 @@ fn mcp_opts(args: &Value) -> Result<ScanOpts> {
     }
     let profile: Profile = match args.get("profile").and_then(|v| v.as_str()) {
         None => Profile::Quick,
-        Some(p) => serde_json::from_value(json!(p)).map_err(|_| anyhow::anyhow!("profile must be quick|standard|deep"))?,
+        Some(p) => serde_json::from_value(json!(p))
+            .map_err(|_| anyhow::anyhow!("profile must be quick|standard|deep"))?,
     };
     if profile == Profile::Deep && std::env::var("READYHAI_MCP_ALLOW_DEEP").as_deref() != Ok("1") {
-        bail!("deep profile is refused over MCP (set READYHAI_MCP_ALLOW_DEEP=1 on the server to allow)");
+        bail!(
+            "deep profile is refused over MCP (set READYHAI_MCP_ALLOW_DEEP=1 on the server to allow)"
+        );
     }
     let allowed_roots: Vec<PathBuf> = match std::env::var("READYHAI_ALLOWED_ROOTS") {
-        Ok(v) if !v.trim().is_empty() => v.split(':').filter(|s| !s.is_empty()).map(PathBuf::from).collect(),
+        Ok(v) if !v.trim().is_empty() => v
+            .split(':')
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect(),
         _ => vec![std::env::current_dir()?],
     };
     let os = match args.get("os").and_then(|v| v.as_str()) {
-        Some(o) => Some(serde_json::from_value(json!(o)).map_err(|_| anyhow::anyhow!("os must be linux|macos|windows"))?),
+        Some(o) => Some(
+            serde_json::from_value(json!(o))
+                .map_err(|_| anyhow::anyhow!("os must be linux|macos|windows"))?,
+        ),
         None => None,
     };
     Ok(ScanOpts {
         target: target.to_string(),
         profile: Some(profile),
-        openapi: args.get("openapi").and_then(|v| v.as_str()).map(String::from),
+        openapi: args
+            .get("openapi")
+            .and_then(|v| v.as_str())
+            .map(String::from),
         os,
-        device: args.get("device").and_then(|v| v.as_str()).map(String::from),
-        no_tools: args.get("no_tools").and_then(|v| v.as_bool()).unwrap_or(false),
+        device: args
+            .get("device")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        no_tools: args
+            .get("no_tools")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
         scope: std::env::var("READYHAI_SCOPE").ok().map(PathBuf::from),
         plugins: std::env::var("READYHAI_PLUGINS").ok().map(PathBuf::from),
         server: true,
@@ -252,32 +292,77 @@ fn tool_scan(args: &Value) -> Result<String> {
 }
 
 fn trunc(s: &str, n: usize) -> String {
-    if s.chars().count() <= n { s.to_string() } else { format!("{}...", s.chars().take(n).collect::<String>()) }
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        format!("{}...", s.chars().take(n).collect::<String>())
+    }
 }
 
 fn summarize(run: &Run) -> String {
-    let mut s = format!("{UNTRUSTED}\n\nVerdict: {}\n", serde_json::to_value(run.verdict).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default());
+    let mut s = format!(
+        "{UNTRUSTED}\n\nVerdict: {}\n",
+        serde_json::to_value(run.verdict)
+            .ok()
+            .and_then(|v| v.as_str().map(String::from))
+            .unwrap_or_default()
+    );
     for r in &run.reasons {
         s += &format!("- {}\n", trunc(r, 300));
     }
-    let count = |sev: Severity| run.findings.iter().filter(|f| f.severity == sev && f.status != FindingStatus::Suppressed).count();
+    let count = |sev: Severity| {
+        run.findings
+            .iter()
+            .filter(|f| f.severity == sev && f.status != FindingStatus::Suppressed)
+            .count()
+    };
     s += &format!(
         "Findings: critical {}, high {}, medium {}, low {}, info {}\n",
-        count(Severity::Critical), count(Severity::High), count(Severity::Medium), count(Severity::Low), count(Severity::Info)
+        count(Severity::Critical),
+        count(Severity::High),
+        count(Severity::Medium),
+        count(Severity::Low),
+        count(Severity::Info)
     );
-    let bad: Vec<_> = run.checks.iter().filter(|c| c.status.label() != "passed").collect();
+    let bad: Vec<_> = run
+        .checks
+        .iter()
+        .filter(|c| c.status.label() != "passed")
+        .collect();
     if !bad.is_empty() {
         s += "Checks not passed:\n";
         for c in bad {
-            s += &format!("- {}: {}{}\n", c.id, c.status.label(), c.status.reason().map(|r| format!(" ({})", trunc(r, 200))).unwrap_or_default());
+            s += &format!(
+                "- {}: {}{}\n",
+                c.id,
+                c.status.label(),
+                c.status
+                    .reason()
+                    .map(|r| format!(" ({})", trunc(r, 200)))
+                    .unwrap_or_default()
+            );
         }
     }
     let mut fs: Vec<&Finding> = run.findings.iter().collect();
     fs.sort_by(|a, b| b.severity.cmp(&a.severity));
-    s += &format!("Top findings (showing {} of {}):\n", fs.len().min(25), fs.len());
+    s += &format!(
+        "Top findings (showing {} of {}):\n",
+        fs.len().min(25),
+        fs.len()
+    );
     for f in fs.iter().take(25) {
-        s += &format!("- [{}] {} | {} | {} | {} | {}\n", f.severity.as_str(), f.rule, trunc(&f.title, 200), trunc(&f.location, 200),
-            serde_json::to_value(f.status).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default(), f.fingerprint);
+        s += &format!(
+            "- [{}] {} | {} | {} | {} | {}\n",
+            f.severity.as_str(),
+            f.rule,
+            trunc(&f.title, 200),
+            trunc(&f.location, 200),
+            serde_json::to_value(f.status)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default(),
+            f.fingerprint
+        );
     }
     s += &format!("Run id: {}\n", run.id);
     s
@@ -286,12 +371,22 @@ fn summarize(run: &Run) -> String {
 fn tool_findings(args: &Value) -> Result<String> {
     let id = args.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let run = engine::load_run(id)?;
-    let min = args.get("severity_min").and_then(|v| v.as_str()).map(Severity::parse);
+    let min = args
+        .get("severity_min")
+        .and_then(|v| v.as_str())
+        .map(Severity::parse);
     let status: Option<FindingStatus> = match args.get("status").and_then(|v| v.as_str()) {
-        Some(s) => Some(serde_json::from_value(json!(s)).map_err(|_| anyhow::anyhow!("status must be new|existing|suppressed"))?),
+        Some(s) => Some(
+            serde_json::from_value(json!(s))
+                .map_err(|_| anyhow::anyhow!("status must be new|existing|suppressed"))?,
+        ),
         None => None,
     };
-    let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50).min(500) as usize;
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(50)
+        .min(500) as usize;
     let out: Vec<Value> = run
         .findings
         .iter()
@@ -305,7 +400,10 @@ fn tool_findings(args: &Value) -> Result<String> {
             v
         })
         .collect();
-    Ok(format!("{UNTRUSTED}\n{}", serde_json::to_string_pretty(&out)?))
+    Ok(format!(
+        "{UNTRUSTED}\n{}",
+        serde_json::to_string_pretty(&out)?
+    ))
 }
 
 #[cfg(test)]
@@ -319,17 +417,40 @@ mod tests {
     #[test]
     fn scripted_session() {
         let mut st = State::default();
-        let r = call(&mut st, json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}));
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26"}}),
+        );
         assert_eq!(r["result"]["protocolVersion"], "2025-03-26");
         assert_eq!(r["result"]["serverInfo"]["name"], "readyhai");
-        let r = call(&mut st, json!({"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999"}}));
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999"}}),
+        );
         assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
-        assert!(handle(&mut st, json!({"jsonrpc":"2.0","method":"notifications/initialized"})).is_none());
-        let r = call(&mut st, json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}));
+        assert!(
+            handle(
+                &mut st,
+                json!({"jsonrpc":"2.0","method":"notifications/initialized"})
+            )
+            .is_none()
+        );
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
+        );
         assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 4);
-        let r = call(&mut st, json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"readyhai_checks","arguments":{}}}));
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"readyhai_checks","arguments":{}}}),
+        );
         assert_eq!(r["result"]["isError"], false);
-        assert!(r["result"]["content"][0]["text"].as_str().unwrap().starts_with('['));
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with('[')
+        );
         let r = call(&mut st, json!({"jsonrpc":"2.0","id":5,"method":"nope"}));
         assert_eq!(r["error"]["code"], -32601);
         let r = call(&mut st, json!({"jsonrpc":"2.0","id":6,"method":"ping"}));
@@ -350,7 +471,10 @@ mod tests {
             assert!(mcp_opts(&json!({"target": "x", "profile": "deep"})).is_err());
         }
         let mut st = State::default();
-        let r = call(&mut st, json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"readyhai_scan","arguments":{"target":"/etc"}}}));
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"readyhai_scan","arguments":{"target":"/etc"}}}),
+        );
         assert_eq!(r["result"]["isError"], true);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -360,7 +484,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rh-scope-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let scope = dir.join("scope.toml");
-        std::fs::write(&scope, "[[hosts]]\nhost = \"app.nonprod.example\"\nenv = \"nonprod\"\n").unwrap();
+        std::fs::write(
+            &scope,
+            "[[hosts]]\nhost = \"app.nonprod.example\"\nenv = \"nonprod\"\n",
+        )
+        .unwrap();
         let mk = |target: &str, openapi: Option<&str>| ScanOpts {
             target: target.into(),
             openapi: openapi.map(Into::into),
@@ -370,14 +498,28 @@ mod tests {
         };
         assert!(precheck(&mk("https://app.nonprod.example/", None)).is_ok());
         // spec URL at an internal metadata IP is an SSRF pivot → refused
-        assert!(precheck(&mk("https://app.nonprod.example/", Some("http://169.254.169.254/latest"))).is_err());
+        assert!(
+            precheck(&mk(
+                "https://app.nonprod.example/",
+                Some("http://169.254.169.254/latest")
+            ))
+            .is_err()
+        );
         // ssh host audit of an internal box needs it listed; an unlisted internal IP is refused
         assert!(precheck(&mk("ssh://root@10.0.0.9", None)).is_err());
+        // an unlisted public web target is allowed for the (read-only) scan; intrusive checks self-skip
+        assert!(precheck(&mk("https://unlisted.example/", None)).is_ok());
         // remote repo clones: public code hosts are allowed with no scope entry (relaxed policy)
         assert!(precheck(&mk("https://github.com/org/x", None)).is_ok());
         assert!(precheck(&mk("git:https://gitlab.com/org/x.git", None)).is_ok());
-        assert!(precheck(&mk("git@github.com:org/x.git", None)).is_ok(), "bare scp-like git@host:path");
-        assert!(precheck(&mk("git:ssh://git@github.com/org/x.git", None)).is_ok(), "ssh:// repo url");
+        assert!(
+            precheck(&mk("git@github.com:org/x.git", None)).is_ok(),
+            "bare scp-like git@host:path"
+        );
+        assert!(
+            precheck(&mk("git:ssh://git@github.com/org/x.git", None)).is_ok(),
+            "ssh:// repo url"
+        );
         // an internal git host (by IP) is refused unless listed under [git] hosts
         assert!(precheck(&mk("git:https://10.0.0.9/x.git", None)).is_err());
         assert!(precheck(&mk("git@10.0.0.9:org/x.git", None)).is_err());
@@ -386,7 +528,13 @@ mod tests {
         assert!(precheck(&mk("git@-oProxyCommand=x:org/x.git", None)).is_err());
         // web targets: a backslash trick that really points at an internal metadata host is refused
         assert!(precheck(&mk("https://10.9.9.9\\@app.nonprod.example/", None)).is_err());
-        assert!(precheck(&mk("https://app.nonprod.example/", Some("http://10.0.0.5/openapi.json"))).is_err());
+        assert!(
+            precheck(&mk(
+                "https://app.nonprod.example/",
+                Some("http://10.0.0.5/openapi.json")
+            ))
+            .is_err()
+        );
         // a local spec file is confined to the allowed roots (it would be copied into the run)
         assert!(precheck(&mk("https://app.nonprod.example/", Some("/etc/passwd"))).is_err());
         let _ = std::fs::remove_dir_all(&dir);
@@ -401,10 +549,17 @@ mod tests {
         }
         let (rpc_in, mut rpc_out) = isolate_stdio().unwrap();
         // a tool that prints to stdout and reads stdin, run the way every scanner child is
-        let o = std::process::Command::new("sh").args(["-c", "echo CHILD-LEAK; cat; echo cat-done >&2"]).status().unwrap();
+        let o = std::process::Command::new("sh")
+            .args(["-c", "echo CHILD-LEAK; cat; echo cat-done >&2"])
+            .status()
+            .unwrap();
         assert!(o.success());
         // our own channel still works and still sees the request that was sent to us
-        let line = std::io::BufReader::new(rpc_in).lines().next().unwrap().unwrap();
+        let line = std::io::BufReader::new(rpc_in)
+            .lines()
+            .next()
+            .unwrap()
+            .unwrap();
         writeln!(rpc_out, "RPC-OUT {line}").unwrap();
         rpc_out.flush().unwrap();
         println!("STRAY-PRINTLN");
@@ -416,21 +571,48 @@ mod tests {
         use std::process::{Command, Stdio};
         let exe = std::env::current_exe().unwrap();
         let mut child = Command::new(exe)
-            .args(["--exact", "mcp::tests::stdio_isolation_child", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                "mcp::tests::stdio_isolation_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env("RH_STDIO_CHILD", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        child.stdin.take().unwrap().write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n").unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+            .unwrap();
         let out = child.wait_with_output().unwrap();
-        let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let (stdout, stderr) = (
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
         assert!(out.status.success(), "child failed:\n{stdout}\n{stderr}");
-        assert!(stdout.contains("RPC-OUT {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"), "request line was swallowed or reply lost:\n{stdout}\n{stderr}");
-        assert!(!stdout.contains("CHILD-LEAK"), "a child wrote to the protocol stream:\n{stdout}");
-        assert!(!stdout.contains("STRAY-PRINTLN"), "println! reached the protocol stream:\n{stdout}");
-        assert!(stderr.contains("CHILD-LEAK") && stderr.contains("STRAY-PRINTLN") && stderr.contains("cat-done"), "{stderr}");
+        assert!(
+            stdout.contains("RPC-OUT {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}"),
+            "request line was swallowed or reply lost:\n{stdout}\n{stderr}"
+        );
+        assert!(
+            !stdout.contains("CHILD-LEAK"),
+            "a child wrote to the protocol stream:\n{stdout}"
+        );
+        assert!(
+            !stdout.contains("STRAY-PRINTLN"),
+            "println! reached the protocol stream:\n{stdout}"
+        );
+        assert!(
+            stderr.contains("CHILD-LEAK")
+                && stderr.contains("STRAY-PRINTLN")
+                && stderr.contains("cat-done"),
+            "{stderr}"
+        );
     }
 
     #[test]
@@ -438,7 +620,11 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rh-spec-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let scope = dir.join("scope.toml");
-        std::fs::write(&scope, "[[hosts]]\nhost = \"app.nonprod.example\"\nenv = \"nonprod\"\n").unwrap();
+        std::fs::write(
+            &scope,
+            "[[hosts]]\nhost = \"app.nonprod.example\"\nenv = \"nonprod\"\n",
+        )
+        .unwrap();
         let spec = dir.join("openapi.json");
         std::fs::write(&spec, "{}").unwrap();
         let opts = ScanOpts {
@@ -450,7 +636,10 @@ mod tests {
             ..Default::default()
         };
         assert!(precheck(&opts).is_ok());
-        let outside = ScanOpts { allowed_roots: vec![std::env::temp_dir().join("rh-no-such-root")], ..opts };
+        let outside = ScanOpts {
+            allowed_roots: vec![std::env::temp_dir().join("rh-no-such-root")],
+            ..opts
+        };
         assert!(precheck(&outside).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

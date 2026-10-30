@@ -82,7 +82,7 @@ Matching is case-insensitive on the URL host (userinfo and port stripped; `*.x` 
 
 | Situation | Result |
 |---|---|
-| Public host, not listed | **Allowed**, treated as `nonprod` (full testing) — no entry needed |
+| Public host, not listed | **Allowed but read-only** (non-intrusive scans, probes, discover, crawl, git clone); intrusive actions need an entry with `env = "nonprod"` |
 | Internal host (loopback, RFC1918, 169.254 metadata, CGNAT, unique-local v6), not listed | **Rejected**: `host 'h' is internal and not listed in scope.toml` |
 | Internal host, listed | Allowed with its `env` (you vouch it is yours) |
 | Host listed `prod` | Allowed; intrusive actions (writes, attacks, load) refused |

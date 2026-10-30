@@ -15,8 +15,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install readyhai
-        # TODO: replace <release-url> with the real release tarball URL.
-        run: curl -sSfL <release-url> | sudo tar xz -C /usr/local/bin
+        run: curl -sSfL https://github.com/deziss/readyhai/releases/latest/download/readyhai-linux-x86_64.tar.gz | sudo tar xz -C /usr/local/bin
 
       - name: Update tool definitions
         run: readyhai tools update

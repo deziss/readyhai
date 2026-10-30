@@ -42,16 +42,36 @@ pub struct Resp {
 
 impl Resp {
     pub fn json(status: u16, v: Value) -> Resp {
-        Resp { status, headers: vec![("Content-Type".into(), "application/json".into())], body: v.to_string().into_bytes(), drop_conn: false }
+        Resp {
+            status,
+            headers: vec![("Content-Type".into(), "application/json".into())],
+            body: v.to_string().into_bytes(),
+            drop_conn: false,
+        }
     }
     pub fn raw(status: u16, ctype: &str, body: Vec<u8>) -> Resp {
-        Resp { status, headers: vec![("Content-Type".into(), ctype.into())], body, drop_conn: false }
+        Resp {
+            status,
+            headers: vec![("Content-Type".into(), ctype.into())],
+            body,
+            drop_conn: false,
+        }
     }
     pub fn empty(status: u16) -> Resp {
-        Resp { status, headers: vec![], body: vec![], drop_conn: false }
+        Resp {
+            status,
+            headers: vec![],
+            body: vec![],
+            drop_conn: false,
+        }
     }
     pub fn dropped() -> Resp {
-        Resp { status: 0, headers: vec![], body: vec![], drop_conn: true }
+        Resp {
+            status: 0,
+            headers: vec![],
+            body: vec![],
+            drop_conn: true,
+        }
     }
     pub fn with_header(mut self, k: &str, v: &str) -> Resp {
         self.headers.push((k.into(), v.into()));
@@ -72,7 +92,10 @@ impl Server {
         self.log.lock().unwrap().clone()
     }
     pub fn count(&self, prefix: &str) -> usize {
-        self.requests().iter().filter(|l| l.starts_with(prefix)).count()
+        self.requests()
+            .iter()
+            .filter(|l| l.starts_with(prefix))
+            .count()
     }
 }
 
@@ -105,9 +128,14 @@ fn read_request(s: &mut TcpStream) -> Option<HReq> {
     let mut first = lines.next()?.split_whitespace();
     let method = first.next()?.to_string();
     let target = first.next()?.to_string();
-    let headers: HashMap<String, String> =
-        lines.filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string())).collect();
-    let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let headers: HashMap<String, String> = lines
+        .filter_map(|l| l.split_once(':'))
+        .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+        .collect();
+    let len: usize = headers
+        .get("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     while buf.len() < head_end + len {
         let n = s.read(&mut tmp).ok()?;
         if n == 0 {
@@ -122,28 +150,57 @@ fn read_request(s: &mut TcpStream) -> Option<HReq> {
         let mut o = Vec::new();
         let mut i = 0;
         while i < b.len() {
-            if b[i] == b'%' && i + 3 <= b.len() {
-                if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    o.push(v);
-                    i += 3;
-                    continue;
-                }
+            if b[i] == b'%'
+                && i + 3 <= b.len()
+                && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+            {
+                o.push(v);
+                i += 3;
+                continue;
             }
             o.push(if b[i] == b'+' { b' ' } else { b[i] });
             i += 1;
         }
         String::from_utf8_lossy(&o).into_owned()
     };
-    let query = q.split('&').filter(|p| !p.is_empty()).map(|p| { let (k, v) = p.split_once('=').unwrap_or((p, "")); (pct(k), pct(v)) }).collect();
-    Some(HReq { method, path: pct(path), query, headers, body })
+    let query = q
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let (k, v) = p.split_once('=').unwrap_or((p, ""));
+            (pct(k), pct(v))
+        })
+        .collect();
+    Some(HReq {
+        method,
+        path: pct(path),
+        query,
+        headers,
+        body,
+    })
 }
 
 fn write_response(s: &mut TcpStream, r: Resp) {
     if r.drop_conn {
         return; // dropping the stream closes it without a response
     }
-    let reason = match r.status { 200 => "OK", 201 => "Created", 204 => "No Content", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden", 404 => "Not Found", 422 => "Unprocessable Entity", 500 => "Internal Server Error", _ => "X" };
-    let mut h = format!("HTTP/1.1 {} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n", r.status, r.body.len());
+    let reason = match r.status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        422 => "Unprocessable Entity",
+        500 => "Internal Server Error",
+        _ => "X",
+    };
+    let mut h = format!(
+        "HTTP/1.1 {} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        r.status,
+        r.body.len()
+    );
     for (k, v) in &r.headers {
         h.push_str(&format!("{k}: {v}\r\n"));
     }
@@ -169,14 +226,21 @@ pub fn serve(handler: impl Fn(&HReq) -> Resp + Send + Sync + 'static) -> Server 
             let (h, log) = (h.clone(), log2.clone());
             std::thread::spawn(move || {
                 if let Some(req) = read_request(&mut s) {
-                    log.lock().unwrap().push(format!("{} {}", req.method, req.path));
+                    log.lock()
+                        .unwrap()
+                        .push(format!("{} {}", req.method, req.path));
                     let r = h(&req);
                     write_response(&mut s, r);
                 }
             });
         }
     });
-    Server { base: format!("http://{addr}"), log, stop, addr }
+    Server {
+        base: format!("http://{addr}"),
+        log,
+        stop,
+        addr,
+    }
 }
 
 // ------------------------------------------------------------------ orders API (port of server.py)
@@ -203,18 +267,33 @@ pub struct Orders {
 impl Orders {
     pub fn new(opts: Opts) -> Arc<Orders> {
         let mut m = BTreeMap::new();
-        for (id, item, qty, total, owner) in [(1, "keyboard", 2, 20, "alice"), (2, "monitor", 1, 10, "alice"), (3, "mouse", 3, 30, "bob")] {
+        for (id, item, qty, total, owner) in [
+            (1, "keyboard", 2, 20, "alice"),
+            (2, "monitor", 1, 10, "alice"),
+            (3, "mouse", 3, 30, "bob"),
+        ] {
             m.insert(id, json!({"id": id, "item": item, "qty": qty, "total": total, "note": "", "owner": owner}));
         }
-        Arc::new(Orders { orders: Mutex::new(m), next: Mutex::new(4), opts, flaky_calls: AtomicUsize::new(0) })
+        Arc::new(Orders {
+            orders: Mutex::new(m),
+            next: Mutex::new(4),
+            opts,
+            flaky_calls: AtomicUsize::new(0),
+        })
     }
 
     fn wrap(&self, v: Value) -> Value {
-        if self.opts.envelope { json!({"data": v}) } else { v }
+        if self.opts.envelope {
+            json!({"data": v})
+        } else {
+            v
+        }
     }
 
     fn validate(b: &Option<Value>) -> Option<String> {
-        let Some(Value::Object(o)) = b else { return Some("body must be an object".into()) };
+        let Some(Value::Object(o)) = b else {
+            return Some("body must be an object".into());
+        };
         for f in ["item", "qty"] {
             if o.get(f).map(|v| v.is_null()).unwrap_or(true) {
                 return Some(format!("missing {f}"));
@@ -227,17 +306,22 @@ impl Orders {
             Some(q) if (1..=100).contains(&q) && !o["qty"].is_boolean() => {}
             _ => return Some("qty must be an integer 1..100".into()),
         }
-        if let Some(n) = o.get("note") {
-            if !n.is_null() && !n.is_string() {
-                return Some("note must be a string".into());
-            }
+        if let Some(n) = o.get("note")
+            && !n.is_null()
+            && !n.is_string()
+        {
+            return Some("note must be a string".into());
         }
         None
     }
 
     pub fn handle(&self, r: &HReq) -> Resp {
         let m = r.method.as_str();
-        let p = if r.path.len() > 1 { r.path.trim_end_matches('/') } else { r.path.as_str() };
+        let p = if r.path.len() > 1 {
+            r.path.trim_end_matches('/')
+        } else {
+            r.path.as_str()
+        };
         let body = r.json();
         if matches!(m, "POST" | "PUT" | "PATCH") && !r.body.is_empty() && body.is_none() {
             return Resp::json(400, json!({"error": "invalid json"}));
@@ -278,17 +362,31 @@ impl Orders {
             }
             _ => {}
         }
-        let Some(user) = r.user() else { return Resp::json(401, json!({"error": "unauthorized"})) };
+        let Some(user) = r.user() else {
+            return Resp::json(401, json!({"error": "unauthorized"}));
+        };
         if p == "/orders" {
             if m == "GET" {
-                let (limit, page) = (r.query.get("limit").map(|v| v.parse::<i64>()), r.query.get("page").map(|v| v.parse::<i64>()));
+                let (limit, page) = (
+                    r.query.get("limit").map(|v| v.parse::<i64>()),
+                    r.query.get("page").map(|v| v.parse::<i64>()),
+                );
                 if matches!(limit, Some(Err(_))) || matches!(page, Some(Err(_))) {
                     return Resp::json(400, json!({"error": "limit/page must be integers"}));
                 }
-                if limit.map(|l| l.unwrap() < 1).unwrap_or(false) || page.map(|p| p.unwrap() < 1).unwrap_or(false) {
+                if limit.map(|l| l.unwrap() < 1).unwrap_or(false)
+                    || page.map(|p| p.unwrap() < 1).unwrap_or(false)
+                {
                     return Resp::json(400, json!({"error": "limit/page must be >= 1"}));
                 }
-                let rows: Vec<Value> = self.orders.lock().unwrap().values().filter(|o| user == "admin" || o["owner"] == user).cloned().collect();
+                let rows: Vec<Value> = self
+                    .orders
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .filter(|o| user == "admin" || o["owner"] == user)
+                    .cloned()
+                    .collect();
                 return Resp::json(200, self.wrap(Value::Array(rows)));
             }
             if m == "POST" {
@@ -296,7 +394,11 @@ impl Orders {
                     return Resp::json(422, json!({"error": e}));
                 }
                 let b = body.unwrap();
-                let note = b.get("note").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                let note = b
+                    .get("note")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if note.len() > 100 {
                     return Resp::json(500, json!({"error": "internal server error"})); // BUG: unhandled
                 }
@@ -308,13 +410,18 @@ impl Orders {
                 *next += 1;
                 let o = json!({"id": id, "item": b["item"], "qty": b["qty"], "total": b["qty"].as_i64().unwrap() * 10, "note": note, "owner": user});
                 self.orders.lock().unwrap().insert(id, o.clone());
-                return Resp::json(201, self.wrap(o)).with_header("Location", &format!("/orders/{id}"));
+                return Resp::json(201, self.wrap(o))
+                    .with_header("Location", &format!("/orders/{id}"));
             }
         }
         if let Some(rest) = p.strip_prefix("/orders/") {
-            let Ok(oid) = rest.parse::<u64>() else { return Resp::json(400, json!({"error": "bad id"})) };
+            let Ok(oid) = rest.parse::<u64>() else {
+                return Resp::json(400, json!({"error": "bad id"}));
+            };
             let mut orders = self.orders.lock().unwrap();
-            let Some(o) = orders.get(&oid).cloned() else { return Resp::json(404, json!({"error": "not found"})) };
+            let Some(o) = orders.get(&oid).cloned() else {
+                return Resp::json(404, json!({"error": "not found"}));
+            };
             match m {
                 "GET" => {
                     let mut out = o.clone();
@@ -334,7 +441,11 @@ impl Orders {
                         return Resp::json(422, json!({"error": e}));
                     }
                     let b = body.unwrap();
-                    let note = b.get("note").and_then(|n| n.as_str()).unwrap_or("").to_string();
+                    let note = b
+                        .get("note")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string();
                     if note.len() > 100 {
                         return Resp::json(422, json!({"error": "note too long"}));
                     }

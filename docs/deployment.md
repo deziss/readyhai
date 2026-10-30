@@ -24,7 +24,7 @@ docker compose up -d
 curl http://127.0.0.1:8080/health
 ```
 
-Compose does not pass `READYHAI_SCOPE` or `READYHAI_PLUGINS`; add them to `.env` (and mount the files) to scan web targets through the API. Without a scope file, every web target is refused in server mode.
+Compose does not pass `READYHAI_SCOPE` or `READYHAI_PLUGINS`; add them to `.env` (and mount the files) to scan web targets through the API. Without a scope file, public web targets still work read-only and internal hosts are refused; list a host with `env = "nonprod"` for intrusive actions.
 
 ### Volume-subpath trick
 

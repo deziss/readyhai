@@ -20,3 +20,6 @@ hard_fail = [
   "qa.api.server_error",
   "qa.api.crash_on_input",
 ]
+# A required check (native, or one whose tool image is present) that ends Errored fails the gate.
+# Skipped checks are unaffected. Set false to downgrade to WARN.
+errored_fails = true

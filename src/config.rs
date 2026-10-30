@@ -61,6 +61,8 @@ impl TargetConfig {
             return Ok(None);
         }
         let text = std::fs::read_to_string(path)?;
-        Ok(Some(toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?))
+        Ok(Some(
+            toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?,
+        ))
     }
 }

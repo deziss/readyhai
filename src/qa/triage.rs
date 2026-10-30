@@ -3,8 +3,12 @@ use super::model::*;
 use crate::model::Severity;
 use std::collections::BTreeMap;
 
-const AUTH_KW: [&str; 7] = ["auth", "login", "password", "token", "admin", "session", "oauth"];
-const PII_KW: [&str; 8] = ["user", "account", "profile", "email", "customer", "payment", "billing", "invoice"];
+const AUTH_KW: [&str; 7] = [
+    "auth", "login", "password", "token", "admin", "session", "oauth",
+];
+const PII_KW: [&str; 8] = [
+    "user", "account", "profile", "email", "customer", "payment", "billing", "invoice",
+];
 
 fn is_write(component: &str) -> bool {
     let m = component.split_whitespace().next().unwrap_or("");
@@ -41,7 +45,10 @@ fn merge_into(a: &mut Defect, b: Defect) {
             a.evidence.push(e);
         }
     }
-    a.reproduced = (a.reproduced.0 + b.reproduced.0, a.reproduced.1 + b.reproduced.1);
+    a.reproduced = (
+        a.reproduced.0 + b.reproduced.0,
+        a.reproduced.1 + b.reproduced.1,
+    );
     if b.severity > a.severity {
         a.severity = b.severity;
     }
@@ -64,7 +71,11 @@ pub fn server_error_signature(actual: &str) -> Option<String> {
         return None;
     }
     // "HTTP 500 (alice)" -> status only: the role is not part of the root cause
-    let status = head.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+    let status = head
+        .split_whitespace()
+        .take(2)
+        .collect::<Vec<_>>()
+        .join(" ");
     Some(format!("{status} {}", crate::logs::signature(body)))
 }
 
@@ -77,7 +88,15 @@ pub fn triage(col: &mut QaCollector) {
     let mut by_key: BTreeMap<(String, String, String), usize> = BTreeMap::new();
     let mut ds: Vec<Defect> = vec![];
     for d in old {
-        let key = (d.rule.clone(), d.component.clone(), if per_item_rule(&d.rule) { d.fp_key.clone() } else { String::new() });
+        let key = (
+            d.rule.clone(),
+            d.component.clone(),
+            if per_item_rule(&d.rule) {
+                d.fp_key.clone()
+            } else {
+                String::new()
+            },
+        );
         let old_id = d.id.clone();
         if let Some(&i) = by_key.get(&key) {
             merge_into(&mut ds[i], d);
@@ -93,10 +112,10 @@ pub fn triage(col: &mut QaCollector) {
     //    "HTTP 500 (role)", which would fold unrelated failures into one defect)
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, d) in ds.iter().enumerate() {
-        if d.rule == "qa.api.server_error" {
-            if let Some(sig) = server_error_signature(&d.actual) {
-                groups.entry(sig).or_default().push(i);
-            }
+        if d.rule == "qa.api.server_error"
+            && let Some(sig) = server_error_signature(&d.actual)
+        {
+            groups.entry(sig).or_default().push(i);
         }
     }
     let mut dead: Vec<bool> = vec![false; ds.len()];
@@ -116,14 +135,21 @@ pub fn triage(col: &mut QaCollector) {
         }
         let h = &mut ds[head];
         h.title = format!("Same server error on {} endpoints", comps.len());
-        h.actual = format!("{}\nAffected: {}", h.actual.lines().next().unwrap_or(""), comps.join(", "));
+        h.actual = format!(
+            "{}\nAffected: {}",
+            h.actual.lines().next().unwrap_or(""),
+            comps.join(", ")
+        );
         h.component = comps.join(", ");
         // fp_key stays the first member's, so the fingerprint still matches its Finding.
     }
 
     // 3. priority, ordering, ids
-    let mut kept: Vec<(usize, Defect)> =
-        ds.into_iter().enumerate().filter(|(i, _)| !dead[*i]).collect();
+    let mut kept: Vec<(usize, Defect)> = ds
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !dead[*i])
+        .collect();
     for (_, d) in kept.iter_mut() {
         d.priority = priority_for(d.severity, &d.component);
     }
@@ -203,16 +229,37 @@ mod tests {
     fn root_cause_merge_and_priority() {
         let mut c = QaCollector::default();
         for p in ["/a", "/b", "/c"] {
-            c.defects.push(defect("qa.api.server_error", &format!("GET {p}"), Severity::Medium,
-                &format!("HTTP 500 (alice); body: SQLSTATE 42P01 relation \"t{}\" missing", p.len() + 7)));
+            c.defects.push(defect(
+                "qa.api.server_error",
+                &format!("GET {p}"),
+                Severity::Medium,
+                &format!(
+                    "HTTP 500 (alice); body: SQLSTATE 42P01 relation \"t{}\" missing",
+                    p.len() + 7
+                ),
+            ));
         }
-        c.defects.push(defect("qa.api.authz_missing", "POST /login", Severity::High, "200"));
-        c.defects.push(defect("qa.api.error_leak", "GET /x", Severity::Low, "trace"));
+        c.defects.push(defect(
+            "qa.api.authz_missing",
+            "POST /login",
+            Severity::High,
+            "200",
+        ));
+        c.defects.push(defect(
+            "qa.api.error_leak",
+            "GET /x",
+            Severity::Low,
+            "trace",
+        ));
         triage(&mut c);
         assert_eq!(c.defects.len(), 3);
         assert_eq!(c.defects[0].priority, Priority::P1);
         assert_eq!(c.defects[0].id, "D-001");
-        let m = c.defects.iter().find(|d| d.title.starts_with("Same server error on 3")).unwrap();
+        let m = c
+            .defects
+            .iter()
+            .find(|d| d.title.starts_with("Same server error on 3"))
+            .unwrap();
         assert_eq!(m.priority, Priority::P3);
         assert_eq!(c.defects[2].priority, Priority::P4);
     }
@@ -220,22 +267,46 @@ mod tests {
     #[test]
     fn same_status_different_body_is_not_merged() {
         let mut c = QaCollector::default();
-        for (p, body) in [("/a", "division by zero"), ("/b", "relation \"orders\" does not exist"), ("/c", "connection refused"), ("/d", "key error")] {
-            c.defects.push(defect("qa.api.server_error", &format!("GET {p}"), Severity::High, &format!("HTTP 500 (alice); body: {body}")));
+        for (p, body) in [
+            ("/a", "division by zero"),
+            ("/b", "relation \"orders\" does not exist"),
+            ("/c", "connection refused"),
+            ("/d", "key error"),
+        ] {
+            c.defects.push(defect(
+                "qa.api.server_error",
+                &format!("GET {p}"),
+                Severity::High,
+                &format!("HTTP 500 (alice); body: {body}"),
+            ));
         }
         triage(&mut c);
-        assert_eq!(c.defects.len(), 4, "four distinct root causes stay four defects");
+        assert_eq!(
+            c.defects.len(),
+            4,
+            "four distinct root causes stay four defects"
+        );
         // no body evidence at all: never merged either
         let mut c = QaCollector::default();
         for p in ["/a", "/b", "/c"] {
-            c.defects.push(defect("qa.api.server_error", &format!("GET {p}"), Severity::High, "HTTP 500 (alice); body: "));
+            c.defects.push(defect(
+                "qa.api.server_error",
+                &format!("GET {p}"),
+                Severity::High,
+                "HTTP 500 (alice); body: ",
+            ));
         }
         triage(&mut c);
         assert_eq!(c.defects.len(), 3);
         // same body on 3 endpoints (different ids/numbers) and different roles: one root cause
         let mut c = QaCollector::default();
         for (p, role, n) in [("/a", "alice", 11), ("/b", "bob", 12), ("/c", "anon", 13)] {
-            c.defects.push(defect("qa.api.server_error", &format!("GET {p}"), Severity::High, &format!("HTTP 500 ({role}); body: [python_traceback] KeyError: 'order_{n}'")));
+            c.defects.push(defect(
+                "qa.api.server_error",
+                &format!("GET {p}"),
+                Severity::High,
+                &format!("HTTP 500 ({role}); body: [python_traceback] KeyError: 'order_{n}'"),
+            ));
         }
         triage(&mut c);
         assert_eq!(c.defects.len(), 1);
@@ -244,7 +315,10 @@ mod tests {
 
     #[test]
     fn signature_parsing() {
-        assert_eq!(server_error_signature("HTTP 500 (alice); body: boom 42").unwrap(), "HTTP 500 boom <*>");
+        assert_eq!(
+            server_error_signature("HTTP 500 (alice); body: boom 42").unwrap(),
+            "HTTP 500 boom <*>"
+        );
         assert!(server_error_signature("HTTP 500 (alice)").is_none());
         assert!(server_error_signature("HTTP 500 (alice); body:   ").is_none());
     }
@@ -265,7 +339,10 @@ mod tests {
     #[test]
     fn priority_matrix() {
         assert_eq!(priority_for(Severity::High, "GET /status"), Priority::P2);
-        assert_eq!(priority_for(Severity::High, "DELETE /things/{id}"), Priority::P1);
+        assert_eq!(
+            priority_for(Severity::High, "DELETE /things/{id}"),
+            Priority::P1
+        );
         assert_eq!(priority_for(Severity::Medium, "GET /auth/me"), Priority::P2);
         assert_eq!(priority_for(Severity::Info, "GET /a"), Priority::P4);
     }

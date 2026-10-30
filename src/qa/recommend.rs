@@ -34,7 +34,10 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         }
     }
 
-    let mut counts = ResultCounts { planned: col.cases.len(), ..Default::default() };
+    let mut counts = ResultCounts {
+        planned: col.cases.len(),
+        ..Default::default()
+    };
     for r in &col.results {
         match r.status {
             ResultStatus::Pass => counts.passed += 1,
@@ -47,13 +50,27 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
     counts.executed = counts.passed + counts.failed + counts.flaky;
 
     let open = |d: &&Defect| d.status != FindingStatus::Suppressed;
-    let open_p1 = col.defects.iter().filter(open).filter(|d| d.priority == Priority::P1).count();
+    let open_p1 = col
+        .defects
+        .iter()
+        .filter(open)
+        .filter(|d| d.priority == Priority::P1)
+        .count();
     let new_sec = run
         .findings
         .iter()
-        .filter(|f| f.status == FindingStatus::New && f.severity >= Severity::High && f.category == Category::Security)
+        .filter(|f| {
+            f.status == FindingStatus::New
+                && f.severity >= Severity::High
+                && f.category == Category::Security
+        })
         .count();
-    let contract = col.defects.iter().filter(open).filter(|d| d.rule == "qa.api.contract_violation").count();
+    let contract = col
+        .defects
+        .iter()
+        .filter(open)
+        .filter(|d| d.rule == "qa.api.contract_violation")
+        .count();
     let roles = qa.roles.names();
     // Distinct CONFIGURED roles that executed role-specific authorization cases. Anonymous /
     // invalid-token cases carry no role, a role whose credential is unset never gets a case, and
@@ -61,7 +78,12 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
     let ran: BTreeSet<&str> = col
         .results
         .iter()
-        .filter(|r| matches!(r.status, ResultStatus::Pass | ResultStatus::Fail | ResultStatus::Flaky))
+        .filter(|r| {
+            matches!(
+                r.status,
+                ResultStatus::Pass | ResultStatus::Fail | ResultStatus::Flaky
+            )
+        })
         .map(|r| r.case_id.as_str())
         .collect();
     let authz_roles: BTreeSet<String> = col
@@ -74,15 +96,31 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         .collect();
     // Failed cases: how many are not explained by any defect, and how many are still open
     // (a failure behind a suppressed defect is an accepted one).
-    let defect_of = |r: &TestResult| r.defect_id.as_deref().and_then(|id| col.defects.iter().find(|d| d.id == id));
-    let failed_unexplained = col.results.iter().filter(|r| r.status == ResultStatus::Fail && defect_of(r).is_none()).count();
+    let defect_of = |r: &TestResult| {
+        r.defect_id
+            .as_deref()
+            .and_then(|id| col.defects.iter().find(|d| d.id == id))
+    };
+    let failed_unexplained = col
+        .results
+        .iter()
+        .filter(|r| r.status == ResultStatus::Fail && defect_of(r).is_none())
+        .count();
     let failed_open = col
         .results
         .iter()
         .filter(|r| r.status == ResultStatus::Fail)
-        .filter(|r| defect_of(r).map(|d| d.status != FindingStatus::Suppressed).unwrap_or(true))
+        .filter(|r| {
+            defect_of(r)
+                .map(|d| d.status != FindingStatus::Suppressed)
+                .unwrap_or(true)
+        })
         .count();
-    let pct = if counts.planned == 0 { 0.0 } else { counts.executed as f64 * 100.0 / counts.planned as f64 };
+    let pct = if counts.planned == 0 {
+        0.0
+    } else {
+        counts.executed as f64 * 100.0 / counts.planned as f64
+    };
 
     let crit = |name: &str, met: bool, blocking: bool, detail: String| ExitCriterion {
         name: name.into(),
@@ -91,7 +129,12 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         detail,
     };
     let exit_criteria = vec![
-        crit("No open P1 defects", open_p1 == 0, true, format!("{open_p1} open P1 defect(s)")),
+        crit(
+            "No open P1 defects",
+            open_p1 == 0,
+            true,
+            format!("{open_p1} open P1 defect(s)"),
+        ),
         crit(
             "No new critical/high security findings",
             new_sec == 0,
@@ -108,7 +151,10 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
             "≥90% of planned cases executed",
             counts.planned > 0 && pct >= 90.0,
             false,
-            format!("{}/{} executed ({pct:.0}%)", counts.executed, counts.planned),
+            format!(
+                "{}/{} executed ({pct:.0}%)",
+                counts.executed, counts.planned
+            ),
         ),
         crit(
             "Every failed case is traced to a defect",
@@ -116,8 +162,21 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
             true,
             format!("{failed_unexplained} failed case(s) without a recorded defect"),
         ),
-        crit("No failed test cases", failed_open == 0, false, format!("{failed_open} open failed case(s) of {} failed", counts.failed)),
-        crit("No flaky tests", counts.flaky == 0, false, format!("{} flaky", counts.flaky)),
+        crit(
+            "No failed test cases",
+            failed_open == 0,
+            false,
+            format!(
+                "{failed_open} open failed case(s) of {} failed",
+                counts.failed
+            ),
+        ),
+        crit(
+            "No flaky tests",
+            counts.flaky == 0,
+            false,
+            format!("{} flaky", counts.flaky),
+        ),
         crit(
             "Authorization tested with ≥2 roles",
             authz_roles.len() >= 2,
@@ -129,7 +188,12 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
                 roles.len()
             ),
         ),
-        crit("API contract violations = 0", contract == 0, false, format!("{contract} violation(s)")),
+        crit(
+            "API contract violations = 0",
+            contract == 0,
+            false,
+            format!("{contract} violation(s)"),
+        ),
     ];
 
     let blocking_unmet = exit_criteria.iter().any(|c| c.blocking && !c.met);
@@ -147,7 +211,12 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         for c in exit_criteria.iter().filter(|c| !c.met) {
             conditions.push(format!("{} ({})", c.name, c.detail));
         }
-        for d in col.defects.iter().filter(open).filter(|d| d.priority == Priority::P2) {
+        for d in col
+            .defects
+            .iter()
+            .filter(open)
+            .filter(|d| d.priority == Priority::P2)
+        {
             conditions.push(format!("Resolve {}: {}", d.id, d.title));
         }
         if run.verdict == Verdict::Warn {
@@ -158,14 +227,27 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
 
     let environment = format!(
         "{} ({})",
-        run.target.url.clone().unwrap_or_else(|| run.target.raw.clone()),
-        if qa.nonprod { "nonprod" } else { "prod/unknown (read-only)" }
+        run.target
+            .url
+            .clone()
+            .unwrap_or_else(|| run.target.raw.clone()),
+        if qa.nonprod {
+            "nonprod"
+        } else {
+            "prod/unknown (read-only)"
+        }
     );
 
     let present: BTreeSet<Area> = col.cases.iter().map(|c| c.area).collect();
     let scope: Vec<String> = present
         .iter()
-        .map(|a| format!("{} ({} cases)", area_label(*a), col.cases.iter().filter(|c| c.area == *a).count()))
+        .map(|a| {
+            format!(
+                "{} ({} cases)",
+                area_label(*a),
+                col.cases.iter().filter(|c| c.area == *a).count()
+            )
+        })
         .collect();
     let mut out_of_scope: Vec<String> = [Area::Ui, Area::Perf, Area::Resilience, Area::Suite]
         .iter()
@@ -184,12 +266,18 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         counts.executed, counts.planned, counts.passed, counts.failed, counts.flaky, counts.blocked
     );
     let open_defects: Vec<&Defect> = col.defects.iter().filter(open).collect();
-    s.push_str(&format!("{} defect(s) are open, {open_p1} of them P1. ", open_defects.len()));
+    s.push_str(&format!(
+        "{} defect(s) are open, {open_p1} of them P1. ",
+        open_defects.len()
+    ));
     if open_defects.is_empty() {
         s.push_str("No defects were recorded. ");
     } else {
-        let top: Vec<String> =
-            open_defects.iter().take(3).map(|d| format!("{} [{:?}] {}", d.id, d.priority, d.title)).collect();
+        let top: Vec<String> = open_defects
+            .iter()
+            .take(3)
+            .map(|d| format!("{} [{:?}] {}", d.id, d.priority, d.title))
+            .collect();
         s.push_str(&format!("Top defects: {}. ", top.join("; ")));
     }
     s.push_str(&format!("Gate verdict is {:?}. ", run.verdict));
@@ -299,15 +387,17 @@ mod tests {
     }
 
     fn qa2() -> QaCtx {
-        let r: Roles = toml::from_str(
-            "[[role]]\nname='a'\nauth='none'\n[[role]]\nname='b'\nauth='none'\n",
-        )
-        .unwrap();
+        let r: Roles =
+            toml::from_str("[[role]]\nname='a'\nauth='none'\n[[role]]\nname='b'\nauth='none'\n")
+                .unwrap();
         QaCtx::new(r, None, None, true)
     }
 
     fn crit<'a>(r: &'a QaReport, name: &str) -> &'a ExitCriterion {
-        r.exit_criteria.iter().find(|c| c.name.starts_with(name)).unwrap_or_else(|| panic!("no criterion {name}"))
+        r.exit_criteria
+            .iter()
+            .find(|c| c.name.starts_with(name))
+            .unwrap_or_else(|| panic!("no criterion {name}"))
     }
 
     fn defect(id: &str, sev: Severity, status: FindingStatus) -> Defect {
@@ -339,9 +429,18 @@ mod tests {
     #[test]
     fn matrix() {
         let q = qa2();
-        assert_eq!(build(good_col(), &run(Verdict::Fail, vec![]), &q, "d").recommendation, Recommendation::NoGo);
-        assert_eq!(build(good_col(), &run(Verdict::Warn, vec![]), &q, "d").recommendation, Recommendation::ConditionalGo);
-        assert_eq!(build(good_col(), &run(Verdict::Pass, vec![]), &q, "d").recommendation, Recommendation::Go);
+        assert_eq!(
+            build(good_col(), &run(Verdict::Fail, vec![]), &q, "d").recommendation,
+            Recommendation::NoGo
+        );
+        assert_eq!(
+            build(good_col(), &run(Verdict::Warn, vec![]), &q, "d").recommendation,
+            Recommendation::ConditionalGo
+        );
+        assert_eq!(
+            build(good_col(), &run(Verdict::Pass, vec![]), &q, "d").recommendation,
+            Recommendation::Go
+        );
         // PASS + unmet non-blocking (flaky)
         let mut c = good_col();
         c.results[0].status = ResultStatus::Flaky;
@@ -350,7 +449,10 @@ mod tests {
         assert!(!r.conditions.is_empty());
         // PASS + no roles -> conditional
         let q0 = QaCtx::new(Roles::default(), None, None, false);
-        assert_eq!(build(good_col(), &run(Verdict::Pass, vec![]), &q0, "d").recommendation, Recommendation::ConditionalGo);
+        assert_eq!(
+            build(good_col(), &run(Verdict::Pass, vec![]), &q0, "d").recommendation,
+            Recommendation::ConditionalGo
+        );
     }
 
     #[test]
@@ -360,7 +462,11 @@ mod tests {
         // two roles ran -> met, and the detail names them
         let r = go(good_col());
         assert!(crit(&r, "Authorization").met);
-        assert!(crit(&r, "Authorization").detail.starts_with("2 distinct role(s)"));
+        assert!(
+            crit(&r, "Authorization")
+                .detail
+                .starts_with("2 distinct role(s)")
+        );
         // anonymous + invalid-token cases only (no role on any case): unmet, even with roles configured
         let mut c = QaCollector::default();
         for id in ["anon", "invalid"] {
@@ -375,11 +481,19 @@ mod tests {
             c.results.push(result(id, ResultStatus::Pass, None));
         }
         let r = go(c);
-        assert!(!crit(&r, "Authorization").met && crit(&r, "Authorization").detail.starts_with("1 distinct role(s)"));
+        assert!(
+            !crit(&r, "Authorization").met
+                && crit(&r, "Authorization")
+                    .detail
+                    .starts_with("1 distinct role(s)")
+        );
         // a configured-but-unset role never got a case; a case that was blocked/skipped did not run
         let mut c = good_col();
         c.results[2].status = ResultStatus::Blocked;
-        assert!(!crit(&go(c), "Authorization").met, "blocked case does not count");
+        assert!(
+            !crit(&go(c), "Authorization").met,
+            "blocked case does not count"
+        );
         let mut c = good_col();
         c.results[1].status = ResultStatus::Skipped;
         assert!(!crit(&go(c), "Authorization").met);
@@ -392,14 +506,19 @@ mod tests {
         c.cases[2].technique = Technique::Positive;
         assert!(!crit(&go(c), "Authorization").met);
         let mut c = good_col();
-        c.cases[2] = case("api.GET./o/{id}.state.bola.b", Technique::StateTransition, Some("b"));
+        c.cases[2] = case(
+            "api.GET./o/{id}.state.bola.b",
+            Technique::StateTransition,
+            Some("b"),
+        );
         c.results[2].case_id = "api.GET./o/{id}.state.bola.b".into();
         assert!(crit(&go(c), "Authorization").met);
         // failed-but-executed cases did run
         let mut c = good_col();
         c.results[1].status = ResultStatus::Fail;
         c.results[1].defect_id = Some("D-1".into());
-        c.defects.push(defect("D-1", Severity::Low, FindingStatus::New));
+        c.defects
+            .push(defect("D-1", Severity::Low, FindingStatus::New));
         assert!(crit(&go(c), "Authorization").met);
     }
 
@@ -424,16 +543,20 @@ mod tests {
         let mut c = good_col();
         c.results[1].status = ResultStatus::Fail;
         c.results[1].defect_id = Some("D-1".into());
-        c.defects.push(defect("D-1", Severity::Low, FindingStatus::New));
+        c.defects
+            .push(defect("D-1", Severity::Low, FindingStatus::New));
         let r = go(c);
         assert!(crit(&r, "Every failed case").met);
-        assert!(!crit(&r, "No failed test cases").met && !crit(&r, "No failed test cases").blocking);
+        assert!(
+            !crit(&r, "No failed test cases").met && !crit(&r, "No failed test cases").blocking
+        );
         assert_eq!(r.recommendation, Recommendation::ConditionalGo);
         // the failure behind a SUPPRESSED defect is an accepted one
         let mut c = good_col();
         c.results[1].status = ResultStatus::Fail;
         c.results[1].defect_id = Some("D-1".into());
-        c.defects.push(defect("D-1", Severity::Low, FindingStatus::Suppressed));
+        c.defects
+            .push(defect("D-1", Severity::Low, FindingStatus::Suppressed));
         let r = go(c);
         assert!(crit(&r, "No failed test cases").met);
         assert_eq!(r.counts.failed, 1, "the raw count still shows it");

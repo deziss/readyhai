@@ -1,8 +1,10 @@
 //! Rules of engagement for network targets (scope.toml).
 //!
-//! Policy (relaxed 2026-10): scope.toml no longer has to list every target.
-//! - A **public** host is allowed without an entry and defaults to `nonprod`
-//!   (full testing), because the user typed a public address they can reach.
+//! Policy (2026-10): scope.toml no longer has to list every target.
+//! - A **public** host is allowed without an entry but is **read-only** (`nonprod = false`):
+//!   non-intrusive actions (scans, probes, discover, crawl, git clone) run, while intrusive ones
+//!   (writes, attack payloads, load, fault injection, agent swarm) need the host listed with
+//!   `env = "nonprod"`.
 //! - An **internal** host (loopback, RFC1918, link-local/metadata, CGNAT,
 //!   unique-local v6) is refused *unless* it is listed in scope.toml. Listing it
 //!   is the user vouching "this private host is mine to test". This keeps the
@@ -34,8 +36,15 @@ pub struct GitCfg {
 }
 
 /// Public code hosts allowed for `git clone` with no scope.toml entry.
-const DEFAULT_GIT_HOSTS: &[&str] =
-    &["github.com", "*.github.com", "gitlab.com", "*.gitlab.com", "bitbucket.org", "codeberg.org", "git.sr.ht"];
+const DEFAULT_GIT_HOSTS: &[&str] = &[
+    "github.com",
+    "*.github.com",
+    "gitlab.com",
+    "*.gitlab.com",
+    "bitbucket.org",
+    "codeberg.org",
+    "git.sr.ht",
+];
 
 /// An IP that must not be reached unless the user explicitly listed its host in
 /// scope.toml: loopback, private, link-local (incl. the 169.254.169.254 cloud
@@ -83,7 +92,9 @@ fn host_matches(host: &str, pattern: &str) -> bool {
     let (host, pat) = (norm_host(host), norm_host(pattern));
     match pat.strip_prefix("*.") {
         Some(sfx) if !sfx.is_empty() => {
-            host.len() > sfx.len() + 1 && host.ends_with(sfx) && host.as_bytes()[host.len() - sfx.len() - 1] == b'.'
+            host.len() > sfx.len() + 1
+                && host.ends_with(sfx)
+                && host.as_bytes()[host.len() - sfx.len() - 1] == b'.'
         }
         _ => host == pat,
     }
@@ -104,7 +115,9 @@ pub fn check_git_host(host: &str, scope: Option<&Scope>) -> Result<()> {
         return Ok(());
     }
     if host_is_internal(&host) {
-        bail!("git host '{host}' is internal and not listed — add it under [git] hosts in scope.toml to clone from it");
+        bail!(
+            "git host '{host}' is internal and not listed — add it under [git] hosts in scope.toml to clone from it"
+        );
     }
     Ok(())
 }
@@ -191,14 +204,20 @@ pub fn set_active(p: &Path) {
 
 /// Scope of the current run: `set_active` path, else READYHAI_SCOPE.
 pub fn active() -> Option<Scope> {
-    let p = ACTIVE.get().cloned().or_else(|| std::env::var("READYHAI_SCOPE").ok().map(Into::into))?;
+    let p = ACTIVE
+        .get()
+        .cloned()
+        .or_else(|| std::env::var("READYHAI_SCOPE").ok().map(Into::into))?;
     Scope::load(&p).ok()
 }
 
 /// Lowercase, no IPv6 brackets, no trailing dot: the form hosts are compared in.
 fn norm_host(h: &str) -> String {
     let h = h.trim().to_ascii_lowercase();
-    let h = h.strip_prefix('[').and_then(|x| x.strip_suffix(']')).unwrap_or(&h);
+    let h = h
+        .strip_prefix('[')
+        .and_then(|x| x.strip_suffix(']'))
+        .unwrap_or(&h);
     h.trim_end_matches('.').to_string()
 }
 
@@ -208,7 +227,10 @@ fn norm_host(h: &str) -> String {
 pub fn parse_web_url(url: &str) -> Result<reqwest::Url> {
     let u = reqwest::Url::parse(url.trim()).map_err(|e| anyhow!("invalid URL: {e}"))?;
     if !matches!(u.scheme(), "http" | "https") {
-        bail!("only http:// and https:// targets are accepted (got '{}')", u.scheme());
+        bail!(
+            "only http:// and https:// targets are accepted (got '{}')",
+            u.scheme()
+        );
     }
     if u.host_str().is_none_or(str::is_empty) {
         bail!("no host in URL");
@@ -243,11 +265,11 @@ pub fn check_host(host: &str, scope: Option<&Scope>, _required: bool) -> Result<
     }
     if host_is_internal(&host) {
         bail!(
-            "host '{host}' is internal and not listed in scope.toml — add it (env = \"nonprod\" for full testing, \"prod\" for read-only) to test it"
+            "host '{host}' is internal and not listed in scope.toml — add `[[hosts]] host = \"{host}\"` (env = \"nonprod\" for full testing, \"prod\" for read-only) to test it"
         );
     }
-    // Public, unlisted: allowed, treated as a nonprod test target.
-    Ok(true)
+    // Public, unlisted: allowed for non-intrusive actions only (read-only).
+    Ok(false)
 }
 
 /// Outcome of [`egress_guard`]: the URL to actually request (normalised, so the client and the
@@ -270,9 +292,20 @@ pub fn egress_guard(url: &str, scope: Option<&Scope>, intrusive: bool) -> Result
     let host = norm_host(u.host_str().unwrap_or_default());
     let nonprod = check_host(&host, scope, true)?;
     if intrusive && !nonprod {
-        bail!("host '{host}' is tagged env = \"prod\" in scope.toml; intrusive actions (writes, attacks, load) are refused on prod hosts");
+        if scope.and_then(|s| s.find(&host)).is_none() {
+            bail!(
+                "host '{host}' is not listed in scope.toml, so it is read-only; intrusive actions (writes, attacks, load, fault injection) are refused. Add `[[hosts]] host = \"{host}\" env = \"nonprod\"` to scope.toml to allow them"
+            );
+        }
+        bail!(
+            "host '{host}' is tagged env = \"prod\" in scope.toml; intrusive actions (writes, attacks, load) are refused on prod hosts"
+        );
     }
-    Ok(Egress { url: u.to_string(), host, nonprod })
+    Ok(Egress {
+        url: u.to_string(),
+        host,
+        nonprod,
+    })
 }
 
 #[cfg(test)]
@@ -285,17 +318,22 @@ mod tests {
 
     #[test]
     fn hosts() {
-        assert_eq!(url_host("https://user:pw@App.Example.com:8443/x?y").unwrap(), "app.example.com");
-        let s = scope("[[hosts]]\nhost='*.nonprod.example'\nenv='nonprod'\n[[hosts]]\nhost='app.example'\nenv='prod'");
+        assert_eq!(
+            url_host("https://user:pw@App.Example.com:8443/x?y").unwrap(),
+            "app.example.com"
+        );
+        let s = scope(
+            "[[hosts]]\nhost='*.nonprod.example'\nenv='nonprod'\n[[hosts]]\nhost='app.example'\nenv='prod'",
+        );
         // listed entries use their env
         assert!(check("https://a.nonprod.example/", Some(&s), true).unwrap());
         assert!(!check("https://app.example/", Some(&s), true).unwrap());
-        // a public host that is not listed is allowed and treated as nonprod (relaxed policy)
-        assert!(check("https://evil.example/", Some(&s), true).unwrap());
-        assert!(check("https://x.unlisted.example/", None, true).unwrap());
-        // a wildcard still does not match the bare suffix or a look-alike (but those are public → nonprod)
-        assert!(check("https://nonprod.example/", Some(&s), true).unwrap());
-        assert!(check("https://anonprod.example/", Some(&s), true).unwrap());
+        // a public host that is not listed is allowed but read-only (nonprod = false)
+        assert!(!check("https://evil.example/", Some(&s), true).unwrap());
+        assert!(!check("https://x.unlisted.example/", None, true).unwrap());
+        // a wildcard still does not match the bare suffix or a look-alike (those are unlisted public → read-only)
+        assert!(!check("https://nonprod.example/", Some(&s), true).unwrap());
+        assert!(!check("https://anonprod.example/", Some(&s), true).unwrap());
     }
 
     #[test]
@@ -313,7 +351,9 @@ mod tests {
         assert!(check("http://169.254.169.254/latest/meta-data/", None, true).is_err());
         assert!(check("http://10.0.0.5:8080/", None, true).is_err());
         // but a listed internal host is allowed with its env
-        let s = scope("[[hosts]]\nhost='10.0.0.5'\nenv='nonprod'\n[[hosts]]\nhost='127.0.0.1'\nenv='prod'");
+        let s = scope(
+            "[[hosts]]\nhost='10.0.0.5'\nenv='nonprod'\n[[hosts]]\nhost='127.0.0.1'\nenv='prod'",
+        );
         assert!(check("http://10.0.0.5:8080/", Some(&s), true).unwrap());
         assert!(!check("http://127.0.0.1/", Some(&s), true).unwrap()); // listed prod → read-only
     }
@@ -336,14 +376,23 @@ mod tests {
     fn host_normalisation() {
         assert_eq!(url_host("http://[::1]:8080/x").unwrap(), "::1");
         assert_eq!(url_host("http://App.Example./").unwrap(), "app.example");
-        let s = scope("[[hosts]]\nhost='APP.example.'\nenv='nonprod'\n[[hosts]]\nhost='[::1]'\nenv='nonprod'");
+        let s = scope(
+            "[[hosts]]\nhost='APP.example.'\nenv='nonprod'\n[[hosts]]\nhost='[::1]'\nenv='nonprod'",
+        );
         assert!(check("http://app.example/", Some(&s), true).unwrap());
         assert!(check("http://[::1]:9/", Some(&s), true).unwrap());
     }
 
     #[test]
     fn only_http_and_https() {
-        for u in ["ftp://app.example/", "file:///etc/passwd", "ssh://app.example", "javascript:alert(1)", "app.example", ""] {
+        for u in [
+            "ftp://app.example/",
+            "file:///etc/passwd",
+            "ssh://app.example",
+            "javascript:alert(1)",
+            "app.example",
+            "",
+        ] {
             assert!(url_host(u).is_err(), "{u}");
         }
         assert!(url_host("HTTPS://app.example").is_ok());
@@ -358,19 +407,30 @@ mod tests {
         // using an internal host that is blocked unless listed: if the parser were fooled into
         // reading `allowed.internal` the request would be allowed; it must read `10.9.9.9` and refuse.
         let s = scope("[[hosts]]\nhost='allowed.internal'\nenv='nonprod'");
-        assert_eq!(url_host("http://10.9.9.9\\@allowed.internal/").unwrap(), "10.9.9.9");
+        assert_eq!(
+            url_host("http://10.9.9.9\\@allowed.internal/").unwrap(),
+            "10.9.9.9"
+        );
         assert!(check("http://10.9.9.9\\@allowed.internal/", Some(&s), true).is_err());
         assert!(egress_guard("http://10.9.9.9\\@allowed.internal/", Some(&s), false).is_err());
         // and the reverse: what looks foreign to a naive parser is really the listed host
         let s = scope("[[hosts]]\nhost='app.example'\nenv='nonprod'");
-        assert_eq!(url_host("http://app.example\\@evil.example/").unwrap(), "app.example");
+        assert_eq!(
+            url_host("http://app.example\\@evil.example/").unwrap(),
+            "app.example"
+        );
         let e = egress_guard("http://app.example\\@evil.example/x", Some(&s), false).unwrap();
         assert_eq!(e.host, "app.example");
         // the normalised URL no longer contains the ambiguous backslash
         assert!(!e.url.contains('\\'), "{}", e.url);
         assert_eq!(url_host(&e.url).unwrap(), "app.example");
         // authority tricks all resolve to the real host
-        for u in ["http://evil.example#@app.example/", "http://evil.example?@app.example/", "http://app.example@evil.example/", "http://app.example:80@evil.example/"] {
+        for u in [
+            "http://evil.example#@app.example/",
+            "http://evil.example?@app.example/",
+            "http://app.example@evil.example/",
+            "http://app.example:80@evil.example/",
+        ] {
             assert_eq!(url_host(u).unwrap(), "evil.example", "{u}");
         }
     }
@@ -383,11 +443,19 @@ mod tests {
             "[[hosts]]\nhost='qa.example'\nenv='nonprod'\n[[hosts]]\nhost='*.example'\nenv='prod'",
         ] {
             let s = scope(order);
-            assert!(check("https://qa.example/", Some(&s), true).unwrap(), "{order}");
-            assert!(!check("https://other.example/", Some(&s), true).unwrap(), "{order}");
+            assert!(
+                check("https://qa.example/", Some(&s), true).unwrap(),
+                "{order}"
+            );
+            assert!(
+                !check("https://other.example/", Some(&s), true).unwrap(),
+                "{order}"
+            );
         }
         // and the other way round
-        let s = scope("[[hosts]]\nhost='*.example'\nenv='nonprod'\n[[hosts]]\nhost='www.example'\nenv='prod'");
+        let s = scope(
+            "[[hosts]]\nhost='*.example'\nenv='nonprod'\n[[hosts]]\nhost='www.example'\nenv='prod'",
+        );
         assert!(!check("https://www.example/", Some(&s), true).unwrap());
         assert!(check("https://dev.example/", Some(&s), true).unwrap());
     }
@@ -398,13 +466,19 @@ mod tests {
             "[[hosts]]\nhost='a.example'\nenv='nonprod'\n[[hosts]]\nhost='a.example'\nenv='prod'",
             "[[hosts]]\nhost='a.example'\nenv='prod'\n[[hosts]]\nhost='a.example'\nenv='nonprod'",
         ] {
-            assert!(!check("https://a.example/", Some(&scope(order)), true).unwrap(), "{order}");
+            assert!(
+                !check("https://a.example/", Some(&scope(order)), true).unwrap(),
+                "{order}"
+            );
         }
         for order in [
             "[[hosts]]\nhost='*.example'\nenv='prod'\n[[hosts]]\nhost='*.stage.example'\nenv='nonprod'",
             "[[hosts]]\nhost='*.stage.example'\nenv='nonprod'\n[[hosts]]\nhost='*.example'\nenv='prod'",
         ] {
-            assert!(!check("https://x.stage.example/", Some(&scope(order)), true).unwrap(), "{order}");
+            assert!(
+                !check("https://x.stage.example/", Some(&scope(order)), true).unwrap(),
+                "{order}"
+            );
         }
         // an env value that is not exactly "nonprod" is prod
         let s = scope("[[hosts]]\nhost='a.example'\nenv='non-prod'");
@@ -413,23 +487,46 @@ mod tests {
 
     #[test]
     fn overlapping_equal_wildcards_are_order_independent() {
-        let a = scope("[[hosts]]\nhost='*.example'\nenv='nonprod'\n[[hosts]]\nhost='*.b.example'\nenv='nonprod'");
-        let b = scope("[[hosts]]\nhost='*.b.example'\nenv='nonprod'\n[[hosts]]\nhost='*.example'\nenv='nonprod'");
+        let a = scope(
+            "[[hosts]]\nhost='*.example'\nenv='nonprod'\n[[hosts]]\nhost='*.b.example'\nenv='nonprod'",
+        );
+        let b = scope(
+            "[[hosts]]\nhost='*.b.example'\nenv='nonprod'\n[[hosts]]\nhost='*.example'\nenv='nonprod'",
+        );
         assert_eq!(a.find("x.b.example").unwrap().host, "*.b.example");
         assert_eq!(b.find("x.b.example").unwrap().host, "*.b.example");
     }
 
     #[test]
     fn egress_guard_gates_intrusive_actions() {
-        let s = scope("[[hosts]]\nhost='qa.example'\nenv='nonprod'\n[[hosts]]\nhost='www.example'\nenv='prod'");
+        let s = scope(
+            "[[hosts]]\nhost='qa.example'\nenv='nonprod'\n[[hosts]]\nhost='www.example'\nenv='prod'",
+        );
         assert!(egress_guard("https://www.example/", Some(&s), false).is_ok());
-        assert!(!egress_guard("https://www.example/", Some(&s), false).unwrap().nonprod);
-        let e = egress_guard("https://www.example/", Some(&s), true).unwrap_err().to_string();
+        assert!(
+            !egress_guard("https://www.example/", Some(&s), false)
+                .unwrap()
+                .nonprod
+        );
+        let e = egress_guard("https://www.example/", Some(&s), true)
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("prod") && e.contains("refused"), "{e}");
-        assert!(egress_guard("https://qa.example/x", Some(&s), true).unwrap().nonprod);
-        // an unlisted PUBLIC host is allowed (relaxed policy), even for intrusive actions
+        assert!(
+            egress_guard("https://qa.example/x", Some(&s), true)
+                .unwrap()
+                .nonprod
+        );
+        // an unlisted PUBLIC host is allowed for non-intrusive actions only
         assert!(egress_guard("https://other.example/", Some(&s), false).is_ok());
-        assert!(egress_guard("https://other.example/", Some(&s), true).unwrap().nonprod);
+        let e = egress_guard("https://other.example/", Some(&s), true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("[[hosts]]") && e.contains("nonprod") && e.contains("other.example"),
+            "{e}"
+        );
+        assert!(egress_guard("https://other.example/", None, true).is_err());
         // no scope file: public hosts allowed, internal still refused
         assert!(egress_guard("https://qa.example/", None, false).is_ok());
         assert!(egress_guard("http://127.0.0.1:8080/", None, true).is_err());
@@ -445,7 +542,10 @@ mod tests {
         let h = s.find("app.test").unwrap();
         assert_eq!(h.perf.as_ref().unwrap().vus, Some(50));
         assert!(h.perf.as_ref().unwrap().allow_heavy);
-        assert_eq!(h.resilience.as_ref().unwrap().services, vec!["postgres", "redis"]);
+        assert_eq!(
+            h.resilience.as_ref().unwrap().services,
+            vec!["postgres", "redis"]
+        );
         let s: Scope = toml::from_str("[[hosts]]\nhost='a'\nenv='prod'").unwrap();
         assert!(s.hosts[0].perf.is_none() && s.hosts[0].resilience.is_none());
     }

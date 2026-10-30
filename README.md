@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/tests-117%20passed-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-315%2B%20passed-success.svg)](tests/)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)
 
 Point ReadyHai at a codebase, a container image, an API/web app, an SSH host, or an Android APK.  
@@ -161,7 +161,7 @@ readyhai agent https://api.example.com --max-steps 6
 # 1. Start the ReadyHai backend engine (port 8080)
 readyhai serve --bind 127.0.0.1:8080
 
-# 2. Start the dedicated Next.js SaaS frontend (port 3000)
+# 2. Start the dedicated Next.js 16 SaaS frontend (port 3000)
 cd frontend && npm run dev -- -p 3000
 # Open http://127.0.0.1:3000 in your browser to access the SaaS UI suite
 
@@ -270,9 +270,15 @@ command = "pytest -q --junitxml=/out/junit.xml"
 Safeguards against scanning unauthorized endpoints:
 
 ```toml
-allowed_hosts = ["staging.internal.net", "10.0.0.0/8"]
-nonprod_hosts = ["staging.internal.net"]
+[[hosts]]
+host = "staging.internal.net"   # internal hosts MUST be listed
+env  = "nonprod"                # "nonprod" allows intrusive actions; "prod" stays read-only
+
+[git]
+hosts = ["git.internal.net"]    # extra git hosts allowed for clones (github/gitlab/etc. are built in)
 ```
+
+Public hosts are allowed without an entry but are **read-only**: intrusive actions (writes, attack payloads, load, fault injection, agent swarm) need the host listed with `env = "nonprod"`. Internal hosts (loopback, RFC1918, link-local/metadata, CGNAT) are refused unless listed. See [docs/configuration.md](docs/configuration.md#scopetoml).
 
 ---
 
@@ -376,7 +382,7 @@ jobs:
 
 ## Testing
 
-ReadyHai features a comprehensive automated test suite (117+ tests covering golden fixtures, snapshotting, policy evaluation, redaction, contract testing, and tool integrations):
+ReadyHai features a comprehensive automated test suite (315+ tests covering golden fixtures, snapshotting, policy evaluation, redaction, contract testing, and tool integrations):
 
 ```bash
 # Run unit & integration tests
@@ -392,10 +398,10 @@ cargo test -- --nocapture
 
 To elevate ReadyHai from an elite developer tool to a global enterprise standard, the following capabilities are integrated into the architecture:
 
-1. **GitHub App / PR Status Check Integration**:
-   - Provide a native GitHub App and automated Action workflow that evaluates branch diffs and posts the 4-Pillar Evidence Ledger and SARIF badges directly as Pull Request comments to block regressions before merge.
-2. **Distributed Node Mesh for Multi-Region Network Probing**:
-   - Execute the 6-pillar network and latency audit simultaneously from 4 distributed simulated regions (`US-East`, `EU-West`, `APAC-Mumbai`, `APAC-Singapore`) to catch geo-DNS propagation drift, CDN routing delays, and cold-start regressions.
+1. **GitHub App / PR Status Check Integration** (planned, not implemented):
+   - Today `POST /api/github/pr-comment` only renders PR-comment markdown from data you supply; ReadyHai does not post to GitHub. Upload SARIF with the `upload-sarif` action instead.
+2. **Distributed Node Mesh for Multi-Region Network Probing** (planned, not implemented):
+   - Today `/api/network/multi-region` measures a single vantage point ("This host") and says so; there are no remote probe nodes.
 3. **HAR (HTTP Archive v1.2) Export**:
    - Export full multi-session network traces and sub-resource waterfalls in standard `.har` format for instant one-click drag-and-drop import into Google Chrome DevTools Network panel or Cloudflare/AWS support escalations.
 

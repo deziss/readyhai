@@ -38,7 +38,12 @@ pub struct QaCtx {
 }
 
 impl QaCtx {
-    pub fn new(roles: Roles, spec: Option<String>, journeys: Option<PathBuf>, nonprod: bool) -> Self {
+    pub fn new(
+        roles: Roles,
+        spec: Option<String>,
+        journeys: Option<PathBuf>,
+        nonprod: bool,
+    ) -> Self {
         QaCtx {
             roles,
             spec,
@@ -70,7 +75,8 @@ impl QaCtx {
 
     /// Requests left in the budget.
     pub fn remaining(&self) -> usize {
-        self.max_requests.saturating_sub(self.requests.load(Ordering::SeqCst))
+        self.max_requests
+            .saturating_sub(self.requests.load(Ordering::SeqCst))
     }
 
     fn pace(&self) {
@@ -123,7 +129,11 @@ pub fn accept_baselines(target_key: &str, run_id: &str) -> Vec<String> {
     accept_baselines_in(&crate::engine::data_dir(), target_key, run_id)
 }
 
-pub(crate) fn accept_baselines_in(data: &std::path::Path, target_key: &str, run_id: &str) -> Vec<String> {
+pub(crate) fn accept_baselines_in(
+    data: &std::path::Path,
+    target_key: &str,
+    run_id: &str,
+) -> Vec<String> {
     let run_dir = data.join("runs").join(run_id);
     let mut out = vec![];
     match api::accept_spec_baseline_in(data, target_key, &run_dir) {
@@ -151,7 +161,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         let st = api::stage_dir(&d.join("runs/r9"));
         std::fs::create_dir_all(&st).unwrap();
-        std::fs::write(st.join("spec-full.json"), r#"{"openapi":"3.0.0","paths":{}}"#).unwrap();
+        std::fs::write(
+            st.join("spec-full.json"),
+            r#"{"openapi":"3.0.0","paths":{}}"#,
+        )
+        .unwrap();
         std::fs::write(st.join("spec-ops.json"), r#"["GET /a"]"#).unwrap();
         let shots = d.join("runs/r9/artifacts/ui/shots");
         std::fs::create_dir_all(&shots).unwrap();
@@ -162,8 +176,14 @@ mod tests {
         let msgs = accept_baselines_in(&d, "k", "r9");
         assert!(msgs[0].starts_with("spec baseline promoted"), "{msgs:?}");
         assert!(msgs[1].starts_with("visual baseline promoted"), "{msgs:?}");
-        assert!(msgs[2].starts_with("perf baseline unchanged"), "no perf run recorded: {msgs:?}");
-        assert_eq!(std::fs::read_to_string(d.join("baselines/k.spec.json")).unwrap(), r#"["GET /a"]"#);
+        assert!(
+            msgs[2].starts_with("perf baseline unchanged"),
+            "no perf run recorded: {msgs:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.join("baselines/k.spec.json")).unwrap(),
+            r#"["GET /a"]"#
+        );
         assert!(d.join("baselines/k.spec-full.json").is_file());
         assert!(d.join("baselines/k/visual/x.png").is_file());
         // a run without staged data changes nothing and says so
