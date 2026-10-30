@@ -46,6 +46,17 @@ Modern deployments often rely on dozens of disparate tools (`trivy`, `semgrep`, 
 
 ## Quick Start
 
+### 0. Pre-built binary or image
+
+```bash
+# Container images (multi-arch, with SBOM + provenance)
+docker pull ghcr.io/deziss/readyhai:latest
+
+# Verify provenance of an image or a release tarball
+gh attestation verify oci://ghcr.io/deziss/readyhai:latest --repo deziss/readyhai
+gh attestation verify readyhai-linux-x86_64.tar.gz --repo deziss/readyhai
+```
+
 ### 1. Build from Source
 
 ReadyHai is written in high-performance Rust (2024 edition):

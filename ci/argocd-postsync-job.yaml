@@ -28,8 +28,8 @@ spec:
         runAsUser: 10001
       containers:
         - name: readyhai
-          # TODO: replace with the registry path once the image is published.
-          image: readyhai:local
+          # Pin a version tag (or @sha256 digest) in production.
+          image: ghcr.io/deziss/readyhai:latest
           args:
             - scan
             - "https://$(TARGET_HOST)"

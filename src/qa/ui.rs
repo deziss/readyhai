@@ -9,8 +9,26 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-const HINT: &str =
-    "build the runner: docker build -t readyhai/playwright-runner:local runners/playwright";
+const HINT: &str = "build the runner: docker build -t readyhai/playwright-runner:local runners/playwright, or pull it: docker pull ghcr.io/deziss/readyhai-playwright-runner:latest";
+
+const LOCAL_IMAGE: &str = "readyhai/playwright-runner:local";
+const PUBLISHED_IMAGE: &str = "ghcr.io/deziss/readyhai-playwright-runner:latest";
+
+/// Runner image: READYHAI_PLAYWRIGHT_IMAGE, else the local build, else the published image.
+pub(crate) fn playwright_image() -> String {
+    pick_image(
+        std::env::var("READYHAI_PLAYWRIGHT_IMAGE").ok(),
+        crate::tools::local_image_id(LOCAL_IMAGE).is_some(),
+    )
+}
+
+fn pick_image(env: Option<String>, local_present: bool) -> String {
+    match env.map(|s| s.trim().to_string()) {
+        Some(e) if !e.is_empty() => e,
+        _ if local_present => LOCAL_IMAGE.into(),
+        _ => PUBLISHED_IMAGE.into(),
+    }
+}
 
 pub fn checks() -> Vec<Check> {
     vec![
@@ -760,6 +778,24 @@ impl Drop for SecretsGuard {
     }
 }
 
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    #[test]
+    fn host_docker_internal_gets_gateway() {
+        let (u, gw) = container_base("http://host.docker.internal:8099/x");
+        assert!(gw);
+        assert_eq!(u, "http://host.docker.internal:8099/x");
+    }
+    #[test]
+    fn image_resolution_order() {
+        assert_eq!(pick_image(Some("x/y:1".into()), true), "x/y:1");
+        assert_eq!(pick_image(Some(" ".into()), true), LOCAL_IMAGE);
+        assert_eq!(pick_image(None, true), LOCAL_IMAGE);
+        assert_eq!(pick_image(None, false), PUBLISHED_IMAGE);
+    }
+}
+
 fn is_missing_image(s: &str) -> bool {
     let l = s.to_lowercase();
     l.contains("unable to find image")
@@ -780,7 +816,10 @@ fn is_local(url: &str) -> bool {
         .strip_prefix('[')
         .map(|r| r.split(']').next().unwrap_or(r))
         .unwrap_or_else(|| auth.split(':').next().unwrap_or(auth));
-    matches!(host, "localhost" | "127.0.0.1" | "::1" | "0.0.0.0") || host.ends_with(".localhost")
+    matches!(
+        host,
+        "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" | "host.docker.internal"
+    ) || host.ends_with(".localhost")
 }
 
 /// (container-reachable base URL, needs host gateway). Same rewrite as web.rs.
@@ -980,6 +1019,7 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
             ts.user = Some(format!("{}:{}", m.uid(), m.gid()));
         }
     }
+    ts.image = Some(playwright_image());
     ts.network = true;
     ts.host_gateway = gw;
     ts.memory = "2g".into();

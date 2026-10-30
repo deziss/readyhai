@@ -50,7 +50,7 @@ What it can do in-cluster: there is no Docker, so only `web.smoke` runs; Schemat
 
 Known problems (the manifest has not been run on a cluster):
 - The image sets `READYHAI_DATA=/data` but the Job mounts only `/tmp` as writable and `/data` is not mounted, so with `readOnlyRootFilesystem: true` the run directory cannot be created. Add `READYHAI_DATA: /tmp/data` (or mount an `emptyDir` at `/data`).
-- `image: readyhai:local` is a placeholder for a registry image.
+- `image: ghcr.io/deziss/readyhai:latest`: pin a release tag or digest instead of `latest`.
 - The HTML/JSON report is written to the pod's `/tmp` and deleted with the pod (`HookSucceeded`); on failure the pod remains for `kubectl cp`/logs only.
 - Hook policy: use `HookFailed` retention or ship the report elsewhere if you need it after success.
 
@@ -83,3 +83,18 @@ readyhai scan . --baseline .readyhai/baseline.json
 | 1 | WARN | mark unstable / non-blocking |
 | 2 | FAIL | block |
 | 3 | Tool error (not a verdict) | block and investigate; for an `errored` check the run still exits 1 or 2 |
+
+## Verifying release artifacts
+
+Release tarballs and published images carry SLSA build provenance attestations. Verify before use:
+
+```bash
+# tarball (download it and its .sha256 from the GitHub release)
+sha256sum -c readyhai-linux-x86_64.tar.gz.sha256
+gh attestation verify readyhai-linux-x86_64.tar.gz --repo deziss/readyhai
+
+# container image
+gh attestation verify oci://ghcr.io/deziss/readyhai:X.Y.Z --repo deziss/readyhai
+```
+
+Workflows: `ci.yml` (build, test, frontend lint/typecheck/test), `release.yml` (tarball + attestation), `image.yml` (multi-arch GHCR images + SBOM + attestation), `scorecard.yml` (OpenSSF Scorecard, weekly). All actions are pinned by commit SHA.

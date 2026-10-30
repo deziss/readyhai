@@ -3,7 +3,7 @@
 services:
   readyhai:
     build: .
-    image: readyhai:local
+    image: ${READYHAI_IMAGE:-ghcr.io/deziss/readyhai:latest}
     container_name: readyhai
     env_file: .env
     environment:
@@ -37,7 +37,7 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: readyhai-frontend:local
+    image: ${READYHAI_FRONTEND_IMAGE:-ghcr.io/deziss/readyhai-frontend:latest}
     container_name: readyhai-frontend
     environment:
       - NODE_ENV=production

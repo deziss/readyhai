@@ -400,9 +400,11 @@ fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Res
     );
     flags.push("--user".into());
     flags.push(spec.user.clone().unwrap_or_else(|| "65534:65534".into()));
-    for (k, v) in &spec.env {
+    // Pass env by NAME only (`-e KEY`); the value is set on the docker client process below, so
+    // secrets such as tokens never appear in the host's process list (`ps`, /proc/*/cmdline).
+    for (k, _) in &spec.env {
         flags.push("-e".into());
-        flags.push(format!("{k}={v}"));
+        flags.push(k.clone());
     }
     if spec.host_gateway {
         flags.push("--add-host".into());
@@ -426,6 +428,7 @@ fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Res
 
     let mut cmd = Command::new("docker");
     cmd.arg("run").args(&flags).arg(&image).args(&spec.args);
+    cmd.envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -788,7 +791,7 @@ fn first_line(t: &str, max: usize) -> String {
     t.lines().next().unwrap_or("").chars().take(max).collect()
 }
 
-fn gate(ctx: &Ctx) -> Option<CheckOutput> {
+pub(crate) fn gate(ctx: &Ctx) -> Option<CheckOutput> {
     if !ctx.docker.available {
         return Some(CheckOutput::status(CheckStatus::Skipped(
             "docker not available".into(),
@@ -798,7 +801,7 @@ fn gate(ctx: &Ctx) -> Option<CheckOutput> {
 }
 
 /// Skipped result when the tool's image is not available locally and we cannot pull (offline).
-fn missing_image(tool: &str) -> Option<CheckOutput> {
+pub(crate) fn missing_image(tool: &str) -> Option<CheckOutput> {
     if crate::bundle::offline() && !image_present(tool) {
         return Some(CheckOutput::status(CheckStatus::Skipped(format!(
             "image not in bundle: {tool}"
@@ -807,12 +810,12 @@ fn missing_image(tool: &str) -> Option<CheckOutput> {
     None
 }
 
-fn read_out(ctx: &Ctx, name: &str) -> Result<String> {
+pub(crate) fn read_out(ctx: &Ctx, name: &str) -> Result<String> {
     std::fs::read_to_string(ctx.out_dir().join(name))
         .with_context(|| format!("tool did not write /out/{name}"))
 }
 
-fn tool_failed(name: &str, r: &ToolRun) -> anyhow::Error {
+pub(crate) fn tool_failed(name: &str, r: &ToolRun) -> anyhow::Error {
     anyhow!("{name} exited {}: {}", r.exit_code, r.stderr_tail.trim())
 }
 
@@ -883,7 +886,7 @@ pub fn scrub_checkov(json: &str) -> Option<String> {
     serde_json::to_string(&v).ok()
 }
 
-fn partial(notes: Vec<String>, findings: Vec<Finding>) -> CheckOutput {
+pub(crate) fn partial(notes: Vec<String>, findings: Vec<Finding>) -> CheckOutput {
     if notes.is_empty() {
         CheckOutput::findings(findings)
     } else {
@@ -2031,6 +2034,7 @@ pub fn tools_update(docker: &Docker) -> Result<()> {
     mkdir_open(&docker.cache_dir);
     mkdir_open(&docker.cache_dir.join("grype"));
     mkdir_open(&docker.cache_dir.join("semgrep"));
+    mkdir_open(&docker.cache_dir.join("osv-scanner"));
     if docker.available {
         let mut spec = ToolSpec::new("grype", &["db", "update"]);
         spec.timeout_secs = 3600; // slow links: the DB is a ~100 MB+ download
@@ -2050,6 +2054,12 @@ pub fn tools_update(docker: &Docker) -> Result<()> {
             bail!("grype db update failed: {}", r.stderr_tail.trim());
         }
         eprintln!("grype DB updated");
+        match osv_db_update(docker) {
+            Ok(()) => eprintln!("osv-scanner offline DBs updated"),
+            Err(e) => eprintln!(
+                "osv-scanner DB update failed (tool.osv_reachability will be skipped): {e:#}"
+            ),
+        }
     } else {
         eprintln!("docker not available: skipping grype DB update");
     }
@@ -2070,6 +2080,66 @@ pub fn tools_update(docker: &Docker) -> Result<()> {
     match crate::host::fetch_lynis(&docker.cache_dir) {
         Ok(()) => eprintln!("lynis tarball cached (checksum recorded, upstream publishes none)"),
         Err(e) => eprintln!("lynis fetch failed (host.lynis will be skipped): {e:#}"),
+    }
+    Ok(())
+}
+
+/// Populate `<cache>/osv-scanner` for `tool.osv_reachability`: scanning a tiny seed project with
+/// `--download-offline-databases` makes osv-scanner fetch the per-ecosystem DB zips it needs.
+fn osv_db_update(docker: &Docker) -> Result<()> {
+    let seed = docker.cache_dir.join("osv-seed");
+    mkdir_open(&seed);
+    let files: [(&str, &str); 4] = [
+        (
+            "go.mod",
+            "module seed\n\ngo 1.21\n\nrequire golang.org/x/text v0.3.7\n",
+        ),
+        ("requirements.txt", "requests==2.0.0\n"),
+        (
+            "package-lock.json",
+            r#"{"name":"seed","lockfileVersion":3,"requires":true,"packages":{"":{"name":"seed","dependencies":{"minimist":"1.2.0"}},"node_modules/minimist":{"version":"1.2.0"}}}"#,
+        ),
+        (
+            "Cargo.lock",
+            "version = 3\n\n[[package]]\nname = \"time\"\nversion = \"0.1.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+        ),
+    ];
+    for (n, c) in files {
+        std::fs::write(seed.join(n), c)?;
+    }
+    let mut spec = ToolSpec::new(
+        "osv-scanner",
+        &[
+            "scan",
+            "source",
+            "--download-offline-databases",
+            "--offline-vulnerabilities",
+            "--no-call-analysis",
+            "go",
+            "--format",
+            "json",
+            "--output-file",
+            "/tmp/osv-seed.json",
+            "-r",
+            "/cache/osv-seed",
+        ],
+    );
+    spec.timeout_secs = 3600;
+    spec.network = true;
+    spec.cache_rw = true;
+    spec.env = vec![(
+        "OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY".into(),
+        "/cache/osv-scanner".into(),
+    )];
+    let mounts = [Mount {
+        host: docker.cache_dir.clone(),
+        dst: "/cache",
+        rw: true,
+    }];
+    let r = exec(docker, "update", &mounts, &spec)?;
+    // Exit 1 = vulnerabilities found (expected for the seed); anything else is a real failure.
+    if r.exit_code > 1 {
+        bail!("{}", r.stderr_tail.trim());
     }
     Ok(())
 }

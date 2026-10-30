@@ -10,16 +10,16 @@ ReadyHai does not host scanners. It runs as one small service (or as a CLI) and 
 
 | Service | Image | Notes |
 |---|---|---|
-| `readyhai` | built from `Dockerfile` as `readyhai:local` | Runs `readyhai serve --bind 0.0.0.0:8080` as uid 10001. Read-only rootfs, `/tmp` tmpfs, `cap_drop: ALL`, `no-new-privileges`, `mem_limit: 1g`. Published on `127.0.0.1:${READYHAI_PORT:-8080}` only. Healthcheck `readyhai ping`. `env_file: .env`. |
-| `frontend` | built from `frontend/Dockerfile` as `readyhai-frontend:local` | Production Next.js Agent Studio UI on port 3000. Multi-stage minimal standalone build, non-root user `readyhai` (UID 10001). Published on `127.0.0.1:${FRONTEND_PORT:-3000}`. Connects internally to `http://readyhai:8080`. |
+| `readyhai` | `ghcr.io/deziss/readyhai:latest` (override with `READYHAI_IMAGE`); `build: .` kept for local dev | Runs `readyhai serve --bind 0.0.0.0:8080` as uid 10001. Read-only rootfs, `/tmp` tmpfs, `cap_drop: ALL`, `no-new-privileges`, `mem_limit: 1g`. Published on `127.0.0.1:${READYHAI_PORT:-8080}` only. Healthcheck `readyhai ping`. `env_file: .env`. |
+| `frontend` | `ghcr.io/deziss/readyhai-frontend:latest` (override with `READYHAI_FRONTEND_IMAGE`); `build: ./frontend` kept for local dev | Production Next.js Agent Studio UI on port 3000. Multi-stage minimal standalone build, non-root user `readyhai` (UID 10001). Published on `127.0.0.1:${FRONTEND_PORT:-3000}`. Connects internally to `http://readyhai:8080`. |
 | `socket-proxy` | `tecnativa/docker-socket-proxy:v0.3.0` | Mounts `/var/run/docker.sock` read-only; enables `CONTAINERS IMAGES POST VOLUMES INFO VERSION PING ALLOW_START ALLOW_STOP`; disables `EXEC BUILD SWARM SECRETS`. `mem_limit: 64m`. |
 
 Environment set by compose: `DOCKER_HOST=tcp://readyhai-socket-proxy:2375`, `READYHAI_DATA=/data`, `READYHAI_DATA_VOLUME=readyhai_data`, `READYHAI_ALLOWED_ROOTS=/targets`. Volumes: named volume `readyhai_data` at `/data`; `${TARGETS_DIR:-./targets}` at `/targets` read-only.
 
 ```bash
 cp .env.example .env            # set READYHAI_TOKEN (16+ chars); never commit .env
-docker build -t readyhai:local .                      # you run this; not done on the author's laptop
-docker build -t readyhai/playwright-runner:local runners/playwright   # for tool.playwright
+docker compose pull                                   # published images from GHCR
+# local dev instead: docker compose build   (heavy; not done on the author's laptop)
 docker compose up -d
 curl http://127.0.0.1:8080/health
 ```
@@ -49,14 +49,30 @@ The proxy filters Docker API paths, not request bodies. A caller that can reach 
 
 The runtime image (`debian:bookworm-slim` + `ca-certificates` + `git` + `docker` CLI) does **not** contain `openssh-client` or `adb`. In the container, `ssh://` host scans and `android.runtime` fail or skip. Use the CLI on a workstation for those, or extend the image. MobSF, Grype, Semgrep etc. are not in the image; they are separate containers pulled on demand.
 
-## Images you must build
+## Published images
+
+Tagged releases (`v*`) publish multi-arch (amd64, arm64) images via `.github/workflows/image.yml`, each with an SBOM and SLSA build provenance attestation:
+
+| Image | Source |
+|---|---|
+| `ghcr.io/deziss/readyhai` | root `Dockerfile` |
+| `ghcr.io/deziss/readyhai-frontend` | `frontend/Dockerfile` |
+| `ghcr.io/deziss/readyhai-playwright-runner` | `runners/playwright` |
+
+Tags: `X.Y.Z`, `X.Y`, and `sha-<commit>`. Pin a version or digest in production. Verify an image before running it:
+
+```bash
+gh attestation verify oci://ghcr.io/deziss/readyhai:X.Y.Z --repo deziss/readyhai
+```
+
+## Images you can build locally
 
 | Image | Build | Why |
 |---|---|---|
 | `readyhai:local` | `docker build -t readyhai:local .` (multi-stage: `rust:1-slim-bookworm` build with `--locked`, then runtime image) | The service |
 | `readyhai/playwright-runner:local` | `docker build -t readyhai/playwright-runner:local runners/playwright` (base `mcr.microsoft.com/playwright:v1.56.0-noble`, runs as `pwuser`) | `tool.playwright`. Not in any registry; until built the check is `skipped` with a build hint. The base is not digest-pinned yet (TODO in the Dockerfile). |
 
-Both builds are left to the user: heavy builds are not run on the author's laptop (the Playwright image was never built).
+The published runner image is `ghcr.io/deziss/readyhai-playwright-runner`; the check looks for the local tag above, so `docker tag` the pulled image to that name. Both local builds are left to the user: heavy builds are not run on the author's laptop (the Playwright image was never built).
 
 ## tools pull and update
 

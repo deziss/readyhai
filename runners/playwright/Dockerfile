@@ -1,6 +1,6 @@
 # Build: docker build -t readyhai/playwright-runner:local runners/playwright
-# TODO: pin the base image by digest once resolved (docker buildx imagetools inspect <tag>).
-FROM mcr.microsoft.com/playwright:v1.56.0-noble
+# Base pinned by digest (tag kept for readability).
+FROM mcr.microsoft.com/playwright:v1.56.0-noble@sha256:35246d87a7c88ea9b771c65d33171b2611b02a8253b4b12ce6f94376c55f99f2
 WORKDIR /runner
 COPY package.json package-lock.json* ./
 # playwright version must match the base image tag (browsers live in /ms-playwright).

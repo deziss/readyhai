@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "2",
+  "thresholds": {"high": 80, "low": 60},
+  "files": {
+    "src/calc.js": {
+      "language": "javascript",
+      "source": "export const add = (a, b) => a + b;\nexport const neg = (a) => -a;\n",
+      "mutants": [
+        {"id": "0", "mutatorName": "ArithmeticOperator", "replacement": "a - b", "location": {"start": {"line": 1, "column": 29}, "end": {"line": 1, "column": 34}}, "status": "Killed"},
+        {"id": "1", "mutatorName": "BlockStatement", "replacement": "{}", "location": {"start": {"line": 1, "column": 22}, "end": {"line": 1, "column": 34}}, "status": "Killed"},
+        {"id": "2", "mutatorName": "UnaryOperator", "replacement": "+a", "location": {"start": {"line": 2, "column": 26}, "end": {"line": 2, "column": 28}}, "status": "Survived"},
+        {"id": "3", "mutatorName": "StringLiteral", "replacement": "\"\"", "location": {"start": {"line": 2, "column": 1}, "end": {"line": 2, "column": 5}}, "status": "NoCoverage"},
+        {"id": "4", "mutatorName": "ConditionalExpression", "replacement": "true", "location": {"start": {"line": 2, "column": 10}, "end": {"line": 2, "column": 12}}, "status": "Timeout"},
+        {"id": "5", "mutatorName": "ObjectLiteral", "replacement": "{}", "location": {"start": {"line": 2, "column": 14}, "end": {"line": 2, "column": 16}}, "status": "CompileError"}
+      ]
+    }
+  }
+}

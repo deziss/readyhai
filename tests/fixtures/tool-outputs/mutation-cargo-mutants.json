@@ -1,0 +1,21 @@
+{
+  "outcomes": [
+    {"scenario": "Baseline", "summary": "Success", "log_path": "log/baseline.log", "diff_path": null, "phase_results": []},
+    {"scenario": {"Mutant": {"name": "replace add -> i32 with 0", "file": "src/lib.rs", "function": {"function_name": "add", "return_type": "-> i32"}, "span": {"start": {"line": 1, "column": 33}, "end": {"line": 1, "column": 38}}, "replacement": "0", "genre": "FnValue"}}, "summary": "CaughtMutant", "phase_results": []},
+    {"scenario": {"Mutant": {"name": "replace add -> i32 with 1", "file": "src/lib.rs", "function": {"function_name": "add", "return_type": "-> i32"}, "span": {"start": {"line": 1, "column": 33}, "end": {"line": 1, "column": 38}}, "replacement": "1", "genre": "FnValue"}}, "summary": "CaughtMutant", "phase_results": []},
+    {"scenario": {"Mutant": {"name": "replace + with - in add", "file": "src/lib.rs", "function": {"function_name": "add", "return_type": "-> i32"}, "span": {"start": {"line": 1, "column": 35}, "end": {"line": 1, "column": 36}}, "replacement": "-", "genre": "BinaryOperator"}}, "summary": "CaughtMutant", "phase_results": []},
+    {"scenario": {"Mutant": {"name": "replace is_even -> bool with false", "file": "src/lib.rs", "function": {"function_name": "is_even", "return_type": "-> bool"}, "span": {"start": {"line": 2, "column": 38}, "end": {"line": 2, "column": 51}}, "replacement": "false", "genre": "FnValue"}}, "summary": "MissedMutant", "phase_results": []},
+    {"scenario": {"Mutant": {"name": "replace is_even -> bool with true", "file": "src/lib.rs", "function": {"function_name": "is_even", "return_type": "-> bool"}, "span": {"start": {"line": 2, "column": 38}, "end": {"line": 2, "column": 51}}, "replacement": "true", "genre": "FnValue"}}, "summary": "MissedMutant", "phase_results": []},
+    {"scenario": {"Mutant": {"name": "replace > with >= in clamp", "file": "src/lib.rs", "function": {"function_name": "clamp", "return_type": "-> i32"}, "span": {"start": {"line": 3, "column": 38}, "end": {"line": 3, "column": 39}}, "replacement": ">=", "genre": "BinaryOperator"}}, "summary": "MissedMutant", "phase_results": []},
+    {"scenario": {"Mutant": {"name": "replace clamp -> i32 with 0", "file": "src/lib.rs", "function": {"function_name": "clamp", "return_type": "-> i32"}, "span": {"start": {"line": 3, "column": 30}, "end": {"line": 3, "column": 60}}, "replacement": "0", "genre": "FnValue"}}, "summary": "MissedMutant", "phase_results": []},
+    {"scenario": {"Mutant": {"name": "replace clamp -> i32 with 1", "file": "src/lib.rs", "function": {"function_name": "clamp", "return_type": "-> i32"}, "span": {"start": {"line": 3, "column": 30}, "end": {"line": 3, "column": 60}}, "replacement": "1", "genre": "FnValue"}}, "summary": "Timeout", "phase_results": []},
+    {"scenario": {"Mutant": {"name": "replace % with / in is_even", "file": "src/lib.rs", "function": {"function_name": "is_even", "return_type": "-> bool"}, "span": {"start": {"line": 2, "column": 41}, "end": {"line": 2, "column": 42}}, "replacement": "/", "genre": "BinaryOperator"}}, "summary": "Unviable", "phase_results": []}
+  ],
+  "total_mutants": 9,
+  "missed": 4,
+  "caught": 3,
+  "timeout": 1,
+  "unviable": 1,
+  "success": 0,
+  "failure": 0
+}

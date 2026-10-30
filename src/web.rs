@@ -65,15 +65,26 @@ fn same_host_redirects() -> reqwest::redirect::Policy {
 }
 
 fn client(redirects: bool) -> Result<Client> {
-    Ok(Client::builder()
+    let mut b = Client::builder()
         .timeout(Duration::from_secs(15))
         .redirect(if redirects {
             same_host_redirects()
         } else {
             reqwest::redirect::Policy::none()
         })
-        .user_agent("readyhai")
-        .build()?)
+        .user_agent("readyhai");
+    // Running on the bare host (not in the readyhai container) `host.docker.internal` does not
+    // resolve; the scanned app is then on this machine's loopback.
+    {
+        use std::net::ToSocketAddrs;
+        if ("host.docker.internal", 80).to_socket_addrs().is_err() {
+            b = b.resolve(
+                "host.docker.internal",
+                std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            );
+        }
+    }
+    Ok(b.build()?)
 }
 
 /// Host part of an http(s) URL (no userinfo, no port).
@@ -123,7 +134,8 @@ fn container_url(url: &str) -> (String, bool) {
         };
         (format!("{scheme}://{a}{tail}"), true)
     } else {
-        (url.to_string(), false)
+        // an explicit host.docker.internal target still needs the host-gateway mapping on Linux
+        (url.to_string(), h == "host.docker.internal")
     }
 }
 
@@ -485,36 +497,68 @@ fn schemathesis(ctx: &Ctx) -> Result<CheckOutput> {
                 continue;
             };
             parsed_any = true;
+            let details = junit_failure_text(&xml);
             for case in parse_junit(&xml) {
                 if !(case.failed || case.errored) {
                     continue;
                 }
                 let m = case.message.to_lowercase();
-                let server = m.contains("500")
+                let detail_txt = details.get(&case.name).cloned().unwrap_or_default();
+                let dl = detail_txt.to_lowercase();
+                let codes: Vec<&str> = case
+                    .message
+                    .split([',', ' '])
+                    .filter(|c| c.starts_with("ST"))
+                    .collect();
+                let has = |c: &str| codes.contains(&c);
+                // Schemathesis v4 reports check codes (ST101 ...) in `message`; the prose is in the body.
+                let undeclared_501 = has("ST204") && dl.contains("returned 501");
+                let (rule, cat, sev) = if has("ST401") || has("ST203") {
+                    (
+                        "api.auth_not_enforced".to_string(),
+                        Category::Security,
+                        Severity::High,
+                    )
+                } else if (has("ST101") && !undeclared_501)
+                    || m.contains("500")
                     || m.contains("5xx")
                     || m.contains("server error")
-                    || m.contains("server_error");
-                let (rule, cat, sev) = if server {
+                {
                     (
                         "api.server_error".to_string(),
                         Category::Reliability,
                         Severity::High,
                     )
+                } else if has("ST204") {
+                    (
+                        "api.undeclared_method".to_string(),
+                        Category::Quality,
+                        Severity::Low,
+                    )
                 } else {
-                    let kind = if m.contains("schema") || m.contains("conformance") {
+                    let kind = if has("ST201") || has("ST202") {
+                        "invalid_input_accepted"
+                    } else if m.contains("schema") || m.contains("conformance") || has("ST301") {
                         "schema"
-                    } else if m.contains("content") {
+                    } else if m.contains("content") || has("ST302") {
                         "content_type"
-                    } else if m.contains("status") {
+                    } else if m.contains("status") || has("ST303") {
                         "status_code"
                     } else {
                         "check"
                     };
                     (format!("api.{kind}"), Category::Quality, Severity::Medium)
                 };
-                let msg: String = case.message.chars().take(400).collect();
+                let msg: String = if detail_txt.is_empty() {
+                    case.message.clone()
+                } else {
+                    detail_txt
+                }
+                .chars()
+                .take(600)
+                .collect();
                 let mut f = Finding::new("tool.schemathesis", &rule, cat, sev,
-                    format!("API check failed: {}", case.name), case.name.clone())
+                    format!("API check failed: {} ({})", case.name, case.message), case.name.clone())
                     .detail(msg)
                     .remediation("Reproduce with Schemathesis against the failing operation and fix the handler or the schema.");
                 f.finalize();
@@ -530,6 +574,37 @@ fn schemathesis(ctx: &Ctx) -> Result<CheckOutput> {
         ))));
     }
     Ok(CheckOutput::findings(findings))
+}
+
+/// testcase name -> text of its first failure/error element (Schemathesis puts the prose there).
+fn junit_failure_text(xml: &str) -> std::collections::HashMap<String, String> {
+    let case_re =
+        regex::Regex::new(r#"(?s)<testcase\b[^>]*?\bname="([^"]*)"[^>/]*>(.*?)</testcase>"#)
+            .unwrap();
+    let body_re =
+        regex::Regex::new(r"(?s)<(?:failure|error)\b[^>]*>(.*?)</(?:failure|error)>").unwrap();
+    let un = |t: &str| {
+        t.replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", "\"")
+            .replace("&#x27;", "'")
+            .replace("&amp;", "&")
+    };
+    let mut m = std::collections::HashMap::new();
+    for c in case_re.captures_iter(xml) {
+        if let Some(b) = body_re.captures(&c[2]) {
+            // drop the HTML/body dump after the check list: keep text up to "Reproduce with"
+            let t = un(&b[1]);
+            let t = t
+                .split("Reproduce with")
+                .next()
+                .unwrap_or(&t)
+                .trim()
+                .to_string();
+            m.insert(un(&c[1]), t);
+        }
+    }
+    m
 }
 
 fn playwright(ctx: &Ctx) -> Result<CheckOutput> {
@@ -869,6 +944,16 @@ mod tests {
         assert_eq!(lines.len(), 3);
         assert!(is_missing_image("Unable to find image 'x' locally"));
     }
+    #[test]
+    fn junit_failure_text_skips_selfclosing() {
+        let x = r#"<testsuite><testcase name="A" time="1"/><testcase name="B" time="2"><failure message="ST101">- ST101 Server error &lt;x&gt;
+
+Reproduce with: curl</failure></testcase></testsuite>"#;
+        let m = junit_failure_text(x);
+        assert!(!m.contains_key("A"));
+        assert_eq!(m["B"], "- ST101 Server error <x>");
+    }
+
     #[test]
     fn zap_parse() {
         let j = r#"{"site":[{"alerts":[{"pluginid":"10038","alert":"CSP","riskcode":"2","desc":"<p>x</p>","instances":[{"uri":"http://a/"},{"uri":"http://a/b"}]}]}]}"#;

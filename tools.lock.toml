@@ -61,6 +61,26 @@ image = "grafana/k6:latest"
 digest = "sha256:3e4186aea62e11a45560bfc51e19eeafe82fc07ce069c78aff44b7ff893d9a5e"
 version = "latest"
 
+[tools.osv-scanner]
+image = "ghcr.io/google/osv-scanner:v2.7.0"
+digest = "sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0"
+version = "v2.7.0"
+
+[tools.scorecard]
+image = "ghcr.io/ossf/scorecard:v5.6.0"
+digest = "sha256:c0a21a1c33a2d8819937d0a8a62e6f4189c800639abd9f0bfbe61c90c71fae90"
+version = "v5.6.0"
+
+[tools.spectral]
+image = "stoplight/spectral:6.17.0"
+digest = "sha256:c8ffae6ee561b70e80402f1ea669e8b37c74fee48a3dbe2147b71359ed987239"
+version = "6.17.0"
+
+[tools.oasdiff]
+image = "tufin/oasdiff:latest"
+digest = "sha256:75a513546b09466bfcbb192bd1ed117e5a22945306602ba2a7bbebf2665d1076"
+version = "latest"
+
 # Built locally: docker build -t readyhai/playwright-runner:local runners/playwright
 # (base mcr.microsoft.com/playwright:v1.56.0-noble; pin its digest in the Dockerfile).
 # Intentionally unpinned: no registry digest exists for a :local image.
