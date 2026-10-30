@@ -631,8 +631,9 @@ fn playwright(ctx: &Ctx) -> Result<CheckOutput> {
     ts.timeout_secs = 600;
     ts.tmpfs = vec!["/home/pwuser:rw,size=256m,mode=1777".into()];
     ts.env = vec![("PLAYWRIGHT_BROWSERS_PATH".into(), "/ms-playwright".into())];
-    let hint =
-        "build the runner: docker build -t readyhai/playwright-runner:local runners/playwright";
+    // Same resolution as the UI QA checks: env override, local build, then the published image.
+    ts.image = Some(crate::qa::ui::playwright_image());
+    let hint = crate::qa::ui::HINT;
     let run = match ctx.docker.run(ctx, &ts) {
         Ok(r) => r,
         Err(e) if is_missing_image(&e.to_string()) => {
