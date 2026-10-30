@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-const HINT: &str = "build the runner: docker build -t readyhai/playwright-runner:local runners/playwright, or pull it: docker pull ghcr.io/deziss/readyhai-playwright-runner:latest";
+pub(crate) const HINT: &str = "build the runner: docker build -t readyhai/playwright-runner:local runners/playwright, or pull it: docker pull ghcr.io/deziss/readyhai-playwright-runner:latest";
 
 const LOCAL_IMAGE: &str = "readyhai/playwright-runner:local";
 const PUBLISHED_IMAGE: &str = "ghcr.io/deziss/readyhai-playwright-runner:latest";
