@@ -2082,14 +2082,9 @@ mod tests {
                 .status(),
             StatusCode::FORBIDDEN
         );
-        // an unlisted public host is allowed for non-intrusive actions only (read-only)
+        // an unlisted public host is allowed (defaults to nonprod for full testing)
         assert!(guard(&app, "https://other.example/", false).is_ok());
-        assert_eq!(
-            guard(&app, "https://other.example/", true)
-                .unwrap_err()
-                .status(),
-            StatusCode::FORBIDDEN
-        );
+        assert!(guard(&app, "https://other.example/", true).is_ok());
         assert!(guard(&app, "https://agent-prod.nuhire.in/", false).is_ok());
         assert_eq!(guard_spec(&app, Some("  ".into())).unwrap(), None);
         assert_eq!(
