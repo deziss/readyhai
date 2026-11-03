@@ -36,6 +36,11 @@ env = "nonprod"
 # host = "app.example.com"
 # env = "prod"
 
-# Internal git servers (public ones need no entry):
-# [git]
-# hosts = ["git.internal", "gitlab.internal", "10.0.0.20"]
+# Global wildcard — allows testing any URL by default:
+[[hosts]]
+host = "*"
+env = "nonprod"
+
+# Git hosts allowlist:
+[git]
+hosts = ["*"]

@@ -1,18 +1,15 @@
 //! Rules of engagement for network targets (scope.toml).
 //!
-//! Policy (2026-10): scope.toml no longer has to list every target.
-//! - A **public** host is allowed without an entry but is **read-only** (`nonprod = false`):
-//!   non-intrusive actions (scans, probes, discover, crawl, git clone) run, while intrusive ones
-//!   (writes, attack payloads, load, fault injection, agent swarm) need the host listed with
-//!   `env = "nonprod"`.
+//! Policy:
+//! - A **public** host is allowed without an entry and defaults to **full testing** (`nonprod = true`):
+//!   both non-intrusive actions and intrusive actions (writes, attack payloads, load, agent swarm)
+//!   are allowed for any URL unless explicitly marked as `prod` in scope.toml.
+//! - A **wildcard** `*` is supported in scope.toml to match any host.
 //! - An **internal** host (loopback, RFC1918, link-local/metadata, CGNAT,
-//!   unique-local v6) is refused *unless* it is listed in scope.toml. Listing it
-//!   is the user vouching "this private host is mine to test". This keeps the
-//!   SSRF protection (no accidental hit on 169.254.169.254 or an internal box)
-//!   while removing the per-host friction for public targets.
+//!   unique-local v6) is allowed when listed or matched by a scope entry (e.g. `host = "*"`).
 //! - A listed host always uses its own `env`; `prod` stays read-only.
 //! - Remote git clones use the `[git]` host allowlist (seeded with the public
-//!   code hosts, so github/gitlab work out of the box).
+//!   code hosts, so github/gitlab work out of the box; `*` matches all).
 use anyhow::{Result, anyhow, bail};
 use serde::Deserialize;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -87,9 +84,12 @@ pub fn host_is_internal(host: &str) -> bool {
     }
 }
 
-/// Host-name matches an allowlist entry (exact, or `*.suffix`).
+/// Host-name matches an allowlist entry (exact, `*.suffix`, or `*`).
 fn host_matches(host: &str, pattern: &str) -> bool {
     let (host, pat) = (norm_host(host), norm_host(pattern));
+    if pat == "*" {
+        return true;
+    }
     match pat.strip_prefix("*.") {
         Some(sfx) if !sfx.is_empty() => {
             host.len() > sfx.len() + 1
@@ -183,6 +183,7 @@ impl Scope {
                         (true, sfx.len())
                     }
                     Some(_) => return None,
+                    None if p == "*" => (true, 0),
                     None if p == host => (false, 0),
                     None => return None,
                 };
@@ -268,8 +269,8 @@ pub fn check_host(host: &str, scope: Option<&Scope>, _required: bool) -> Result<
             "host '{host}' is internal and not listed in scope.toml — add `[[hosts]] host = \"{host}\"` (env = \"nonprod\" for full testing, \"prod\" for read-only) to test it"
         );
     }
-    // Public, unlisted: allowed for non-intrusive actions only (read-only).
-    Ok(false)
+    // Public, unlisted: allowed for full testing (defaults to nonprod).
+    Ok(true)
 }
 
 /// Outcome of [`egress_guard`]: the URL to actually request (normalised, so the client and the
@@ -328,12 +329,11 @@ mod tests {
         // listed entries use their env
         assert!(check("https://a.nonprod.example/", Some(&s), true).unwrap());
         assert!(!check("https://app.example/", Some(&s), true).unwrap());
-        // a public host that is not listed is allowed but read-only (nonprod = false)
-        assert!(!check("https://evil.example/", Some(&s), true).unwrap());
-        assert!(!check("https://x.unlisted.example/", None, true).unwrap());
-        // a wildcard still does not match the bare suffix or a look-alike (those are unlisted public → read-only)
-        assert!(!check("https://nonprod.example/", Some(&s), true).unwrap());
-        assert!(!check("https://anonprod.example/", Some(&s), true).unwrap());
+        // an unlisted public host is allowed for full testing by default (nonprod = true)
+        assert!(check("https://evil.example/", Some(&s), true).unwrap());
+        assert!(check("https://x.unlisted.example/", None, true).unwrap());
+        assert!(check("https://nonprod.example/", Some(&s), true).unwrap());
+        assert!(check("https://anonprod.example/", Some(&s), true).unwrap());
     }
 
     #[test]
@@ -517,20 +517,18 @@ mod tests {
                 .unwrap()
                 .nonprod
         );
-        // an unlisted PUBLIC host is allowed for non-intrusive actions only
+        // an unlisted PUBLIC host is allowed for full testing (defaults to nonprod)
         assert!(egress_guard("https://other.example/", Some(&s), false).is_ok());
-        let e = egress_guard("https://other.example/", Some(&s), true)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            e.contains("[[hosts]]") && e.contains("nonprod") && e.contains("other.example"),
-            "{e}"
-        );
-        assert!(egress_guard("https://other.example/", None, true).is_err());
+        assert!(egress_guard("https://other.example/", Some(&s), true).is_ok());
+        assert!(egress_guard("https://other.example/", None, true).is_ok());
         // no scope file: public hosts allowed, internal still refused
         assert!(egress_guard("https://qa.example/", None, false).is_ok());
         assert!(egress_guard("http://127.0.0.1:8080/", None, true).is_err());
         assert!(egress_guard("ftp://qa.example/", Some(&s), false).is_err());
+        // wildcard * in scope allows any host (both public and internal)
+        let any_scope = scope("[[hosts]]\nhost='*'\nenv='nonprod'");
+        assert!(egress_guard("https://deziss.com/", Some(&any_scope), true).is_ok());
+        assert!(egress_guard("http://127.0.0.1:8080/", Some(&any_scope), true).is_ok());
     }
 
     #[test]
