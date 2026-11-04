@@ -10,6 +10,7 @@ import {
   User,
   KeyRound,
   AlertTriangle,
+  AlertCircle,
   Code,
   CheckCircle2,
   XCircle,
@@ -40,6 +41,8 @@ interface MergedStep {
   latency_ms?: number;
   extracted_values?: Record<string, string>;
   passed?: boolean;
+  violation_triggered?: boolean;
+  error_detail?: string;
 }
 
 function getActorBadge(actorName: string) {
@@ -150,6 +153,8 @@ export function StatefulChainFlow({
           latency_ms: e.latency_ms,
           extracted_values: e.extracted_values,
           passed: e.passed,
+          violation_triggered: e.violation_triggered,
+          error_detail: e.error_detail,
           executed: true,
         });
       });
@@ -162,18 +167,48 @@ export function StatefulChainFlow({
     return null;
   }
 
-  // Detect breach in the chain
+  // Detect genuine security breach in the chain
+  // A breach occurs ONLY when a security violation condition triggered OR an unauthorized actor (e.g. Bob) succeeded with 2xx
   const breach = mergedSteps.find(
     (s) =>
       s.executed &&
-      (s.passed === false ||
-        (s.violation_condition && s.status_code != null && s.status_code >= 200 && s.status_code < 300 && s.actor.toLowerCase().includes("bob")))
+      (s.violation_triggered === true ||
+        (s.violation_condition &&
+          s.status_code != null &&
+          s.status_code >= 200 &&
+          s.status_code < 300 &&
+          !s.actor.toLowerCase().includes("alice") &&
+          !s.actor.toLowerCase().includes("owner")))
+  );
+
+  // Setup failure: Step 1 (or resource setup) could not be established (e.g. 401 Unauthorized / missing creds / 404)
+  const setupFailedStep = mergedSteps.find(
+    (s) =>
+      s.executed &&
+      s.passed === false &&
+      !s.violation_triggered &&
+      (s.step_number === 1 || !s.violation_condition)
   );
 
   const breachMessage =
+    breach?.error_detail ||
     breach?.violation_condition ||
     violationCondition ||
     (breach ? `BOLA Breached: ${breach.actor} successfully accessed protected resource (HTTP ${breach.status_code})` : null);
+
+  const setupMessage =
+    setupFailedStep?.error_detail ||
+    (setupFailedStep
+      ? `Prerequisite setup step ${setupFailedStep.step_number} not met: ${setupFailedStep.actor} received HTTP ${setupFailedStep.status_code} (${
+          setupFailedStep.status_code === 401
+            ? "Missing or invalid bearer credentials"
+            : setupFailedStep.status_code === 403
+            ? "Access forbidden"
+            : setupFailedStep.status_code === 404
+            ? "Endpoint not found"
+            : "Setup rejected"
+        }). Scenario could not provision initial test state.`
+      : null);
 
   return (
     <div className={`p-4 rounded-xl border border-cyan-800/40 bg-[#070d18] flex flex-col gap-3.5 shadow-xl ${className}`}>
@@ -203,6 +238,11 @@ export function StatefulChainFlow({
             <AlertTriangle className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
             <span>CRITICAL BREACH DETECTED</span>
           </span>
+        ) : setupFailedStep ? (
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-amber-950/80 text-amber-300 border border-amber-600 font-mono text-xs font-bold shadow-sm">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+            <span>PREREQUISITE SETUP NOT MET</span>
+          </span>
         ) : (
           <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-600 font-mono text-xs font-bold">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
@@ -212,7 +252,7 @@ export function StatefulChainFlow({
       </div>
 
       {/* Breach Alert Banner */}
-      {breachMessage && (
+      {breach && breachMessage && (
         <div className="p-3 rounded-lg bg-rose-950/70 border border-rose-500/80 text-rose-200 text-xs font-mono shadow-[0_0_15px_rgba(244,63,94,0.25)] flex items-start gap-2.5">
           <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5 animate-pulse" />
           <div className="flex flex-col gap-0.5">
@@ -220,9 +260,22 @@ export function StatefulChainFlow({
               Security Violation Alert:
             </span>
             <span className="text-rose-100 font-sans text-xs">
-              {breachMessage.includes("BOLA") || breachMessage.includes("Breach")
-                ? breachMessage
-                : `BOLA Breached: ${breachMessage}`}
+              {breachMessage}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Setup Prerequisite Notice Banner */}
+      {!breach && setupFailedStep && setupMessage && (
+        <div className="p-3 rounded-lg bg-amber-950/60 border border-amber-600/70 text-amber-200 text-xs font-mono shadow-sm flex items-start gap-2.5">
+          <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="flex flex-col gap-0.5">
+            <span className="font-bold text-amber-300 uppercase tracking-wide">
+              Prerequisite Setup Notice:
+            </span>
+            <span className="text-amber-100/90 font-sans text-xs">
+              {setupMessage}
             </span>
           </div>
         </div>
@@ -248,7 +301,9 @@ export function StatefulChainFlow({
                 className={`relative z-10 w-8 h-8 rounded-full flex items-center justify-center font-mono text-xs font-bold shrink-0 border shadow-md ${
                   step.executed
                     ? step.passed === false
-                      ? "bg-rose-950 text-rose-300 border-rose-600 shadow-[0_0_8px_rgba(244,63,94,0.4)]"
+                      ? step.violation_triggered
+                        ? "bg-rose-950 text-rose-300 border-rose-600 shadow-[0_0_8px_rgba(244,63,94,0.4)]"
+                        : "bg-amber-950 text-amber-300 border-amber-600 shadow-[0_0_8px_rgba(245,158,11,0.25)]"
                       : "bg-emerald-950 text-emerald-300 border-emerald-600"
                     : "bg-[#0b1323] text-cyan-300 border-cyan-700/60"
                 }`}
@@ -309,16 +364,31 @@ export function StatefulChainFlow({
                     ) : null}
 
                     {step.executed && (
-                      <span title={step.passed ? "Step Passed" : "Step Failed"}>
+                      <span title={step.passed ? "Step Passed" : step.violation_triggered ? "Security Violation" : "Prerequisite Setup Failed"}>
                         {step.passed ? (
                           <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                        ) : (
+                        ) : step.violation_triggered ? (
                           <XCircle className="w-4 h-4 text-rose-400" />
+                        ) : (
+                          <AlertCircle className="w-4 h-4 text-amber-400" />
                         )}
                       </span>
                     )}
                   </div>
                 </div>
+
+                {/* Step Failure / Notice Detail */}
+                {step.error_detail && !step.passed && (
+                  <div
+                    className={`p-2 rounded border text-[11px] font-mono ${
+                      step.violation_triggered
+                        ? "bg-rose-950/40 border-rose-800/60 text-rose-300"
+                        : "bg-amber-950/40 border-amber-800/60 text-amber-300"
+                    }`}
+                  >
+                    {step.error_detail}
+                  </div>
+                )}
 
                 {/* Extracted Variables Pills */}
                 {step.extracted_values && Object.keys(step.extracted_values).length > 0 && (
