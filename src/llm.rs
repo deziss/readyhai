@@ -91,6 +91,12 @@ pub struct LlmConfig {
     pub max_attempts: u32,
     /// First backoff step; doubles per attempt (a `Retry-After` header wins, capped at 30 s).
     pub retry_base_ms: u64,
+    /// Extended Thinking / CoT reasoning active.
+    pub thinking: bool,
+    /// Token budget allocated to reasoning (e.g. 1024..=32768).
+    pub thinking_budget_tokens: u32,
+    /// Model tier (low, medium, high, max, max_pro).
+    pub model_tier: String,
 }
 
 impl LlmConfig {
@@ -131,7 +137,17 @@ impl LlmConfig {
             cache_dir: None,
             max_attempts: 3,
             retry_base_ms: 500,
+            thinking: false,
+            thinking_budget_tokens: 8192,
+            model_tier: "high".to_string(),
         })
+    }
+
+    pub fn with_thinking(mut self, thinking: bool, tier: &str, budget: u32) -> Self {
+        self.thinking = thinking;
+        self.model_tier = tier.to_string();
+        self.thinking_budget_tokens = budget;
+        self
     }
 
     pub fn base_url(&self) -> Result<String> {
@@ -621,10 +637,17 @@ pub fn parse_json_object(text: &str) -> Result<Value> {
 fn cache_path(cfg: &LlmConfig, system: &str, prompt: &str) -> std::path::PathBuf {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
+    let budget_str = cfg.thinking_budget_tokens.to_string();
     for part in [
         cfg.provider.id,
         "\0",
         cfg.model.as_str(),
+        "\0",
+        if cfg.thinking { "thinking" } else { "normal" },
+        "\0",
+        cfg.model_tier.as_str(),
+        "\0",
+        budget_str.as_str(),
         "\0",
         system,
         "\0",
@@ -689,13 +712,28 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
     match cfg.provider.transport {
         Transport::OpenAiChat => {
             let url = format!("{}/chat/completions", base.trim_end_matches('/'));
+            let max_tok = if cfg.thinking {
+                std::cmp::max(cfg.thinking_budget_tokens as usize, 4096)
+            } else {
+                2048
+            };
             let mut body = json!({
                 "model": cfg.model,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 2048,
+                "max_tokens": max_tok,
                 "response_format": {"type": "json_object"},
             });
+            if cfg.thinking {
+                let effort = match cfg.model_tier.to_ascii_lowercase().as_str() {
+                    "low" => "low",
+                    "medium" => "medium",
+                    "high" => "high",
+                    "max" | "max_pro" => "high",
+                    _ => "medium",
+                };
+                body["reasoning_effort"] = json!(effort);
+            }
             for attempt in 0..2 {
                 let r = send_retrying(cfg, || {
                     let rq = c.post(&url).json(&body);
@@ -705,7 +743,10 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
                     }
                 })?;
                 if r.status().as_u16() == 400 && attempt == 0 {
-                    body.as_object_mut().map(|o| o.remove("response_format"));
+                    body.as_object_mut().map(|o| {
+                        o.remove("response_format");
+                        o.remove("reasoning_effort");
+                    });
                     continue;
                 }
                 let v: Value = r.error_for_status()?.json()?;
@@ -723,30 +764,48 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
                 }],
                 &[],
             );
-            b["max_tokens"] = json!(2048);
-            b["temperature"] = json!(0.1);
-            let url = format!("{}/v1/messages", base.trim_end_matches('/'));
-            let r = send_retrying(cfg, || {
-                let rq = c
-                    .post(&url)
-                    .header("anthropic-version", "2023-06-01")
-                    .json(&b);
-                match &key {
-                    Some(k) => rq.header("x-api-key", k),
-                    None => rq,
-                }
-            })?;
-            let v: Value = r.error_for_status()?.json()?;
-            let text = v["content"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|c| c["text"].as_str())
-                .collect::<String>();
-            if text.trim().is_empty() {
-                bail!("LLM returned empty content");
+            if cfg.thinking {
+                let budget = std::cmp::max(cfg.thinking_budget_tokens, 1024);
+                b["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
+                b["max_tokens"] = json!(budget + 2048);
+                b["temperature"] = json!(1.0);
+            } else {
+                b["max_tokens"] = json!(2048);
+                b["temperature"] = json!(0.1);
             }
-            Ok(text)
+            let url = format!("{}/v1/messages", base.trim_end_matches('/'));
+            for attempt in 0..2 {
+                let r = send_retrying(cfg, || {
+                    let rq = c
+                        .post(&url)
+                        .header("anthropic-version", "2023-06-01")
+                        .json(&b);
+                    match &key {
+                        Some(k) => rq.header("x-api-key", k),
+                        None => rq,
+                    }
+                })?;
+                if r.status().as_u16() == 400 && attempt == 0 && cfg.thinking {
+                    b.as_object_mut().map(|o| {
+                        o.remove("thinking");
+                        o.insert("temperature".into(), json!(0.1));
+                        o.insert("max_tokens".into(), json!(2048));
+                    });
+                    continue;
+                }
+                let v: Value = r.error_for_status()?.json()?;
+                let text = v["content"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|c| c["text"].as_str())
+                    .collect::<String>();
+                if text.trim().is_empty() {
+                    bail!("LLM returned empty content");
+                }
+                return Ok(text);
+            }
+            bail!("Anthropic rejected the request")
         }
     }
 }

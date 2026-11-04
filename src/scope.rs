@@ -160,6 +160,11 @@ impl Scope {
         Ok(toml::from_str(&std::fs::read_to_string(path)?)?)
     }
 
+    /// Default scope: `active()` scope (set via `set_active` or `READYHAI_SCOPE`).
+    pub fn load_default() -> Option<Scope> {
+        active()
+    }
+
     /// Scope entry that governs `host`.
     ///
     /// When several entries match: an exact entry beats a wildcard, and `prod` beats `nonprod`

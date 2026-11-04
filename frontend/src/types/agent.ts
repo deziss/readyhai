@@ -50,6 +50,14 @@ export interface TestCaseResult {
   response_body?: string | null;
   assertion_details?: string | null;
   retested?: boolean;
+  adaptive_mutation?: {
+    framework?: string;
+    required_fields?: string[];
+    mutated_payload?: string;
+    mutated_status?: number;
+    penetrated_validation?: boolean;
+    mutated_verdict?: string;
+  } | null;
 }
 
 export interface ThreatFinding {
@@ -191,6 +199,15 @@ export interface RawCaseResult {
   evidence?: string | null;
   assertion_details?: string | null;
   failure_reason?: string | null;
+  evidence_detail?: any;
+  adaptive_mutation?: {
+    framework?: string;
+    required_fields?: string[];
+    mutated_payload?: string;
+    mutated_status?: number;
+    penetrated_validation?: boolean;
+    mutated_verdict?: string;
+  } | null;
 }
 
 /** Raw triaged defect (older and newer backend field names are both accepted). */

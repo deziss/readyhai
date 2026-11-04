@@ -276,13 +276,24 @@ pub(crate) fn run_in(
     );
     let (requester_ip, requester_ip_type, allowlist_guidance) =
         ip_fields(lookup_requester_ip, &mut steps);
-    if req.thinking {
-        notes.push(format!("thinking/model_tier/thinking_budget_tokens ({}, {}) are recorded but not forwarded to the provider: every LLM step is a single-shot JSON call", req.model_tier, req.thinking_budget_tokens));
-    }
 
     // LLM: resolved and probed once; every LLM step is skipped when it is not reachable
     let (llm_cfg, llm_status) = match resolve_llm(&llm) {
-        Ok(c) => {
+        Ok(mut c) => {
+            if req.thinking {
+                c = c.with_thinking(true, &req.model_tier, req.thinking_budget_tokens);
+                log(
+                    &mut steps,
+                    "Supervisor",
+                    "Extended Thinking (CoT)",
+                    &format!(
+                        "Extended CoT active: model_tier='{}', reasoning budget={} tokens forwarded to {}",
+                        req.model_tier, req.thinking_budget_tokens, c.describe()
+                    ),
+                    "completed",
+                    Some("llm"),
+                );
+            }
             log(
                 &mut steps,
                 "Supervisor",
@@ -397,6 +408,31 @@ pub(crate) fn run_in(
     };
     let executed = execute_cases_with(&plan.cases, &req.target, &exec_opts, &mut budget);
     let n = |s: &str| executed.iter().filter(|r| r.status == s).count();
+    let mutations_count = executed
+        .iter()
+        .filter_map(|r| r.evidence_detail.as_ref())
+        .filter(|d| !d.get("adaptive_mutation").unwrap_or(&serde_json::Value::Null).is_null())
+        .count();
+    let penetrated_count = executed
+        .iter()
+        .filter_map(|r| r.evidence_detail.as_ref())
+        .filter_map(|d| d.get("adaptive_mutation"))
+        .filter(|m| m.get("penetrated_validation").and_then(serde_json::Value::as_bool).unwrap_or(false))
+        .count();
+
+    if mutations_count > 0 {
+        log(
+            &mut steps,
+            "Explorer",
+            "Adaptive Schema Mutation",
+            &format!(
+                "Triggered {mutations_count} adaptive mutation probe(s) from schema feedback; {penetrated_count} penetrated validation filters"
+            ),
+            "completed",
+            Some("deterministic"),
+        );
+    }
+
     log(
         &mut steps,
         "Explorer",

@@ -146,7 +146,20 @@ fn tool_defs() -> Value {
             "id": {"type": "string"},
             "severity_min": {"type": "string", "enum": ["info", "low", "medium", "high", "critical"]},
             "status": {"type": "string", "enum": ["new", "existing", "suppressed"]},
-            "limit": {"type": "integer", "default": 50}}, "required": ["id"]}}
+            "limit": {"type": "integer", "default": 50}}, "required": ["id"]}},
+        {"name": "readyhai_agent_swarm",
+         "description": "Launch an autonomous multi-agent QA and adversarial security testing swarm against a web target. Executes recon, endpoint discovery, adaptive schema fuzzing, and OWASP defect triage to produce an immutable Evidence Ledger with production readiness gate verdict (GO, CONDITIONAL_GO, NO_GO).",
+         "inputSchema": {"type": "object", "properties": {
+            "target": {"type": "string", "description": "HTTP/HTTPS target origin or URL"},
+            "directives": {"type": "string", "description": "Custom instructions or test focus (e.g. authz bypass, IDOR, prompt injection)"},
+            "profile": {"type": "string", "enum": ["quick", "standard", "deep"], "default": "standard"},
+            "max_steps": {"type": "integer", "minimum": 1, "maximum": 50, "default": 15},
+            "thinking": {"type": "boolean", "default": true, "description": "Enable extended multi-pass reasoning"},
+            "model_tier": {"type": "string", "enum": ["low", "medium", "high", "max", "max_pro"], "default": "high"}}, "required": ["target"]}},
+        {"name": "readyhai_agent_discover",
+         "description": "Fast reconnaissance and endpoint discovery for a web application. Discovers same-host routes, SPA shell technology, framework detection, and OpenAPI specifications.",
+         "inputSchema": {"type": "object", "properties": {
+            "target": {"type": "string", "description": "HTTP/HTTPS target origin"}}, "required": ["target"]}}
     ])
 }
 
@@ -165,6 +178,8 @@ fn call_tool(name: &str, args: &Value) -> Result<String> {
             Ok(summarize(&engine::load_run(id)?))
         }
         "readyhai_findings" => tool_findings(args),
+        "readyhai_agent_swarm" => tool_agent_swarm(args),
+        "readyhai_agent_discover" => tool_agent_discover(args),
         _ => bail!("unknown tool '{name}'"),
     }
 }
@@ -406,6 +421,106 @@ fn tool_findings(args: &Value) -> Result<String> {
     ))
 }
 
+fn tool_agent_swarm(args: &Value) -> Result<String> {
+    let mut req: crate::agent::AgentRunRequest = serde_json::from_value(args.clone())
+        .map_err(|e| anyhow::anyhow!("invalid arguments for readyhai_agent_swarm: {e}"))?;
+    if req.target.trim().is_empty() {
+        bail!("target is required and cannot be empty");
+    }
+    if !["quick", "standard", "deep"].contains(&req.profile.as_str()) {
+        bail!("profile must be quick|standard|deep");
+    }
+    if !["low", "medium", "high", "max", "max_pro"].contains(&req.model_tier.as_str()) {
+        bail!("model_tier must be low|medium|high|max|max_pro");
+    }
+    if let Some(steps) = req.max_steps {
+        if !(1..=50).contains(&steps) {
+            bail!("max_steps must be between 1 and 50");
+        }
+    }
+    let steps = req.max_steps.unwrap_or(15).clamp(1, 50);
+    req.max_steps = Some(steps);
+    if req.custom_instructions.is_none() {
+        if let Some(d) = args.get("directives").and_then(|v| v.as_str()) {
+            req.custom_instructions = Some(d.to_string());
+        }
+    }
+    let run_id = engine::new_run_id();
+    let scope = crate::scope::Scope::load_default();
+    let egress = crate::scope::egress_guard(&req.target, scope.as_ref(), true)?;
+    req.target = egress.url;
+    if let Some(spec) = &req.spec_url {
+        let spec_egress = crate::scope::egress_guard(spec, scope.as_ref(), false)?;
+        req.spec_url = Some(spec_egress.url);
+    }
+    let opts = crate::agent::RunOptions::default().with_max_steps(steps);
+    eprintln!(
+        "readyhai mcp: agent swarm against {} (run {run_id})",
+        req.target
+    );
+    let report = crate::agent::run_agentic_loop_with(&req, &run_id, opts)?;
+    let gate_verdict = report
+        .evidence_ledger
+        .as_ref()
+        .map(|l| l.gate_verdict.clone())
+        .unwrap_or_else(|| "UNKNOWN".to_string());
+    let overall_readiness = report
+        .evidence_ledger
+        .as_ref()
+        .map(|l| l.overall_readiness)
+        .unwrap_or(0);
+    let defect_count = report.triaged_defects.len();
+    let pillars = report
+        .evidence_ledger
+        .as_ref()
+        .map(|l| l.pillars.clone())
+        .unwrap_or_default();
+    let executive_summary = report
+        .evidence_ledger
+        .as_ref()
+        .map(|l| l.executive_summary.clone())
+        .unwrap_or_default();
+    let summary = json!({
+        "run_id": report.id,
+        "target": report.target,
+        "gate_verdict": gate_verdict,
+        "overall_readiness_score": overall_readiness,
+        "defect_count": defect_count,
+        "status": report.status,
+        "executive_summary": executive_summary,
+        "evidence_ledger": {
+            "gate_verdict": gate_verdict,
+            "overall_readiness": overall_readiness,
+            "pillars": pillars,
+        },
+        "defects": report.triaged_defects,
+    });
+    Ok(serde_json::to_string_pretty(&summary)?)
+}
+
+fn tool_agent_discover(args: &Value) -> Result<String> {
+    let target = args
+        .get("target")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("target is required"))?;
+    if target.trim().is_empty() {
+        bail!("target is required and cannot be empty");
+    }
+    let scope = crate::scope::Scope::load_default();
+    let egress = crate::scope::egress_guard(target, scope.as_ref(), false)?;
+    eprintln!("readyhai mcp: agent discover on {}", egress.url);
+    let (routes, tech_profile) = crate::agent::discover_routes(&egress.url, None, 20);
+    let count = routes.len();
+    let out = json!({
+        "target": egress.url,
+        "count": count,
+        "framework": tech_profile.primary_framework,
+        "tech_profile": tech_profile,
+        "routes": routes,
+    });
+    Ok(serde_json::to_string_pretty(&out)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,7 +554,10 @@ mod tests {
             &mut st,
             json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}),
         );
-        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 4);
+        let tools = r["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 6);
+        assert!(tools.iter().any(|t| t["name"] == "readyhai_agent_swarm"));
+        assert!(tools.iter().any(|t| t["name"] == "readyhai_agent_discover"));
         let r = call(
             &mut st,
             json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"readyhai_checks","arguments":{}}}),
@@ -642,5 +760,191 @@ mod tests {
         };
         assert!(precheck(&outside).is_err());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_tools_schema_definition() {
+        let tools = tool_defs();
+        let tools_arr = tools.as_array().expect("array of tools");
+        assert_eq!(tools_arr.len(), 6);
+
+        let swarm = tools_arr
+            .iter()
+            .find(|t| t["name"] == "readyhai_agent_swarm")
+            .expect("readyhai_agent_swarm defined");
+        assert!(
+            swarm["description"]
+                .as_str()
+                .unwrap()
+                .contains("autonomous multi-agent QA")
+        );
+        let swarm_props = &swarm["inputSchema"]["properties"];
+        assert!(swarm_props.get("target").is_some());
+        assert!(swarm_props.get("directives").is_some());
+        assert!(swarm_props.get("profile").is_some());
+        assert!(swarm_props.get("max_steps").is_some());
+        assert!(swarm_props.get("thinking").is_some());
+        assert!(swarm_props.get("model_tier").is_some());
+        assert_eq!(swarm["inputSchema"]["required"], json!(["target"]));
+
+        let discover = tools_arr
+            .iter()
+            .find(|t| t["name"] == "readyhai_agent_discover")
+            .expect("readyhai_agent_discover defined");
+        assert!(
+            discover["description"]
+                .as_str()
+                .unwrap()
+                .contains("Fast reconnaissance and endpoint discovery")
+        );
+        let discover_props = &discover["inputSchema"]["properties"];
+        assert!(discover_props.get("target").is_some());
+        assert_eq!(discover["inputSchema"]["required"], json!(["target"]));
+    }
+
+    #[test]
+    fn agent_discover_schema_validation() {
+        let mut st = State::default();
+
+        // 1. Missing target
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"readyhai_agent_discover","arguments":{}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("target is required")
+        );
+
+        // 2. Empty target
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"readyhai_agent_discover","arguments":{"target":""}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("cannot be empty")
+        );
+
+        // 3. Invalid scheme
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"readyhai_agent_discover","arguments":{"target":"ftp://invalid.example"}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("only http:// and https:// targets are accepted")
+        );
+
+        // 4. Internal unlisted IP refused by scope
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"readyhai_agent_discover","arguments":{"target":"http://169.254.169.254/latest"}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("internal and not listed")
+        );
+    }
+
+    #[test]
+    fn agent_swarm_schema_validation() {
+        let mut st = State::default();
+
+        // 1. Missing target
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"readyhai_agent_swarm","arguments":{}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+
+        // 2. Empty target
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"readyhai_agent_swarm","arguments":{"target":""}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("target is required")
+        );
+
+        // 3. Invalid profile
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"readyhai_agent_swarm","arguments":{"target":"https://example.com","profile":"hyper"}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("profile must be quick|standard|deep")
+        );
+
+        // 4. Invalid model_tier
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"readyhai_agent_swarm","arguments":{"target":"https://example.com","model_tier":"super_tier"}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("model_tier must be low|medium|high|max|max_pro")
+        );
+
+        // 5. Invalid max_steps (0 or >50)
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"readyhai_agent_swarm","arguments":{"target":"https://example.com","max_steps":0}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("max_steps must be between 1 and 50")
+        );
+
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"readyhai_agent_swarm","arguments":{"target":"https://example.com","max_steps":100}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("max_steps must be between 1 and 50")
+        );
+
+        // 6. Target with internal IP blocked by scope
+        let r = call(
+            &mut st,
+            json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"readyhai_agent_swarm","arguments":{"target":"http://10.0.0.1:8080"}}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        assert!(
+            r["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("internal and not listed")
+        );
     }
 }
