@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   XCircle,
@@ -35,6 +35,21 @@ export function FloatingTaskWidget({
 }: FloatingTaskWidgetProps) {
   // Timer for elapsed seconds
   const [now, setNow] = useState(() => Date.now());
+
+  // Auto-dismiss completed or failed tasks after 6 seconds
+  const scheduledDismissals = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    tasks.forEach((t) => {
+      if ((t.status === "completed" || t.status === "failed") && !scheduledDismissals.current.has(t.id)) {
+        scheduledDismissals.current.add(t.id);
+        setTimeout(() => {
+          onDismiss(t.id);
+          scheduledDismissals.current.delete(t.id);
+        }, 6000);
+      }
+    });
+  }, [tasks, onDismiss]);
 
   useEffect(() => {
     if (tasks.length === 0) return;
@@ -101,7 +116,7 @@ export function FloatingTaskWidget({
                       {isRunning ? "Running in BG" : isFailed ? "Failed" : "Completed"}
                     </span>
                     <span className="text-[10px] font-mono text-slate-400">
-                      {elapsedSec}s
+                      {isRunning ? `${elapsedSec}s` : "auto-closing..."}
                     </span>
                   </div>
 
