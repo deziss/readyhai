@@ -46,6 +46,10 @@ pub struct StatefulStepExecution {
     pub latency_ms: u64,
     pub extracted_values: std::collections::HashMap<String, String>,
     pub passed: bool,
+    #[serde(default)]
+    pub violation_triggered: bool,
+    #[serde(default)]
+    pub error_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

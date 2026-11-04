@@ -571,9 +571,19 @@ fn run_case(
             budget,
             host,
         );
+        let res_status = if stateful_res.violation_triggered {
+            "FAIL"
+        } else if stateful_res.setup_failed {
+            "INCONCLUSIVE"
+        } else if stateful_res.passed {
+            "PASS"
+        } else {
+            "INCONCLUSIVE"
+        };
+
         let mut res = skeleton(
             c,
-            if stateful_res.passed { "PASS" } else { "FAIL" },
+            res_status,
             String::new(),
             stateful_res.reproduction_curl.clone(),
         );
@@ -581,12 +591,13 @@ fn run_case(
         res.latency_ms = stateful_res.total_latency_ms;
         res.stateful_chain = Some(stateful_res.steps.clone());
         res.evidence_file = Some(evidence_rel_path(&c.id));
-        if !stateful_res.passed {
+
+        if stateful_res.violation_triggered {
             let reason = stateful_res
                 .failure_reason
-                .unwrap_or_else(|| "Stateful scenario condition violated".into());
+                .unwrap_or_else(|| "Security violation triggered in stateful scenario".into());
             res.failure_reason = Some(reason.clone());
-            res.evidence = format!("Stateful scenario failed: {reason}");
+            res.evidence = format!("Stateful security breach detected: {reason}");
             res.oracle = Some(OracleOutcome {
                 verdict: Verdict::Fail,
                 checks: vec![OracleCheck {
@@ -597,18 +608,34 @@ fn run_case(
                 }],
                 warnings: vec![],
             });
+        } else if stateful_res.setup_failed {
+            let reason = stateful_res
+                .failure_reason
+                .unwrap_or_else(|| "Stateful setup prerequisite not met".into());
+            res.failure_reason = Some(reason.clone());
+            res.evidence = format!("Stateful scenario skipped: {reason}");
+            res.oracle = Some(OracleOutcome {
+                verdict: Verdict::Inconclusive,
+                checks: vec![OracleCheck {
+                    code: "authz".into(),
+                    verdict: Verdict::Inconclusive,
+                    severity: None,
+                    detail: reason,
+                }],
+                warnings: vec![],
+            });
         } else {
             res.evidence = format!(
-                "All {} stateful scenario steps passed successfully",
+                "Stateful scenario chain ({} steps) passed: security boundaries verified.",
                 steps.len()
             );
             res.oracle = Some(OracleOutcome {
                 verdict: Verdict::Pass,
                 checks: vec![OracleCheck {
-                    code: "state_transition".into(),
+                    code: "authz".into(),
                     verdict: Verdict::Pass,
                     severity: None,
-                    detail: format!("All {} steps verified", steps.len()),
+                    detail: format!("All {} stateful steps verified and access controls held", steps.len()),
                 }],
                 warnings: vec![],
             });

@@ -20,6 +20,8 @@ const BODY_CAP: usize = 64 * 1024;
 #[derive(Debug, Clone)]
 pub struct StatefulScenarioResult {
     pub passed: bool,
+    pub violation_triggered: bool,
+    pub setup_failed: bool,
     pub steps: Vec<StatefulStepExecution>,
     pub failure_reason: Option<String>,
     pub reproduction_curl: String,
@@ -186,6 +188,8 @@ pub fn execute_stateful_scenario(
             let reason = format!("Budget exceeded before step {}: {m}", step.step_number);
             return StatefulScenarioResult {
                 passed: false,
+                violation_triggered: false,
+                setup_failed: true,
                 steps: step_records,
                 failure_reason: Some(reason),
                 reproduction_curl: curl_repros.join("\n"),
@@ -224,6 +228,8 @@ pub fn execute_stateful_scenario(
                 let reason = format!("Invalid HTTP method '{}' in step {}: {e}", method_str, step.step_number);
                 return StatefulScenarioResult {
                     passed: false,
+                    violation_triggered: false,
+                    setup_failed: true,
                     steps: step_records,
                     failure_reason: Some(reason),
                     reproduction_curl: curl_repros.join("\n"),
@@ -263,9 +269,13 @@ pub fn execute_stateful_scenario(
                     latency_ms: step_latency,
                     extracted_values: HashMap::new(),
                     passed: false,
+                    violation_triggered: false,
+                    error_detail: Some(reason.clone()),
                 });
                 return StatefulScenarioResult {
                     passed: false,
+                    violation_triggered: false,
+                    setup_failed: true,
                     steps: step_records,
                     failure_reason: Some(reason),
                     reproduction_curl: curl_repros.join("\n"),
@@ -307,11 +317,13 @@ pub fn execute_stateful_scenario(
 
         // Check violation condition
         let mut step_passed = true;
+        let mut step_violation = false;
         let mut failure_reason = None;
 
         if let Some(cond) = &step.violation_condition {
             if evaluate_violation(cond, status, &body_str) {
                 step_passed = false;
+                step_violation = true;
                 failure_reason = Some(format!(
                     "Security violation triggered on step {} (actor '{}', {} {}): condition '{}' met with HTTP {}",
                     step.step_number, step.actor, method_str, path_norm, cond, status
@@ -321,7 +333,13 @@ pub fn execute_stateful_scenario(
 
         if step_passed {
             if let Some(expected) = step.expected_status {
-                if status != expected {
+                let matches_expected = if expected == 201 {
+                    status == 200 || status == 201
+                } else {
+                    status == expected
+                };
+
+                if !matches_expected {
                     step_passed = false;
                     failure_reason = Some(format!(
                         "Step {} expected status {} but received {}",
@@ -331,7 +349,7 @@ pub fn execute_stateful_scenario(
             } else if status >= 400 {
                 step_passed = false;
                 failure_reason = Some(format!(
-                    "Step {} unexpectedly failed with status {}",
+                    "Step {} failed with HTTP {}",
                     step.step_number, status
                 ));
             }
@@ -341,18 +359,44 @@ pub fn execute_stateful_scenario(
             step_number: step.step_number,
             actor: step.actor.clone(),
             method: method_str.to_string(),
-            resolved_path: path_norm,
+            resolved_path: path_norm.clone(),
             status_code: status,
             latency_ms: step_latency,
             extracted_values: extracted,
             passed: step_passed,
+            violation_triggered: step_violation,
+            error_detail: failure_reason.clone(),
         });
 
         if !step_passed {
+            let is_setup = step.step_number == 1 && step.violation_condition.is_none();
+            let reason_text = if is_setup {
+                format!(
+                    "Prerequisite setup step 1 not met (actor '{}', {} {}): received HTTP {} ({})",
+                    step.actor,
+                    method_str,
+                    path_norm,
+                    status,
+                    if status == 401 || status == 403 {
+                        "authentication credentials required or denied"
+                    } else if status == 404 {
+                        "endpoint not found"
+                    } else if status == 405 {
+                        "method not allowed"
+                    } else {
+                        "resource setup prerequisite failed"
+                    }
+                )
+            } else {
+                failure_reason.unwrap_or_else(|| "Stateful step failed".into())
+            };
+
             return StatefulScenarioResult {
                 passed: false,
+                violation_triggered: step_violation,
+                setup_failed: is_setup,
                 steps: step_records,
-                failure_reason,
+                failure_reason: Some(reason_text),
                 reproduction_curl: curl_repros.join("\n"),
                 final_status: last_status,
                 total_latency_ms: total_latency,
@@ -362,6 +406,8 @@ pub fn execute_stateful_scenario(
 
     StatefulScenarioResult {
         passed: true,
+        violation_triggered: false,
+        setup_failed: false,
         steps: step_records,
         failure_reason: None,
         reproduction_curl: curl_repros.join("\n"),

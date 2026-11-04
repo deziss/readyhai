@@ -41,6 +41,8 @@ export interface StatefulStepExecution {
   latency_ms: number;
   extracted_values: Record<string, string>;
   passed: boolean;
+  violation_triggered?: boolean;
+  error_detail?: string;
 }
 
 export interface PlannedCase {

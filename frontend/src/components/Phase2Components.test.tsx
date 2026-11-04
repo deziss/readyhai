@@ -92,6 +92,47 @@ describe("StatefulChainFlow", () => {
     expect(screen.getByText("CRITICAL BREACH DETECTED")).toBeDefined();
     expect(screen.getAllByText(/BOLA Breached/i).length).toBeGreaterThan(0);
   });
+
+  it("renders prerequisite setup notice when Alice receives HTTP 401 instead of a false breach", () => {
+    const steps: StatefulStep[] = [
+      {
+        step_number: 1,
+        actor: "alice",
+        method: "POST",
+        path: "/api/workspaces",
+        extract_vars: ["workspace_id"],
+      },
+      {
+        step_number: 2,
+        actor: "bob",
+        method: "GET",
+        path: "/api/workspaces/{{workspace_id}}",
+        violation_condition: "status == 200",
+      },
+    ];
+
+    const chain: StatefulStepExecution[] = [
+      {
+        step_number: 1,
+        actor: "alice",
+        method: "POST",
+        resolved_path: "/api/workspaces",
+        status_code: 401,
+        latency_ms: 15,
+        extracted_values: {},
+        passed: false,
+        violation_triggered: false,
+        error_detail: "Prerequisite setup step 1 not met (actor 'alice', POST /api/workspaces): received HTTP 401",
+      },
+    ];
+
+    render(<StatefulChainFlow steps={steps} chain={chain} />);
+
+    expect(screen.getByText("PREREQUISITE SETUP NOT MET")).toBeDefined();
+    expect(screen.queryByText("CRITICAL BREACH DETECTED")).toBeNull();
+    expect(screen.getByText(/Prerequisite Setup Notice/i)).toBeDefined();
+    expect(screen.getByText(/received HTTP 401/i)).toBeDefined();
+  });
 });
 
 describe("ConcurrencyBurstMeter", () => {

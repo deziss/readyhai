@@ -333,8 +333,11 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
         c.concurrency_burst = Some(5);
         out.push(c);
     }
-    // Stateful BOLA tenant isolation check on discovered API routes
-    if let Some(api_r) = routes.iter().find(|r| r.is_api || r.path.starts_with("/api/")) {
+    // Stateful BOLA tenant isolation check on discovered API resource routes (never root '/')
+    if let Some(api_r) = routes.iter().find(|r| {
+        let p = r.path.trim();
+        p != "/" && !p.is_empty() && (r.is_api || p.starts_with("/api/") || r.has_body)
+    }) {
         let step1 = super::types::StatefulStep {
             step_number: 1,
             actor: "alice".into(),
