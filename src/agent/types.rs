@@ -25,6 +25,30 @@ pub(crate) fn default_method() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatefulStep {
+    pub step_number: u32,
+    pub actor: String, // "alice", "bob", "anon", "admin"
+    pub method: String,
+    pub path: String, // e.g. "/api/items/{{item_id}}"
+    pub payload: Option<String>,
+    pub extract_vars: Option<Vec<String>>, // variable names to extract from JSON response
+    pub expected_status: Option<u16>,
+    pub violation_condition: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatefulStepExecution {
+    pub step_number: u32,
+    pub actor: String,
+    pub method: String,
+    pub resolved_path: String,
+    pub status_code: u16,
+    pub latency_ms: u64,
+    pub extracted_values: std::collections::HashMap<String, String>,
+    pub passed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentRunRequest {
     pub target: String,
     #[serde(default = "default_profile")]
@@ -127,6 +151,10 @@ pub struct PlannedCase {
     /// deterministic | openapi | llm
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub stateful_steps: Option<Vec<StatefulStep>>,
+    #[serde(default)]
+    pub concurrency_burst: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +197,10 @@ pub struct CaseExecutionResult {
     /// Full (redacted) request/response record behind `evidence_file`; not part of the report JSON.
     #[serde(skip)]
     pub evidence_detail: Option<serde_json::Value>,
+    #[serde(default)]
+    pub stateful_chain: Option<Vec<StatefulStepExecution>>,
+    #[serde(default)]
+    pub concurrency_burst_results: Option<Vec<u16>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,6 +223,12 @@ pub struct TriagedDefect {
     /// Advisory LLM prose. Never used for severity, priority or the gate.
     #[serde(default)]
     pub ai_note: Option<String>,
+    #[serde(default)]
+    pub remediation_patch: Option<String>,
+    #[serde(default)]
+    pub remediation_explanation: Option<String>,
+    #[serde(default)]
+    pub reproduction_script: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -128,7 +128,13 @@ pub fn derive_defects(results: &[CaseExecutionResult]) -> Vec<TriagedDefect> {
             } else {
                 title.to_string()
             };
-            TriagedDefect {
+            let sample_curl = g
+                .members
+                .iter()
+                .map(|m| m.reproduction_curl.as_str())
+                .find(|c| !c.is_empty())
+                .unwrap_or("");
+            let mut defect = TriagedDefect {
                 id: format!("DEF-{:03}", i + 1),
                 title: format!("{title}: {} {}", g.method, g.component),
                 severity: g.sev.as_str().into(),
@@ -157,7 +163,21 @@ pub fn derive_defects(results: &[CaseExecutionResult]) -> Vec<TriagedDefect> {
                     .filter_map(|m| m.evidence_file.clone())
                     .collect(),
                 ai_note: None,
-            }
+                remediation_patch: None,
+                remediation_explanation: None,
+                reproduction_script: None,
+            };
+
+            let (patch, exp, script) = super::remediation::synthesize_remediation(
+                &defect,
+                &g.component,
+                &g.method,
+                sample_curl,
+            );
+            defect.remediation_patch = Some(patch);
+            defect.remediation_explanation = Some(exp);
+            defect.reproduction_script = Some(script);
+            defect
         })
         .collect()
 }
@@ -300,6 +320,8 @@ mod tests {
             attempts: vec![],
             evidence_file: Some(format!("evidence/{id}.json")),
             evidence_detail: None,
+            stateful_chain: None,
+            concurrency_burst_results: None,
         }
     }
 
@@ -362,6 +384,9 @@ mod tests {
         assert_eq!(orders.evidence_files.len(), 2);
         assert_eq!(orders.reproduction.lines().count(), 2);
         assert!(orders.owasp_category.contains("API4"));
+        assert!(orders.remediation_patch.as_deref().unwrap().contains("--- a/"));
+        assert!(orders.remediation_explanation.is_some());
+        assert!(orders.reproduction_script.is_some());
     }
 
     #[test]

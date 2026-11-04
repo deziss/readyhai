@@ -45,6 +45,9 @@ import {
 } from "@/lib/runs";
 import { ReportButton, ReportFrame } from "./ReportButton";
 import { VerdictBadge } from "./VerdictBadge";
+import { StatefulChainFlow } from "./StatefulChainFlow";
+import { ConcurrencyBurstMeter } from "./ConcurrencyBurstMeter";
+import { AutoRemediationCard } from "./AutoRemediationCard";
 
 interface AgentHistoryViewProps {
   onLoadRunInStudio?: (run: AgentRunRecord) => void;
@@ -775,8 +778,38 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                                   {tc.method}
                                 </span>
                                 <div className="min-w-0">
-                                  <div className="text-xs font-mono font-semibold text-slate-200 truncate">
-                                    {tc.title}
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-xs font-mono font-semibold text-slate-200 truncate">
+                                      {tc.title}
+                                    </span>
+                                    {/* Compact Badges */}
+                                    {(tc.technique?.toLowerCase().includes("bola") ||
+                                      (tc.stateful_steps && tc.stateful_steps.some((s) => s.actor.toLowerCase() === "bob"))) && (
+                                      <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-amber-950/90 text-amber-300 border border-amber-500/70 shadow-[0_0_8px_rgba(245,158,11,0.2)] flex items-center gap-1 shrink-0">
+                                        <span>⚡</span>
+                                        <span>BOLA Test</span>
+                                      </span>
+                                    )}
+
+                                    {((tc.stateful_chain && tc.stateful_chain.length > 0) ||
+                                      (tc.stateful_steps && tc.stateful_steps.length > 0) ||
+                                      tc.technique?.toLowerCase().includes("stateful")) && (
+                                      <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-cyan-950/90 text-cyan-300 border border-cyan-500/70 shadow-[0_0_8px_rgba(6,182,212,0.2)] flex items-center gap-1 shrink-0">
+                                        <span>🔗</span>
+                                        <span>Stateful Chain</span>
+                                      </span>
+                                    )}
+
+                                    {(tc.concurrency_burst != null ||
+                                      (tc.concurrency_burst_results && tc.concurrency_burst_results.length > 0) ||
+                                      tc.technique?.toLowerCase().includes("toctou") ||
+                                      tc.technique?.toLowerCase().includes("burst") ||
+                                      tc.technique?.toLowerCase().includes("race")) && (
+                                      <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-orange-950/90 text-orange-300 border border-orange-500/70 shadow-[0_0_8px_rgba(249,115,22,0.2)] flex items-center gap-1 shrink-0">
+                                        <span>🚀</span>
+                                        <span>TOCTOU Burst</span>
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="text-[11px] font-mono text-slate-500 truncate mt-0.5">
                                     {tc.component} · technique: {tc.technique}
@@ -802,6 +835,34 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                             {/* Expanded Details */}
                             {isExpanded && (
                               <div className="p-4 pt-1 border-t border-[#162238] bg-[#090e1a] space-y-3 font-mono text-xs">
+                                {/* Stateful Scenario Chain Flow (Phase 2) */}
+                                {(tc.stateful_chain || tc.stateful_steps) && (
+                                  <StatefulChainFlow
+                                    steps={tc.stateful_steps}
+                                    chain={tc.stateful_chain}
+                                    caseStatus={tc.status}
+                                  />
+                                )}
+
+                                {/* TOCTOU Concurrency Burst Meter (Phase 2) */}
+                                {(tc.concurrency_burst != null || (tc.concurrency_burst_results && tc.concurrency_burst_results.length > 0)) && (
+                                  <ConcurrencyBurstMeter
+                                    burstCount={tc.concurrency_burst}
+                                    burstResults={tc.concurrency_burst_results}
+                                    technique={tc.technique}
+                                    caseStatus={tc.status}
+                                  />
+                                )}
+
+                                {/* Auto-Remediation Git Patch Card (Phase 2) */}
+                                {(tc.remediation_patch || tc.remediation_explanation || tc.reproduction_script) && (
+                                  <AutoRemediationCard
+                                    patch={tc.remediation_patch}
+                                    explanation={tc.remediation_explanation}
+                                    reproScript={tc.reproduction_script}
+                                  />
+                                )}
+
                                 {tc.assertion_details && (
                                   <div>
                                     <span className="text-[11px] text-slate-500 uppercase font-semibold">Expected Behavior:</span>
@@ -1050,12 +1111,13 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                             {d.evidence_snippet}
                           </div>
                         )}
-                        {(d.remediation_patch_suggestion || d.recommended_fix) && (
-                          <div className="p-2 rounded bg-emerald-950/20 border border-emerald-900/40 text-emerald-300">
-                            <span className="font-bold">Patch suggestion: </span>
-                            {d.remediation_patch_suggestion || d.recommended_fix}
-                          </div>
-                        )}
+                        {(d.remediation_patch || d.remediation_patch_suggestion || d.recommended_fix || d.remediation_explanation || d.reproduction_script) ? (
+                          <AutoRemediationCard
+                            patch={d.remediation_patch || d.remediation_patch_suggestion || d.recommended_fix}
+                            explanation={d.remediation_explanation}
+                            reproScript={d.reproduction_script || d.reproduction}
+                          />
+                        ) : null}
                       </div>
                     ))
                   )}

@@ -688,6 +688,8 @@ mod tests {
             attempts: vec![],
             evidence_file: executed.then(|| format!("evidence/{id}.json")),
             evidence_detail: None,
+            stateful_chain: None,
+            concurrency_burst_results: None,
         }
     }
 
@@ -797,6 +799,9 @@ mod tests {
             case_ids: vec!["TC-006".into()],
             evidence_files: vec![],
             ai_note: None,
+            remediation_patch: None,
+            remediation_explanation: None,
+            reproduction_script: None,
         };
         assert_eq!(
             ledger(&r, &[defect("medium")], false).gate_verdict,

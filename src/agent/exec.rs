@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use super::budget::RunBudget;
-use super::oracle::{self, Observation, OracleOutcome, Verdict};
+use super::oracle::{self, Observation, OracleCheck, OracleOutcome, Severity, Verdict};
 use super::types::{AttemptRecord, CaseExecutionResult, PlannedCase};
 use crate::llm::{is_sensitive_key, redact_for_llm};
 
@@ -442,6 +442,8 @@ fn skeleton(c: &PlannedCase, status: &str, reason: String, curl: String) -> Case
         attempts: vec![],
         evidence_file: None,
         evidence_detail: None,
+        stateful_chain: None,
+        concurrency_burst_results: None,
     }
 }
 
@@ -547,6 +549,81 @@ fn run_case(
     opts: &ExecOptions,
     budget: &mut RunBudget,
 ) -> CaseExecutionResult {
+    // Check if this case is a stateful scenario chain
+    if let Some(steps) = &c.stateful_steps
+        && !steps.is_empty()
+    {
+        if opts.dry_run && steps.iter().any(|s| is_mutating(&s.method)) {
+            return skipped(
+                c,
+                "dry_run: state-changing steps in stateful scenario were not sent",
+                String::new(),
+            );
+        }
+        if let Err(m) = budget.take_step() {
+            return skipped(c, m, String::new());
+        }
+        let stateful_res = super::stateful::execute_stateful_scenario(
+            client,
+            target,
+            steps,
+            &opts.credentials,
+            budget,
+            host,
+        );
+        let mut res = skeleton(
+            c,
+            if stateful_res.passed { "PASS" } else { "FAIL" },
+            String::new(),
+            stateful_res.reproduction_curl.clone(),
+        );
+        res.status_code = Some(stateful_res.final_status);
+        res.latency_ms = stateful_res.total_latency_ms;
+        res.stateful_chain = Some(stateful_res.steps.clone());
+        res.evidence_file = Some(evidence_rel_path(&c.id));
+        if !stateful_res.passed {
+            let reason = stateful_res
+                .failure_reason
+                .unwrap_or_else(|| "Stateful scenario condition violated".into());
+            res.failure_reason = Some(reason.clone());
+            res.evidence = format!("Stateful scenario failed: {reason}");
+            res.oracle = Some(OracleOutcome {
+                verdict: Verdict::Fail,
+                checks: vec![OracleCheck {
+                    code: "authz".into(),
+                    verdict: Verdict::Fail,
+                    severity: Some(Severity::Critical),
+                    detail: reason,
+                }],
+                warnings: vec![],
+            });
+        } else {
+            res.evidence = format!(
+                "All {} stateful scenario steps passed successfully",
+                steps.len()
+            );
+            res.oracle = Some(OracleOutcome {
+                verdict: Verdict::Pass,
+                checks: vec![OracleCheck {
+                    code: "state_transition".into(),
+                    verdict: Verdict::Pass,
+                    severity: None,
+                    detail: format!("All {} steps verified", steps.len()),
+                }],
+                warnings: vec![],
+            });
+        }
+        let detail = json!({
+            "case_id": c.id,
+            "title": c.title,
+            "technique": c.technique,
+            "stateful_chain": stateful_res.steps,
+            "reproduction_curl": stateful_res.reproduction_curl,
+        });
+        res.evidence_detail = Some(detail);
+        return res;
+    }
+
     let spec = match build_request(c, target) {
         Ok(s) => s,
         Err(e) => return skipped(c, format!("invalid case, not sent: {e}"), String::new()),
@@ -768,6 +845,43 @@ fn run_case(
         }
     }
     detail["adaptive_mutation"] = serde_json::to_value(&mutation_info).unwrap_or(Value::Null);
+
+    // Concurrency burst execution for TOCTOU / race conditions
+    if let Some(burst) = c.concurrency_burst
+        && burst > 1
+        && !opts.dry_run
+    {
+        let burst_res = super::stateful::execute_concurrency_burst(
+            client,
+            &spec.url,
+            spec.method,
+            spec.body.as_ref().map(|(_, b)| b.as_str()),
+            bearer.as_deref(),
+            burst as usize,
+        );
+        res.concurrency_burst_results = Some(burst_res.status_codes.clone());
+        if burst_res.has_race_condition {
+            res.status = "FAIL".into();
+            let exp = burst_res
+                .explanation
+                .clone()
+                .unwrap_or_else(|| "Concurrency burst detected race condition".into());
+            res.failure_reason = Some(exp.clone());
+            res.evidence.push_str(&format!(" [TOCTOU Collision: {exp}]"));
+            outcome = OracleOutcome {
+                verdict: Verdict::Fail,
+                checks: vec![OracleCheck {
+                    code: "server_error".into(),
+                    verdict: Verdict::Fail,
+                    severity: Some(Severity::High),
+                    detail: exp,
+                }],
+                warnings: vec![],
+            };
+        }
+        detail["concurrency_burst"] = serde_json::to_value(&burst_res).unwrap_or(Value::Null);
+    }
+
     res.oracle = Some(outcome);
     res.evidence_detail = Some(detail);
     res
@@ -795,6 +909,8 @@ mod tests {
             expect_fields: vec![],
             expected_content_type: None,
             source: None,
+            stateful_steps: None,
+            concurrency_burst: None,
         }
     }
 

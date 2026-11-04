@@ -846,6 +846,8 @@ mod tests {
             expect_fields: vec![],
             expected_content_type: None,
             source: None,
+            stateful_steps: None,
+            concurrency_burst: None,
         }
     }
 
