@@ -42,6 +42,9 @@ import {
 } from "@/lib/runs";
 import { ReportButton, ReportFrame } from "./ReportButton";
 import { VerdictBadge } from "./VerdictBadge";
+import { StatefulChainFlow } from "./StatefulChainFlow";
+import { ConcurrencyBurstMeter } from "./ConcurrencyBurstMeter";
+import { AutoRemediationCard } from "./AutoRemediationCard";
 
 interface SideCanvasProps {
   testCases: TestCaseResult[];
@@ -300,7 +303,36 @@ export function SideCanvas({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-3 font-mono text-xs">
+                      <div className="flex items-center gap-2 font-mono text-xs">
+                        {/* Compact Badges for Phase 2 Stateful & Concurrency Scenarios */}
+                        {(tc.technique?.toLowerCase().includes("bola") ||
+                          (tc.stateful_steps && tc.stateful_steps.some((s) => s.actor.toLowerCase() === "bob"))) && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-950/90 text-amber-300 border border-amber-500/70 shadow-[0_0_8px_rgba(245,158,11,0.2)] flex items-center gap-1">
+                            <span>⚡</span>
+                            <span>BOLA Test</span>
+                          </span>
+                        )}
+
+                        {((tc.stateful_chain && tc.stateful_chain.length > 0) ||
+                          (tc.stateful_steps && tc.stateful_steps.length > 0) ||
+                          tc.technique?.toLowerCase().includes("stateful")) && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-cyan-950/90 text-cyan-300 border border-cyan-500/70 shadow-[0_0_8px_rgba(6,182,212,0.2)] flex items-center gap-1">
+                            <span>🔗</span>
+                            <span>Stateful Chain</span>
+                          </span>
+                        )}
+
+                        {(tc.concurrency_burst != null ||
+                          (tc.concurrency_burst_results && tc.concurrency_burst_results.length > 0) ||
+                          tc.technique?.toLowerCase().includes("toctou") ||
+                          tc.technique?.toLowerCase().includes("burst") ||
+                          tc.technique?.toLowerCase().includes("race")) && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-orange-950/90 text-orange-300 border border-orange-500/70 shadow-[0_0_8px_rgba(249,115,22,0.2)] flex items-center gap-1">
+                            <span>🚀</span>
+                            <span>TOCTOU Burst</span>
+                          </span>
+                        )}
+
                         {tc.adaptive_mutation && (
                           <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-purple-950/80 text-purple-300 border border-purple-600/70 shadow-[0_0_8px_rgba(168,85,247,0.2)] flex items-center gap-1">
                             <span>⚡</span>
@@ -359,6 +391,34 @@ export function SideCanvas({
                     {/* Expandable Deep Inspector */}
                     {isExpanded && (
                       <div className="p-4 border-t border-[#1a2436] bg-[#05070c] flex flex-col gap-3.5">
+                        {/* Stateful Scenario Chain Flow (Phase 2) */}
+                        {(tc.stateful_chain || tc.stateful_steps) && (
+                          <StatefulChainFlow
+                            steps={tc.stateful_steps}
+                            chain={tc.stateful_chain}
+                            caseStatus={tc.status}
+                          />
+                        )}
+
+                        {/* TOCTOU Concurrency Burst Meter (Phase 2) */}
+                        {(tc.concurrency_burst != null || (tc.concurrency_burst_results && tc.concurrency_burst_results.length > 0)) && (
+                          <ConcurrencyBurstMeter
+                            burstCount={tc.concurrency_burst}
+                            burstResults={tc.concurrency_burst_results}
+                            technique={tc.technique}
+                            caseStatus={tc.status}
+                          />
+                        )}
+
+                        {/* Auto-Remediation Git Patch Card (Phase 2) */}
+                        {(tc.remediation_patch || tc.remediation_explanation || tc.reproduction_script) && (
+                          <AutoRemediationCard
+                            patch={tc.remediation_patch}
+                            explanation={tc.remediation_explanation}
+                            reproScript={tc.reproduction_script}
+                          />
+                        )}
+
                         {/* Adaptive Feedback Mutation Panel */}
                         {tc.adaptive_mutation && (
                           <div className="bg-gradient-to-r from-purple-950/30 via-[#0d1222] to-cyan-950/20 border border-purple-500/40 rounded-lg p-3 text-xs flex flex-col gap-2.5">
@@ -863,10 +923,18 @@ export function SideCanvas({
                     <span className="text-slate-500">Affected: </span>
                     {threat.affected_routes.length > 0 ? threat.affected_routes.join(", ") : "not reported"}
                   </div>
-                  <div className="p-2.5 rounded bg-[#04060a] border border-[#162033] text-[11px] text-slate-300 leading-relaxed">
-                    <strong className="text-cyan-400 block mb-1">Recommended Remediation:</strong>
-                    {threat.remediation || "No remediation was reported."}
-                  </div>
+                  {(threat.remediation_patch || threat.remediation_explanation || threat.reproduction_script) ? (
+                    <AutoRemediationCard
+                      patch={threat.remediation_patch}
+                      explanation={threat.remediation_explanation}
+                      reproScript={threat.reproduction_script}
+                    />
+                  ) : (
+                    <div className="p-2.5 rounded bg-[#04060a] border border-[#162033] text-[11px] text-slate-300 leading-relaxed">
+                      <strong className="text-cyan-400 block mb-1">Recommended Remediation:</strong>
+                      {threat.remediation || "No remediation was reported."}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

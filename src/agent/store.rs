@@ -183,6 +183,8 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
                 attempts: vec![],
                 evidence_file: None,
                 evidence_detail: None,
+                stateful_chain: None,
+                concurrency_burst_results: None,
             }
         })
         .collect();
@@ -212,6 +214,9 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
                 case_ids: vec![],
                 evidence_files: vec![],
                 ai_note: None,
+                remediation_patch: None,
+                remediation_explanation: None,
+                reproduction_script: None,
             }
         })
         .collect();

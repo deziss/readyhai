@@ -63,6 +63,8 @@ fn mk(
         expect_fields: vec![],
         expected_content_type: None,
         source: Some(source.to_string()),
+        stateful_steps: None,
+        concurrency_burst: None,
     }
 }
 
@@ -313,6 +315,62 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
         c.route_status = st;
         out.push(c);
     }
+    // TOCTOU concurrency burst on discovered form or mutating routes
+    if let Some(f) = &form_path {
+        let mut c = mk(
+            "boundary",
+            format!("TOCTOU concurrency burst on {f}"),
+            "POST",
+            f.clone(),
+            "Rapid parallel concurrency burst to detect race conditions",
+            Some("data=burst_test".into()),
+            "Concurrent mutating requests are serialized safely without server crashes",
+            None,
+            "high",
+            user,
+            "deterministic",
+        );
+        c.concurrency_burst = Some(5);
+        out.push(c);
+    }
+    // Stateful BOLA tenant isolation check on discovered API routes
+    if let Some(api_r) = routes.iter().find(|r| r.is_api || r.path.starts_with("/api/")) {
+        let step1 = super::types::StatefulStep {
+            step_number: 1,
+            actor: "alice".into(),
+            method: "POST".into(),
+            path: api_r.path.clone(),
+            payload: Some(r#"{"title": "Alice Private Asset"}"#.into()),
+            extract_vars: Some(vec!["id".into(), "uuid".into(), "item_id".into()]),
+            expected_status: Some(201),
+            violation_condition: None,
+        };
+        let step2 = super::types::StatefulStep {
+            step_number: 2,
+            actor: "bob".into(),
+            method: "GET".into(),
+            path: format!("{}/{{{{id}}}}", api_r.path.trim_end_matches('/')),
+            payload: None,
+            extract_vars: None,
+            expected_status: Some(403),
+            violation_condition: Some("status == 200 || status == 204".into()),
+        };
+        let mut c = mk(
+            "authz",
+            format!("Stateful BOLA tenant isolation ({})", api_r.path),
+            "POST",
+            api_r.path.clone(),
+            "Alice creates an object; Bob attempts to read it",
+            None,
+            "Alice's private resource is denied to Bob (HTTP 403/404)",
+            Some(403),
+            "critical",
+            "alice",
+            "deterministic",
+        );
+        c.stateful_steps = Some(vec![step1, step2]);
+        out.push(c);
+    }
     out
 }
 
@@ -449,7 +507,7 @@ fn spec_cases(spec: &SpecDoc, creds: &Credentials) -> Vec<PlannedCase> {
         (vec![], vec![], vec![], vec![], vec![], vec![]);
     let mut forged_n = 0;
     let mut inj_n = 0;
-    for op in ops {
+    for op in &ops {
         let params = op_params(&spec.doc, &op.path, &op.method);
         let comp = format!("{}{}", spec.base_path, fill_path(&op.path, &params));
         let opv = op_value(&spec.doc, &op.path, &op.method)
@@ -581,7 +639,98 @@ fn spec_cases(spec: &SpecDoc, creds: &Credentials) -> Vec<PlannedCase> {
             }
         }
     }
-    [authz, inj, neg, bound, forged, base].concat()
+    let mut stateful_bola = vec![];
+    let mut toctou_burst = vec![];
+
+    // Find candidate for BOLA: POST route + GET route with path param
+    let post_op_opt = ops.iter().find(|o| o.method == "POST" && o.has_body);
+    let get_item_opt = ops.iter().find(|o| o.method == "GET" && o.path.contains('{'));
+
+    if let (Some(post_op), Some(get_op)) = (post_op_opt, get_item_opt) {
+        let post_params = op_params(&spec.doc, &post_op.path, &post_op.method);
+        let post_comp = format!("{}{}", spec.base_path, fill_path(&post_op.path, &post_params));
+
+        let mut get_template = get_op.path.clone();
+        if let Some(start) = get_template.find('{') {
+            if let Some(end) = get_template[start..].find('}') {
+                let actual_end = start + end;
+                get_template.replace_range(start..=actual_end, "{{id}}");
+            }
+        }
+        let get_step_path = format!("{}{}", spec.base_path, get_template);
+
+        let get_params = op_params(&spec.doc, &get_op.path, &get_op.method);
+        let grounded_comp = format!("{}{}", spec.base_path, fill_path(&get_op.path, &get_params));
+
+        let step1 = super::types::StatefulStep {
+            step_number: 1,
+            actor: "alice".into(),
+            method: "POST".into(),
+            path: post_comp,
+            payload: Some(r#"{"item": "Alice Confidential Record", "name": "Confidential"}"#.into()),
+            extract_vars: Some(vec!["id".into(), "uuid".into(), "order_id".into(), "item_id".into()]),
+            expected_status: Some(201),
+            violation_condition: None,
+        };
+        let step2 = super::types::StatefulStep {
+            step_number: 2,
+            actor: "bob".into(),
+            method: "GET".into(),
+            path: get_step_path,
+            payload: None,
+            extract_vars: None,
+            expected_status: Some(403),
+            violation_condition: Some("status == 200 || status == 204".into()),
+        };
+
+        let mut c = mk(
+            "authz",
+            format!("Stateful BOLA tenant isolation (POST {} -> GET {})", post_op.path, get_op.path),
+            "POST",
+            grounded_comp,
+            "Alice creates private resource; Bob attempts cross-tenant access",
+            None,
+            "Alice's private resource is denied to Bob (HTTP 403 or 404)",
+            Some(403),
+            "critical",
+            "alice",
+            "openapi",
+        );
+        c.secured = Some(true);
+        c.stateful_steps = Some(vec![step1, step2]);
+        stateful_bola.push(c);
+    }
+
+    // TOCTOU burst on mutating operations
+    if let Some(mutating_op) = ops.iter().find(|o| matches!(o.method.as_str(), "POST" | "PUT" | "DELETE")) {
+        let params = op_params(&spec.doc, &mutating_op.path, &mutating_op.method);
+        let comp = format!("{}{}", spec.base_path, fill_path(&mutating_op.path, &params));
+        let opv = op_value(&spec.doc, &mutating_op.path, &mutating_op.method).cloned().unwrap_or(Value::Null);
+        let field = request_first_property(&spec.doc, &opv).unwrap_or_else(|| "id".into());
+        let payload = if mutating_op.has_body {
+            Some(serde_json::json!({ field: "burst_claim" }).to_string())
+        } else {
+            None
+        };
+        let mut c = mk(
+            "boundary",
+            format!("TOCTOU concurrency burst on {} {}", mutating_op.method, mutating_op.path),
+            &mutating_op.method,
+            comp,
+            "Rapid parallel concurrency burst to detect race conditions",
+            payload,
+            "Concurrent mutating requests are serialized safely without server crashes",
+            None,
+            "high",
+            user,
+            "openapi",
+        );
+        c.secured = Some(mutating_op.secured);
+        c.concurrency_burst = Some(5);
+        toctou_burst.push(c);
+    }
+
+    [authz, inj, neg, bound, forged, base, stateful_bola, toctou_burst].concat()
 }
 
 // ---------------------------------------------------------------- LLM additions

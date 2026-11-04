@@ -21,6 +21,28 @@ export interface DiscoveredTarget {
   routes: DiscoveredRoute[];
 }
 
+export interface StatefulStep {
+  step_number: number;
+  actor: string; // "alice", "bob", "anon", "admin"
+  method: string;
+  path: string;
+  payload?: string;
+  extract_vars?: string[];
+  expected_status?: number;
+  violation_condition?: string;
+}
+
+export interface StatefulStepExecution {
+  step_number: number;
+  actor: string;
+  method: string;
+  resolved_path: string;
+  status_code: number;
+  latency_ms: number;
+  extracted_values: Record<string, string>;
+  passed: boolean;
+}
+
 export interface PlannedCase {
   id: string;
   component: string;
@@ -32,6 +54,8 @@ export interface PlannedCase {
   expected_behavior: string;
   expected_status: number;
   risk_level: string;
+  stateful_steps?: StatefulStep[];
+  concurrency_burst?: number;
 }
 
 export interface TestCaseResult {
@@ -50,6 +74,49 @@ export interface TestCaseResult {
   response_body?: string | null;
   assertion_details?: string | null;
   retested?: boolean;
+  stateful_steps?: StatefulStep[];
+  stateful_chain?: StatefulStepExecution[];
+  concurrency_burst?: number;
+  concurrency_burst_results?: number[];
+  remediation_patch?: string;
+  remediation_explanation?: string;
+  reproduction_script?: string;
+  adaptive_mutation?: {
+    framework?: string;
+    required_fields?: string[];
+    mutated_payload?: string;
+    mutated_status?: number;
+    penetrated_validation?: boolean;
+    mutated_verdict?: string;
+  } | null;
+}
+
+export interface CaseExecutionResult {
+  case_id?: string;
+  id?: string;
+  title?: string;
+  component?: string;
+  technique?: string;
+  method?: string;
+  status?: string;
+  status_code?: number | null;
+  latency_ms?: number | null;
+  reproduction_curl?: string;
+  curl?: string;
+  request_payload?: string | null;
+  evidence?: string | null;
+  content_type?: string | null;
+  is_spa_shell?: boolean;
+  failure_reason?: string | null;
+  expected_status?: number | null;
+  stateful_steps?: StatefulStep[];
+  stateful_chain?: StatefulStepExecution[];
+  concurrency_burst?: number;
+  concurrency_burst_results?: number[];
+  remediation_patch?: string;
+  remediation_explanation?: string;
+  reproduction_script?: string;
+  flaky?: boolean;
   adaptive_mutation?: {
     framework?: string;
     required_fields?: string[];
@@ -62,20 +129,30 @@ export interface TestCaseResult {
 
 export interface ThreatFinding {
   owasp_category: string;
-  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+  severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | string;
   title: string;
   affected_routes: string[];
   remediation: string;
+  remediation_patch?: string;
+  remediation_explanation?: string;
+  reproduction_script?: string;
 }
 
 export interface TriagedDefect {
-  case_id: string;
+  case_id?: string;
+  id?: string;
   owasp_category: string;
   severity: string;
   title: string;
   evidence_snippet: string;
   remediation_patch_suggestion: string;
   affected_endpoints: string[];
+  component?: string;
+  recommended_fix?: string;
+  reproduction?: string;
+  remediation_patch?: string;
+  remediation_explanation?: string;
+  reproduction_script?: string;
 }
 
 export interface AgentStep {
@@ -200,6 +277,13 @@ export interface RawCaseResult {
   assertion_details?: string | null;
   failure_reason?: string | null;
   evidence_detail?: any;
+  stateful_steps?: StatefulStep[];
+  stateful_chain?: StatefulStepExecution[];
+  concurrency_burst?: number;
+  concurrency_burst_results?: number[];
+  remediation_patch?: string;
+  remediation_explanation?: string;
+  reproduction_script?: string;
   adaptive_mutation?: {
     framework?: string;
     required_fields?: string[];
@@ -223,6 +307,9 @@ export interface RawDefect {
   recommended_fix?: string;
   evidence_snippet?: string;
   reproduction?: string;
+  remediation_patch?: string;
+  remediation_explanation?: string;
+  reproduction_script?: string;
 }
 
 /**

@@ -272,6 +272,8 @@ fn case(id: &str, tech: &str, method: &str, comp: &str) -> PlannedCase {
         expect_fields: vec![],
         expected_content_type: None,
         source: None,
+        stateful_steps: None,
+        concurrency_burst: None,
     }
 }
 
@@ -1189,6 +1191,8 @@ fn hostile_report() -> AgentRunReport {
         attempts: vec![],
         evidence_file: None,
         evidence_detail: None,
+        stateful_chain: None,
+        concurrency_burst_results: None,
     };
     r.executed_results = ["PASS", "FAIL", "BLOCKED", "SKIPPED", "INCONCLUSIVE", "WARN"]
         .iter()
@@ -1209,6 +1213,9 @@ fn hostile_report() -> AgentRunReport {
         case_ids: vec!["TC-1".into()],
         evidence_files: vec![],
         ai_note: Some(evil.into()),
+        remediation_patch: None,
+        remediation_explanation: None,
+        reproduction_script: None,
     }];
     r
 }
@@ -1368,4 +1375,112 @@ fn request_accepts_ui_directives_and_max_steps() {
     .unwrap();
     assert_eq!(r.custom_instructions.as_deref(), Some("focus on auth"));
     assert_eq!(r.max_steps, Some(7));
+}
+
+#[test]
+fn stateful_scenario_and_concurrency_burst_wire_through_runner() {
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let target = format!("http://127.0.0.1:{port}");
+    let counter = std::sync::Arc::new(AtomicUsize::new(0));
+    let c_clone = counter.clone();
+
+    // Background server to respond to stateful steps and burst
+    std::thread::spawn(move || {
+        // Step 1 of stateful scenario: Alice creates an item
+        if let Ok((mut s, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf);
+            let body = "{\"id\": \"item_secret_99\"}";
+            let resp = format!("HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+            let _ = s.write_all(resp.as_bytes());
+        }
+
+        // Step 2 of stateful scenario: Bob accesses Alice's item -> returns 200 (BOLA security failure!)
+        if let Ok((mut s, _)) = listener.accept() {
+            let mut buf = [0u8; 1024];
+            let _ = s.read(&mut buf);
+            let body = "{\"title\": \"Stolen Alice Data\"}";
+            let resp = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
+            let _ = s.write_all(resp.as_bytes());
+        }
+
+        // Initial request + concurrency burst: 1 + 3 = 4 requests
+        for _ in 0..4 {
+            if let Ok((mut s, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf);
+                let _n = c_clone.fetch_add(1, Ordering::SeqCst);
+                let resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\nOK";
+                let _ = s.write_all(resp.as_bytes());
+            }
+        }
+    });
+
+    let mut stateful_case = case("TC-S01", "authz", "POST", "/api/items");
+    stateful_case.stateful_steps = Some(vec![
+        StatefulStep {
+            step_number: 1,
+            actor: "alice".into(),
+            method: "POST".into(),
+            path: "/api/items".into(),
+            payload: Some("{\"title\": \"Secret\"}".into()),
+            extract_vars: Some(vec!["id".into()]),
+            expected_status: Some(201),
+            violation_condition: None,
+        },
+        StatefulStep {
+            step_number: 2,
+            actor: "bob".into(),
+            method: "GET".into(),
+            path: "/api/items/{{id}}".into(),
+            payload: None,
+            extract_vars: None,
+            expected_status: Some(403),
+            violation_condition: Some("status == 200 || status == 204".into()),
+        },
+    ]);
+
+    let mut burst_case = case("TC-B01", "boundary", "POST", "/api/transfer");
+    burst_case.payload = Some("{\"amount\": 10}".into());
+    burst_case.concurrency_burst = Some(3);
+
+    let creds = Credentials::none().with("alice", "alice-key").with("bob", "bob-key");
+    let opts = ExecOptions {
+        dry_run: false,
+        is_spa_target: false,
+        credentials: creds,
+        reruns: 0,
+        timeout: Duration::from_secs(3),
+    };
+
+    let results = run_cases(&[stateful_case, burst_case], &target, &opts);
+    assert_eq!(results.len(), 2);
+
+    // Verify stateful scenario execution
+    let s_res = &results[0];
+    assert_eq!(s_res.status, "FAIL", "BOLA violation should fail the case");
+    let chain = s_res.stateful_chain.as_ref().expect("chain recorded");
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain[0].status_code, 201);
+    assert_eq!(chain[0].extracted_values.get("id").map(|s| s.as_str()), Some("item_secret_99"));
+    assert_eq!(chain[1].resolved_path, "/api/items/item_secret_99");
+    assert_eq!(chain[1].status_code, 200);
+
+    // Verify triage of this BOLA defect produces auto-remediation patch
+    let defects = super::triage::derive_defects(&results);
+    assert!(!defects.is_empty());
+    let bola_defect = defects.iter().find(|d| d.case_ids.contains(&"TC-S01".to_string())).unwrap();
+    assert!(bola_defect.remediation_patch.as_deref().unwrap().contains("--- a/"));
+    assert!(bola_defect.remediation_explanation.is_some());
+    assert!(bola_defect.reproduction_script.is_some());
+
+    // Verify concurrency burst execution
+    let b_res = &results[1];
+    let burst_codes = b_res.concurrency_burst_results.as_ref().expect("burst codes recorded");
+    assert_eq!(burst_codes.len(), 3);
 }
