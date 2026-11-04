@@ -270,3 +270,17 @@ The fixtures contain fake tokens (`alice-token`, ...) that may trip secret scann
 - UI and PDF have not been run live (resilience has: `tests/fixtures/resilience`); see [status-and-competition.md](status-and-competition.md).
 
 Runner image: `READYHAI_PLAYWRIGHT_IMAGE`, else local `readyhai/playwright-runner:local`, else `ghcr.io/deziss/readyhai-playwright-runner:latest`. Targets on `host.docker.internal` get the Docker host-gateway mapping. The PDF is rendered as the output dir owner (a fixed uid 65534 could not write it).
+
+## Autonomous Super Agent QA (`readyhai agent`)
+
+The Super Agent testing engine extends standard QA runs with autonomous intelligence:
+1. **Extended Thinking (Chain-of-Thought)**: Deep multi-pass reasoning tokens before synthesizing complex adversarial vectors.
+2. **Adaptive Schema Mutation**: Listens to server validation responses (FastAPI, Django REST, Express) and creates iterative payload mutations to find parser and boundary defects.
+3. **Stateful Multi-Actor Chains**: Plans and executes multi-step tenant boundary workflows (Alice -> extract state -> Bob) to identify BOLA/IDOR vulnerabilities without false-positive defect reporting on prerequisite setup rejections.
+4. **TOCTOU Concurrency Bursts**: Microsecond-synchronized concurrency testing (`Barrier`) to uncover race conditions in stateful transitions.
+5. **Auto-Remediation Git Patches**: Synthesizes verified unified git diffs for identified defects.
+6. **Model Context Protocol (MCP)**: Native tools for Claude Code and autonomous agents via `readyhai_agent_swarm` and `readyhai_agent_discover`.
+
+## License
+
+ReadyHai is distributed under the GNU Affero General Public License v3.0 (AGPL-3.0). See [`LICENSE`](../LICENSE) for complete terms.

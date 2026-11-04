@@ -99,11 +99,12 @@ export function Scenarios({
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="bg-[#07090e] border border-[#1a2436] rounded px-2 py-1 text-xs font-mono text-slate-300 focus:outline-none focus:border-cyan-500/60"
+            className="bg-[#07090e] border border-[#1a2436] rounded px-2 py-1 text-xs font-mono text-slate-300 focus:outline-none focus:border-cyan-500/60 cursor-pointer"
           >
             <option value="ALL">All Status</option>
             <option value="PASS">PASS</option>
             <option value="FAIL">FAIL</option>
+            <option value="INCONCLUSIVE">INCONCLUSIVE</option>
             <option value="WARN">WARN</option>
             <option value="PLANNED">PLANNED</option>
             <option value="SKIPPED">SKIPPED</option>

@@ -459,7 +459,7 @@ export default function Home() {
   }
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#06080e]">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#04060a] text-slate-100">
       {/* SaaS Global Navigation Header */}
       <Header
         currentTarget={target}
