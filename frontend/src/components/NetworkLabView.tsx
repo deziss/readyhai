@@ -68,11 +68,13 @@ export function NetworkLabView({
   // Regressive test configuration
   const [method, setMethod] = useState("GET");
   const [iterations, setIterations] = useState(10);
+  const [isCustomIterations, setIsCustomIterations] = useState(false);
   const [throttleProfile, setThrottleProfile] = useState("unthrottled");
   const [customLatency] = useState(120);
   const [separateSessions, setSeparateSessions] = useState(true);
   const [delayBetweenMs, setDelayBetweenMs] = useState(25);
   const [customHeaders, setCustomHeaders] = useState("");
+  const [showAdvancedHeaders, setShowAdvancedHeaders] = useState(false);
   const [customPayload] = useState("");
 
   // Regressive Results
@@ -564,187 +566,311 @@ export function NetworkLabView({
       <div className={`flex-1 overflow-hidden min-h-0 ${activeTab === "regress" ? "grid grid-cols-1 xl:grid-cols-12" : "flex flex-col bg-[#06080e]"}`}>
         {/* Left Config Sidebar (Only shown for Regressive Lab) */}
         {activeTab === "regress" && (
-          <aside className="xl:col-span-4 border-r border-[#182338] bg-[#090d18] p-4 overflow-y-auto space-y-4">
-          <div className="space-y-1">
-            <h2 className="text-sm font-semibold text-white flex items-center gap-2">
-              <Sliders className="w-4 h-4 text-cyan-400" />
-              <span>Target & Parameters</span>
-            </h2>
-            <p className="text-xs text-slate-400">
-              Configure app endpoint, socket isolation, and simulated network environments.
-            </p>
-          </div>
-
-          {/* Target App URL */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-mono font-medium text-slate-300">Target App URL</label>
-            <div className="relative">
-              <Globe className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
-              <input
-                id="input-target-url"
-                type="text"
-                value={target}
-                onChange={(e) => setTarget(e.target.value)}
-                placeholder="http://127.0.0.1:8080 or https://app.example.com"
-                className="w-full pl-9 pr-3 py-2 bg-[#0d1424] border border-[#1e2c47] rounded-lg text-xs font-mono text-cyan-300 focus:outline-none focus:border-cyan-500"
-              />
-            </div>
-          </div>
-
-          {/* HTTP Method & Iterations */}
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-mono font-medium text-slate-300">Method</label>
-              <select
-                id="select-method"
-                value={method}
-                onChange={(e) => setMethod(e.target.value)}
-                className="w-full px-3 py-2 bg-[#0d1424] border border-[#1e2c47] rounded-lg text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
-              >
-                <option value="GET">GET</option>
-                <option value="POST">POST</option>
-                <option value="PUT">PUT</option>
-                <option value="DELETE">DELETE</option>
-                <option value="HEAD">HEAD</option>
-              </select>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-mono font-medium text-slate-300">Iterations (N)</label>
-              <select
-                id="select-iterations"
-                value={iterations}
-                onChange={(e) => setIterations(Number(e.target.value))}
-                className="w-full px-3 py-2 bg-[#0d1424] border border-[#1e2c47] rounded-lg text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
-              >
-                <option value={5}>5 Repetitions</option>
-                <option value={10}>10 Repetitions</option>
-                <option value={25}>25 Repetitions</option>
-                <option value={50}>50 Repetitions</option>
-                <option value={100}>100 Repetitions</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Private Session Isolation Switch */}
-          <div className="p-3 bg-[#0d1526] rounded-xl border border-[#1e2d49] space-y-2">
-            <div className="flex items-center justify-between">
+          <aside className="xl:col-span-4 border-r border-[#182338] bg-[#090d18] p-3.5 overflow-y-auto space-y-3.5 text-xs font-mono">
+            {/* Header: Compact & Professional */}
+            <div className="flex items-center justify-between pb-2 border-b border-[#182338]">
               <div className="flex items-center gap-2">
-                <WifiOff className="w-4 h-4 text-cyan-400" />
-                <span className="text-xs font-semibold text-slate-200">Separate Private Sessions</span>
+                <Sliders className="w-3.5 h-3.5 text-cyan-400" />
+                <h2 className="text-xs font-semibold text-slate-200 uppercase tracking-wider font-sans">
+                  Environment & Target
+                </h2>
               </div>
-              <input
-                id="toggle-separate-sessions"
-                type="checkbox"
-                checked={separateSessions}
-                onChange={(e) => setSeparateSessions(e.target.checked)}
-                className="w-4 h-4 accent-cyan-500 cursor-pointer"
-              />
+              <span
+                className="text-[10px] text-cyan-400/90 bg-cyan-950/60 border border-cyan-800/50 px-2 py-0.5 rounded-full font-semibold"
+                title="Active Execution Profile"
+              >
+                {throttleProfile === "unthrottled" ? "Direct" : throttleProfile} • {iterations}x
+              </span>
             </div>
-            <p className="text-[11px] text-slate-400 leading-relaxed">
-              Forces zero connection pooling (<code className="text-cyan-300 font-mono">pool_max_idle_per_host(0)</code>).
-              Every single iteration forces fresh DNS resolution and TCP/TLS handshake to catch socket starvation.
-            </p>
-          </div>
 
-          {/* Network Throttling Presets */}
-          <div className="space-y-2">
-            <label className="text-xs font-mono font-medium text-slate-300 flex items-center justify-between">
-              <span>Network Throttling Simulation</span>
-              <span className="text-[10px] text-cyan-400 font-semibold uppercase">{throttleProfile}</span>
-            </label>
-            <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-              {[
-                { id: "unthrottled", label: "Unthrottled", desc: "Native network speed" },
-                { id: "fast_3g", label: "Fast 3G", desc: "+75ms mobile RTT" },
-                { id: "slow_3g", label: "Slow 3G", desc: "+250ms high latency" },
-                { id: "flaky", label: "Flaky Network", desc: "Jitter & packet drops" },
-              ].map((p) => (
+            {/* Target App URL & Method: Unified Group */}
+            <div className="space-y-1">
+              <label className="text-[11px] font-medium text-slate-400 flex items-center justify-between">
+                <span>Target Endpoint</span>
+                <span className="text-[10px] text-slate-500">HTTP/1.1 & HTTP/2</span>
+              </label>
+              <div className="flex rounded-lg border border-[#1e2c47] bg-[#0d1424] focus-within:border-cyan-500/80 focus-within:ring-1 focus-within:ring-cyan-500/30 transition-all overflow-hidden shadow-inner">
+                <div className="relative border-r border-[#1e2c47] bg-[#0a0f1d] shrink-0">
+                  <select
+                    id="select-method"
+                    value={method}
+                    onChange={(e) => setMethod(e.target.value)}
+                    className="h-8 pl-2.5 pr-6 bg-transparent text-[11px] font-bold text-cyan-400 focus:outline-none cursor-pointer appearance-none"
+                  >
+                    <option value="GET" className="bg-[#0d1424] text-slate-200">GET</option>
+                    <option value="POST" className="bg-[#0d1424] text-slate-200">POST</option>
+                    <option value="PUT" className="bg-[#0d1424] text-slate-200">PUT</option>
+                    <option value="DELETE" className="bg-[#0d1424] text-slate-200">DELETE</option>
+                    <option value="HEAD" className="bg-[#0d1424] text-slate-200">HEAD</option>
+                  </select>
+                  <ChevronDown className="w-3 h-3 text-slate-500 absolute right-1.5 top-2.5 pointer-events-none" />
+                </div>
+                <div className="relative flex-1 flex items-center min-w-0">
+                  <Globe className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 pointer-events-none shrink-0" />
+                  <input
+                    id="input-target-url"
+                    type="text"
+                    value={target}
+                    onChange={(e) => setTarget(e.target.value)}
+                    placeholder="http://127.0.0.1:8080 or https://app.example.com"
+                    className="w-full pl-8 pr-2.5 py-1.5 bg-transparent text-xs text-cyan-200 placeholder:text-slate-600 focus:outline-none truncate"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Probe Iterations (N) Segmented Selector */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span>Iterations</span>
+                <span className="text-cyan-300 font-semibold">{iterations} Repetitions</span>
+              </div>
+              <div className="grid grid-cols-6 gap-1 p-0.5 bg-[#090e1a] border border-[#1a263d] rounded-lg text-[11px]" role="radiogroup" aria-label="Iterations">
+                {[5, 10, 25, 50, 100].map((count) => {
+                  const active = iterations === count && !isCustomIterations;
+                  return (
+                    <button
+                      key={count}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => {
+                        setIsCustomIterations(false);
+                        setIterations(count);
+                      }}
+                      className={`py-1 rounded text-center font-medium transition-all cursor-pointer ${
+                        active
+                          ? "bg-cyan-950/80 text-cyan-300 font-bold border border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.2)]"
+                          : "text-slate-400 hover:text-slate-200 hover:bg-[#121c2e] border border-transparent"
+                      }`}
+                    >
+                      {count}x
+                    </button>
+                  );
+                })}
                 <button
-                  key={p.id}
-                  id={`throttle-${p.id}`}
-                  onClick={() => setThrottleProfile(p.id)}
-                  className={`p-2.5 rounded-lg border text-left transition-all ${
-                    throttleProfile === p.id
-                      ? "bg-cyan-950/60 border-cyan-500/70 text-cyan-300 shadow-[0_0_8px_rgba(6,182,212,0.2)]"
-                      : "bg-[#0d1424] border-[#1d2b45] text-slate-400 hover:text-slate-200 hover:border-slate-700"
+                  type="button"
+                  role="radio"
+                  aria-checked={isCustomIterations}
+                  onClick={() => setIsCustomIterations(true)}
+                  className={`py-1 rounded text-center font-medium transition-all cursor-pointer ${
+                    isCustomIterations
+                      ? "bg-cyan-950/80 text-cyan-300 font-bold border border-cyan-500/60 shadow-[0_0_8px_rgba(6,182,212,0.2)]"
+                      : "text-slate-400 hover:text-slate-200 hover:bg-[#121c2e] border border-transparent"
                   }`}
                 >
-                  <div className="font-semibold text-[11px]">{p.label}</div>
-                  <div className="text-[10px] text-slate-500 truncate">{p.desc}</div>
+                  Custom
                 </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Timeout & Delay Sliders */}
-          <div className="space-y-3 pt-1">
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs font-mono text-slate-400">
-                <span>Per-Attempt Timeout:</span>
-                <span className="text-cyan-300 font-semibold">{timeoutMs}ms</span>
               </div>
-              <input
-                type="range"
-                min="1000"
-                max="15000"
-                step="500"
-                value={timeoutMs}
-                onChange={(e) => setTimeoutMs(Number(e.target.value))}
-                className="w-full accent-cyan-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
-              />
+              {isCustomIterations && (
+                <div className="flex items-center gap-2 pt-1">
+                  <span className="text-[10px] text-slate-400">Custom Count:</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={iterations}
+                    onChange={(e) => setIterations(Math.max(1, Math.min(100, Number(e.target.value) || 1)))}
+                    className="w-20 px-2 py-0.5 bg-[#0d1424] border border-cyan-500/50 rounded text-xs text-cyan-300 focus:outline-none"
+                  />
+                  <span className="text-[10px] text-slate-500">(1-100)</span>
+                </div>
+              )}
             </div>
 
-            <div className="space-y-1">
-              <div className="flex justify-between text-xs font-mono text-slate-400">
-                <span>Delay Between Requests:</span>
-                <span className="text-cyan-300 font-semibold">{delayBetweenMs}ms</span>
+            {/* Socket Isolation Radio Button Switch */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span className="flex items-center gap-1.5">
+                  <WifiOff className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Socket Isolation</span>
+                </span>
+                <span
+                  className="text-[10px] text-slate-500 cursor-help hover:text-slate-300 transition-colors"
+                  title="Forces zero connection pooling (pool_max_idle_per_host(0)) to catch socket starvation and TLS leaks."
+                >
+                  pool_max_idle(0) ⓘ
+                </span>
               </div>
-              <input
-                type="range"
-                min="0"
-                max="500"
-                step="25"
-                value={delayBetweenMs}
-                onChange={(e) => setDelayBetweenMs(Number(e.target.value))}
-                className="w-full accent-cyan-500 h-1.5 bg-slate-800 rounded-lg cursor-pointer"
-              />
+              <div
+                className="grid grid-cols-2 gap-1 p-1 bg-[#090e1a] border border-[#1a263d] rounded-lg text-xs"
+                role="radiogroup"
+                aria-label="Socket Isolation Mode"
+              >
+                <button
+                  type="button"
+                  role="radio"
+                  id="toggle-separate-sessions"
+                  aria-checked={separateSessions}
+                  onClick={() => setSeparateSessions(true)}
+                  className={`flex items-center justify-center gap-2 py-1.5 px-2 rounded-md transition-all cursor-pointer ${
+                    separateSessions
+                      ? "bg-cyan-950/90 border border-cyan-500/60 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.2)] font-semibold"
+                      : "text-slate-400 hover:text-slate-200 hover:bg-[#121c2e] border border-transparent"
+                  }`}
+                >
+                  <div className={`w-2.5 h-2.5 rounded-full border flex items-center justify-center shrink-0 ${separateSessions ? "border-cyan-400" : "border-slate-600"}`}>
+                    {separateSessions && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_4px_#22d3ee]" />}
+                  </div>
+                  <span className="text-[11px] truncate">Fresh DNS & TLS</span>
+                </button>
+
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={!separateSessions}
+                  onClick={() => setSeparateSessions(false)}
+                  className={`flex items-center justify-center gap-2 py-1.5 px-2 rounded-md transition-all cursor-pointer ${
+                    !separateSessions
+                      ? "bg-cyan-950/90 border border-cyan-500/60 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.2)] font-semibold"
+                      : "text-slate-400 hover:text-slate-200 hover:bg-[#121c2e] border border-transparent"
+                  }`}
+                >
+                  <div className={`w-2.5 h-2.5 rounded-full border flex items-center justify-center shrink-0 ${!separateSessions ? "border-cyan-400" : "border-slate-600"}`}>
+                    {!separateSessions && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_4px_#22d3ee]" />}
+                  </div>
+                  <span className="text-[11px] truncate">Pool & Keep-Alive</span>
+                </button>
+              </div>
             </div>
-          </div>
 
-          {/* Custom Headers */}
-          <div className="space-y-1.5">
-            <label className="text-xs font-mono font-medium text-slate-300">Custom Headers (Key: Value)</label>
-            <textarea
-              value={customHeaders}
-              onChange={(e) => setCustomHeaders(e.target.value)}
-              placeholder={"Authorization: Bearer my-token\nX-Custom-Tenant: prod-1"}
-              rows={2}
-              className="w-full p-2.5 bg-[#0d1424] border border-[#1e2c47] rounded-lg text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
-            />
-          </div>
+            {/* Network Throttling 4-Option Radio Switch */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] text-slate-400">
+                <span className="flex items-center gap-1.5">
+                  <Activity className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Network Simulation</span>
+                </span>
+                <span className="text-[10px] text-cyan-400 font-bold uppercase">{throttleProfile}</span>
+              </div>
+              <div
+                className="grid grid-cols-4 gap-1 p-1 bg-[#090e1a] border border-[#1a263d] rounded-lg text-xs"
+                role="radiogroup"
+                aria-label="Network Throttling Simulation Profile"
+              >
+                {[
+                  { id: "unthrottled", label: "Native", desc: "Native network speed (no artificial delay)" },
+                  { id: "fast_3g", label: "Fast 3G", desc: "Fast 3G profile (+75ms mobile RTT)" },
+                  { id: "slow_3g", label: "Slow 3G", desc: "Slow 3G profile (+250ms high latency)" },
+                  { id: "flaky", label: "Flaky", desc: "Flaky network with random jitter & packet drops" },
+                ].map((p) => {
+                  const active = throttleProfile === p.id;
+                  return (
+                    <button
+                      key={p.id}
+                      id={`throttle-${p.id}`}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      title={p.desc}
+                      onClick={() => setThrottleProfile(p.id)}
+                      className={`py-1.5 px-1 rounded-md flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                        active
+                          ? "bg-cyan-950/90 border border-cyan-500/60 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.2)] font-semibold"
+                          : "text-slate-400 hover:text-slate-200 hover:bg-[#121c2e] border border-transparent"
+                      }`}
+                    >
+                      <div className={`w-2 h-2 rounded-full border flex items-center justify-center shrink-0 ${active ? "border-cyan-400" : "border-slate-600"}`}>
+                        {active && <div className="w-1 h-1 rounded-full bg-cyan-400 shadow-[0_0_3px_#22d3ee]" />}
+                      </div>
+                      <span className="text-[11px] truncate">{p.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
 
-          {/* Quick cURL Runner Card */}
-          <div className="p-3 bg-[#0c1220] rounded-xl border border-[#1c2a44] space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-mono font-semibold text-slate-300 flex items-center gap-1.5">
-                <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Instant cURL Probe</span>
-              </span>
+            {/* Timing Controls (Timeout & Delay): Compact 2-Column Grid */}
+            <div className="grid grid-cols-2 gap-3 pt-0.5">
+              <div className="space-y-1">
+                <div className="flex justify-between text-[11px] text-slate-400">
+                  <span>Timeout:</span>
+                  <span className="text-cyan-300 font-semibold">{timeoutMs}ms</span>
+                </div>
+                <input
+                  type="range"
+                  min="1000"
+                  max="15000"
+                  step="500"
+                  value={timeoutMs}
+                  onChange={(e) => setTimeoutMs(Number(e.target.value))}
+                  className="w-full accent-cyan-500 h-1 bg-slate-800 rounded-lg cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between text-[11px] text-slate-400">
+                  <span>Delay:</span>
+                  <span className="text-cyan-300 font-semibold">{delayBetweenMs}ms</span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max="500"
+                  step="25"
+                  value={delayBetweenMs}
+                  onChange={(e) => setDelayBetweenMs(Number(e.target.value))}
+                  className="w-full accent-cyan-500 h-1 bg-slate-800 rounded-lg cursor-pointer"
+                />
+              </div>
+            </div>
+
+            {/* Custom Headers: Collapsible Accordion Disclosure */}
+            <div className="border border-[#1a263d] rounded-lg bg-[#0a0f1d] overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setShowAdvancedHeaders(!showAdvancedHeaders)}
+                className="w-full px-3 py-2 flex items-center justify-between text-[11px] text-slate-300 hover:bg-[#121c2e] transition-colors cursor-pointer"
+              >
+                <div className="flex items-center gap-1.5">
+                  <FileCode className="w-3.5 h-3.5 text-slate-400" />
+                  <span>Custom Headers</span>
+                  {customHeaders.trim() ? (
+                    <span className="px-1.5 py-0.2 bg-cyan-950 border border-cyan-600/50 text-cyan-300 rounded text-[9px] font-bold">
+                      {customHeaders.trim().split("\n").filter(Boolean).length} set
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-slate-500">(Optional)</span>
+                  )}
+                </div>
+                {showAdvancedHeaders ? (
+                  <ChevronUp className="w-3.5 h-3.5 text-slate-500" />
+                ) : (
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+                )}
+              </button>
+              {showAdvancedHeaders && (
+                <div className="p-2.5 pt-1 border-t border-[#1a263d]">
+                  <textarea
+                    value={customHeaders}
+                    onChange={(e) => setCustomHeaders(e.target.value)}
+                    placeholder={"Authorization: Bearer my-token\nX-Custom-Tenant: prod-1"}
+                    rows={2}
+                    className="w-full p-2 bg-[#060a14] border border-[#1e2c47] rounded text-xs text-slate-200 focus:outline-none focus:border-cyan-500 resize-none font-mono"
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Streamlined cURL Action Bar */}
+            <div className="pt-0.5">
               <button
                 id="btn-run-curl"
+                type="button"
                 onClick={handleRunCurl}
                 disabled={isCurlRunning}
-                className="px-2.5 py-1 rounded bg-cyan-950 border border-cyan-600/50 hover:bg-cyan-900/50 text-[11px] font-mono text-cyan-300 font-semibold transition-all cursor-pointer disabled:opacity-50"
+                className="w-full py-2 px-3 rounded-lg bg-[#0d1628] hover:bg-[#13223d] border border-cyan-800/40 hover:border-cyan-500/60 text-xs text-cyan-300 font-semibold flex items-center justify-between transition-all cursor-pointer disabled:opacity-50 shadow-sm"
               >
-                {isCurlRunning ? "Running..." : "Run cURL Test"}
+                <span className="flex items-center gap-1.5">
+                  <Terminal className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Sub-ms Stage Probe</span>
+                </span>
+                <span className="text-[10px] font-normal text-slate-400">
+                  {isCurlRunning ? "Probing..." : "Run cURL Test →"}
+                </span>
               </button>
             </div>
-            <p className="text-[10px] text-slate-500 font-mono">
-              Executes sub-millisecond stage breakdown (DNS, TCP, TLS, TTFB, Total).
-            </p>
-          </div>
-        </aside>
+          </aside>
         )}
 
         {/* Main Content Viewport */}
