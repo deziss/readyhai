@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.1.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/tests-315%2B%20passed-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-347%2B%20passed-success.svg)](tests/)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)
 
 Point ReadyHai at a codebase, a container image, an API/web app, an SSH host, or an Android APK.  
@@ -41,6 +41,20 @@ Modern deployments often rely on dozens of disparate tools (`trivy`, `semgrep`, 
 | **Host over SSH (`ssh://`)** | OS hardening, Lynis audit, kernel patches, listening ports, failed systemd units, journal errors, package CVEs (Linux, macOS, Windows). |
 | **Android APK (`android:`)** | MobSF static analysis, dangerous permissions, hardcoded secrets, crash and ANR extraction from connected ADB devices/emulators. |
 | **QA Test Suite (`qa`)** | Synthetic OpenAPI test generation, RBAC authorization matrix, k6 load testing, resilience & chaos testing, axe-core a11y, visual diffs. |
+| **Super Agent Swarm (`agent`)** | Multi-agent autonomous security orchestration with Extended Thinking (CoT), adaptive schema mutation, stateful BOLA tenant chains, TOCTOU bursts, and auto-remediation patches. |
+
+---
+
+## Super Agent Suite 🚀
+
+ReadyHai includes an advanced autonomous agent suite powered by Anthropic / OpenAI / Ollama models with deep reasoning capabilities:
+
+- 🧠 **Extended Thinking (Chain-of-Thought)**: Configurable token budgets (1k to 32k tokens) across model tiers (`Low`, `Medium`, `High`, `Max`, `Max Pro`) enabling multi-pass architectural reflection before test generation.
+- ⚡ **Adaptive Schema Mutation Fuzzing**: Real-time error feedback engine that parses validation errors from FastAPI (Pydantic), Django REST Framework, and Express (Zod), automatically generating boundary mutations to break input validators.
+- 🔗 **Stateful Multi-Actor Scenario Chains**: Models multi-step workflows (e.g. Alice creates resource → extract `{{id}}` → Bob attempts access) to rigorously audit Broken Object Level Authorization (BOLA/IDOR) with zero false-positives for prerequisite setup failures.
+- ⏱️ **TOCTOU Concurrency Bursts**: Thread-synchronized barrier testing (`std::sync::Barrier`) sending concurrent requests within microsecond windows to expose race conditions in stateful business logic.
+- 🛠️ **Automated Remediation & Git Patches**: Generates production-ready unified diff patches (`git apply`) and prescriptive fix guidance directly from defect findings.
+- 🔌 **Model Context Protocol (MCP) Server**: Native MCP tools (`readyhai_agent_swarm`, `readyhai_agent_discover`) allowing external agent workflows (Claude Code, Cursor) to leverage ReadyHai's engine directly.
 
 ---
 

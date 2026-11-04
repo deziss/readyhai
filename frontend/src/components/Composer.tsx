@@ -143,12 +143,15 @@ export function Composer({
   }
 
   return (
-    <div className="bg-[#0b101a] border border-[#1a2436] rounded-xl p-4 shadow-xl flex flex-col gap-4">
+    <div className="bg-[#080d19]/90 backdrop-blur-xl border border-[#172740] rounded-xl p-4 shadow-[0_8px_32px_rgba(0,0,0,0.55)] flex flex-col gap-3.5 relative overflow-hidden">
+      {/* Ambient Top Glow Line */}
+      <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-cyan-500/40 to-transparent pointer-events-none" />
+
       {/* Top Command Bar & QA Reports Shortcut */}
-      <div className="flex items-center justify-between pb-1 border-b border-[#162033]">
+      <div className="flex items-center justify-between pb-2 border-b border-[#141f33]/80">
         <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
-          <span className="text-xs font-mono font-bold text-slate-200 uppercase tracking-wider">
+          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_#22d3ee]" />
+          <span className="text-xs font-mono font-bold text-slate-100 uppercase tracking-wider">
             Agent Command Center
           </span>
         </div>
@@ -157,7 +160,7 @@ export function Composer({
             id="btn-goto-qa-reports-top"
             type="button"
             onClick={onOpenAgentHistory}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#0e1726] hover:bg-[#132238] border border-cyan-800/50 hover:border-cyan-500 text-cyan-300 text-[11px] font-mono font-semibold transition-all cursor-pointer shadow-sm group shrink-0"
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#0c1626] hover:bg-[#112036] border border-cyan-800/60 hover:border-cyan-500/80 text-cyan-300 text-[11px] font-mono font-semibold transition-all cursor-pointer shadow-sm group shrink-0"
             title="Open QA Agent Reports & Swarm History"
           >
             <Bot className="w-3.5 h-3.5 text-cyan-400 group-hover:scale-110 transition-transform" />
@@ -167,16 +170,16 @@ export function Composer({
         )}
       </div>
 
-      {/* Mode Switch */}
+      {/* Mode Switch Radio Group */}
       <div
         role="radiogroup"
         aria-label="Testing Mode Switch"
-        className="flex items-center p-0.5 bg-[#060912] rounded-lg border border-[#162033]"
+        className="flex items-center p-1 bg-[#050811] rounded-lg border border-[#142033]"
       >
         {([
-          { id: "autonomous", label: "Autonomous QA", icon: Zap, activeColor: "text-cyan-300 border-cyan-500/40 bg-[#0f172a]" },
-          { id: "adversarial", label: "Adversarial & Auth", icon: ShieldAlert, activeColor: "text-rose-300 border-rose-500/40 bg-[#1a0f19]" },
-          { id: "contract", label: "Contract & Spec", icon: FileCode, activeColor: "text-emerald-300 border-emerald-500/40 bg-[#0c1a16]" },
+          { id: "autonomous", label: "Autonomous QA", icon: Zap, activeColor: "text-cyan-200 border-cyan-500/60 bg-gradient-to-r from-cyan-950/80 to-[#0e1d33] shadow-[0_0_12px_rgba(6,182,212,0.25)]" },
+          { id: "adversarial", label: "Adversarial & Auth", icon: ShieldAlert, activeColor: "text-rose-200 border-rose-500/60 bg-gradient-to-r from-rose-950/80 to-[#2d111d] shadow-[0_0_12px_rgba(244,63,94,0.25)]" },
+          { id: "contract", label: "Contract & Spec", icon: FileCode, activeColor: "text-emerald-200 border-emerald-500/60 bg-gradient-to-r from-emerald-950/80 to-[#0c221a] shadow-[0_0_12px_rgba(16,185,129,0.25)]" },
         ] as const).map((mode) => {
           const isSelected = activeMode === mode.id;
           const Icon = mode.icon;
@@ -187,13 +190,13 @@ export function Composer({
               role="radio"
               aria-checked={isSelected}
               onClick={() => handleModeChange(mode.id)}
-              className={`flex-1 py-1.5 px-2 rounded-md text-xs font-medium transition-all flex items-center justify-center gap-1.5 cursor-pointer border ${
+              className={`flex-1 py-1.5 px-2 rounded-md text-xs font-medium transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer border ${
                 isSelected
-                  ? `${mode.activeColor} shadow-sm font-semibold`
-                  : "text-slate-400 hover:text-slate-200 border-transparent hover:bg-[#0c111e]"
+                  ? `${mode.activeColor} font-semibold`
+                  : "text-slate-400 hover:text-slate-200 border-transparent hover:bg-[#090f1d]"
               }`}
             >
-              <Icon className={`w-3.5 h-3.5 ${isSelected ? "" : "opacity-70"}`} />
+              <Icon className={`w-3.5 h-3.5 ${isSelected ? "animate-pulse" : "opacity-70"}`} />
               <span className="truncate">{mode.label}</span>
             </button>
           );
@@ -201,13 +204,13 @@ export function Composer({
       </div>
 
       {/* Requester Public IP & Private Network Whitelist Banner */}
-      <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-[#070b14] border border-[#162238] text-[11px] font-mono text-slate-300">
+      <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-[#060b16] border border-[#15233a] text-[11px] font-mono text-slate-300">
         <div className="flex items-center gap-2 min-w-0">
           <span className="flex items-center gap-1.5 text-cyan-400 font-bold shrink-0">
             <Globe className="w-3.5 h-3.5 text-cyan-400" />
             Requester Public IP:
           </span>
-          <span className="text-cyan-200 font-bold bg-[#0d1627] px-2 py-0.5 rounded border border-cyan-800/60 font-mono">
+          <span className="text-cyan-200 font-bold bg-[#0b1527] px-2 py-0.5 rounded border border-cyan-800/60 font-mono shadow-inner">
             {requesterIpInfo?.egress_public_ip || "unknown"}
           </span>
           <span className="text-[10px] text-slate-400 hidden sm:inline truncate">
@@ -604,21 +607,22 @@ export function Composer({
         type="button"
         onClick={onLaunch}
         disabled={isRunning}
-        className="w-full h-10 py-2 px-4 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 active:from-cyan-700 active:to-blue-700 border border-cyan-400/40 text-white rounded-lg font-semibold text-xs tracking-wide flex items-center justify-center gap-2 shadow-[0_0_12px_rgba(6,182,212,0.22)] hover:shadow-[0_0_18px_rgba(6,182,212,0.32)] transition-all disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer active:scale-[0.99]"
+        className="group relative w-full h-11 py-2 px-4 bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 hover:from-cyan-500 hover:via-sky-500 hover:to-blue-500 active:from-cyan-700 active:to-blue-700 border border-cyan-400/50 text-white rounded-xl font-bold text-xs tracking-wider flex items-center justify-center gap-2.5 shadow-[0_0_20px_rgba(6,182,212,0.28)] hover:shadow-[0_0_28px_rgba(6,182,212,0.45)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer active:scale-[0.99] overflow-hidden"
       >
+        <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/15 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700 ease-in-out pointer-events-none" />
         {isRunning ? (
           <>
-            <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-200 shrink-0" />
-            <span>Executing Swarm</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/35 border border-white/20 text-cyan-200 uppercase font-bold tracking-wider">
+            <Loader2 className="w-4 h-4 animate-spin text-cyan-200 shrink-0" />
+            <span className="tracking-wide">EXECUTING SWARM PIPELINE</span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-black/40 border border-white/20 text-cyan-200 uppercase font-bold tracking-wider shadow-inner">
               {tierDisplayName}
             </span>
           </>
         ) : (
           <>
-            <Play className="w-3.5 h-3.5 fill-white shrink-0" />
-            <span>Launch Multi-Agent Swarm</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/35 border border-white/20 text-cyan-200 uppercase font-bold tracking-wider">
+            <Play className="w-4 h-4 fill-white shrink-0 group-hover:scale-110 transition-transform" />
+            <span className="tracking-wide">LAUNCH MULTI-AGENT SWARM</span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-black/40 border border-white/20 text-cyan-200 uppercase font-bold tracking-wider shadow-inner">
               {tierDisplayName}
             </span>
           </>

@@ -6,9 +6,14 @@ A high-performance, cyber-dark UI for ReadyHai's autonomous multi-agent QA engin
 
 1. **Attack Surface Discovery & URL Reconnaissance**: Probes endpoints, inspects OpenAPI/Swagger contracts, detects SPA shells vs JSON APIs, and records scans to the persistent history ledger.
 2. **Autonomous Multi-Agent Swarm Orchestration**: Synthesizes adversarial test scenarios (Boundary, Authz/BOLA, Prompt Injection, Negative cases) grounded in discovered attack surfaces.
-3. **Deep Payload Inspector & Interactive Retests**: Inspects complete cURL reproductions, HTTP response bodies, and latency traces with in-place one-click re-execution.
-4. **4-Pillar Evidence Ledger & Human-in-the-Loop Governance Gate**: Evaluates `Value`, `Authority`, `Safety`, and `Evidence` with cryptographic signature generation and operator sign-off (`Approved` / `Rejected`).
-5. **Global Persistent History Archive**: Visualizes both URL reconnaissance scans and comprehensive test runs with complete state restoration and one-click run deletion.
+3. **Super Agent Extended Thinking & Reasoning Budget**: Configurable Chain-of-Thought reasoning budgets (1k-32k tokens) across model tiers (`Low`, `Medium`, `High`, `Max`, `Max Pro`) with live slider and radio tier switches.
+4. **Stateful Scenario Chain Flow**: Visualizes multi-step cross-tenant authorization journeys (Alice -> extract variable -> Bob) with zero false-positives for prerequisite setup failures.
+5. **TOCTOU Concurrency Burst Meter**: Microsecond-synchronized concurrency testing to detect race conditions in inventory, couponing, and balance transfers.
+6. **Automated Remediation & Git Patch Cards**: Synthesizes ready-to-apply unified diff patches (`git apply`) for identified OWASP defects.
+7. **Regressive Network Lab**: Comprehensive network simulation with radio button toggles, latency sliders, socket isolation, and 1-click repetition pills.
+8. **Deep Payload Inspector & Interactive Retests**: Inspects complete cURL reproductions, HTTP response bodies, and latency traces with in-place one-click re-execution.
+9. **4-Pillar Evidence Ledger & Human-in-the-Loop Governance Gate**: Evaluates `Value`, `Authority`, `Safety`, and `Evidence` with cryptographic signature generation and operator sign-off (`Approved` / `Rejected`).
+10. **Global Persistent History Archive**: Visualizes both URL reconnaissance scans and comprehensive test runs with complete state restoration and one-click run deletion.
 
 ## Development
 
@@ -64,3 +69,8 @@ In the ReadyHai full-stack Compose setup:
 # From project root:
 docker compose up --build -d
 ```
+
+## License
+
+Distributed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).  
+See [`LICENSE`](LICENSE) for complete terms.

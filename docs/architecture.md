@@ -235,3 +235,45 @@ Flow: engine runs all checks -> findings -> baseline + policy gate -> verdict ->
 | `QaReport` | plan, environment, `cases`, `results`, `counts`, `coverage`, `defects`, `risks`, `exit_criteria[{name, met, blocking, detail}]`, `recommendation`, `executive_summary`, `ai_summary`, `notes` (mode, LLM note, untested reasons) |
 
 **Defect -> Finding twin:** `Defect::to_finding(check)` yields exactly one `Finding` (rule `qa.<area>.<kind>`, same fingerprint), so the gate, baseline suppressions, SARIF and JUnit need no changes. The fingerprint uses `rule` + `fp_key`, so QA defects are baselined like any other finding.
+
+## Super Agent Architecture (Phase 1 & Phase 2)
+
+The Super Agent subsystem upgrades ReadyHai's QA and security testing engine with high-reasoning autonomous capabilities:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        SUPER AGENT SUITE                               │
+├────────────────────────────────────────────────────────────────────────┤
+│  1. Extended Thinking CoT (src/llm.rs)                                 │
+│     - Configurable reasoning budgets (1k - 32k tokens)                 │
+│     - Model tiers: Low, Medium, High, Max, Max Pro                     │
+│     - Provider support: Ollama, vLLM, Anthropic, OpenAI                │
+├────────────────────────────────────────────────────────────────────────┤
+│  2. Adaptive Schema Mutation Fuzzing (src/agent/mutation.rs)           │
+│     - Real-time validation error reflection parser                     │
+│     - Parses FastAPI/Pydantic, Django REST Framework, Express/Zod      │
+│     - Synthesizes targeted boundary & type mutations                   │
+├────────────────────────────────────────────────────────────────────────┤
+│  3. Stateful Scenario Chains & BOLA Audits (src/agent/stateful.rs)     │
+│     - Multi-actor stateful execution (Alice/Bob/Admin/Anon)            │
+│     - Dynamic JSON variable extraction ({{id}}, {{token}})             │
+│     - Zero-false-positive BOLA verification (setup failure filtering)  │
+├────────────────────────────────────────────────────────────────────────┤
+│  4. TOCTOU Concurrency Bursts (src/agent/stateful.rs)                  │
+│     - std::sync::Barrier synchronized parallel thread bursts           │
+│     - Detects race conditions in checkout, coupon, balance transfers   │
+├────────────────────────────────────────────────────────────────────────┤
+│  5. Automated Remediation & Git Patch Synthesizer                      │
+│     (src/agent/remediation.rs)                                         │
+│     - Generates unified git diff patches (git apply compatible)        │
+│     - AST-informed fix recommendations for OWASP vulnerabilities       │
+├────────────────────────────────────────────────────────────────────────┤
+│  6. Model Context Protocol (MCP) Swarm Server (src/mcp.rs)             │
+│     - readyhai_agent_swarm: Launches full autonomous QA swarms         │
+│     - readyhai_agent_discover: Returns attack surface & routes         │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+## License
+
+ReadyHai is distributed under the GNU Affero General Public License v3.0 (AGPL-3.0). See [`LICENSE`](../LICENSE) for complete terms.
