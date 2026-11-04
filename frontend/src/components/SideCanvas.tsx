@@ -22,6 +22,7 @@ import {
   FileCode,
   X,
   Search,
+  Play,
 } from "lucide-react";
 import type {
   AgentRunRecord,
@@ -80,9 +81,46 @@ export function SideCanvas({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [retestingId, setRetestingId] = useState<string | null>(null);
   const [testingPath, setTestingPath] = useState<string | null>(null);
+  const [isTestingAll, setIsTestingAll] = useState(false);
+  const [testAllProgress, setTestAllProgress] = useState<{ current: number; total: number; path: string } | null>(null);
+  const [routeSearch, setRouteSearch] = useState<string>("");
   const [reportModalRunId, setReportModalRunId] = useState<string | null>(null);
   const [historySearch, setHistorySearch] = useState<string>("");
   const [historyVerdict, setHistoryVerdict] = useState<string>("ALL");
+
+  const filteredRoutes = useMemo(() => {
+    const q = routeSearch.trim().toLowerCase();
+    if (!q) return discoveredRoutes;
+    return discoveredRoutes.filter(
+      (r) =>
+        r.path.toLowerCase().includes(q) ||
+        (r.title && r.title.toLowerCase().includes(q)) ||
+        r.method.toLowerCase().includes(q) ||
+        (r.content_type && r.content_type.toLowerCase().includes(q))
+    );
+  }, [discoveredRoutes, routeSearch]);
+
+  async function handleTestAll() {
+    if (!onTestEndpoint || discoveredRoutes.length === 0 || isTestingAll) return;
+    setIsTestingAll(true);
+    setTestAllProgress({ current: 0, total: discoveredRoutes.length, path: "" });
+    try {
+      for (let i = 0; i < discoveredRoutes.length; i++) {
+        const r = discoveredRoutes[i];
+        setTestAllProgress({ current: i + 1, total: discoveredRoutes.length, path: r.path });
+        setTestingPath(r.path);
+        try {
+          await onTestEndpoint(r.path, r.method || "GET");
+        } catch (err) {
+          console.error("Test endpoint failed for", r.path, err);
+        }
+      }
+    } finally {
+      setTestingPath(null);
+      setIsTestingAll(false);
+      setTestAllProgress(null);
+    }
+  }
 
   function copyCurl(curlText: string, id: string) {
     navigator.clipboard.writeText(curlText);
@@ -441,9 +479,10 @@ export function SideCanvas({
 
       {/* Tab 2: Discovered Routes */}
       {activeTab === "routes" && (
-        <div className="p-4 overflow-y-auto flex-1 flex flex-col gap-3">
-          <div className="flex items-center justify-between pb-2 border-b border-[#162033]">
-            <div className="flex items-center gap-2">
+        <div className="p-4 flex-1 min-h-0 flex flex-col gap-3 overflow-hidden">
+          {/* Header Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#162033] shrink-0">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">Target Endpoint Discovery</span>
               <span
                 className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold ${
@@ -457,15 +496,52 @@ export function SideCanvas({
                 {appArchitecture || (isSpa ? "SPA shell detected" : "Architecture not reported")}
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-[11px] font-mono text-slate-500">
-                {discoveredRoutes.length} real routes
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Quick Route Filter */}
+              <div className="relative">
+                <Search className="w-3 h-3 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={routeSearch}
+                  onChange={(e) => setRouteSearch(e.target.value)}
+                  placeholder="Filter routes..."
+                  className="pl-7 pr-2 py-1 text-xs font-mono bg-[#07090e] border border-[#1a2436] rounded text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500/60 w-36"
+                />
+              </div>
+
+              <span className="text-[11px] font-mono text-slate-500 whitespace-nowrap">
+                {filteredRoutes.length} of {discoveredRoutes.length} real routes
               </span>
+
+              {/* Test All Endpoints Button */}
+              {onTestEndpoint && (
+                <button
+                  type="button"
+                  onClick={handleTestAll}
+                  disabled={isTestingAll || isCrawling || discoveredRoutes.length === 0}
+                  className="px-2.5 py-1 rounded bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-600/70 text-cyan-300 text-xs font-mono font-bold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50 shadow-sm"
+                  title="Probe and verify all discovered endpoint URLs for liveness, 5xx errors, stack trace leaks, and response latency"
+                >
+                  {isTestingAll ? (
+                    <>
+                      <RotateCw className="w-3 h-3 animate-spin text-cyan-400" />
+                      <span>Testing ({testAllProgress?.current || 0}/{discoveredRoutes.length})...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3 h-3 text-cyan-400 fill-cyan-400" />
+                      <span>⚡ Test All ({discoveredRoutes.length})</span>
+                    </>
+                  )}
+                </button>
+              )}
+
               {onCrawlSite && (
                 <button
                   type="button"
                   onClick={onCrawlSite}
-                  disabled={isCrawling}
+                  disabled={isCrawling || isTestingAll}
                   className="px-2.5 py-1 rounded bg-purple-950/80 hover:bg-purple-900 border border-purple-700/80 text-purple-300 text-xs font-mono flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
                 >
                   {isCrawling ? (
@@ -483,95 +559,138 @@ export function SideCanvas({
             </div>
           </div>
 
-          <div className="border border-[#1a2436] rounded-lg overflow-hidden bg-[#07090e]/60">
+          {/* Scrollable Table View with Sticky Header */}
+          <div className="border border-[#1a2436] rounded-lg bg-[#07090e]/60 flex-1 min-h-0 overflow-y-auto overflow-x-auto shadow-inner scrollbar-thin scrollbar-thumb-slate-700 scrollbar-track-transparent">
             <table className="w-full text-left border-collapse text-xs font-mono">
-              <thead>
-                <tr className="border-b border-[#1a2436] bg-[#090d16] text-slate-400 text-[11px]">
-                  <th className="p-3">Method</th>
-                  <th className="p-3">Real Route & Page Title</th>
-                  <th className="p-3">Status</th>
-                  <th className="p-3">Content-Type</th>
-                  <th className="p-3">Classification</th>
-                  <th className="p-3 text-right">Action</th>
+              <thead className="sticky top-0 z-10 bg-[#090d16] border-b border-[#1a2436] shadow-sm">
+                <tr className="text-slate-400 text-[11px]">
+                  <th className="p-3 bg-[#090d16]">Method</th>
+                  <th className="p-3 bg-[#090d16]">Real Route & Page Title</th>
+                  <th className="p-3 bg-[#090d16]">Status</th>
+                  <th className="p-3 bg-[#090d16]">Content-Type</th>
+                  <th className="p-3 bg-[#090d16]">Classification</th>
+                  <th className="p-3 bg-[#090d16]">Verification</th>
+                  <th className="p-3 text-right bg-[#090d16]">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#162033]">
-                {discoveredRoutes.map((route, idx) => (
-                  <tr key={idx} className="hover:bg-[#0e1524]/50 transition-colors">
-                    <td className="p-3 text-cyan-400 font-bold">{route.method}</td>
-                    <td className="p-3">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-slate-200 font-mono font-medium">{route.path}</span>
-                        {route.has_form && (
-                          <span className="px-1.5 py-0.2 rounded bg-amber-950/80 text-amber-300 border border-amber-800/60 text-[9px] font-mono font-bold">
-                            📝 Form
+                {filteredRoutes.map((route, idx) => {
+                  const matchingTest = testCases.find(
+                    (tc) => tc.component === route.path || tc.title.includes(route.path)
+                  );
+                  const isCurrentlyTesting =
+                    testingPath === route.path ||
+                    (isTestingAll && testAllProgress?.path === route.path);
+
+                  return (
+                    <tr key={idx} className="hover:bg-[#0e1524]/50 transition-colors">
+                      <td className="p-3 text-cyan-400 font-bold">{route.method}</td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-200 font-mono font-medium">{route.path}</span>
+                          {route.has_form && (
+                            <span className="px-1.5 py-0.2 rounded bg-amber-950/80 text-amber-300 border border-amber-800/60 text-[9px] font-mono font-bold">
+                              📝 Form
+                            </span>
+                          )}
+                        </div>
+                        {route.title && (
+                          <div className="text-[11px] text-slate-400 truncate max-w-[280px] font-sans mt-0.5">
+                            {route.title}
+                          </div>
+                        )}
+                      </td>
+                      <td className="p-3">
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                            route.status_code >= 200 && route.status_code < 300
+                              ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
+                              : route.status_code === 401 || route.status_code === 403
+                              ? "bg-blue-950 text-blue-300 border border-blue-800"
+                              : "bg-amber-950 text-amber-300 border border-amber-800"
+                          }`}
+                        >
+                          {route.status_code}
+                        </span>
+                      </td>
+                      <td className="p-3 text-slate-400 text-[11px] truncate max-w-[130px]">
+                        {route.content_type || "unknown"}
+                      </td>
+                      <td className="p-3">
+                        {route.is_spa_shell ? (
+                          <span className="px-2 py-0.5 rounded bg-purple-950/70 text-purple-300 border border-purple-800/60 text-[10px] font-bold">
+                            SPA HTML Shell
+                          </span>
+                        ) : route.is_api ? (
+                          <span className="px-2 py-0.5 rounded bg-emerald-950/70 text-emerald-300 border border-emerald-800/60 text-[10px] font-bold">
+                            API route
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">
+                            Route Endpoint
                           </span>
                         )}
-                      </div>
-                      {route.title && (
-                        <div className="text-[11px] text-slate-400 truncate max-w-[280px] font-sans mt-0.5">
-                          {route.title}
-                        </div>
-                      )}
-                    </td>
-                    <td className="p-3">
-                      <span
-                        className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
-                          route.status_code >= 200 && route.status_code < 300
-                            ? "bg-emerald-950 text-emerald-300 border border-emerald-800"
-                            : route.status_code === 401 || route.status_code === 403
-                            ? "bg-blue-950 text-blue-300 border border-blue-800"
-                            : "bg-amber-950 text-amber-300 border border-amber-800"
-                        }`}
-                      >
-                        {route.status_code}
-                      </span>
-                    </td>
-                    <td className="p-3 text-slate-400 text-[11px] truncate max-w-[130px]">
-                      {route.content_type || "unknown"}
-                    </td>
-                    <td className="p-3">
-                      {route.is_spa_shell ? (
-                        <span className="px-2 py-0.5 rounded bg-purple-950/70 text-purple-300 border border-purple-800/60 text-[10px] font-bold">
-                          SPA HTML Shell
-                        </span>
-                      ) : route.is_api ? (
-                        <span className="px-2 py-0.5 rounded bg-emerald-950/70 text-emerald-300 border border-emerald-800/60 text-[10px] font-bold">
-                          API route
-                        </span>
-                      ) : (
-                        <span className="px-2 py-0.5 rounded bg-slate-800 text-slate-400 text-[10px]">
-                          Route Endpoint
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-3 text-right">
-                      {onTestEndpoint && (
-                        <button
-                          type="button"
-                          onClick={async () => {
-                            setTestingPath(route.path);
-                            await onTestEndpoint(route.path, route.method);
-                            setTestingPath(null);
-                          }}
-                          disabled={testingPath === route.path}
-                          className="px-2 py-0.5 rounded bg-cyan-950/70 hover:bg-cyan-900 border border-cyan-700/60 text-cyan-300 text-[10px] font-mono inline-flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
-                        >
-                          {testingPath === route.path ? (
-                            <>
-                              <RotateCw className="w-2.5 h-2.5 animate-spin text-cyan-400" />
-                              Testing
-                            </>
-                          ) : (
-                            <>
-                              ⚡ Test URL
-                            </>
-                          )}
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className="p-3">
+                        {isCurrentlyTesting ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] text-cyan-400 font-mono font-bold">
+                            <RotateCw className="w-2.5 h-2.5 animate-spin" />
+                            Probing...
+                          </span>
+                        ) : matchingTest ? (
+                          <span
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${
+                              matchingTest.status === "PASS"
+                                ? "bg-emerald-950/90 text-emerald-300 border border-emerald-800"
+                                : matchingTest.status === "FAIL"
+                                ? "bg-rose-950/90 text-rose-300 border border-rose-800"
+                                : matchingTest.status === "WARN"
+                                ? "bg-amber-950/90 text-amber-300 border border-amber-800"
+                                : "bg-cyan-950/90 text-cyan-300 border border-cyan-800"
+                            }`}
+                          >
+                            {matchingTest.status === "PASS" && <Check className="w-2.5 h-2.5" />}
+                            {matchingTest.status === "FAIL" && <AlertTriangle className="w-2.5 h-2.5" />}
+                            <span>{matchingTest.status}</span>
+                            {matchingTest.latency_ms !== null && (
+                              <span className="text-[9px] opacity-80">({matchingTest.latency_ms}ms)</span>
+                            )}
+                          </span>
+                        ) : (
+                          <span className="text-slate-600 text-[10px] italic">Not Tested</span>
+                        )}
+                      </td>
+                      <td className="p-3 text-right">
+                        {onTestEndpoint && (
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setTestingPath(route.path);
+                              try {
+                                await onTestEndpoint(route.path, route.method);
+                              } finally {
+                                setTestingPath(null);
+                              }
+                            }}
+                            disabled={isCurrentlyTesting || isTestingAll}
+                            className="px-2 py-0.5 rounded bg-cyan-950/70 hover:bg-cyan-900 border border-cyan-700/60 text-cyan-300 text-[10px] font-mono inline-flex items-center gap-1 transition-colors cursor-pointer disabled:opacity-50"
+                          >
+                            {isCurrentlyTesting ? (
+                              <>
+                                <RotateCw className="w-2.5 h-2.5 animate-spin text-cyan-400" />
+                                Testing
+                              </>
+                            ) : matchingTest ? (
+                              <>⚡ Retest</>
+                            ) : (
+                              <>⚡ Test URL</>
+                            )}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

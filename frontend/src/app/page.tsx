@@ -156,7 +156,7 @@ export default function Home() {
       curl: `curl -i -X ${method} "${target.replace(/\/$/, "")}${path}"`,
       assertion_details: "Active verification of crawled real URL",
     };
-    setTestCases((prev) => [newCase, ...prev.filter((c) => c.id !== testId)]);
+    setTestCases((prev) => [newCase, ...prev.filter((c) => c.component !== path && c.id !== testId)]);
 
     const r = await apiRequest<RawCaseResult>("/api/agent/retest", {
       method: "POST",
