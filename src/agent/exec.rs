@@ -646,7 +646,7 @@ fn run_case(
         "request": {"method": spec.method, "url": spec.url, "curl": curl, "payload": c.payload, "auth": match &spec.auth { Auth::None => "none".to_string(), Auth::Forged => "forged-token".to_string(), Auth::Role(r) => format!("role:{r} (token not recorded)") }, "auth_note": auth_note},
     });
 
-    let (Some(seen), Some(outcome)) = (first_seen, first_outcome) else {
+    let (Some(mut seen), Some(mut outcome)) = (first_seen, first_outcome) else {
         let e = first_err.unwrap_or_else(|| "unknown error".into());
         res.status = "BLOCKED".into();
         res.failure_reason = Some(format!("Connection error: {e}"));
@@ -658,6 +658,59 @@ fn run_case(
         res.evidence_detail = Some(detail);
         return res;
     };
+
+    // Adaptive Schema Feedback Mutation:
+    // If the endpoint returned 400 or 422 disclosing schema errors, extract the expected fields
+    // and synthesize an adaptive probe to test deep application handlers.
+    let mut mutation_info: Option<Value> = None;
+    if (seen.status == 400 || seen.status == 422) && !opts.dry_run {
+        if let Some(feedback) = super::mutation::extract_schema_feedback(seen.status, &seen.content_type, &seen.body) {
+            if let Some(mutated_payload) = super::mutation::mutate_payload(c.payload.as_deref(), &feedback, &c.technique) {
+                let mut mutated_case = c.clone();
+                mutated_case.payload = Some(mutated_payload.clone());
+                if let Ok(mutated_spec) = build_request(&mutated_case, target) {
+                    if budget.take_request(host).is_ok() {
+                        if let Ok(mutated_seen) = send_once(client, &mutated_spec, bearer.as_deref()) {
+                            let shell = spa_shell(&mutated_seen.content_type, &mutated_seen.body, opts.is_spa_target);
+                            let mutated_outcome = oracle::judge(
+                                &mutated_case,
+                                &Observation {
+                                    status: mutated_seen.status,
+                                    content_type: &mutated_seen.content_type,
+                                    headers: &mutated_seen.headers,
+                                    body: &mutated_seen.body,
+                                    sent_values: &mutated_spec.sent_values,
+                                    is_spa_shell: shell,
+                                    authenticated,
+                                    https,
+                                },
+                            );
+                            let penetrated = mutated_seen.status != 400 && mutated_seen.status != 422;
+                            res.attempts.push(AttemptRecord {
+                                attempt: (res.attempts.len() + 1) as u32,
+                                status_code: Some(mutated_seen.status),
+                                verdict: format!("MUTATED_{}", mutated_outcome.verdict.label()),
+                            });
+                            mutation_info = Some(json!({
+                                "framework": feedback.framework_hint,
+                                "required_fields": feedback.required_fields.iter().map(|f| &f.name).collect::<Vec<_>>(),
+                                "mutated_payload": mutated_payload,
+                                "mutated_status": mutated_seen.status,
+                                "penetrated_validation": penetrated,
+                                "mutated_verdict": mutated_outcome.verdict.label(),
+                            }));
+
+                            // If the mutated payload penetrated and revealed a failure (e.g. 500 server crash):
+                            if mutated_outcome.verdict == Verdict::Fail {
+                                outcome = mutated_outcome;
+                                seen = mutated_seen;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // flaky: failed first, but a completed re-run did not reproduce it
     let reruns_done: Vec<&OracleOutcome> =
@@ -706,6 +759,15 @@ fn run_case(
     detail["oracle"] = serde_json::to_value(&outcome).unwrap_or(Value::Null);
     detail["attempts"] = serde_json::to_value(&res.attempts).unwrap_or(Value::Null);
     detail["flaky"] = json!(flaky);
+    if let Some(m) = &mutation_info {
+        if m.get("penetrated_validation").and_then(Value::as_bool).unwrap_or(false) {
+            res.evidence.push_str(&format!(
+                " [Adaptive Mutation Penetrated: HTTP {}]",
+                m.get("mutated_status").and_then(Value::as_u64).unwrap_or(0)
+            ));
+        }
+    }
+    detail["adaptive_mutation"] = serde_json::to_value(&mutation_info).unwrap_or(Value::Null);
     res.oracle = Some(outcome);
     res.evidence_detail = Some(detail);
     res

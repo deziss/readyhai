@@ -21,6 +21,7 @@ mod budget;
 mod discover;
 mod exec;
 mod ledger;
+pub mod mutation;
 mod oracle;
 mod pipeline;
 mod plan;

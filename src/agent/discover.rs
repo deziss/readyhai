@@ -640,8 +640,9 @@ pub fn discover(
 pub fn discover_routes(
     target: &str,
     spec_url: Option<&str>,
+    max_urls: usize,
 ) -> (Vec<DiscoveredRoute>, TargetTechProfile) {
-    crawl_and_discover_routes(target, spec_url, 20)
+    crawl_and_discover_routes(target, spec_url, max_urls)
 }
 
 pub fn crawl_and_discover_routes(

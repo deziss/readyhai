@@ -301,6 +301,12 @@ export function SideCanvas({
                       </div>
 
                       <div className="flex items-center gap-3 font-mono text-xs">
+                        {tc.adaptive_mutation && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-bold bg-purple-950/80 text-purple-300 border border-purple-600/70 shadow-[0_0_8px_rgba(168,85,247,0.2)] flex items-center gap-1">
+                            <span>⚡</span>
+                            <span>Mutated</span>
+                          </span>
+                        )}
                         <span
                           className={`px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 ${
                             tc.status === "PASS"
@@ -353,6 +359,51 @@ export function SideCanvas({
                     {/* Expandable Deep Inspector */}
                     {isExpanded && (
                       <div className="p-4 border-t border-[#1a2436] bg-[#05070c] flex flex-col gap-3.5">
+                        {/* Adaptive Feedback Mutation Panel */}
+                        {tc.adaptive_mutation && (
+                          <div className="bg-gradient-to-r from-purple-950/30 via-[#0d1222] to-cyan-950/20 border border-purple-500/40 rounded-lg p-3 text-xs flex flex-col gap-2.5">
+                            <div className="font-mono text-[11px] uppercase font-bold text-purple-300 flex items-center gap-1.5">
+                              ⚡ Adaptive Schema Feedback & Mutation Probe
+                            </div>
+                            <div className="flex flex-col gap-1.5 font-mono text-[11px]">
+                              <div>
+                                <span className="text-slate-400">Framework: </span>
+                                <span className="text-purple-200 font-semibold">
+                                  {tc.adaptive_mutation.framework || "REST Validation"}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400">Discovered Required Fields: </span>
+                                <span className="text-purple-200 font-semibold">
+                                  {tc.adaptive_mutation.required_fields?.join(", ") || "None"}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-slate-400">Status: </span>
+                                {tc.adaptive_mutation.penetrated_validation ? (
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-500/70 shadow-[0_0_8px_rgba(16,185,129,0.25)]">
+                                    Penetrated Schema Validation (HTTP {tc.adaptive_mutation.mutated_status ?? tc.response_status ?? 200})
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-950/80 text-rose-300 border border-rose-700/60">
+                                    Rejected by Validator
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            {tc.adaptive_mutation.mutated_payload && (
+                              <div className="flex flex-col gap-1">
+                                <span className="text-slate-400 text-[10px] font-mono font-semibold">
+                                  Mutated Payload:
+                                </span>
+                                <pre className="bg-[#05070c] p-2 rounded text-[10px] font-mono text-purple-200 overflow-x-auto">
+                                  {tc.adaptive_mutation.mutated_payload}
+                                </pre>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
                         {/* Request & Response Split Grid */}
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                           {/* Request Panel */}
