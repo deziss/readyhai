@@ -1,7 +1,11 @@
 //! Report renderers (HTML, Markdown, SARIF, JUnit, JSON). Every piece of target- or LLM-derived
 //! text is escaped for the format it lands in; nothing is invented when data is missing:
 //! absent values render as "not evaluated" / "not detected".
-use super::types::{AgentRunReport, CaseExecutionResult, EvidenceLedger};
+use super::memory::{DefectLine, SinceLastRun};
+use super::types::{
+    AgentRunReport, AgentsReport, AreaBudget, AreaReport, CaseExecutionResult, ChangeImpact,
+    EvidenceLedger, Quota, TriagedDefect, VerificationSummary, VerifyVerdict,
+};
 
 // ---------------------------------------------------------------- escaping
 
@@ -127,12 +131,20 @@ fn llm_line(rep: &AgentRunReport) -> String {
 fn budget_line(rep: &AgentRunReport) -> String {
     match &rep.budget {
         Some(b) => format!(
-            "steps {}/{}, requests {}/{}, {} ms{}",
+            "steps {}/{}, requests {}/{}, {} ms{}{}",
             b.steps,
             b.max_steps,
             b.requests,
             b.max_requests,
             b.elapsed_ms,
+            if b.max_llm_calls > 0 {
+                format!(
+                    ", LLM calls {}/{} ({} ms)",
+                    b.llm_calls, b.max_llm_calls, b.llm_ms
+                )
+            } else {
+                String::new()
+            },
             b.stopped
                 .as_ref()
                 .map(|s| format!(", STOPPED: {s}"))
@@ -146,6 +158,70 @@ fn status_code_text(c: &CaseExecutionResult) -> String {
     c.status_code
         .map(|s| s.to_string())
         .unwrap_or_else(|| "-".into())
+}
+
+/// "Verified 2/2" / "Flaky 1/2" / "Unverified" / "not run" (no verifier data for the defect).
+fn defect_verification(d: &TriagedDefect) -> String {
+    match d.verification.as_deref() {
+        Some("confirmed") => format!("Verified {}", d.reproduced.as_deref().unwrap_or("k/k")),
+        Some("flaky") => format!("Flaky {}", d.reproduced.as_deref().unwrap_or("m/k")),
+        Some("unverified") => "Unverified".into(),
+        _ => "not run".into(),
+    }
+}
+
+fn verdict_label(v: VerifyVerdict) -> &'static str {
+    match v {
+        VerifyVerdict::Confirmed => "Confirmed",
+        VerifyVerdict::Flaky => "Flaky",
+        VerifyVerdict::NotReproduced => "Not reproduced",
+        VerifyVerdict::Unverified => "Unverified",
+    }
+}
+
+/// "200 12 ms, 500 9 ms": what each replay saw.
+fn replays_text(r: &super::types::VerificationRecord) -> String {
+    if r.replays.is_empty() {
+        return "none".into();
+    }
+    r.replays
+        .iter()
+        .map(|p| {
+            format!(
+                "#{} {} {} ms{}",
+                p.replay,
+                p.status_code
+                    .map(|c| format!("HTTP {c}"))
+                    .unwrap_or_else(|| p.verdict.clone()),
+                p.latency_ms,
+                if p.reproduced { " (reproduced)" } else { "" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn verification_line(v: &VerificationSummary) -> String {
+    if v.k == 0 {
+        return "off: failures were not replayed".into();
+    }
+    format!(
+        "k={}; {} of {} failed case(s) fully replayed ({} confirmed, {} flaky, {} not reproduced); {} unverified; {} replay request(s); pass^{} = {}{}",
+        v.k,
+        v.replayed,
+        v.candidates,
+        v.confirmed,
+        v.flaky,
+        v.not_reproduced,
+        v.unverified,
+        v.replay_requests,
+        v.k,
+        v.pass_k_text(),
+        v.stopped
+            .as_ref()
+            .map(|s| format!("; stopped: {s}"))
+            .unwrap_or_default()
+    )
 }
 
 // ---------------------------------------------------------------- HTML
@@ -248,6 +324,75 @@ fn html_ledger(l: &EvidenceLedger) -> String {
     h
 }
 
+fn html_verification(rep: &AgentRunReport, v: &VerificationSummary) -> String {
+    let mut h = String::new();
+    h.push_str("<div class=\"card\"><h2>Verification (independent replay)</h2>");
+    h.push_str(&format!(
+        "<p>Every FAIL is replayed k times by a verifier that rebuilds the request from the stored case, attaches fresh credentials and judges the answer with the same oracle. A failure that does not reproduce is INCONCLUSIVE, not a defect. <b>pass^k</b> is the share of replayed failures that reproduced on all k replays. State-changing requests that are not safe to repeat are marked unverified and stay as they were.</p><p class=\"mut\">{}</p>",
+        html_escape(&verification_line(v))
+    ));
+    h.push_str("<div class=\"grid\">");
+    let items: Vec<(&str, String)> = vec![
+        ("Replays per failure (k)", v.k.to_string()),
+        ("pass^k", v.pass_k_text()),
+        ("Confirmed", v.confirmed.to_string()),
+        ("Flaky", v.flaky.to_string()),
+        ("Not reproduced", v.not_reproduced.to_string()),
+        ("Unverified", v.unverified.to_string()),
+        ("Replay requests", v.replay_requests.to_string()),
+    ];
+    for (k, val) in items {
+        h.push_str(&format!(
+            "<div class=\"item\"><div class=\"lbl\">{}</div><div>{}</div></div>",
+            html_escape(k),
+            html_escape(&val)
+        ));
+    }
+    h.push_str("</div>");
+    if !v.records.is_empty() {
+        h.push_str("<div class=\"wrap\" style=\"margin-top:16px\"><table><thead><tr><th>Case</th><th>Verdict</th><th>Reproduced</th><th>Replays</th><th>Result</th></tr></thead><tbody>");
+        for r in &v.records {
+            h.push_str(&format!(
+                "<tr><td><code>{}</code><div class=\"mut\">{} {}</div></td><td><b>{}</b><div class=\"mut\">{} severity</div></td><td>{}</td><td>{}{}</td><td>{} &rarr; {}{}</td></tr>",
+                html_escape(&r.case_id), html_escape(&r.method), html_escape(&r.component),
+                verdict_label(r.verdict), html_escape(&r.severity),
+                html_escape(&r.ratio().unwrap_or_else(|| "-".into())),
+                html_escape(&replays_text(r)),
+                r.note.as_ref().map(|n| format!("<div class=\"mut\">{}</div>", html_escape(n))).unwrap_or_default(),
+                html_escape(&r.original_status), html_escape(&r.final_status),
+                r.evidence_file.as_ref().map(|f| format!("<div class=\"mut\">evidence: {}</div>", html_escape(f))).unwrap_or_default()
+            ));
+        }
+        h.push_str("</tbody></table></div>");
+    }
+    let defects: Vec<&TriagedDefect> = rep.triaged_defects.iter().collect();
+    if !defects.is_empty() {
+        h.push_str("<div class=\"wrap\" style=\"margin-top:16px\"><table><thead><tr><th>Defect</th><th>Severity</th><th>Verification</th><th>Blocking</th></tr></thead><tbody>");
+        for d in defects {
+            h.push_str(&format!(
+                "<tr><td><code>{}</code> {}</td><td>{}</td><td>{}{}</td><td>{}</td></tr>",
+                html_escape(&d.id),
+                html_escape(&d.title),
+                html_escape(&d.severity.to_uppercase()),
+                html_escape(&defect_verification(d)),
+                if d.flaky {
+                    " <span class=\"badge badge-ne\">flaky</span>"
+                } else {
+                    ""
+                },
+                if super::ledger::is_blocking(d) {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ));
+        }
+        h.push_str("</tbody></table></div>");
+    }
+    h.push_str("</div>");
+    h
+}
+
 pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
     let (verdict, score) = verdict_of(rep);
     let badge = match verdict {
@@ -271,6 +416,7 @@ pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
     ));
     let items: Vec<(&str, String)> = vec![
         ("Run ID", rep.id.clone()),
+        ("Run status", rep.status.clone()),
         (
             "Architecture",
             rep.app_architecture
@@ -329,8 +475,22 @@ pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
     h.push_str("</div>");
 
     match &rep.evidence_ledger {
-        Some(l) => h.push_str(&html_ledger(l)),
+        Some(l) => {
+            h.push_str(&html_ledger(l));
+            if let Some(v) = &l.verification {
+                h.push_str(&html_verification(rep, v));
+            }
+        }
         None => h.push_str("<div class=\"card\"><h2>Evidence ledger</h2><p class=\"ne\">not evaluated: this run has no ledger</p></div>"),
+    }
+    if let Some(s) = &rep.since_last_run {
+        h.push_str(&html_since_last_run(s));
+    }
+    if let Some(ci) = &rep.change_impact {
+        h.push_str(&html_change_impact(ci));
+    }
+    if let Some(a) = &rep.agents {
+        h.push_str(&html_agents(a));
     }
 
     h.push_str(&format!("<div class=\"card\"><h2>Executed cases ({})</h2><div class=\"wrap\"><table><thead><tr><th>Case</th><th>Request</th><th>Technique</th><th>Status</th></tr></thead><tbody>", rep.executed_results.len()));
@@ -391,8 +551,9 @@ pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
         h.push_str("<div class=\"wrap\"><table><thead><tr><th>Severity</th><th>Defect</th><th>Cases</th><th>Fix</th></tr></thead><tbody>");
         for d in &rep.triaged_defects {
             h.push_str(&format!(
-                "<tr><td><b>{}</b> {}</td><td>{}<div class=\"mut\">{} &middot; {}</div>{}</td><td>{}</td><td>{}</td></tr>",
-                html_escape(&d.severity.to_uppercase()), html_escape(&d.priority), html_escape(&d.title), html_escape(&d.owasp_category), html_escape(&d.component),
+                "<tr><td><b>{}</b> {}</td><td>{}<div class=\"mut\">{} &middot; {} &middot; verification: {}</div>{}{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&d.severity.to_uppercase()), html_escape(&d.priority), html_escape(&d.title), html_escape(&d.owasp_category), html_escape(&d.component), html_escape(&defect_verification(d)),
+                d.accepted.as_ref().map(|a| format!("<div><span class=\"badge badge-cond\">accepted, does not block</span> by {} until {}: {}</div>", html_escape(&a.by), html_escape(&a.expires), html_escape(&a.reason))).unwrap_or_default(),
                 d.ai_note.as_ref().map(|n| format!("<div><span class=\"badge badge-ne\">AI note, advisory</span> {}</div>", html_escape(n))).unwrap_or_default(),
                 cites(&d.case_ids, &d.evidence_files), html_escape(&d.recommended_fix)
             ));
@@ -432,6 +593,600 @@ pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
     h
 }
 
+// ---------------------------------------------------------------- since last run
+
+fn acceptance_text(l: &DefectLine) -> String {
+    l.accepted
+        .as_ref()
+        .map(|a| format!("accepted by {} until {}: {}", a.by, a.expires, a.reason))
+        .unwrap_or_default()
+}
+
+fn line_note(l: &DefectLine) -> String {
+    [acceptance_text(l), l.note.clone().unwrap_or_default()]
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn since_title(s: &SinceLastRun) -> String {
+    match (&s.previous_run, &s.previous_at) {
+        (Some(r), Some(at)) => format!(
+            "{}. Compared with run {r} ({at}); {} run(s) remembered.",
+            s.summary_line(),
+            s.runs_remembered
+        ),
+        _ => format!("{}.", s.summary_line()),
+    }
+}
+
+fn md_defect_lines(title: &str, lines: &[DefectLine], what: &str) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut md = format!("### {title} ({})\n\n{what}\n\n", lines.len());
+    md.push_str("| Severity | Defect | Rule | Endpoint | First seen | Last seen | Seen | Fingerprint | Note |\n| :--- | :--- | :--- | :--- | :--- | :--- | ---: | :--- | :--- |\n");
+    for l in lines {
+        md.push_str(&format!(
+            "| **{}** | {} | {} | {} | {} | {} | {}x | {} | {} |\n",
+            md_text(&l.severity.to_uppercase()),
+            md_text(l.defect_id.as_deref().unwrap_or("-")),
+            md_code(&l.rule),
+            md_code(&l.endpoint),
+            md_text(&l.first_seen),
+            md_text(&l.last_seen),
+            l.runs_seen,
+            md_code(&l.fingerprint),
+            md_text(&line_note(l))
+        ));
+    }
+    md.push('\n');
+    md
+}
+
+/// "Since last run": what the agent's memory says changed since the previous run against this target.
+fn md_since_last_run(s: &SinceLastRun) -> String {
+    let mut md = String::from("## Since last run\n\n");
+    md.push_str(&format!("{}\n\n", md_text(&since_title(s))));
+    md.push_str(&md_defect_lines(
+        "New",
+        &s.new,
+        "Found in this run, never seen before.",
+    ));
+    md.push_str(&md_defect_lines(
+        "Still open",
+        &s.still_open,
+        "Known from an earlier run and found again.",
+    ));
+    md.push_str(&md_defect_lines(
+        "Fixed",
+        &s.fixed,
+        "Known as open; every reproduction case ran and passed in this run.",
+    ));
+    md.push_str(&md_defect_lines(
+        "Regressed",
+        &s.regressed,
+        "Known as fixed and found again.",
+    ));
+    md.push_str(&md_defect_lines("Not re-tested", &s.not_retested, "Known as open but not seen: its reproduction cases did not run cleanly, so it is not called fixed."));
+    if !s.known_flaky.is_empty() {
+        md.push_str(&format!("### Known flaky ({})\n\nCase classes that failed on some attempts in the remembered runs.\n\n| Case class | Operation | Pass | Fail | Flaky |\n| :--- | :--- | ---: | ---: | ---: |\n", s.known_flaky.len()));
+        for f in &s.known_flaky {
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                md_code(&f.class),
+                md_code(&f.operation),
+                f.pass,
+                f.fail,
+                f.flaky
+            ));
+        }
+        md.push('\n');
+    }
+    md.push_str(&md_defect_lines("Accepted", &s.accepted, "An operator accepted these until the date shown: they are listed, do not block the gate, and their failing cases are not scored."));
+    md.push_str(&md_defect_lines(
+        "Acceptance expired",
+        &s.expired,
+        "The acceptance has run out: these block again.",
+    ));
+    if !s.regression_probes.is_empty() {
+        md.push_str(&format!(
+            "### Regression probes ({})\n\nPlanned cases that re-test known defects; they come first in the plan.\n\n| Case | Case class | Defects |\n| :--- | :--- | :--- |\n",
+            s.regression_probes.len()
+        ));
+        for p in &s.regression_probes {
+            md.push_str(&format!(
+                "| {} | {} | {} |\n",
+                md_code(&p.case_id),
+                md_code(&p.class),
+                md_text(&p.defects.join(", "))
+            ));
+        }
+        md.push('\n');
+    }
+    for n in &s.notes {
+        md.push_str(&format!("- note: {}\n", md_text(n)));
+    }
+    if !s.notes.is_empty() {
+        md.push('\n');
+    }
+    md
+}
+
+fn html_defect_lines(title: &str, lines: &[DefectLine], what: &str) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut h = format!(
+        "<h3>{} ({})</h3><p class=\"mut\">{}</p><div class=\"wrap\"><table><thead><tr><th>Severity</th><th>Defect</th><th>Rule / endpoint</th><th>First / last seen</th><th>Note</th></tr></thead><tbody>",
+        html_escape(title),
+        lines.len(),
+        html_escape(what)
+    );
+    for l in lines {
+        h.push_str(&format!(
+            "<tr><td><b>{}</b></td><td>{}<div class=\"mut\">{}</div></td><td><code>{}</code> <code>{}</code></td><td>{} / {} ({}x)</td><td>{}</td></tr>",
+            html_escape(&l.severity.to_uppercase()),
+            html_escape(l.defect_id.as_deref().unwrap_or("-")),
+            html_escape(&l.fingerprint),
+            html_escape(&l.rule),
+            html_escape(&l.endpoint),
+            html_escape(&l.first_seen),
+            html_escape(&l.last_seen),
+            l.runs_seen,
+            html_escape(&line_note(l))
+        ));
+    }
+    h.push_str("</tbody></table></div>");
+    h
+}
+
+fn html_since_last_run(s: &SinceLastRun) -> String {
+    let mut h = format!(
+        "<div class=\"card\"><h2>Since last run</h2><p>{}</p>",
+        html_escape(&since_title(s))
+    );
+    h.push_str(&html_defect_lines(
+        "New",
+        &s.new,
+        "Found in this run, never seen before.",
+    ));
+    h.push_str(&html_defect_lines(
+        "Still open",
+        &s.still_open,
+        "Known from an earlier run and found again.",
+    ));
+    h.push_str(&html_defect_lines(
+        "Fixed",
+        &s.fixed,
+        "Known as open; every reproduction case ran and passed in this run.",
+    ));
+    h.push_str(&html_defect_lines(
+        "Regressed",
+        &s.regressed,
+        "Known as fixed and found again.",
+    ));
+    h.push_str(&html_defect_lines("Not re-tested", &s.not_retested, "Known as open but not seen: its reproduction cases did not run cleanly, so it is not called fixed."));
+    if !s.known_flaky.is_empty() {
+        h.push_str(&format!("<h3>Known flaky ({})</h3><div class=\"wrap\"><table><thead><tr><th>Case class</th><th>Operation</th><th>Pass</th><th>Fail</th><th>Flaky</th></tr></thead><tbody>", s.known_flaky.len()));
+        for f in &s.known_flaky {
+            h.push_str(&format!(
+                "<tr><td><code>{}</code></td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&f.class),
+                html_escape(&f.operation),
+                f.pass,
+                f.fail,
+                f.flaky
+            ));
+        }
+        h.push_str("</tbody></table></div>");
+    }
+    h.push_str(&html_defect_lines("Accepted", &s.accepted, "An operator accepted these until the date shown: they are listed, do not block the gate, and their failing cases are not scored."));
+    h.push_str(&html_defect_lines(
+        "Acceptance expired",
+        &s.expired,
+        "The acceptance has run out: these block again.",
+    ));
+    if !s.regression_probes.is_empty() {
+        h.push_str(&format!("<h3>Regression probes ({})</h3><p class=\"mut\">Planned cases that re-test known defects; they come first in the plan.</p><div class=\"wrap\"><table><thead><tr><th>Case</th><th>Case class</th><th>Defects</th></tr></thead><tbody>", s.regression_probes.len()));
+        for p in &s.regression_probes {
+            h.push_str(&format!(
+                "<tr><td><code>{}</code></td><td><code>{}</code></td><td>{}</td></tr>",
+                html_escape(&p.case_id),
+                html_escape(&p.class),
+                html_escape(&p.defects.join(", "))
+            ));
+        }
+        h.push_str("</tbody></table></div>");
+    }
+    for n in &s.notes {
+        h.push_str(&format!("<p class=\"mut\">note: {}</p>", html_escape(n)));
+    }
+    h.push_str("</div>");
+    h
+}
+
+// ---------------------------------------------------------------- change impact
+
+/// Files named in the report text (the list in the data is capped at `change::MAX_LISTED_FILES`).
+const SHOWN_FILES: usize = 40;
+
+fn via_text(via: &str) -> &'static str {
+    if via == "route" {
+        "route matched"
+    } else {
+        "file changed, routes unknown"
+    }
+}
+
+fn status_text(ci: &ChangeImpact) -> &'static str {
+    match ci.status.as_str() {
+        "applied" => "applied: changed operations were planned in full and first",
+        "no_changes" => "no changed files: the plan is what the profile gives",
+        "unmapped" => "no changed file maps to an operation: the plan is what the profile gives",
+        "skipped" => "skipped: no OpenAPI spec to map the changes onto",
+        "failed" => "failed: the plan is what the profile gives",
+        _ => "unknown",
+    }
+}
+
+/// (sent, planned, percent) over the cases that test a changed operation.
+fn change_totals(ci: &ChangeImpact) -> (usize, usize, String) {
+    let (sent, planned) = super::change::coverage_totals(&ci.coverage);
+    let pct = (sent * 100)
+        .checked_div(planned)
+        .map_or("n/a".to_string(), |p| format!("{p}%"));
+    (sent, planned, pct)
+}
+
+fn md_change_impact(ci: &ChangeImpact) -> String {
+    let (sent, planned, pct) = change_totals(ci);
+    let mut md = String::from("## Change impact\n\n");
+    md.push_str(&format!(
+        "`git diff {}...HEAD` in {}: **{}** changed file(s), **{}** changed operation(s), **{}** file(s) mapped to no operation. Status: {}.\n\n",
+        md_code(&ci.diff_base).trim_matches('`'),
+        md_code(&ci.repo),
+        ci.changed_files_total,
+        ci.operations.len(),
+        ci.unmapped_total,
+        md_text(status_text(ci))
+    ));
+    if !ci.operations.is_empty() {
+        md.push_str(&format!(
+            "**Coverage of changed operations:** {sent} of {planned} planned case(s) sent ({pct}).\n\n"
+        ));
+        md.push_str("| Operation | Found by | Files | Planned | Sent | Pass | Fail | Other | Techniques |\n| :--- | :--- | :--- | ---: | ---: | ---: | ---: | ---: | :--- |\n");
+        for o in &ci.operations {
+            let c = ci.coverage.iter().find(|c| c.operation == o.operation);
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                md_code(&o.operation),
+                md_text(via_text(&o.via)),
+                md_text(&o.files.join(", ")),
+                c.map_or("-".into(), |c| c.planned.to_string()),
+                c.map_or("-".into(), |c| c.executed.to_string()),
+                c.map_or("-".into(), |c| c.pass.to_string()),
+                c.map_or("-".into(), |c| c.fail.to_string()),
+                c.map_or("-".into(), |c| c.inconclusive.to_string()),
+                md_text(&c.map(|c| c.techniques.join(", ")).unwrap_or_default())
+            ));
+        }
+        md.push('\n');
+    }
+    let list = |md: &mut String, title: &str, files: &[String], total: usize| {
+        if files.is_empty() {
+            return;
+        }
+        md.push_str(&format!("### {title} ({total})\n\n"));
+        for f in files.iter().take(SHOWN_FILES) {
+            md.push_str(&format!("- {}\n", md_code(f)));
+        }
+        if total > SHOWN_FILES.min(files.len()) {
+            md.push_str(&format!(
+                "- ... and {} more\n",
+                total - SHOWN_FILES.min(files.len())
+            ));
+        }
+        md.push('\n');
+    };
+    list(
+        &mut md,
+        "Changed files",
+        &ci.changed_files,
+        ci.changed_files_total,
+    );
+    list(
+        &mut md,
+        "Unmapped files",
+        &ci.unmapped_files,
+        ci.unmapped_total,
+    );
+    for n in &ci.notes {
+        md.push_str(&format!("- {}\n", md_text(n)));
+    }
+    if !ci.notes.is_empty() {
+        md.push('\n');
+    }
+    if !ci.context_notes.is_empty() {
+        md.push_str("### Context from the retriever (untrusted, advisory)\n\nText from the code index. It is quoted as data, adds no test case and changes no verdict.\n\n");
+        // no renderer or sanitizer may ever see a raw tag in text that came from an index
+        let body: String = ci
+            .context_notes
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n')
+            .map(|c| match c {
+                '<' => '\u{2039}',
+                '>' => '\u{203a}',
+                c => c,
+            })
+            .collect();
+        md.push_str(&md_fence(&body, "text"));
+        md.push('\n');
+    }
+    md
+}
+
+fn html_change_impact(ci: &ChangeImpact) -> String {
+    let (sent, planned, pct) = change_totals(ci);
+    let mut h = String::from("<div class=\"card\"><h2>Change impact</h2>");
+    h.push_str(&format!(
+        "<p><code>git diff {}...HEAD</code> in <code>{}</code>: <b>{}</b> changed file(s), <b>{}</b> changed operation(s), <b>{}</b> file(s) mapped to no operation.</p><p class=\"mut\">Status: {}</p>",
+        html_escape(&ci.diff_base),
+        html_escape(&ci.repo),
+        ci.changed_files_total,
+        ci.operations.len(),
+        ci.unmapped_total,
+        html_escape(status_text(ci))
+    ));
+    if !ci.operations.is_empty() {
+        h.push_str(&format!(
+            "<p><b>Coverage of changed operations:</b> {sent} of {planned} planned case(s) sent ({}).</p>",
+            html_escape(&pct)
+        ));
+        h.push_str("<div class=\"wrap\"><table><thead><tr><th>Operation</th><th>Found by</th><th>Files</th><th>Planned</th><th>Sent</th><th>Pass</th><th>Fail</th><th>Other</th><th>Techniques</th></tr></thead><tbody>");
+        for o in &ci.operations {
+            let c = ci.coverage.iter().find(|c| c.operation == o.operation);
+            let n = |f: fn(&super::types::ChangedOpCoverage) -> usize| {
+                c.map_or("-".to_string(), |c| f(c).to_string())
+            };
+            h.push_str(&format!(
+                "<tr><td><code>{}</code></td><td>{}<div class=\"mut\">{}</div></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                html_escape(&o.operation),
+                html_escape(via_text(&o.via)),
+                html_escape(&o.detail),
+                html_escape(&o.files.join(", ")),
+                n(|c| c.planned),
+                n(|c| c.executed),
+                n(|c| c.pass),
+                n(|c| c.fail),
+                n(|c| c.inconclusive),
+                html_escape(&c.map(|c| c.techniques.join(", ")).unwrap_or_default())
+            ));
+        }
+        h.push_str("</tbody></table></div>");
+    }
+    let list = |h: &mut String, title: &str, files: &[String], total: usize| {
+        if files.is_empty() {
+            return;
+        }
+        h.push_str(&format!("<h3>{} ({total})</h3><ul>", html_escape(title)));
+        for f in files.iter().take(SHOWN_FILES) {
+            h.push_str(&format!("<li><code>{}</code></li>", html_escape(f)));
+        }
+        if total > SHOWN_FILES.min(files.len()) {
+            h.push_str(&format!(
+                "<li class=\"mut\">... and {} more</li>",
+                total - SHOWN_FILES.min(files.len())
+            ));
+        }
+        h.push_str("</ul>");
+    };
+    list(
+        &mut h,
+        "Changed files",
+        &ci.changed_files,
+        ci.changed_files_total,
+    );
+    list(
+        &mut h,
+        "Unmapped files",
+        &ci.unmapped_files,
+        ci.unmapped_total,
+    );
+    for n in &ci.notes {
+        h.push_str(&format!("<p class=\"mut\">note: {}</p>", html_escape(n)));
+    }
+    if !ci.context_notes.is_empty() {
+        h.push_str("<h3>Context from the retriever <span class=\"badge badge-ne\">untrusted, advisory</span></h3><p class=\"mut\">Text from the code index, shown as data. It adds no test case and changes no verdict.</p>");
+        h.push_str(&format!(
+            "<pre>{}</pre>",
+            html_escape(&ci.context_notes.join("\n"))
+        ));
+    }
+    h.push_str("</div>");
+    h
+}
+
+// ---------------------------------------------------------------- agents (the lead and its areas)
+
+fn secs(ms: u64) -> String {
+    format!("{:.1}s", ms as f64 / 1000.0)
+}
+
+/// `used/allocated` of one dimension, wave 1 and (when the area had one) wave 2.
+fn used_of(a: &AreaReport, f: fn(&Quota) -> String, g: fn(&Quota) -> String) -> String {
+    let one = |b: &AreaBudget| format!("{}/{}", f(&b.used), g(&b.allocated));
+    match &a.wave2_budget {
+        Some(w) => format!("{} + w2 {}", one(&a.budget), one(w)),
+        None => one(&a.budget),
+    }
+}
+
+fn area_cells(a: &AreaReport) -> [String; 5] {
+    [
+        used_of(a, |q| q.steps.to_string(), |q| q.steps.to_string()),
+        used_of(a, |q| q.requests.to_string(), |q| q.requests.to_string()),
+        used_of(a, |q| secs(q.wall_ms), |q| secs(q.wall_ms)),
+        used_of(a, |q| q.llm_calls.to_string(), |q| q.llm_calls.to_string()),
+        if a.defect_ids.is_empty() {
+            "-".into()
+        } else {
+            a.defect_ids.join(", ")
+        },
+    ]
+}
+
+fn pool_text(a: &AgentsReport) -> String {
+    let q = |q: &Quota| {
+        format!(
+            "{} step(s), {} request(s), {}",
+            q.steps,
+            q.requests,
+            secs(q.wall_ms)
+        )
+    };
+    format!(
+        "pool: reserve {}; reclaimed from the areas {}; granted to wave 2 {}; left at the end {}",
+        q(&a.pool_reserve),
+        q(&a.pool_reclaimed),
+        q(&a.pool_granted_wave2),
+        q(&a.pool_left)
+    )
+}
+
+fn md_agents(a: &AgentsReport) -> String {
+    let mut md = String::from("## Agents\n\n");
+    md.push_str(&format!(
+        "The lead split the plan into areas and ran **{}** worker(s) over **{}** wave(s) ({}). Budget columns are used/allocated.\n\n{}\n\n",
+        a.workers,
+        a.waves,
+        md_text(&a.status),
+        md_text(&pool_text(a))
+    ));
+    md.push_str("| Area | Status | Cases | Sent | Pass | Fail | Other | Steps | Requests | Wall | LLM calls | Defects |\n| :--- | :--- | ---: | ---: | ---: | ---: | ---: | :--- | :--- | :--- | :--- | :--- |\n");
+    for x in &a.areas {
+        let [steps, reqs, wall, llm, defects] = area_cells(x);
+        md.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+            md_code(&x.area),
+            md_text(&x.status),
+            x.cases,
+            x.executed,
+            x.pass,
+            x.fail,
+            x.warn + x.inconclusive + x.blocked + x.skipped,
+            md_text(&steps),
+            md_text(&reqs),
+            md_text(&wall),
+            md_text(&llm),
+            md_text(&defects)
+        ));
+    }
+    md.push('\n');
+    for x in a
+        .areas
+        .iter()
+        .filter(|x| x.stopped.is_some() || x.error.is_some())
+    {
+        md.push_str(&format!(
+            "- {}: {}\n",
+            md_code(&x.area),
+            md_text(
+                x.error
+                    .as_deref()
+                    .or(x.stopped.as_deref())
+                    .unwrap_or_default()
+            )
+        ));
+    }
+    if !a.wave2.is_empty() {
+        md.push_str("\n### Wave 2 additions\n\n| Case | Area | Rule | Origin | Why |\n| :--- | :--- | :--- | :--- | :--- |\n");
+        for w in &a.wave2 {
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                md_code(&w.case_id),
+                md_code(&w.area),
+                md_text(&w.rule),
+                md_code(&w.origin),
+                md_text(&w.reason)
+            ));
+        }
+    }
+    for n in &a.notes {
+        md.push_str(&format!("\n- {}", md_text(n)));
+    }
+    md.push_str("\n\n");
+    md
+}
+
+fn html_agents(a: &AgentsReport) -> String {
+    let mut h = String::from("<div class=\"card\"><h2>Agents</h2>");
+    h.push_str(&format!(
+        "<p>The lead split the plan into areas and ran <b>{}</b> worker(s) over <b>{}</b> wave(s) ({}). Budget columns are used/allocated.</p><p class=\"mut\">{}</p>",
+        a.workers,
+        a.waves,
+        html_escape(&a.status),
+        html_escape(&pool_text(a))
+    ));
+    h.push_str("<div class=\"wrap\"><table><thead><tr><th>Area</th><th>Status</th><th>Cases</th><th>Sent</th><th>Pass</th><th>Fail</th><th>Other</th><th>Steps</th><th>Requests</th><th>Wall</th><th>LLM calls</th><th>Defects</th></tr></thead><tbody>");
+    for x in &a.areas {
+        let [steps, reqs, wall, llm, defects] = area_cells(x);
+        h.push_str(&format!(
+            "<tr><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            html_escape(&x.area),
+            html_escape(&x.status),
+            x.cases,
+            x.executed,
+            x.pass,
+            x.fail,
+            x.warn + x.inconclusive + x.blocked + x.skipped,
+            html_escape(&steps),
+            html_escape(&reqs),
+            html_escape(&wall),
+            html_escape(&llm),
+            html_escape(&defects)
+        ));
+    }
+    h.push_str("</tbody></table></div>");
+    for x in a
+        .areas
+        .iter()
+        .filter(|x| x.stopped.is_some() || x.error.is_some())
+    {
+        h.push_str(&format!(
+            "<p class=\"mut\"><code>{}</code>: {}</p>",
+            html_escape(&x.area),
+            html_escape(
+                x.error
+                    .as_deref()
+                    .or(x.stopped.as_deref())
+                    .unwrap_or_default()
+            )
+        ));
+    }
+    if !a.wave2.is_empty() {
+        h.push_str("<h3>Wave 2 additions</h3><div class=\"wrap\"><table><thead><tr><th>Case</th><th>Area</th><th>Rule</th><th>Origin</th><th>Why</th></tr></thead><tbody>");
+        for w in &a.wave2 {
+            h.push_str(&format!(
+                "<tr><td><code>{}</code></td><td><code>{}</code></td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>",
+                html_escape(&w.case_id),
+                html_escape(&w.area),
+                html_escape(&w.rule),
+                html_escape(&w.origin),
+                html_escape(&w.reason)
+            ));
+        }
+        h.push_str("</tbody></table></div>");
+    }
+    for n in &a.notes {
+        h.push_str(&format!("<p class=\"mut\">note: {}</p>", html_escape(n)));
+    }
+    h.push_str("</div>");
+    h
+}
+
 // ---------------------------------------------------------------- Markdown
 
 pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
@@ -459,12 +1214,13 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
         md_text(&llm_line(rep))
     ));
     md.push_str(&format!(
-        "**Mode:** {}  \n**Budget:** {}  \n**Started:** {}  \n\n",
+        "**Mode:** {}  \n**Run status:** {}  \n**Budget:** {}  \n**Started:** {}  \n\n",
         if rep.dry_run {
             "dry-run (no state-changing requests)"
         } else {
             "live"
         },
+        md_text(&rep.status),
         md_text(&budget_line(rep)),
         md_text(&rep.started_at)
     ));
@@ -535,6 +1291,70 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
             ));
         }
         md.push('\n');
+        if let Some(v) = &l.verification {
+            md.push_str("## Verification\n\n");
+            md.push_str(&format!(
+                "Every FAIL is replayed k times by an independent verifier (request rebuilt from the stored case, fresh credentials, same oracle). A failure that does not reproduce is INCONCLUSIVE, not a defect. pass^k is the share of replayed failures that reproduced on all k replays.\n\n{}\n\n",
+                md_text(&verification_line(v))
+            ));
+            md.push_str("| Replays (k) | pass^k | Confirmed | Flaky | Not reproduced | Unverified | Replay requests |\n| ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+            md.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} |\n\n",
+                v.k,
+                md_text(&v.pass_k_text()),
+                v.confirmed,
+                v.flaky,
+                v.not_reproduced,
+                v.unverified,
+                v.replay_requests
+            ));
+            if !v.records.is_empty() {
+                md.push_str("| Case | Request | Verdict | Reproduced | Replays | Result | Note |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n");
+                for r in &v.records {
+                    md.push_str(&format!(
+                        "| {} | {} {} | {} | {} | {} | {} -> {} | {} |\n",
+                        md_code(&r.case_id),
+                        md_code(&r.method),
+                        md_code(&r.component),
+                        verdict_label(r.verdict),
+                        md_text(&r.ratio().unwrap_or_else(|| "-".into())),
+                        md_text(&replays_text(r)),
+                        md_text(&r.original_status),
+                        md_text(&r.final_status),
+                        md_text(r.note.as_deref().unwrap_or(""))
+                    ));
+                }
+                md.push('\n');
+            }
+            if !rep.triaged_defects.is_empty() {
+                md.push_str("| Defect | Severity | Verification | Blocking |\n| :--- | :--- | :--- | :--- |\n");
+                for d in &rep.triaged_defects {
+                    md.push_str(&format!(
+                        "| {} | {} | {}{} | {} |\n",
+                        md_text(&d.id),
+                        md_text(&d.severity.to_uppercase()),
+                        md_text(&defect_verification(d)),
+                        if d.flaky { " (flaky)" } else { "" },
+                        if super::ledger::is_blocking(d) {
+                            "yes"
+                        } else {
+                            "no"
+                        }
+                    ));
+                }
+                md.push('\n');
+            }
+        }
+    }
+
+    if let Some(s) = &rep.since_last_run {
+        md.push_str(&md_since_last_run(s));
+    }
+    if let Some(ci) = &rep.change_impact {
+        md.push_str(&md_change_impact(ci));
+    }
+    if let Some(a) = &rep.agents {
+        md.push_str(&md_agents(a));
     }
 
     md.push_str("## Executed scenarios\n\n| ID | Method | Component | Technique | Status | HTTP | Latency |\n| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n");
@@ -568,14 +1388,23 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
     }
 
     if !rep.triaged_defects.is_empty() {
-        md.push_str("## Defects\n\n| Severity | Defect | Category | Cases | Remediation |\n| :--- | :--- | :--- | :--- | :--- |\n");
+        md.push_str("## Defects\n\n| Severity | Defect | Category | Verification | Cases | Remediation |\n| :--- | :--- | :--- | :--- | :--- | :--- |\n");
         for d in &rep.triaged_defects {
             md.push_str(&format!(
-                "| **{}** {} | {} | {} | {} | {} |\n",
+                "| **{}** {} | {}{} | {} | {} | {} | {} |\n",
                 md_text(&d.severity.to_uppercase()),
                 md_text(&d.priority),
                 md_text(&d.title),
+                d.accepted
+                    .as_ref()
+                    .map(|a| format!(
+                        " (accepted by {} until {}: does not block)",
+                        md_text(&a.by),
+                        md_text(&a.expires)
+                    ))
+                    .unwrap_or_default(),
                 md_text(&d.owasp_category),
+                md_text(&defect_verification(d)),
                 md_text(&d.case_ids.join(", ")),
                 md_text(&d.recommended_fix)
             ));
@@ -645,12 +1474,23 @@ pub fn generate_agent_sarif_report(rep: &AgentRunReport) -> serde_json::Value {
                 rules.len() - 1
             }
         };
-        results.push(serde_json::json!({
+        let mut result = serde_json::json!({
             "ruleId": rule_id, "ruleIndex": idx, "level": sarif_level(&d.severity),
             "message": {"text": format!("{}: {}", d.title, d.recommended_fix)},
             "locations": [{"physicalLocation": {"artifactLocation": {"uri": d.component}}}],
-            "properties": {"defectId": d.id, "severity": d.severity, "priority": d.priority, "caseIds": d.case_ids, "evidenceFiles": d.evidence_files}
-        }));
+            "properties": {"defectId": d.id, "severity": d.severity, "priority": d.priority, "caseIds": d.case_ids, "evidenceFiles": d.evidence_files, "verified": d.verified, "reproduced": d.reproduced, "verification": d.verification, "flaky": d.flaky}
+        });
+        if !d.fingerprint.is_empty() {
+            result["partialFingerprints"] = serde_json::json!({"readyhai/v1": d.fingerprint});
+        }
+        if let Some(a) = &d.accepted {
+            // an operator accepted it until `expires`: SARIF's own way to say "listed, not blocking"
+            result["suppressions"] = serde_json::json!([{
+                "kind": "external", "status": "accepted",
+                "justification": format!("accepted by {} until {}: {}", a.by, a.expires, a.reason)
+            }]);
+        }
+        results.push(result);
     }
     let mut props = serde_json::Map::new();
     if let Some(ip) = rep.requester_ip.as_deref().filter(|s| !s.is_empty()) {
@@ -660,6 +1500,16 @@ pub fn generate_agent_sarif_report(rep: &AgentRunReport) -> serde_json::Value {
         props.insert("allowlistGuidance".into(), g.into());
     }
     props.insert("gateVerdict".into(), verdict_of(rep).0.into());
+    if let Some(v) = rep
+        .evidence_ledger
+        .as_ref()
+        .and_then(|l| l.verification.as_ref())
+    {
+        props.insert(
+            "verification".into(),
+            serde_json::json!({"k": v.k, "confirmed": v.confirmed, "flaky": v.flaky, "notReproduced": v.not_reproduced, "unverified": v.unverified, "passK": v.pass_k}),
+        );
+    }
     serde_json::json!({
         "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
         "version": "2.1.0",
@@ -675,11 +1525,23 @@ pub fn generate_agent_sarif_report(rep: &AgentRunReport) -> serde_json::Value {
 
 pub fn generate_agent_junit_report(rep: &AgentRunReport) -> String {
     let rs = &rep.executed_results;
-    let failures = rs.iter().filter(|c| c.status == "FAIL").count();
+    // failing cases of a defect an operator accepted (unexpired) are reported as skipped, with why
+    let accepted: std::collections::BTreeMap<&str, &super::memory::Acceptance> = rep
+        .triaged_defects
+        .iter()
+        .filter_map(|d| d.accepted.as_ref().map(|a| (d, a)))
+        .flat_map(|(d, a)| d.case_ids.iter().map(move |c| (c.as_str(), a)))
+        .collect();
+    let is_accepted =
+        |c: &CaseExecutionResult| c.status == "FAIL" && accepted.contains_key(c.case_id.as_str());
+    let failures = rs
+        .iter()
+        .filter(|c| c.status == "FAIL" && !is_accepted(c))
+        .count();
     let errors = rs.iter().filter(|c| c.status == "BLOCKED").count();
     let skipped = rs
         .iter()
-        .filter(|c| c.status == "SKIPPED" || c.status == "INCONCLUSIVE")
+        .filter(|c| c.status == "SKIPPED" || c.status == "INCONCLUSIVE" || is_accepted(c))
         .count();
     let time: f64 = rs.iter().map(|c| c.latency_ms as f64 / 1000.0).sum();
     let mut xml = format!(
@@ -703,6 +1565,16 @@ pub fn generate_agent_junit_report(rep: &AgentRunReport) -> String {
         let time = c.latency_ms as f64 / 1000.0;
         let reason = c.failure_reason.as_deref().unwrap_or("");
         let body = match c.status.as_str() {
+            "FAIL" if is_accepted(c) => {
+                let a = accepted[c.case_id.as_str()];
+                format!(
+                    "<skipped message=\"{}\"/>",
+                    xml_escape(&format!(
+                        "accepted defect, does not block: by {} until {}: {}",
+                        a.by, a.expires, a.reason
+                    ))
+                )
+            }
             "FAIL" => format!(
                 "<failure message=\"{}\" type=\"{}\">{}</failure>",
                 xml_escape(if reason.is_empty() {

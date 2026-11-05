@@ -1,14 +1,22 @@
 //! Autonomous QA and production-readiness gate.
 //!
-//! Pipeline (see `pipeline`): Discovery -> Planner -> Explorer -> Triager -> Readiness gate -> sign-off.
+//! Pipeline (see `pipeline`): Discovery -> Planner -> Explorer -> Verifier -> Cleanup -> Triager -> Readiness gate -> sign-off.
 //!
 //! Design rules that every module follows:
 //! * Verdicts are deterministic. `oracle` judges each HTTP observation (PASS/FAIL/INCONCLUSIVE),
 //!   `triage` derives defects and severities from failed assertions, `ledger` computes pillars and the
-//!   gate from a technique-coverage matrix. The LLM can add planned cases (validated), prose notes and an
-//!   advisory opinion; its verdict can only make the gate stricter and its scores are clamped and advisory.
+//!   gate from a technique-coverage matrix. The LLM can add planned cases (validated) and prose notes
+//!   and give an advisory opinion on the gate. That opinion is stored separately (`llm_advisory`, scores
+//!   clamped) and NEVER changes the verdict: `gate_verdict` is the computed verdict, stricter or softer
+//!   opinion alike.
 //! * Everything that reaches an LLM and came from the target (or an operator) goes through
 //!   `crate::llm::untrusted` (SYSTEM preamble, redaction, fence, output cleaning, guard).
+//! * `verify` replays every FAIL k times (`READYHAI_VERIFY_K`, default 2, max 5, 0 = off) before triage: only a
+//!   failure that reproduces stays a defect (confirmed = verified k/k, flaky high/critical = FAIL with a flag);
+//!   one that does not reproduce is INCONCLUSIVE. Teardown confirms every 2xx DELETE with a GET.
+//! * A run remembers its target (`memory`): known defects, flaky history, coverage. The planner uses it
+//!   only to reorder cases and raise the verify k of flaky ones, never to skip a case or change a
+//!   verdict; an explicit, unexpired acceptance is the one thing that lets a known defect through the gate.
 //! * A run has a `RunBudget` (steps, requests, wall clock, per-host rate) and honours `dry_run`.
 //! * Test credentials come only from `RH_<ROLE>_TOKEN` environment variables (or `Credentials::with`);
 //!   the server's own secrets are never attached to requests sent to targets.
@@ -18,9 +26,12 @@
 #![allow(dead_code, unused_imports)]
 
 mod budget;
+pub mod change;
 mod discover;
 mod exec;
+pub mod lead;
 mod ledger;
+pub mod memory;
 pub mod mutation;
 mod oracle;
 mod pipeline;
@@ -31,6 +42,7 @@ pub mod stateful;
 mod store;
 mod triage;
 mod types;
+pub mod verify;
 
 #[cfg(test)]
 mod tests;
@@ -51,9 +63,9 @@ pub use report::{
     generate_agent_report_formats, generate_agent_sarif_report,
 };
 pub use store::{
-    agent_runs_dir, approve_agent_run, convert_engine_run_to_agent_report, delete_agent_run,
-    list_agent_full_runs, list_agent_runs, load_agent_run, reject_agent_run, save_agent_run,
-    update_run_case_result,
+    SignOffRefused, agent_runs_dir, approve_agent_run, convert_engine_run_to_agent_report,
+    delete_agent_run, list_agent_full_runs, list_agent_runs, load_agent_run, reject_agent_run,
+    save_agent_run, update_run_case_result,
 };
 #[allow(unused_imports)]
 pub use types::*;

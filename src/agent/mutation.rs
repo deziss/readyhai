@@ -30,7 +30,11 @@ impl SchemaFeedback {
 }
 
 /// Parse HTTP 400 / 422 response bodies to extract schema expectations.
-pub fn extract_schema_feedback(status: u16, content_type: &str, body: &str) -> Option<SchemaFeedback> {
+pub fn extract_schema_feedback(
+    status: u16,
+    content_type: &str,
+    body: &str,
+) -> Option<SchemaFeedback> {
     if status != 400 && status != 422 {
         return None;
     }
@@ -51,13 +55,18 @@ pub fn extract_schema_feedback(status: u16, content_type: &str, body: &str) -> O
     if let Some(detail_arr) = v.get("detail").and_then(Value::as_array) {
         framework_hint = Some("FastAPI / Pydantic".into());
         for item in detail_arr {
-            if let Some(loc) = item.get("loc").and_then(Value::as_array) {
-                if let Some(last) = loc.last().and_then(Value::as_str) {
-                    if last != "body" && last != "query" && last != "header" && last != "path" {
-                        let exp_type = item.get("type").and_then(Value::as_str).map(|s| s.to_string());
-                        fields.entry(last.to_string()).or_insert(exp_type);
-                    }
-                }
+            if let Some(loc) = item.get("loc").and_then(Value::as_array)
+                && let Some(last) = loc.last().and_then(Value::as_str)
+                && last != "body"
+                && last != "query"
+                && last != "header"
+                && last != "path"
+            {
+                let exp_type = item
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string());
+                fields.entry(last.to_string()).or_insert(exp_type);
             }
         }
     }
@@ -68,7 +77,10 @@ pub fn extract_schema_feedback(status: u16, content_type: &str, body: &str) -> O
             for item in err_arr {
                 if let Some(path) = item.get("path").and_then(Value::as_array) {
                     if let Some(field) = path.last().and_then(Value::as_str) {
-                        let exp = item.get("expected").and_then(Value::as_str).map(|s| s.to_string());
+                        let exp = item
+                            .get("expected")
+                            .and_then(Value::as_str)
+                            .map(|s| s.to_string());
                         framework_hint = Some("Zod / Express".into());
                         fields.entry(field.to_string()).or_insert(exp);
                     }
@@ -82,28 +94,29 @@ pub fn extract_schema_feedback(status: u16, content_type: &str, body: &str) -> O
     }
 
     // 3. Django REST Framework: {"field_name": ["This field is required."]}
-    if fields.is_empty() && v.is_object() {
-        if let Some(map) = v.as_object() {
-            for (k, val) in map {
-                if matches!(
-                    k.as_str(),
-                    "detail" | "message" | "error" | "status" | "timestamp" | "path" | "code"
-                ) {
-                    continue;
-                }
-                if let Some(arr) = val.as_array() {
-                    let has_req_msg = arr.iter().any(|msg| {
-                        msg.as_str()
-                            .map(|m| {
-                                let l = m.to_ascii_lowercase();
-                                l.contains("required") || l.contains("blank") || l.contains("null")
-                            })
-                            .unwrap_or(false)
-                    });
-                    if has_req_msg {
-                        framework_hint = Some("Django REST Framework".into());
-                        fields.entry(k.clone()).or_insert(None);
-                    }
+    if fields.is_empty()
+        && v.is_object()
+        && let Some(map) = v.as_object()
+    {
+        for (k, val) in map {
+            if matches!(
+                k.as_str(),
+                "detail" | "message" | "error" | "status" | "timestamp" | "path" | "code"
+            ) {
+                continue;
+            }
+            if let Some(arr) = val.as_array() {
+                let has_req_msg = arr.iter().any(|msg| {
+                    msg.as_str()
+                        .map(|m| {
+                            let l = m.to_ascii_lowercase();
+                            l.contains("required") || l.contains("blank") || l.contains("null")
+                        })
+                        .unwrap_or(false)
+                });
+                if has_req_msg {
+                    framework_hint = Some("Django REST Framework".into());
+                    fields.entry(k.clone()).or_insert(None);
                 }
             }
         }
@@ -115,7 +128,10 @@ pub fn extract_schema_feedback(status: u16, content_type: &str, body: &str) -> O
 
     let required_fields = fields
         .into_iter()
-        .map(|(name, expected_type)| DiscoveredField { name, expected_type })
+        .map(|(name, expected_type)| DiscoveredField {
+            name,
+            expected_type,
+        })
         .collect();
 
     Some(SchemaFeedback {
@@ -148,14 +164,20 @@ pub fn mutate_payload(
     let map = obj.as_object_mut()?;
 
     for field in &feedback.required_fields {
-        let is_numeric = field.expected_type.as_deref().map(|t| {
-            let l = t.to_ascii_lowercase();
-            l.contains("int") || l.contains("float") || l.contains("number")
-        }).unwrap_or(false);
+        let is_numeric = field
+            .expected_type
+            .as_deref()
+            .map(|t| {
+                let l = t.to_ascii_lowercase();
+                l.contains("int") || l.contains("float") || l.contains("number")
+            })
+            .unwrap_or(false);
 
-        let is_bool = field.expected_type.as_deref().map(|t| {
-            t.to_ascii_lowercase().contains("bool")
-        }).unwrap_or(false);
+        let is_bool = field
+            .expected_type
+            .as_deref()
+            .map(|t| t.to_ascii_lowercase().contains("bool"))
+            .unwrap_or(false);
 
         let val = if is_bool {
             json!(true)
@@ -204,7 +226,8 @@ mod tests {
             ]
         }"#;
 
-        let fb = extract_schema_feedback(422, "application/json", body).expect("should extract feedback");
+        let fb = extract_schema_feedback(422, "application/json", body)
+            .expect("should extract feedback");
         assert_eq!(fb.framework_hint.as_deref(), Some("FastAPI / Pydantic"));
         assert_eq!(fb.required_fields.len(), 2);
         assert_eq!(fb.required_fields[0].name, "tenant_slug");
@@ -228,7 +251,8 @@ mod tests {
             ]
         }"#;
 
-        let fb = extract_schema_feedback(400, "application/json", body).expect("should extract feedback");
+        let fb = extract_schema_feedback(400, "application/json", body)
+            .expect("should extract feedback");
         assert_eq!(fb.framework_hint.as_deref(), Some("Zod / Express"));
         assert_eq!(fb.required_fields.len(), 1);
         assert_eq!(fb.required_fields[0].name, "token");
@@ -241,7 +265,8 @@ mod tests {
             "api_key": ["This field may not be blank."]
         }"#;
 
-        let fb = extract_schema_feedback(400, "application/json", body).expect("should extract feedback");
+        let fb = extract_schema_feedback(400, "application/json", body)
+            .expect("should extract feedback");
         assert_eq!(fb.framework_hint.as_deref(), Some("Django REST Framework"));
         assert_eq!(fb.required_fields.len(), 2);
     }

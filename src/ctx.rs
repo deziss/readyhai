@@ -21,7 +21,9 @@ pub struct Ctx {
     pub cfg: TargetConfig,
     /// Raw error lines checks collected; the engine clusters them (crate::logs).
     pub error_lines: Mutex<Vec<(String, String)>>,
-    /// Target host tagged env=nonprod in scope.toml (writes/intrusive allowed).
+    /// The target's host may be tested intrusively (writes, attack payloads, load): true for a
+    /// public host that scope.toml does not mark `env = "prod"`, or one listed `env = "nonprod"`.
+    /// False for a `prod` entry and for targets without a web host.
     #[allow(dead_code)]
     pub nonprod: bool,
     /// Present only for `readyhai qa` runs.

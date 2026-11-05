@@ -14,8 +14,35 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Publishing is gated twice: the ref must be the release tag for the version in VERSION, and the
+  # full CI workflow (fmt, clippy, tests, frontend, python) must pass first.
+  verify:
+    name: Tag matches VERSION
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Require the release tag for VERSION
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" != "tag" ]]; then
+            echo "Error: images are published from release tags (vX.Y.Z), not from ${GITHUB_REF}" >&2
+            exit 1
+          fi
+          FILE_VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [[ "${GITHUB_REF_NAME}" != "v${FILE_VERSION}" ]]; then
+            echo "Error: tag ${GITHUB_REF_NAME} does not equal v${FILE_VERSION} (the VERSION file)" >&2
+            exit 1
+          fi
+          echo "Verified: tag ${GITHUB_REF_NAME} matches VERSION ${FILE_VERSION}"
+
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
   image:
     name: ${{ matrix.name }}
+    needs: [verify, ci]
     runs-on: ubuntu-latest
     permissions:
       contents: read

@@ -1,8 +1,15 @@
 //! Exit criteria + Go / Conditional Go / No-Go. Computed, never chosen by an LLM.
 use super::QaCtx;
 use super::model::*;
-use crate::model::{Category, FindingStatus, Run, Severity, Verdict, sha256_hex};
+use crate::model::{Category, CheckStatus, FindingStatus, Run, Severity, Verdict, sha256_hex};
 use std::collections::BTreeSet;
+
+/// Below this share of planned cases executed the run proves nothing either way.
+pub const MIN_EXECUTED_PCT: f64 = 50.0;
+/// Name of the exit criterion that decides "insufficient evidence" (blocking, but it yields
+/// Inconclusive, not No-Go: nothing was shown to be broken, nothing was shown to work).
+pub const EVIDENCE_CRITERION: &str =
+    "Sufficient test evidence (≥50% of planned cases executed, requested core area ran)";
 
 /// Same formula as Finding::finalize: sha256(rule \0 fp_key)[..12 bytes] hex.
 pub fn fingerprint(rule: &str, fp_key: &str) -> String {
@@ -23,14 +30,99 @@ fn area_label(a: Area) -> &'static str {
     }
 }
 
+/// Status of a defect made of `keys` (rule, fp_key) members, judged on their Finding twins.
+/// None when no member has a twin in the run.
+fn merged_status(keys: &[(String, String)], run: &Run) -> Option<FindingStatus> {
+    let sts: Vec<FindingStatus> = keys
+        .iter()
+        .filter_map(|(r, k)| {
+            let fp = fingerprint(r, k);
+            run.findings
+                .iter()
+                .find(|f| f.fingerprint == fp)
+                .map(|f| f.status)
+        })
+        .collect();
+    if sts.is_empty() {
+        None
+    } else if sts.contains(&FindingStatus::New) {
+        Some(FindingStatus::New)
+    } else if sts.contains(&FindingStatus::Existing) {
+        Some(FindingStatus::Existing)
+    } else {
+        Some(FindingStatus::Suppressed)
+    }
+}
+
+/// Check-id prefixes whose checks produce the cases of `a`.
+fn area_checks(a: Area) -> &'static [&'static str] {
+    match a {
+        Area::Api => &["qa.api."],
+        Area::Ui => &["qa.ui"],
+        Area::Perf => &["qa.perf"],
+        Area::Resilience => &["qa.resilience"],
+        Area::Suite | Area::Release => &["qa.suite", "qa.release"],
+    }
+}
+
+/// An area that executed no case: why (from the check status, when a check of the area is in
+/// the run) and whether it was requested (a check ran but ended Skipped/Errored/Partial).
+struct NotRun {
+    area: Area,
+    reason: String,
+    requested: bool,
+}
+
+fn not_run(area: Area, executed_in_area: usize, run: &Run) -> Option<NotRun> {
+    if executed_in_area > 0 {
+        return None;
+    }
+    let mut reason = String::new();
+    let mut requested = false;
+    let mut present = false;
+    for c in run
+        .checks
+        .iter()
+        .filter(|c| area_checks(area).iter().any(|p| c.id.starts_with(p)))
+    {
+        present = true;
+        match &c.status {
+            CheckStatus::Skipped(r) | CheckStatus::Errored(r) | CheckStatus::Partial(r) => {
+                requested = true;
+                if reason.is_empty() {
+                    reason = r.clone();
+                }
+            }
+            CheckStatus::NotApplicable(r) if reason.is_empty() => reason = r.clone(),
+            _ => {}
+        }
+    }
+    if reason.is_empty() {
+        reason = if present {
+            "no case executed".into()
+        } else {
+            "not part of this run (profile or target)".into()
+        };
+    }
+    Some(NotRun {
+        area,
+        reason,
+        requested,
+    })
+}
+
 pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaReport {
     super::triage::triage(&mut col);
 
     for d in col.defects.iter_mut() {
         d.fingerprint = fingerprint(&d.rule, &d.fp_key);
-        if let Some(f) = run.findings.iter().find(|f| f.fingerprint == d.fingerprint) {
-            d.status = f.status;
-            d.regression = f.status == FindingStatus::New;
+        // A merged defect stands for several raw defects, each with its own Finding twin and
+        // baseline status: it is New when ANY member is new, Suppressed only when ALL are.
+        let own = [(d.rule.clone(), d.fp_key.clone())];
+        let keys = col.merged.get(&d.id).map(|m| m.as_slice()).unwrap_or(&own);
+        if let Some(st) = merged_status(keys, run) {
+            d.status = st;
+            d.regression = st == FindingStatus::New;
         }
     }
 
@@ -121,6 +213,31 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
     } else {
         counts.executed as f64 * 100.0 / counts.planned as f64
     };
+    // Evidence: executed cases per area (an area "ran" when at least one of its cases executed).
+    let executed_in = |a: Area| {
+        col.cases
+            .iter()
+            .filter(|c| c.area == a && ran.contains(c.id.as_str()))
+            .count()
+    };
+    let api_requested = qa.spec.is_some()
+        || run.target.openapi.is_some()
+        || run.checks.iter().any(|c| {
+            c.id.starts_with("qa.api.") && !matches!(c.status, CheckStatus::NotApplicable(_))
+        });
+    let mut evidence_gaps: Vec<String> = vec![];
+    if counts.planned == 0 {
+        evidence_gaps.push("no test case was planned".into());
+    } else if pct < MIN_EXECUTED_PCT {
+        evidence_gaps.push(format!(
+            "only {} of {} planned cases executed ({pct:.0}%, minimum {MIN_EXECUTED_PCT:.0}%)",
+            counts.executed, counts.planned
+        ));
+    }
+    if api_requested && executed_in(Area::Api) == 0 {
+        evidence_gaps.push("the API area was requested but no API case executed".into());
+    }
+    let evidence_ok = evidence_gaps.is_empty();
 
     let crit = |name: &str, met: bool, blocking: bool, detail: String| ExitCriterion {
         name: name.into(),
@@ -155,6 +272,19 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
                 "{}/{} executed ({pct:.0}%)",
                 counts.executed, counts.planned
             ),
+        ),
+        crit(
+            EVIDENCE_CRITERION,
+            evidence_ok,
+            true,
+            if evidence_ok {
+                format!(
+                    "{}/{} executed ({pct:.0}%)",
+                    counts.executed, counts.planned
+                )
+            } else {
+                evidence_gaps.join("; ")
+            },
         ),
         crit(
             "Every failed case is traced to a defect",
@@ -196,11 +326,37 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         ),
     ];
 
-    let blocking_unmet = exit_criteria.iter().any(|c| c.blocking && !c.met);
+    // Areas that executed nothing. UI / performance / test-suite quality are conditions of a
+    // release; resilience only when its check was actually requested (it needs deep + a scope).
+    let skipped_areas: Vec<NotRun> = [Area::Ui, Area::Perf, Area::Suite, Area::Resilience]
+        .into_iter()
+        .filter_map(|a| {
+            not_run(
+                a,
+                executed_in(a)
+                    + if a == Area::Suite {
+                        executed_in(Area::Release)
+                    } else {
+                        0
+                    },
+                run,
+            )
+        })
+        .filter(|n| n.area != Area::Resilience || n.requested)
+        .collect();
+    let degraded = skipped_areas.iter().any(|n| n.requested);
+
+    // Known-bad (a blocking criterion other than evidence, a failed gate) beats unknown:
+    // No-Go. Without evidence there is no recommendation to give: Inconclusive.
+    let other_blocking_unmet = exit_criteria
+        .iter()
+        .any(|c| c.blocking && !c.met && c.name != EVIDENCE_CRITERION);
     let any_unmet = exit_criteria.iter().any(|c| !c.met);
-    let recommendation = if run.verdict == Verdict::Fail || blocking_unmet {
+    let recommendation = if run.verdict == Verdict::Fail || other_blocking_unmet {
         Recommendation::NoGo
-    } else if run.verdict == Verdict::Warn || any_unmet {
+    } else if !evidence_ok {
+        Recommendation::Inconclusive
+    } else if run.verdict == Verdict::Warn || any_unmet || degraded {
         Recommendation::ConditionalGo
     } else {
         Recommendation::Go
@@ -208,8 +364,27 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
 
     let mut conditions: Vec<String> = vec![];
     if recommendation != Recommendation::Go {
-        for c in exit_criteria.iter().filter(|c| !c.met) {
+        if !evidence_ok {
+            conditions.push(format!(
+                "Insufficient evidence: {}. Fix what blocked the run (credentials, reachability, budget) and re-run so that most planned cases execute",
+                evidence_gaps.join("; ")
+            ));
+        }
+        for c in exit_criteria
+            .iter()
+            .filter(|c| !c.met && c.name != EVIDENCE_CRITERION)
+        {
             conditions.push(format!("{} ({})", c.name, c.detail));
+        }
+        for n in skipped_areas
+            .iter()
+            .filter(|n| n.area != Area::Resilience || n.requested)
+        {
+            conditions.push(format!(
+                "{} did not run ({}): run it, or accept that it is untested",
+                area_label(n.area),
+                n.reason
+            ));
         }
         for d in col
             .defects
@@ -222,7 +397,7 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         if run.verdict == Verdict::Warn {
             conditions.push("Review the gate WARN reasons".into());
         }
-        conditions.truncate(10);
+        conditions.truncate(12);
     }
 
     let environment = format!(
@@ -260,11 +435,18 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         Recommendation::Go => "GO",
         Recommendation::ConditionalGo => "CONDITIONAL GO",
         Recommendation::NoGo => "NO-GO",
+        Recommendation::Inconclusive => "INCONCLUSIVE (insufficient evidence)",
     };
     let mut s = format!(
         "Recommendation: {rec_s} for {environment}. {} of {} planned cases were executed: {} passed, {} failed, {} flaky, {} blocked. ",
         counts.executed, counts.planned, counts.passed, counts.failed, counts.flaky, counts.blocked
     );
+    if !evidence_ok {
+        s.push_str(&format!(
+            "The evidence is insufficient: {}. ",
+            evidence_gaps.join("; ")
+        ));
+    }
     let open_defects: Vec<&Defect> = col.defects.iter().filter(open).collect();
     s.push_str(&format!(
         "{} defect(s) are open, {open_p1} of them P1. ",
@@ -603,5 +785,257 @@ mod tests {
         assert_eq!(r.defects[0].status, FindingStatus::Existing);
         assert!(!r.defects[0].regression);
         assert!(r.executive_summary.contains("NO-GO"));
+    }
+
+    // ------------------------------------------------------------ insufficient evidence
+
+    fn check(id: &str, st: crate::model::CheckStatus) -> crate::model::CheckResult {
+        crate::model::CheckResult {
+            id: id.into(),
+            title: id.into(),
+            tool: None,
+            status: st,
+            findings: 0,
+            duration_ms: 1,
+        }
+    }
+
+    /// `n` planned api cases of which the first `executed` passed (role a / b auth-matrix cases first).
+    fn col_with(n: usize, executed: usize) -> QaCollector {
+        let mut c = QaCollector::default();
+        for i in 0..n {
+            let role = ["a", "b"].get(i).copied();
+            c.cases
+                .push(case(&format!("c{i}"), Technique::AuthMatrix, role));
+            c.results.push(result(
+                &format!("c{i}"),
+                if i < executed {
+                    ResultStatus::Pass
+                } else {
+                    ResultStatus::Blocked
+                },
+                None,
+            ));
+        }
+        c
+    }
+
+    #[test]
+    fn nothing_executed_is_inconclusive_never_a_go() {
+        let q = qa2();
+        // nothing planned at all
+        let r = build(QaCollector::default(), &run(Verdict::Pass, vec![]), &q, "d");
+        assert_eq!(r.recommendation, Recommendation::Inconclusive);
+        assert!(
+            r.conditions[0].starts_with("Insufficient evidence"),
+            "{:?}",
+            r.conditions
+        );
+        assert!(
+            crit(&r, "Sufficient test evidence").blocking
+                && !crit(&r, "Sufficient test evidence").met
+        );
+        assert!(
+            r.executive_summary.contains("INCONCLUSIVE")
+                && r.executive_summary.contains("insufficient")
+        );
+        // planned but everything blocked
+        let r = build(col_with(4, 0), &run(Verdict::Pass, vec![]), &q, "d");
+        assert_eq!(r.recommendation, Recommendation::Inconclusive);
+        assert_eq!(r.counts.executed, 0);
+    }
+
+    #[test]
+    fn below_half_executed_is_inconclusive_half_is_not() {
+        let q = qa2();
+        let go = |c: QaCollector| build(c, &run(Verdict::Pass, vec![]), &q, "d");
+        let r = go(col_with(4, 1));
+        assert_eq!(r.recommendation, Recommendation::Inconclusive);
+        assert!(
+            r.conditions[0].contains("only 1 of 4 planned cases executed (25%"),
+            "{:?}",
+            r.conditions
+        );
+        // exactly 50% is enough evidence to judge (the 90% criterion is then just unmet)
+        let r = go(col_with(4, 2));
+        assert_eq!(r.recommendation, Recommendation::ConditionalGo);
+        assert!(crit(&r, "Sufficient test evidence").met);
+        // all executed: unchanged Go
+        assert_eq!(go(col_with(4, 4)).recommendation, Recommendation::Go);
+    }
+
+    #[test]
+    fn a_requested_api_area_that_never_ran_is_inconclusive() {
+        // the user gave a spec (API requested); only UI cases executed
+        let r: Roles =
+            toml::from_str("[[role]]\nname='a'\nauth='none'\n[[role]]\nname='b'\nauth='none'\n")
+                .unwrap();
+        let q = QaCtx::new(r, Some("spec.json".into()), None, true);
+        let mut c = QaCollector::default();
+        for i in 0..3 {
+            let mut t = case(&format!("ui{i}"), Technique::Exploratory, None);
+            t.area = Area::Ui;
+            c.cases.push(t);
+            c.results
+                .push(result(&format!("ui{i}"), ResultStatus::Pass, None));
+        }
+        let rep = build(c, &run(Verdict::Pass, vec![]), &q, "d");
+        assert_eq!(rep.recommendation, Recommendation::Inconclusive);
+        assert!(
+            rep.conditions[0].contains("API area was requested but no API case executed"),
+            "{:?}",
+            rep.conditions
+        );
+        // the same run without a spec / api checks never asked for the API: UI evidence is enough
+        let q2 = qa2();
+        let mut c = QaCollector::default();
+        let mut t = case("ui0", Technique::Exploratory, None);
+        t.area = Area::Ui;
+        c.cases.push(t);
+        c.results.push(result("ui0", ResultStatus::Pass, None));
+        assert_ne!(
+            build(c, &run(Verdict::Pass, vec![]), &q2, "d").recommendation,
+            Recommendation::Inconclusive
+        );
+        // an api check that ran in this run (even without --spec: it was discovered) is "requested"
+        let mut c = QaCollector::default();
+        let mut t = case("ui0", Technique::Exploratory, None);
+        t.area = Area::Ui;
+        c.cases.push(t);
+        c.results.push(result("ui0", ResultStatus::Pass, None));
+        let mut rn = run(Verdict::Pass, vec![]);
+        rn.checks = vec![check(
+            "qa.api.authz",
+            crate::model::CheckStatus::Errored("down".into()),
+        )];
+        assert_eq!(
+            build(c, &rn, &q2, "d").recommendation,
+            Recommendation::Inconclusive
+        );
+    }
+
+    #[test]
+    fn a_known_failure_beats_missing_evidence() {
+        let q = qa2();
+        // no evidence, but the gate failed: No-Go (something IS known to be wrong)
+        let r = build(col_with(4, 0), &run(Verdict::Fail, vec![]), &q, "d");
+        assert_eq!(r.recommendation, Recommendation::NoGo);
+        // no evidence and an open P1 defect: No-Go
+        let mut c = col_with(4, 1);
+        let mut d = defect("D-1", Severity::Critical, FindingStatus::New);
+        d.priority = Priority::P1;
+        c.defects.push(d);
+        assert_eq!(
+            build(c, &run(Verdict::Pass, vec![]), &q, "d").recommendation,
+            Recommendation::NoGo
+        );
+    }
+
+    #[test]
+    fn skipped_ui_perf_suite_areas_are_conditions_not_just_out_of_scope() {
+        use crate::model::CheckStatus::{Passed, Skipped};
+        let q = qa2();
+        let mut rn = run(Verdict::Pass, vec![]);
+        rn.checks = vec![
+            check("qa.api.authz", Passed),
+            check("qa.ui", Skipped("playwright image not available".into())),
+            check("qa.perf", Skipped("k6 image not available".into())),
+            check("qa.suite.coverage", Skipped("no coverage report".into())),
+        ];
+        let r = build(good_col(), &rn, &q, "d");
+        // good evidence + a clean gate, but three requested areas never ran: not a plain Go
+        assert_eq!(r.recommendation, Recommendation::ConditionalGo);
+        for (label, why) in [
+            ("UI exploratory testing", "playwright image not available"),
+            ("Performance testing", "k6 image not available"),
+            ("Test-suite quality", "no coverage report"),
+        ] {
+            assert!(
+                r.conditions
+                    .iter()
+                    .any(|c| c.contains(label) && c.contains("did not run") && c.contains(why)),
+                "{label}: {:?}",
+                r.conditions
+            );
+        }
+        // still listed as out of scope too
+        assert!(
+            r.out_of_scope
+                .iter()
+                .any(|o| o.contains("UI exploratory testing"))
+        );
+        // areas that simply are not part of the run (no check at all) do not degrade a Go...
+        assert_eq!(
+            build(good_col(), &run(Verdict::Pass, vec![]), &q, "d").recommendation,
+            Recommendation::Go
+        );
+        // ...but are named when the recommendation is not a Go anyway
+        let r = build(good_col(), &run(Verdict::Warn, vec![]), &q, "d");
+        assert!(
+            r.conditions
+                .iter()
+                .any(|c| c.contains("Performance testing did not run (not part of this run")),
+            "{:?}",
+            r.conditions
+        );
+    }
+
+    #[test]
+    fn exit_codes_per_recommendation() {
+        assert_eq!(Recommendation::Go.exit_code(), 0);
+        assert_eq!(Recommendation::ConditionalGo.exit_code(), 1);
+        assert_eq!(Recommendation::NoGo.exit_code(), 2);
+        assert_eq!(Recommendation::Inconclusive.exit_code(), 2);
+    }
+
+    // ------------------------------------------------------------ merged defects keep every member
+
+    fn finding_for(d: &Defect, st: FindingStatus) -> Finding {
+        let mut f = d.to_finding("qa.api.functional");
+        f.finalize();
+        f.status = st;
+        f
+    }
+
+    #[test]
+    fn a_merged_defect_is_new_when_any_member_is_new_and_suppressed_only_when_all_are() {
+        let q = qa2();
+        let mk = |p: &str| {
+            let mut d = crate::qa::triage::tests::defect(
+                "qa.api.server_error",
+                &format!("GET {p}"),
+                Severity::High,
+                "HTTP 500 (alice); body: [python_traceback] KeyError: 'x'",
+            );
+            d.fp_key = format!("GET {p}|state");
+            d
+        };
+        let build_with = |sts: [FindingStatus; 3]| {
+            let mut c = good_col();
+            let ds: Vec<Defect> = ["/a", "/b", "/c"].iter().map(|p| mk(p)).collect();
+            let fs: Vec<Finding> = ds
+                .iter()
+                .zip(sts)
+                .map(|(d, st)| finding_for(d, st))
+                .collect();
+            c.defects = ds;
+            build(c, &run(Verdict::Pass, fs), &q, "d")
+        };
+        use FindingStatus::*;
+        // first member accepted (suppressed), another one NEW: the merged defect is new + open
+        let r = build_with([Suppressed, New, Suppressed]);
+        assert_eq!(r.defects.len(), 1, "three members share one root cause");
+        assert!(r.defects[0].title.starts_with("Same server error on 3"));
+        assert_eq!(r.defects[0].status, New);
+        assert!(r.defects[0].regression);
+        // all accepted: suppressed
+        assert_eq!(
+            build_with([Suppressed, Suppressed, Suppressed]).defects[0].status,
+            Suppressed
+        );
+        // a mix of baselined and suppressed: existing
+        let r = build_with([Suppressed, Existing, Suppressed]);
+        assert_eq!(r.defects[0].status, Existing);
+        assert!(!r.defects[0].regression);
     }
 }

@@ -79,7 +79,7 @@ fn re(p: &str) -> Regex {
     Regex::new(p).expect("static regex")
 }
 
-fn is_test_path(p: &str) -> bool {
+pub(crate) fn is_test_path(p: &str) -> bool {
     let l = p.to_lowercase();
     let name = l.rsplit('/').next().unwrap_or("");
     l.starts_with("tests/")
@@ -242,6 +242,10 @@ fn parse_cobertura(t: &str) -> Option<Cov> {
             files.push((f, r));
         }
     }
+    // `lines-valid="0"`: nothing was instrumented, so a line-rate of 1 / 0 means no data
+    if attr(&root, "lines-valid").and_then(|v| v.parse::<u64>().ok()) == Some(0) {
+        return None;
+    }
     let overall = attr(&root, "line-rate")?.parse::<f64>().ok()?;
     Some(Cov { overall, files })
 }
@@ -259,20 +263,20 @@ fn parse_lcov(t: &str) -> Option<Cov> {
         } else if let Some(v) = l.strip_prefix("LH:") {
             lh = v.trim().parse().unwrap_or(0);
         } else if l.starts_with("end_of_record") && !cur.is_empty() {
-            tf += lf;
-            th += lh;
-            files.push((
-                cur.clone(),
-                if lf == 0 { 1.0 } else { lh as f64 / lf as f64 },
-            ));
+            // LF:0 = no instrumented lines: that file says nothing (it is NOT 100% covered)
+            if lf > 0 {
+                tf += lf;
+                th += lh;
+                files.push((cur.clone(), lh as f64 / lf as f64));
+            }
             cur.clear();
         }
     }
-    if files.is_empty() {
-        return None;
+    if files.is_empty() || tf == 0 {
+        return None; // no line data at all: "no data", never 100%
     }
     Some(Cov {
-        overall: if tf == 0 { 1.0 } else { th as f64 / tf as f64 },
+        overall: th as f64 / tf as f64,
         files,
     })
 }
@@ -324,16 +328,12 @@ fn parse_jacoco(t: &str) -> Option<Cov> {
                 } else {
                     format!("{cur_pkg}/{name}")
                 };
-                tm += m;
-                tc += cv;
-                files.push((
-                    path,
-                    if m + cv == 0 {
-                        1.0
-                    } else {
-                        cv as f64 / (m + cv) as f64
-                    },
-                ));
+                // a source file without instrumented lines carries no coverage information
+                if m + cv > 0 {
+                    tm += m;
+                    tc += cv;
+                    files.push((path, cv as f64 / (m + cv) as f64));
+                }
             }
             pos += end.max(next.1);
         }
@@ -342,12 +342,11 @@ fn parse_jacoco(t: &str) -> Option<Cov> {
         return None;
     }
     let total = tm + tc;
+    if total == 0 {
+        return None;
+    }
     Some(Cov {
-        overall: if total == 0 {
-            1.0
-        } else {
-            tc as f64 / total as f64
-        },
+        overall: tc as f64 / total as f64,
         files,
     })
 }
@@ -405,6 +404,15 @@ fn find_coverage(ctx: &Ctx, snap: &Snapshot) -> Option<(String, Cov)> {
     None
 }
 
+/// A coverage report in the snapshot that parses to nothing (no instrumented lines).
+fn unusable_coverage(snap: &Snapshot) -> Option<String> {
+    snap.files
+        .iter()
+        .filter(|f| !f.contains("node_modules/"))
+        .find(|f| is_cov_name(f.rsplit('/').next().unwrap_or(f)))
+        .cloned()
+}
+
 fn is_critical_path(p: &str) -> bool {
     let l = p.to_lowercase();
     ["auth", "payment", "order", "security", "admin"]
@@ -425,10 +433,20 @@ fn coverage(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     };
     let case = "suite.coverage";
     let Some((src, cov)) = find_coverage(ctx, snap) else {
-        untested(
-            ctx,
-            "no coverage report (add --cov / lcov to [test] command)",
-        );
+        // a report that exists but holds no line data (LF:0 / lines-valid=0) is "no data", not 100%
+        let (why, actual) = match unusable_coverage(snap) {
+            Some(f) => (
+                format!(
+                    "coverage report {f} contains no line data (nothing instrumented): coverage unknown"
+                ),
+                format!("{f} has no line data"),
+            ),
+            None => (
+                "no coverage report (add --cov / lcov to [test] command)".to_string(),
+                "no coverage report found".to_string(),
+            ),
+        };
+        untested(ctx, &why);
         record(
             ctx,
             "qa.suite.coverage",
@@ -437,12 +455,10 @@ fn coverage(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
             "Coverage report present",
             ".",
             ResultStatus::Blocked,
-            "no coverage report found",
+            &actual,
             vec![],
         );
-        return Ok(CheckOutput::status(CheckStatus::Skipped(
-            "no coverage report (add --cov / lcov to [test] command)".into(),
-        )));
+        return Ok(CheckOutput::status(CheckStatus::Skipped(why)));
     };
     let mut defs = vec![];
     let pct = cov.overall * 100.0;
@@ -512,12 +528,14 @@ fn coverage(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
 
 // ------------------------------------------------------------------ 2. routes
 
+/// A route a source file declares. Shared with the agent's change analysis (`agent::change`), which
+/// maps the routes of changed files to OpenAPI operations.
 #[derive(Debug, Clone, PartialEq)]
-struct Route {
-    method: String,
-    path: String,
-    file: String,
-    line: usize,
+pub(crate) struct Route {
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) file: String,
+    pub(crate) line: usize,
 }
 
 impl Route {
@@ -526,7 +544,7 @@ impl Route {
     }
 }
 
-fn extract_routes(file: &str, text: &str) -> Vec<Route> {
+pub(crate) fn extract_routes(file: &str, text: &str) -> Vec<Route> {
     let ext = file.rsplit('.').next().unwrap_or("");
     let name = file.rsplit('/').next().unwrap_or("");
     let mut v = vec![];
@@ -600,6 +618,39 @@ fn extract_routes(file: &str, text: &str) -> Vec<Route> {
     v
 }
 
+/// A path segment that is a parameter in some framework's syntax: `{id}`, `:id`, `<int:id>`,
+/// Django's `(?P<id>...)`, or a bare `*`.
+pub(crate) fn is_param_segment(s: &str) -> bool {
+    static PARAM: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        re(r"^(?:\{[^}]*\}|:[A-Za-z_]\w*|<[^>]*>|\(\?P<[^>]*>[^)]*\))$")
+    });
+    PARAM.is_match(s) || s == "*"
+}
+
+/// The segments of a route or OpenAPI path as `route_regex` reads them: a leading `/` is implied,
+/// query/fragment and the trailing `/` are dropped, a parameter becomes `{}` and a literal is
+/// lower-cased. `/Orders/{id}/`, `orders/<int:pk>` and `/orders/:id` all give `["orders", "{}"]`.
+pub(crate) fn route_segments(path: &str) -> Vec<String> {
+    // a query or fragment ends the path, but the `?` of Django's `(?P<name>...)` does not
+    let cut = path
+        .char_indices()
+        .find(|&(i, c)| (c == '?' && !path[..i].ends_with('(')) || c == '#')
+        .map_or(path.len(), |(i, _)| i);
+    path[..cut]
+        .trim()
+        .split('/')
+        .map(|s| s.trim_matches(['^', '$']))
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if is_param_segment(s) {
+                "{}".to_string()
+            } else {
+                s.to_lowercase()
+            }
+        })
+        .collect()
+}
+
 /// Literal route path -> regex that matches it inside test source (params become a segment wildcard).
 fn route_regex(path: &str) -> Option<Regex> {
     let mut p = path.trim().to_string();
@@ -618,10 +669,9 @@ fn route_regex(path: &str) -> Option<Regex> {
     if p == "/" {
         return Regex::new(r#"["'`]/["'`?]"#).ok();
     }
-    let param = re(r"^(?:\{[^}]*\}|:[A-Za-z_]\w*|<[^>]*>|\(\?P<[^>]*>[^)]*\))$");
     for s in p.split('/').skip(1) {
         rx.push('/');
-        if param.is_match(s) || s == "*" {
+        if is_param_segment(s) {
             rx.push_str(seg);
         } else {
             rx.push_str(&regex::escape(s));
@@ -1915,20 +1965,29 @@ fn licenses(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     deny.extend(parse_deny(
         &std::env::var("READYHAI_LICENSE_DENY").unwrap_or_default(),
     ));
-    Ok(out(licenses_eval(ctx, &j, &deny)))
+    let findings = licenses_eval(ctx, &j, &deny);
+    if deny.is_empty() {
+        // no policy = nothing was judged: Skipped (visible), never a green "licences comply"
+        return Ok(CheckOutput::status(CheckStatus::Skipped(
+            "no licence deny policy configured (set [license] deny or READYHAI_LICENSE_DENY): licences were listed, not judged".into(),
+        )));
+    }
+    Ok(out(findings))
 }
 
 fn licenses_eval(ctx: &Ctx, j: &Value, deny: &[String]) -> Vec<Finding> {
     let all = sbom_licenses(j);
     let distinct: BTreeSet<&str> = all.iter().map(|(_, l)| l.as_str()).collect();
     if deny.is_empty() {
+        // Without a deny policy compliance was not evaluated: Skipped + an untested note.
+        let why = format!(
+            "licence compliance not evaluated: {} component licence(s), {} distinct, but no deny policy is configured (set [license] deny in readyhai.toml or READYHAI_LICENSE_DENY)",
+            all.len(),
+            distinct.len()
+        );
+        untested(ctx, &why);
         if let Some(qa) = &ctx.qa {
-            qa.with(|c| {
-                c.notes.push(format!(
-                    "Licences: {} component licence(s), {} distinct; no deny policy configured (set READYHAI_LICENSE_DENY).",
-                    all.len(), distinct.len()
-                ))
-            });
+            qa.with(|c| c.notes.push(why.clone()));
         }
         return record(
             ctx,
@@ -1937,8 +1996,11 @@ fn licenses_eval(ctx: &Ctx, j: &Value, deny: &[String]) -> Vec<Finding> {
             "release.licenses",
             "Dependency licences comply with policy",
             "sbom",
-            ResultStatus::Pass,
-            &format!("{} distinct licence(s); no deny policy", distinct.len()),
+            ResultStatus::Skipped,
+            &format!(
+                "{} distinct licence(s) found; no deny policy, so none was judged",
+                distinct.len()
+            ),
             vec![],
         );
     }
@@ -2120,6 +2182,23 @@ mod tests {
             "users/<int:pk>/"
         );
         assert!(extract_routes("views.py", dj).is_empty());
+    }
+
+    #[test]
+    fn route_segments_read_every_framework_syntax_the_same_way() {
+        let want = ["orders", "{}"];
+        for p in [
+            "/orders/{id}",
+            "/Orders/{order_id}/",
+            "orders/<int:pk>",
+            "/orders/:id?x=1",
+            "/orders/*",
+            "/orders/(?P<pk>[0-9]+)",
+        ] {
+            assert_eq!(route_segments(p), want, "{p}");
+        }
+        assert!(route_segments("/").is_empty());
+        assert_eq!(route_segments("/api/v1/health"), ["api", "v1", "health"]);
     }
 
     #[test]
@@ -2464,5 +2543,102 @@ mod tests {
             assert!(infra_exit(c).is_none(), "{c}");
         }
         assert_eq!(step_for_exit(11), "alembic upgrade head");
+    }
+
+    #[test]
+    fn lcov_without_line_data_is_no_data_not_full_coverage() {
+        // LF:0 everywhere: nothing instrumented
+        assert!(parse_lcov("SF:src/a.js\nLF:0\nLH:0\nend_of_record\n").is_none());
+        assert!(parse_lcov("").is_none());
+        // a file with LF:0 says nothing about itself and does not dilute the others to 100%
+        let l = parse_lcov(
+            "SF:src/empty.js\nLF:0\nLH:0\nend_of_record\nSF:src/b.js\nLF:10\nLH:5\nend_of_record\n",
+        )
+        .unwrap();
+        assert_eq!(l.files, vec![("src/b.js".to_string(), 0.5)]);
+        assert!((l.overall - 0.5).abs() < 1e-9);
+        // jacoco: only sourcefiles without any counted line
+        let j = r#"<report><package name="p"><sourcefile name="A.java"><counter type="LINE" missed="0" covered="0"/></sourcefile></package></report>"#;
+        assert!(parse_jacoco(j).is_none());
+        // cobertura: nothing instrumented
+        let c =
+            r#"<coverage line-rate="1" lines-valid="0" lines-covered="0"><packages/></coverage>"#;
+        assert!(parse_cobertura(c).is_none());
+        let ok = r#"<coverage line-rate="0.5" lines-valid="10" lines-covered="5"><packages/></coverage>"#;
+        assert!((parse_cobertura(ok).unwrap().overall - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_coverage_report_with_no_line_data_is_skipped_and_untested() {
+        let mut ctx = ctx_for("nolines", true);
+        let snap = ctx.snapshot.as_mut().unwrap();
+        snap.files.retain(|f| f != "coverage.xml");
+        fs::write(
+            snap.root.join("lcov.info"),
+            "SF:src/a.js\nLF:0\nLH:0\nend_of_record\n",
+        )
+        .unwrap();
+        snap.files.push("lcov.info".into());
+        let r = run_one(&ctx, "qa.suite.coverage");
+        assert!(
+            matches!(&r.status, Some(CheckStatus::Skipped(m)) if m.contains("no line data")),
+            "{:?}",
+            r.status
+        );
+        assert!(
+            r.findings.is_empty(),
+            "no low-coverage finding, and certainly no 100% pass"
+        );
+        let c = ctx.qa.as_ref().unwrap();
+        assert_eq!(c.with(|c| c.results[0].status), ResultStatus::Blocked);
+        assert!(c.with(
+            |c| c.untested[0].contains("lcov.info") && c.untested[0].contains("no line data")
+        ));
+    }
+
+    #[test]
+    fn licences_without_a_deny_policy_are_skipped_not_pass() {
+        let ctx = ctx_for("lic-none", true);
+        let sbom = serde_json::json!({"components":[
+            {"name":"a","version":"1","licenses":[{"license":{"id":"MIT"}}]},
+            {"name":"b","version":"2","licenses":[{"license":{"id":"AGPL-3.0-only"}}]}]});
+        assert!(licenses_eval(&ctx, &sbom, &[]).is_empty());
+        let q = ctx.qa.as_ref().unwrap();
+        let (res, untested, notes) =
+            q.with(|c| (c.results.clone(), c.untested.clone(), c.notes.clone()));
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].status, ResultStatus::Skipped, "{res:?}");
+        assert!(
+            untested
+                .iter()
+                .any(|u| u.contains("not evaluated") && u.contains("no deny policy")),
+            "{untested:?}"
+        );
+        assert!(notes.iter().any(|n| n.contains("not evaluated")));
+
+        // check level: the CheckOutput is Skipped too (needs READYHAI_LICENSE_DENY unset)
+        if std::env::var("READYHAI_LICENSE_DENY").is_ok() {
+            return;
+        }
+        let ctx = ctx_for("lic-none2", true);
+        fs::create_dir_all(ctx.out_dir()).unwrap();
+        fs::write(ctx.out_dir().join("sbom.cdx.json"), sbom.to_string()).unwrap();
+        let r = run_one(&ctx, "qa.release.licenses");
+        assert!(
+            matches!(&r.status, Some(CheckStatus::Skipped(m)) if m.contains("not judged")),
+            "{:?}",
+            r.status
+        );
+        // with a policy it is judged (and fails on the AGPL package)
+        let mut ctx = ctx_for("lic-pol", true);
+        ctx.cfg.license.deny = vec!["AGPL-3.0*".into()];
+        fs::create_dir_all(ctx.out_dir()).unwrap();
+        fs::write(ctx.out_dir().join("sbom.cdx.json"), sbom.to_string()).unwrap();
+        let r = run_one(&ctx, "qa.release.licenses");
+        assert!(
+            r.status.is_none() && r.findings.len() == 1,
+            "{:?}",
+            r.status
+        );
     }
 }

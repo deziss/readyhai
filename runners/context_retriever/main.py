@@ -13,6 +13,7 @@ from rich.table import Table
 from .config import ConfigError, api_key_for, openai_compatible_base_url
 from .embeddings import embedding_model_name, get_bge_m3_embeddings
 from .ingest import build_bge_m3_index
+from .output import dumps, evidence_payload
 from .store import IndexError_, load_index
 
 console = Console()
@@ -62,17 +63,25 @@ def cmd_query(args):
     """Executes the LangGraph Long Context Retriever."""
     from .graph import ReadyHaiContextRetrieverGraph
 
+    if args.json:
+        console.quiet = True  # stdout carries exactly one JSON object
+
+    def fail(message: str, code: int):
+        if args.json:
+            print(dumps({"error": message[:300]}))
+        else:
+            console.print(f"[bold red]{escape(message)}[/bold red]")
+        sys.exit(code)
+
     if not Path(args.index_dir).exists():
-        console.print(f"[bold red]Index directory {escape(args.index_dir)} not found. Run index first.[/bold red]")
-        sys.exit(1)
+        fail(f"Index directory {args.index_dir} not found. Run index first.", 1)
 
     console.print("[dim]Rebuilding the vector store from the index files (no pickle is loaded)...[/dim]")
     try:
         embeddings = get_bge_m3_embeddings(backend=args.backend)
         vectorstore = load_index(args.index_dir, embeddings, expect_model=embedding_model_name(args.backend))
     except (IndexError_, ConfigError) as e:
-        console.print(f"[bold red]{escape(str(e))}[/bold red]")
-        sys.exit(1)
+        fail(str(e), 1)
 
     llm = get_default_llm() if not args.no_llm else None
     retriever_graph = ReadyHaiContextRetrieverGraph(
@@ -86,8 +95,11 @@ def cmd_query(args):
     try:
         result = retriever_graph.run(query=args.query, target_path=args.target)
     except Exception as e:  # e.g. the embedding backend is down while embedding the query
-        console.print(f"[bold red]Retrieval failed: {escape(type(e).__name__)}: {escape(str(e)[:300])}[/bold red]")
-        sys.exit(2)
+        fail(f"Retrieval failed: {type(e).__name__}: {str(e)[:300]}", 2)
+
+    if args.json:
+        print(dumps(evidence_payload(result)))
+        return
 
     table = Table(title="ReadyHai Reordered Evidence Ledger (Extremities Weighted)")
     table.add_column("Rank", style="cyan", width=6)
@@ -124,6 +136,7 @@ def main():
     p_qry.add_argument("--max-chunks", type=int, default=10, help="Number of chunks to retrieve and reorder")
     p_qry.add_argument("--max-tokens", type=int, default=16384, help="Context token budget")
     p_qry.add_argument("--no-llm", action="store_true", help="Do not invoke LLM synthesis, only output context")
+    p_qry.add_argument("--json", action="store_true", help="Print one machine-readable JSON object (for ReadyHai's agent) instead of tables")
     p_qry.add_argument("--backend", default=None, choices=["ollama", "huggingface", "openai_compatible"])
 
     args = parser.parse_args()

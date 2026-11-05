@@ -1,5 +1,15 @@
+# First run on a fresh clone:  cp .env.example .env  &&  cp scope.example.toml scope.toml
+# (scope.toml is bind-mounted below; if it does not exist when you run `docker compose up`,
+#  Docker creates an empty DIRECTORY named scope.toml and readyhai refuses to start with a hint.)
+#
 # socket-proxy filters Docker API paths, not request bodies: it is NOT a security boundary.
 # Prefer rootless Docker/Podman on shared hosts.
+#
+# Networks:
+#   socket  internal (no route out): readyhai <-> socket-proxy only. Nothing else can reach the proxy.
+#   edge    readyhai <-> frontend, plus the published 127.0.0.1 ports and readyhai's outbound traffic
+#           (scan targets, git clones). The frontend is on this network only, so it cannot reach
+#           the socket-proxy.
 services:
   readyhai:
     build: .
@@ -21,9 +31,26 @@ services:
       - "host.docker.internal:host-gateway"
     ports:
       - "127.0.0.1:${READYHAI_PORT:-8080}:8080"
+    networks:
+      - socket
+      - edge
     depends_on:
-      - socket-proxy
+      socket-proxy:
+        condition: service_healthy
+    # `readyhai ping` (the image HEALTHCHECK) is repeated here so `depends_on` below has a
+    # health state to wait for, with timings suited to a service that starts in a second or two.
+    healthcheck:
+      test: ["CMD", "readyhai", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
+    # init: a real PID 1 forwards SIGTERM to readyhai and reaps zombie children (git, docker CLI).
+    init: true
+    # readyhai stops accepting work after SIGTERM, drains for 8 s, removes the scan containers of
+    # the run in flight and exits well inside this window; SIGKILL follows only if it hangs.
+    stop_grace_period: 20s
     mem_limit: 1g
     read_only: true
     tmpfs:
@@ -47,13 +74,20 @@ services:
       - READYHAI_TOKEN=${READYHAI_TOKEN}
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+    networks:
+      - edge
     depends_on:
-      - readyhai
+      readyhai:
+        condition: service_healthy
     restart: unless-stopped
+    init: true
+    stop_grace_period: 10s
     mem_limit: 512m
 
   socket-proxy:
-    image: tecnativa/docker-socket-proxy:latest
+    # Pinned: `latest` would change the proxy under you. v0.5.0 is the build this file was tested
+    # with (the docs used to name v0.3.0, which is published as `0.3.0`, without the v).
+    image: tecnativa/docker-socket-proxy:v0.5.0
     container_name: readyhai-socket-proxy
     environment:
       CONTAINERS: "1"
@@ -71,6 +105,8 @@ services:
       SECRETS: "0"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - socket
     read_only: true
     tmpfs:
       - /run
@@ -80,8 +116,14 @@ services:
       interval: 10s
       timeout: 3s
       retries: 3
+      start_period: 5s
     mem_limit: 64m
     restart: unless-stopped
+
+networks:
+  socket:
+    internal: true
+  edge: {}
 
 volumes:
   readyhai_data:

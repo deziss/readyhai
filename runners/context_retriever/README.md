@@ -93,6 +93,12 @@ them as inert data. LLM synthesis is advisory; if the LLM call fails the retriev
 shown together with the error. Chat synthesis needs `READYHAI_VLLM_URL` (and optionally
 `READYHAI_LLM_MODEL`); without it only retrieval runs.
 
+### 5. Machine-readable output (`--json`)
+```bash
+python -m runners.context_retriever.main query --query "..." --index-dir DIR --no-llm --json
+```
+prints exactly one JSON object, `{"evidence": [{"source", "kind", "summary"}], "synthesis": ..., "llm_error": ...}` (redacted, bounded, no markup), or `{"error": "..."}` with a non-zero exit. This is what ReadyHai's agent reads when a run has a source checkout (`readyhai agent --repo DIR --diff-base REF`): it looks for an index in `$READYHAI_CONTEXT_INDEX`, then `<repo>/.readyhai/context-index`; without one it skips this step with a note. The output is treated as untrusted advisory text (report notes only; it never adds a test case and never changes a verdict). The agent calls it with a timeout (`READYHAI_CONTEXT_TIMEOUT_SECS`, default 60), without the `RH_*_TOKEN` test credentials, and `READYHAI_CONTEXT_RETRIEVER` can point at another program that speaks the same protocol.
+
 ### Tests (no heavy dependencies needed)
 ```bash
 python3 -m unittest discover -s runners/context_retriever/tests -t . -v

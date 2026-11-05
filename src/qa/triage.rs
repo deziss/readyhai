@@ -34,6 +34,13 @@ pub fn priority_for(sev: Severity, component: &str) -> Priority {
     }
 }
 
+fn add_member(m: &mut Vec<(String, String)>, rule: &str, fp_key: &str) {
+    let k = (rule.to_string(), fp_key.to_string());
+    if !m.contains(&k) {
+        m.push(k);
+    }
+}
+
 fn merge_into(a: &mut Defect, b: Defect) {
     for c in b.cases {
         if !a.cases.contains(&c) {
@@ -83,6 +90,8 @@ pub fn triage(col: &mut QaCollector) {
     let old = std::mem::take(&mut col.defects);
     // (old id, new key) so results can be re-linked.
     let mut id_map: Vec<(String, usize)> = vec![];
+    // (rule, fp_key) of every raw defect folded into ds[i], the survivor's own included.
+    let mut members: Vec<Vec<(String, String)>> = vec![];
 
     // 1. dedupe by (rule, component) [+ fp_key for per-item rules]
     let mut by_key: BTreeMap<(String, String, String), usize> = BTreeMap::new();
@@ -99,11 +108,13 @@ pub fn triage(col: &mut QaCollector) {
         );
         let old_id = d.id.clone();
         if let Some(&i) = by_key.get(&key) {
+            add_member(&mut members[i], &d.rule, &d.fp_key);
             merge_into(&mut ds[i], d);
             id_map.push((old_id, i));
         } else {
             by_key.insert(key, ds.len());
             id_map.push((old_id, ds.len()));
+            members.push(vec![(d.rule.clone(), d.fp_key.clone())]);
             ds.push(d);
         }
     }
@@ -129,6 +140,9 @@ pub fn triage(col: &mut QaCollector) {
         let comps: Vec<String> = idxs.iter().map(|i| ds[*i].component.clone()).collect();
         for &i in &idxs[1..] {
             let d = ds[i].clone();
+            for (r, k) in members[i].clone() {
+                add_member(&mut members[head], &r, &k);
+            }
             merge_into(&mut ds[head], d);
             dead[i] = true;
             redirect[i] = head;
@@ -141,7 +155,8 @@ pub fn triage(col: &mut QaCollector) {
             comps.join(", ")
         );
         h.component = comps.join(", ");
-        // fp_key stays the first member's, so the fingerprint still matches its Finding.
+        // fp_key stays the first member's, so the fingerprint still matches its Finding; the other
+        // members' fingerprints are kept in `members` (see QaCollector::merged).
     }
 
     // 3. priority, ordering, ids
@@ -161,9 +176,12 @@ pub fn triage(col: &mut QaCollector) {
             .then(a.1.rule.cmp(&b.1.rule))
     });
     let mut new_id: BTreeMap<usize, String> = BTreeMap::new();
+    col.merged.clear();
     for (n, (i, d)) in kept.iter_mut().enumerate() {
         d.id = format!("D-{:03}", n + 1);
         new_id.insert(*i, d.id.clone());
+        col.merged
+            .insert(d.id.clone(), std::mem::take(&mut members[*i]));
     }
     let old_to_new: BTreeMap<String, String> = id_map
         .into_iter()
@@ -179,7 +197,7 @@ pub fn triage(col: &mut QaCollector) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::model::{Category, FindingStatus};
 
@@ -345,5 +363,53 @@ mod tests {
         );
         assert_eq!(priority_for(Severity::Medium, "GET /auth/me"), Priority::P2);
         assert_eq!(priority_for(Severity::Info, "GET /a"), Priority::P4);
+    }
+
+    #[test]
+    fn merged_groups_keep_every_members_identity() {
+        let mut c = QaCollector::default();
+        for p in ["/a", "/b", "/c"] {
+            let mut d = defect(
+                "qa.api.server_error",
+                &format!("GET {p}"),
+                Severity::High,
+                "HTTP 500 (alice); body: [python_traceback] KeyError: 'x'",
+            );
+            d.fp_key = format!("GET {p}|state");
+            c.defects.push(d);
+        }
+        // same rule + component, two different fp_keys: folded by step 1, both keys kept
+        let mut l1 = defect("qa.api.error_leak", "GET /x", Severity::Low, "trace");
+        l1.fp_key = "GET /x|python".into();
+        let mut l2 = l1.clone();
+        l2.fp_key = "GET /x|java".into();
+        l2.id = "other".into();
+        c.defects.push(l1);
+        c.defects.push(l2);
+        triage(&mut c);
+        assert_eq!(c.defects.len(), 2);
+        let root = c
+            .defects
+            .iter()
+            .find(|d| d.title.starts_with("Same server error on 3"))
+            .unwrap();
+        let keys = &c.merged[&root.id];
+        assert_eq!(keys.len(), 3, "{keys:?}");
+        for p in ["/a", "/b", "/c"] {
+            assert!(
+                keys.contains(&("qa.api.server_error".to_string(), format!("GET {p}|state"))),
+                "{keys:?}"
+            );
+        }
+        let leak = c
+            .defects
+            .iter()
+            .find(|d| d.rule == "qa.api.error_leak")
+            .unwrap();
+        let lk = &c.merged[&leak.id];
+        assert_eq!(lk.len(), 2, "{lk:?}");
+        assert!(
+            lk.iter().any(|k| k.1 == "GET /x|python") && lk.iter().any(|k| k.1 == "GET /x|java")
+        );
     }
 }

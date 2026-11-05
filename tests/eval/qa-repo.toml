@@ -1,0 +1,50 @@
+# Suite: static scan of tests/fixtures/qa-repo with the QA suite/release checks (no network, no
+# docker). The seeded defects are listed in tests/fixtures/qa-repo/EXPECTED.md.
+name = "qa-repo"
+kind = "repo"
+description = "QA suite and release checks vs the seeded defects of the qa-repo fixture"
+# Only the senior-QA suite/release findings are scored; the generic readiness.* findings the same
+# scan produces (Dockerfile, CI, deps) are not what this suite measures.
+observe_prefix = "qa."
+
+[target]
+path = "tests/fixtures/qa-repo"
+profile = "standard"
+
+[thresholds]
+min_recall = 0.85
+max_false_positives = 2
+pass_k = true
+stable_verdict = true
+max_seconds = 60
+
+[[expect]]
+id = "low-coverage"
+rule = "qa.suite.low_coverage"
+note = "overall coverage 42% is under 60%"
+
+[[expect]]
+id = "critical-uncovered"
+rule = "qa.suite.critical_uncovered"
+note = "app/auth.py is at 0%"
+
+[[expect]]
+id = "untested-routes"
+rule = "qa.suite.untested_routes"
+note = "/health, /orders/{id}, /admin/stats are never referenced by a test"
+
+[[expect]]
+id = "test-smells"
+rule = "qa.suite.test_smells"
+note = "a test without assert, a skipped test, a sleep >= 1s"
+
+[[expect]]
+id = "eol-runtime"
+rule = "qa.release.eol_runtime"
+note = "Dockerfile uses python:3.8, which is end of life"
+
+[[expect]]
+id = "migration-failure"
+rule = "qa.release.migration_failure"
+optional = true
+note = "alembic downgrade raises NotImplementedError; only found with a [test] image, i.e. docker"

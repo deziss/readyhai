@@ -3,7 +3,10 @@
 use crate::checks::Check;
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, CheckStatus, Finding, Profile, Severity, TargetKind};
-use crate::tools::{ToolSpec, gate, missing_image, partial, read_out, tool_failed};
+use crate::tools::{
+    ToolSpec, gate, is_oversize, missing_image, out_err, partial, read_out, read_text_capped,
+    tool_failed,
+};
 use anyhow::Result;
 use regex::Regex;
 use serde_json::Value;
@@ -328,6 +331,8 @@ fn osv_reachability(ctx: &Ctx) -> Result<CheckOutput> {
     }
     let txt = match read_out(ctx, "osv.json") {
         Ok(t) => t,
+        // Output too big to read is Partial (via the engine), never "no findings".
+        Err(e) if is_oversize(&e) => return Err(e),
         Err(_) if r.exit_code != 0 => return Err(tool_failed("osv-scanner", &r)),
         Err(_) => "{}".into(),
     };
@@ -459,18 +464,35 @@ pub fn parse_scorecard(json: &str) -> Result<Vec<Finding>> {
     Ok(out)
 }
 
-fn scorecard(ctx: &Ctx) -> Result<CheckOutput> {
-    let Some(dir) = ctx.target.path.as_ref() else {
-        return Ok(CheckOutput::status(CheckStatus::NotApplicable(
-            "no repo path".into(),
-        )));
-    };
-    let slug = std::fs::read_to_string(dir.join(".git").join("config"))
-        .ok()
+/// The GitHub slug a remote clone target was given as: `https://github.com/o/r(.git)`,
+/// `git:<url>`, `git@github.com:o/r.git`. A local path (or any non-GitHub URL) gives `None`.
+pub fn slug_from_target_raw(raw: &str) -> Option<String> {
+    let r = raw.trim();
+    github_slug(r.strip_prefix("git:").unwrap_or(r).trim())
+}
+
+/// Where Scorecard should look: the repo's own `origin` remote when the target is a local checkout,
+/// else the URL a remote target was cloned from. (A remote clone is deleted after the snapshot is
+/// taken, so its `.git/config` is gone by the time checks run: the slug must come from `target.raw`.)
+fn scorecard_slug(ctx: &Ctx) -> Option<String> {
+    ctx.target
+        .path
+        .as_ref()
+        .and_then(|d| read_text_capped(&d.join(".git").join("config"), 1 << 20).ok())
         .as_deref()
         .and_then(remote_url)
         .as_deref()
-        .and_then(github_slug);
+        .and_then(github_slug)
+        .or_else(|| slug_from_target_raw(&ctx.target.raw))
+}
+
+fn scorecard(ctx: &Ctx) -> Result<CheckOutput> {
+    if ctx.target.path.is_none() && slug_from_target_raw(&ctx.target.raw).is_none() {
+        return Ok(CheckOutput::status(CheckStatus::NotApplicable(
+            "no repo path".into(),
+        )));
+    }
+    let slug = scorecard_slug(ctx);
     let Some(slug) = slug else {
         return Ok(CheckOutput::status(CheckStatus::NotApplicable(
             "no github.com git remote".into(),
@@ -510,10 +532,8 @@ fn scorecard(ctx: &Ctx) -> Result<CheckOutput> {
     spec.env = vec![("GITHUB_AUTH_TOKEN".into(), token)];
     let r = ctx.docker.run(ctx, &spec)?;
     // Scorecard exits non-zero when any single check errors but still writes the rest.
-    let txt = match read_out(ctx, "scorecard.json") {
-        Ok(t) => t,
-        Err(_) => return Err(tool_failed("scorecard", &r)),
-    };
+    let txt =
+        read_out(ctx, "scorecard.json").map_err(|e| out_err(e, || tool_failed("scorecard", &r)))?;
     Ok(CheckOutput::findings(parse_scorecard(&txt)?))
 }
 
@@ -690,6 +710,7 @@ fn spectral(ctx: &Ctx) -> Result<CheckOutput> {
     }
     let txt = match read_out(ctx, "spectral.json") {
         Ok(t) => t,
+        Err(e) if is_oversize(&e) => return Err(e),
         Err(_) if r.exit_code != 0 => return Err(tool_failed("spectral", &r)),
         Err(_) => "[]".into(),
     };
@@ -1076,6 +1097,21 @@ mod tests {
         let cfg = "[core]\n\tbare = false\n[remote \"fork\"]\n\turl = https://github.com/a/b\n[remote \"origin\"]\n\turl = git@github.com:o/r.git\n";
         assert_eq!(remote_url(cfg).as_deref(), Some("git@github.com:o/r.git"));
         assert_eq!(remote_url("[core]\n"), None);
+    }
+
+    #[test]
+    fn scorecard_slug_comes_from_the_remote_target_url() {
+        // A remote clone is deleted after the snapshot, so the slug has to come from target.raw.
+        let ok = Some("github.com/o/r".to_string());
+        assert_eq!(slug_from_target_raw("https://github.com/o/r"), ok);
+        assert_eq!(slug_from_target_raw("https://github.com/o/r.git"), ok);
+        assert_eq!(slug_from_target_raw("git:https://github.com/o/r.git"), ok);
+        assert_eq!(slug_from_target_raw("git@github.com:o/r.git"), ok);
+        assert_eq!(slug_from_target_raw("https://tok:x@github.com/o/r"), ok);
+        // not GitHub, or not a remote at all
+        assert_eq!(slug_from_target_raw("https://gitlab.com/o/r.git"), None);
+        assert_eq!(slug_from_target_raw("/targets/my-repo"), None);
+        assert_eq!(slug_from_target_raw("image:nginx:1.27"), None);
     }
 
     #[test]

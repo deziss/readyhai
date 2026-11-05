@@ -319,7 +319,8 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
         return na("no web target");
     };
     let host = crate::scope::url_host(&url)?;
-    let cfg = crate::scope::active().and_then(|s| s.find(&host).and_then(|h| h.resilience.clone()));
+    let cfg =
+        crate::scope::active()?.and_then(|s| s.find(&host).and_then(|h| h.resilience.clone()));
     let Some(cfg) = cfg.filter(|c| !c.services.is_empty()) else {
         return na("needs scope.toml [hosts.resilience] compose_project + services allow-list");
     };

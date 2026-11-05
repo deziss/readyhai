@@ -13,7 +13,8 @@ pub struct Check {
     pub min_profile: Profile,
     /// Container-backed tool name (reported; check is skipped when docker is absent).
     pub tool: Option<String>,
-    /// Intrusive checks need a scope.toml entry tagged nonprod.
+    /// Intrusive checks need `--profile deep` and a nonprod host: a public host not marked
+    /// `env = "prod"` in scope.toml, or an entry listed `env = "nonprod"`.
     pub intrusive: bool,
     /// Senior-QA check: runs only under `readyhai qa`.
     pub qa: bool,

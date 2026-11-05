@@ -483,6 +483,8 @@ fn schemathesis(ctx: &Ctx) -> Result<CheckOutput> {
     let run = ctx.docker.run(ctx, &ts)?;
     let mut findings = vec![];
     let mut parsed_any = false;
+    // Reports over the read cap: skipped, and the check says so (Partial) instead of passing.
+    let mut oversize_notes: Vec<String> = vec![];
     if let Ok(rd) = std::fs::read_dir(ctx.out_dir()) {
         for e in rd.flatten() {
             let p = e.path();
@@ -493,8 +495,13 @@ fn schemathesis(ctx: &Ctx) -> Result<CheckOutput> {
             if !name.to_lowercase().contains("schemathesis") && !name.starts_with("junit") {
                 continue;
             }
-            let Ok(xml) = std::fs::read_to_string(&p) else {
-                continue;
+            let xml = match crate::tools::read_text_capped(&p, crate::tools::MAX_OUT_BYTES) {
+                Ok(x) => x,
+                Err(e) if crate::tools::is_oversize(&e) => {
+                    oversize_notes.push(format!("{e:#}"));
+                    continue;
+                }
+                Err(_) => continue,
             };
             parsed_any = true;
             let details = junit_failure_text(&xml);
@@ -566,14 +573,14 @@ fn schemathesis(ctx: &Ctx) -> Result<CheckOutput> {
             }
         }
     }
-    if !parsed_any && run.exit_code != 0 {
+    if !parsed_any && oversize_notes.is_empty() && run.exit_code != 0 {
         return Ok(CheckOutput::status(CheckStatus::Errored(format!(
             "schemathesis exited {} with no report: {}",
             run.exit_code,
             run.stderr_tail.chars().take(300).collect::<String>()
         ))));
     }
-    Ok(CheckOutput::findings(findings))
+    Ok(crate::tools::partial(oversize_notes, findings))
 }
 
 /// testcase name -> text of its first failure/error element (Schemathesis puts the prose there).
@@ -642,7 +649,12 @@ fn playwright(ctx: &Ctx) -> Result<CheckOutput> {
         Err(e) => return Err(e),
     };
     let path = ctx.out_dir().join("playwright.json");
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let text = match crate::tools::read_text_capped(&path, crate::tools::MAX_OUT_BYTES) {
+        Ok(t) => Some(t),
+        Err(e) if crate::tools::is_oversize(&e) => return Err(e),
+        Err(_) => None,
+    };
+    let Some(text) = text else {
         if is_missing_image(&run.stderr_tail) {
             return Ok(CheckOutput::status(CheckStatus::Skipped(hint.into())));
         }
@@ -828,7 +840,12 @@ fn zap(ctx: &Ctx) -> Result<CheckOutput> {
     ts.timeout_secs = 900;
     let run = ctx.docker.run(ctx, &ts)?;
     let path = ctx.out_dir().join("zap.json");
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let text = match crate::tools::read_text_capped(&path, crate::tools::MAX_OUT_BYTES) {
+        Ok(t) => Some(t),
+        Err(e) if crate::tools::is_oversize(&e) => return Err(e),
+        Err(_) => None,
+    };
+    let Some(text) = text else {
         return Ok(CheckOutput::status(CheckStatus::Errored(format!(
             "ZAP produced no report (exit {}): {}",
             run.exit_code,

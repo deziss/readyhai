@@ -1,0 +1,50 @@
+# Suite: change-aware agent planning. The agent is given a source repository and a base ref
+# (`repo`, `diff_base`) next to the spec, and must test what the diff changed.
+#
+# The harness builds the repository from tests/fixtures/qa-api-src: commit 1 is the whole service
+# (one handler file per route group), commit 2 is the PR, which touches app/search.py and the
+# changelog. `git diff base...HEAD` therefore maps to one operation, GET /search, whose seeded bug
+# (bug 4 of the qa-api server: a quote in q answers 500 with a traceback) the run must find.
+#
+# The profile is `quick`: without a diff it plans no spec case at all (only the crawl baseline),
+# so everything this run sends to the API comes from the change. The other six seeded bugs live
+# on routes the PR did not touch and are NOT expected here (the `agent-api` suite covers them);
+# a defect on any other route would be a false positive. The gate is CONDITIONAL_GO: one high
+# defect (error disclosure) and no critical one.
+name = "agent-diff"
+kind = "agent"
+description = "A PR that touches one route: the agent plans that operation first, in full, and finds its bug"
+expect_verdict = "CONDITIONAL_GO"
+
+[target]
+server = "tests/fixtures/qa-api/server.py"
+spec = "tests/fixtures/qa-api/openapi.json"
+profile = "quick"
+max_steps = 50
+
+[target.repo]
+commits = ["tests/fixtures/qa-api-src/base", "tests/fixtures/qa-api-src/change"]
+
+[target.tokens]
+alice = "alice-token"
+bob = "bob-token"
+admin = "admin-token"
+
+[change]
+operations = ["GET /search"]
+planned_first = true
+min_sent = 1.0
+
+[thresholds]
+min_recall = 0.85
+max_false_positives = 0
+pass_k = true
+stable_verdict = true
+max_requests = 40
+max_seconds = 30
+
+[[expect]]
+id = "traceback-leak"
+rule = "server_error"
+component = "/search"
+note = "bug 4: q=' -> 500 with a traceback, found by the injection cases planned for the changed GET /search"

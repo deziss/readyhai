@@ -114,6 +114,34 @@ pub fn html(run: &Run) -> Result<String> {
     Ok(env.get_template("report.html.j2")?.render(ctx)?)
 }
 
+/// `GET /x`, `POST /orders/{id}`, `GET /a, GET /b`: an HTTP operation, not a file.
+fn is_component(loc: &str) -> bool {
+    const M: [&str; 7] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+    loc.split_once(' ')
+        .is_some_and(|(m, rest)| M.contains(&m) && rest.trim_start().starts_with(['/', '{', '*']))
+}
+
+/// Percent-escape what a URI reference may not contain (spaces, quotes, `<>`, `{}`, controls,
+/// non-ASCII, a stray `%`); everything else (including `?#&=:/@[]`) is kept as is.
+fn uri_escape(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut o = String::with_capacity(s.len());
+    for (i, &c) in b.iter().enumerate() {
+        let keep = c.is_ascii_alphanumeric()
+            || b"-._~:/?#[]@!$&'()*+,;=".contains(&c)
+            || (c == b'%'
+                && i + 2 < b.len()
+                && b[i + 1].is_ascii_hexdigit()
+                && b[i + 2].is_ascii_hexdigit());
+        if keep {
+            o.push(c as char);
+        } else {
+            o.push_str(&format!("%{c:02X}"));
+        }
+    }
+    o
+}
+
 pub fn sarif(run: &Run) -> Value {
     let mut rule_ids: Vec<&str> = vec![];
     let mut rules = vec![];
@@ -133,23 +161,33 @@ pub fn sarif(run: &Run) -> Value {
                 _ => "note",
             };
             let is_url = f.location.contains("://");
-            let mut phys = json!({"artifactLocation": {"uri": f.path()}});
-            if !is_url {
+            // `location` is also a QA component ("GET /x", "GET /a, GET /b") or a journey name:
+            // never a valid artifact URI. Those go to logicalLocations (and the message), file
+            // paths and URLs to physicalLocation with every illegal URI character escaped.
+            let component = !is_url && is_component(&f.location);
+            let location = if component {
+                json!({"logicalLocations": [{"name": f.location, "kind": "member"}]})
+            } else if is_url {
+                json!({"physicalLocation": {"artifactLocation": {"uri": uri_escape(&f.location)}}})
+            } else {
+                let mut phys = json!({"artifactLocation": {"uri": uri_escape(f.path())}});
                 if let Some((_, l)) = f.location.rsplit_once(':')
                     && let Ok(n) = l.parse::<u64>()
                 {
                     phys["region"] = json!({"startLine": n});
                 }
-            } else {
-                phys = json!({"artifactLocation": {"uri": f.location}});
-            }
+                json!({"physicalLocation": phys})
+            };
             let mut text = f.title.clone();
             if !f.detail.is_empty() {
                 text = format!("{}: {}", f.title, f.detail);
             }
+            if component {
+                text = format!("{text} [{}]", f.location);
+            }
             let mut r = json!({
                 "ruleId": f.rule, "level": level, "message": {"text": text},
-                "locations": [{"physicalLocation": phys}],
+                "locations": [location],
                 "partialFingerprints": {"readyhai/v1": f.fingerprint},
                 "properties": {"severity": f.severity.as_str(), "category": f.category.as_str(),
                     "status": status_str(f.status), "kev": f.kev, "epss": f.epss},
@@ -484,5 +522,80 @@ mod tests {
         assert_eq!(x.matches("<error ").count(), 1);
         assert_eq!(x.matches("<skipped").count(), 2);
         assert!(!x.contains("<script>"));
+    }
+
+    #[test]
+    fn sarif_artifact_uris_are_valid_for_qa_components_and_odd_paths() {
+        let mk = |loc: &str| {
+            let mut f = Finding::new(
+                "qa.api.functional",
+                "qa.api.bola",
+                Category::Security,
+                Severity::High,
+                "BOLA on the order",
+                loc,
+            );
+            f.finalize();
+            f
+        };
+        let mut run = sample();
+        run.findings = vec![
+            mk("GET /orders/{id}"),
+            mk("GET /a, GET /b, GET /c"),
+            mk("docs/my report.md:7"),
+            mk("src/a.rs:12"),
+            mk("http://h/x y?q=<1>"),
+            mk("login"),
+        ];
+        let s = sarif(&run);
+        let r = s["runs"][0]["results"].as_array().unwrap();
+        // an operation is a logical location + named in the message, never an artifact URI
+        for i in [0, 1] {
+            let loc = &r[i]["locations"][0];
+            assert!(loc.get("physicalLocation").is_none(), "{loc}");
+            assert_eq!(
+                loc["logicalLocations"][0]["name"],
+                run.findings[i].location.as_str()
+            );
+            assert!(
+                r[i]["message"]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&run.findings[i].location)
+            );
+        }
+        // every artifact URI that IS emitted is a legal URI reference
+        let legal = |u: &str| {
+            u.bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"-._~:/?#[]@!$&'()*+,;=%".contains(&c))
+                && !u.contains(' ')
+        };
+        for x in r {
+            if let Some(u) =
+                x["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].as_str()
+            {
+                assert!(legal(u), "invalid artifact uri {u:?}");
+            }
+        }
+        let uri = |i: usize| {
+            r[i]["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(uri(2), "docs/my%20report.md");
+        assert_eq!(
+            r[2]["locations"][0]["physicalLocation"]["region"]["startLine"],
+            7
+        );
+        assert_eq!(uri(3), "src/a.rs");
+        assert_eq!(uri(4), "http://h/x%20y?q=%3C1%3E");
+        assert_eq!(uri(5), "login");
+        // a path that was already percent-encoded is not double-encoded
+        assert_eq!(uri_escape("a%20b"), "a%20b");
+        assert_eq!(uri_escape("100%"), "100%25");
+        assert!(
+            is_component("POST /x") && !is_component("src/GET /x") && !is_component("GETTING /x")
+        );
     }
 }

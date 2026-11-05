@@ -3,8 +3,12 @@ use super::spec::{Op, Spec};
 use super::synth::{flatten, schema_type};
 use regex::Regex;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
+
+/// What a spec documents per response of one operation: status ("200", "2XX", "default") to the
+/// JSON schema of the body (None when the response has no JSON content).
+pub type Responses = BTreeMap<String, Option<Value>>;
 
 fn type_ok(t: &str, v: &Value) -> bool {
     match t {
@@ -143,19 +147,38 @@ pub fn normalize_mismatch(m: &str) -> String {
 }
 
 /// Schema for a status code: exact, then "2XX", then "default".
-pub fn schema_for(op: &Op, status: u16) -> Option<Option<&Value>> {
+pub fn schema_in(responses: &Responses, status: u16) -> Option<Option<&Value>> {
     let exact = status.to_string();
     let class = format!("{}XX", status / 100);
     for k in [exact.as_str(), class.as_str(), "DEFAULT"] {
-        if let Some(s) = op.responses.get(k) {
+        if let Some(s) = responses.get(k) {
             return Some(s.as_ref());
         }
     }
     None
 }
 
-pub fn status_documented(op: &Op, status: u16) -> bool {
-    op.responses.is_empty() || schema_for(op, status).is_some()
+/// `status` is documented, or the spec documents no response at all.
+pub fn documented_in(responses: &Responses, status: u16) -> bool {
+    responses.is_empty() || schema_in(responses, status).is_some()
+}
+
+/// A status the spec does not document. 401/403 (auth layer), 429 (rate limit) and 5xx (reported
+/// as server errors) are never the operation's own contract, so they never count.
+pub fn undocumented(responses: &Responses, status: u16) -> bool {
+    !documented_in(responses, status) && !matches!(status, 401 | 403 | 429) && status < 500
+}
+
+/// First mismatch ("$.path: message") of a 2xx JSON body against the schema the spec documents
+/// for `status`. None when the body conforms or the spec documents no schema for the status.
+pub fn schema_mismatch(responses: &Responses, status: u16, body: &Value) -> Option<String> {
+    if !(200..300).contains(&status) {
+        return None;
+    }
+    let Some(Some(schema)) = schema_in(responses, status) else {
+        return None;
+    };
+    validate(schema, body, "$")
 }
 
 /// HTML attribute values (`href="/home/x"`) are navigation, never an error disclosure.
@@ -167,8 +190,9 @@ fn strip_attrs(body: &str) -> std::borrow::Cow<'_, str> {
     .replace_all(body, "")
 }
 
-/// Returns the leak label if the body shows an internal error disclosure. Callers only run it on
-/// error responses (status >= 400); the patterns still avoid prose and navigation links.
+/// Returns the leak label if the body shows an internal error disclosure. The QA engine only runs
+/// it on error responses (status >= 400); the patterns avoid prose and navigation links either way.
+/// [`leak_description`] words a label for a report.
 pub fn leak_kind(body: &str) -> Option<&'static str> {
     static R: OnceLock<Vec<(&'static str, Regex)>> = OnceLock::new();
     let rs = R.get_or_init(|| {
@@ -186,6 +210,10 @@ pub fn leak_kind(body: &str) -> Option<&'static str> {
             ("java_thread", r#"Exception in thread ""#),
             // a `stackTrace` / `stack_trace` JSON key, or a "Stack trace:" heading; not the words in prose
             ("stack_trace", r#"(?i)"stack_?trace"\s*:|(?m)^\s*stack ?trace\s*:"#),
+            ("sql_error", r"(?i)(?:error in your sql syntax|sqlite3?\.(?:operational|programming|integrity)error|unrecognized token|pg::\w+error|psycopg2\.\w+|unclosed quotation mark)"),
+            ("php_error", r"(?i)\b(?:fatal error|warning|notice|parse error)\b: .{0,160} on line \d+"),
+            ("runtime_panic", r"(?i)panicked at|goroutine \d+ \["),
+            ("exception_trace", r"(?i)java\.lang\.\w+exception|system\.\w+exception"),
             // absolute source paths of the server (not "/home/" nav links)
             ("server_path", r#"(?:^|[\s"'(=:])(?:/home/[\w.-]+|/usr/src|/usr/local/lib|/var/www|/opt|/srv|/app|/workspace|/root)/[\w./@+-]*\.(?:py|rb|php|js|ts|java|go|rs|cs|kt|scala|jar)\b"#),
             ("server_path", r"[A-Za-z]:\\(?:[\w .-]+\\)+[\w.-]+\.(?:py|cs|java|js|ts|rb|php)\b"),
@@ -196,6 +224,23 @@ pub fn leak_kind(body: &str) -> Option<&'static str> {
     });
     let body = strip_attrs(body);
     rs.iter().find(|(_, r)| r.is_match(&body)).map(|x| x.0)
+}
+
+/// A leak label from [`leak_kind`] in words ("a Python stack trace").
+pub fn leak_description(kind: &str) -> &'static str {
+    match kind {
+        "python_traceback" | "python_file" => "a Python stack trace",
+        "java_frame" => "a Java stack trace",
+        "node_frame" => "a Node.js stack trace",
+        "dotnet_frame" => "a .NET stack trace",
+        "sqlstate" | "oracle" | "sql_error" => "a SQL error",
+        "java_thread" | "exception_trace" => "an exception trace",
+        "stack_trace" => "a stack trace",
+        "php_error" => "a PHP error",
+        "runtime_panic" => "a runtime panic",
+        "server_path" => "an internal file path",
+        _ => "internal error details",
+    }
 }
 
 /// Short, volatile-free fingerprint of an error body for root-cause grouping: the first
@@ -407,6 +452,83 @@ mod tests {
         assert_eq!(leak_kind(html), None);
         assert_eq!(leak_kind("Visit /home/ or /usr/src/ for more"), None);
         assert_eq!(leak_kind("arrived at home.page(1)"), None);
+    }
+
+    #[test]
+    fn leak_labels_cover_sql_php_panic_and_exceptions_and_have_words() {
+        for (body, kind, words) in [
+            (
+                "You have an error in your SQL syntax near",
+                "sql_error",
+                "a SQL error",
+            ),
+            (
+                "sqlite3.OperationalError: unrecognized token",
+                "sql_error",
+                "a SQL error",
+            ),
+            (
+                "Fatal error: Uncaught x in a.php on line 4",
+                "php_error",
+                "a PHP error",
+            ),
+            (
+                "panic: x\ngoroutine 1 [running]:",
+                "runtime_panic",
+                "a runtime panic",
+            ),
+            (
+                "java.lang.NullPointerException: x",
+                "exception_trace",
+                "an exception trace",
+            ),
+        ] {
+            assert_eq!(leak_kind(body), Some(kind), "{body}");
+            assert_eq!(leak_description(kind), words);
+        }
+        assert_eq!(leak_description("python_file"), "a Python stack trace");
+        assert_eq!(leak_description("something_new"), "internal error details");
+        // the specific label wins over the path it also contains
+        assert_eq!(
+            leak_kind("Fatal error: Uncaught x in /var/www/a.php on line 4"),
+            Some("php_error")
+        );
+    }
+
+    #[test]
+    fn documented_statuses_and_schema_mismatch_work_from_the_response_map_alone() {
+        let order = json!({"type":"object","required":["id","total"],"properties":{
+            "id":{"type":"integer"},"total":{"type":"integer"}}});
+        let mut r = Responses::new();
+        r.insert("200".into(), Some(order));
+        r.insert("404".into(), None);
+        r.insert("4XX".into(), None);
+        assert!(documented_in(&r, 200) && documented_in(&r, 404) && documented_in(&r, 409));
+        assert!(!documented_in(&r, 201));
+        assert!(
+            documented_in(&Responses::new(), 418),
+            "no responses documented: nothing to compare"
+        );
+        // 401/403/429 and 5xx are never "undocumented"
+        for st in [401, 403, 429, 500, 503] {
+            assert!(!undocumented(&r, st), "{st}");
+        }
+        assert!(undocumented(&r, 201) && !undocumented(&r, 404));
+        assert!(undocumented(&r, 302));
+        assert_eq!(
+            schema_mismatch(&r, 200, &json!({"id": 2})).as_deref(),
+            Some("$.total: required property missing")
+        );
+        assert!(schema_mismatch(&r, 200, &json!({"id": 2, "total": 3})).is_none());
+        // a 4xx body and a status without a schema are not validated
+        assert!(schema_mismatch(&r, 404, &json!({})).is_none());
+        assert!(schema_mismatch(&r, 201, &json!({})).is_none());
+        let mut d = Responses::new();
+        d.insert("DEFAULT".into(), Some(json!({"type":"array"})));
+        assert!(
+            schema_mismatch(&d, 200, &json!({})).is_some(),
+            "default covers 2xx"
+        );
     }
 
     #[test]

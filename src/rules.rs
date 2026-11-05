@@ -5,7 +5,6 @@ use crate::facts::Facts;
 use crate::model::{Category, CheckOutput, CheckStatus, Finding, Profile, Severity, TargetKind};
 use crate::snapshot::Snapshot;
 use regex::Regex;
-use serde::Deserialize;
 use serde_norway::Value;
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
@@ -32,16 +31,63 @@ fn normalize(p: &str) -> String {
     o.join("/")
 }
 
-/// Reads a snapshot file; denied (placeholder) and oversized files are never read.
-fn read(snap: &Snapshot, rel: &str) -> Option<String> {
+/// Reads a snapshot file; denied (placeholder) and oversized files are never read. The Err says
+/// why, so a check can report the file it could not analyse instead of silently passing it.
+fn read_checked(snap: &Snapshot, rel: &str) -> Result<String, String> {
     if snap.denied.iter().any(|d| d.path == rel) {
-        return None;
+        return Err("secret-bearing file, deliberately not read".into());
     }
     let p = snap.root.join(rel);
-    if fs::metadata(&p).ok()?.len() > MAX_READ {
-        return None;
+    let len = fs::metadata(&p)
+        .map_err(|e| format!("cannot stat: {e}"))?
+        .len();
+    if len > MAX_READ {
+        return Err(format!(
+            "{len} bytes exceeds the {MAX_READ}-byte read limit"
+        ));
     }
-    Some(String::from_utf8_lossy(&fs::read(p).ok()?).into_owned())
+    let bytes = fs::read(&p).map_err(|e| format!("cannot read: {e}"))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn read(snap: &Snapshot, rel: &str) -> Option<String> {
+    read_checked(snap, rel).ok()
+}
+
+/// Files a check could not read or parse: "<file>: <why>". A check with any of these ends
+/// Partial (naming them), never Passed, because the unread file may hold the finding.
+#[derive(Default)]
+struct Skips(Vec<String>);
+
+impl Skips {
+    fn add(&mut self, file: &str, why: impl std::fmt::Display) {
+        self.0.push(format!("{file}: {why}"));
+    }
+
+    fn finish(self, findings: Vec<Finding>) -> CheckOutput {
+        if self.0.is_empty() {
+            return CheckOutput::findings(findings);
+        }
+        let n = self.0.len();
+        let shown = self
+            .0
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        let more = if n > 5 {
+            format!("; ... {} more", n - 5)
+        } else {
+            String::new()
+        };
+        CheckOutput {
+            status: Some(CheckStatus::Partial(format!(
+                "{n} file(s) could not be fully analysed: {shown}{more}"
+            ))),
+            findings,
+        }
+    }
 }
 
 // ---------- dependency parsing ----------
@@ -92,10 +138,9 @@ fn req_deps(text: &str) -> Vec<Dep> {
     v
 }
 
-fn pkg_deps(text: &str) -> Vec<Dep> {
-    let Ok(j) = serde_json::from_str::<serde_json::Value>(text) else {
-        return vec![];
-    };
+fn pkg_deps(text: &str) -> Result<Vec<Dep>, String> {
+    let j = serde_json::from_str::<serde_json::Value>(text)
+        .map_err(|e| format!("invalid JSON: {e}"))?;
     let exact = Regex::new(r"^=?v?\d+\.\d+\.\d+([-+][\w.+-]*)?$").unwrap();
     let mut v = vec![];
     for sect in ["dependencies", "devDependencies", "optionalDependencies"] {
@@ -123,17 +168,15 @@ fn pkg_deps(text: &str) -> Vec<Dep> {
             });
         }
     }
-    v
+    Ok(v)
 }
 
-fn manifest_deps(snap: &Snapshot, rel: &str) -> Vec<Dep> {
-    let Some(t) = read(snap, rel) else {
-        return vec![];
-    };
+fn manifest_deps(snap: &Snapshot, rel: &str) -> Result<Vec<Dep>, String> {
+    let t = read_checked(snap, rel)?;
     if base(rel) == "package.json" {
         pkg_deps(&t)
     } else {
-        req_deps(&t)
+        Ok(req_deps(&t))
     }
 }
 
@@ -154,18 +197,65 @@ const LOCKFILES: &[&str] = &[
 const TEST_DIRS: &[&str] = &["tests", "test", "__tests__", "spec"];
 const SRC_EXT: &[&str] = &["py", "js", "ts", "mjs", "cjs", "go", "java"];
 
-fn k8s_docs(text: &str) -> Vec<Value> {
-    let mut out = vec![];
-    for d in serde_norway::Deserializer::from_str(text) {
-        match Value::deserialize(d) {
+fn has_yaml_content(chunk: &str) -> bool {
+    chunk
+        .lines()
+        .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+}
+
+/// YAML documents of `text` split on `---` / `...` markers, each with its 1-based start line.
+/// Blank and comment-only chunks are not documents.
+fn split_yaml_docs(text: &str) -> Vec<(usize, String)> {
+    let mut docs: Vec<(usize, String)> = vec![];
+    let (mut cur, mut start) = (String::new(), 1usize);
+    for (i, l) in text.lines().enumerate() {
+        let marker = |m: &str| {
+            l == m
+                || l.strip_prefix(m)
+                    .is_some_and(|r| r.starts_with([' ', '\t']))
+        };
+        if marker("---") || marker("...") {
+            if has_yaml_content(&cur) {
+                docs.push((start, std::mem::take(&mut cur)));
+            }
+            cur.clear();
+            start = i + 2;
+            // `--- key: v` keeps its content as the first line of the next document
+            let rest = l[3..].trim();
+            if marker("---") && !rest.is_empty() && !rest.starts_with('#') {
+                cur.push_str(rest);
+                cur.push('\n');
+                start = i + 1;
+            }
+            continue;
+        }
+        cur.push_str(l);
+        cur.push('\n');
+    }
+    if has_yaml_content(&cur) {
+        docs.push((start, cur));
+    }
+    docs
+}
+
+/// Every parseable document of a multi-document YAML file, plus one error line per document that
+/// does not parse ("document N (line L): why"). A bad document never hides the ones after it.
+fn k8s_docs_checked(text: &str) -> (Vec<Value>, Vec<String>) {
+    let (mut out, mut errs) = (vec![], vec![]);
+    for (n, (line, chunk)) in split_yaml_docs(text).into_iter().enumerate() {
+        match serde_norway::from_str::<Value>(&chunk) {
             Ok(mut v) => {
                 v.apply_merge().ok();
                 out.push(v)
             }
-            Err(_) => break,
+            Err(e) => errs.push(format!("document {} (line {line}): {e}", n + 1)),
         }
     }
-    out
+    (out, errs)
+}
+
+fn k8s_docs(text: &str) -> Vec<Value> {
+    k8s_docs_checked(text).0
 }
 
 pub fn detect_facts(snap: &Snapshot) -> Facts {
@@ -247,7 +337,7 @@ pub fn detect_facts(snap: &Snapshot) -> Facts {
     let mut names: BTreeSet<String> = BTreeSet::new();
     let tok = Regex::new(r"[a-z0-9_@/.\-]+").unwrap();
     for rel in f.requirement_files.iter().chain(&f.package_jsons) {
-        let deps = manifest_deps(snap, rel);
+        let deps = manifest_deps(snap, rel).unwrap_or_default(); // deps_check reports the failure
         f.total_deps += deps.len();
         f.unpinned_deps += deps.iter().filter(|d| !d.pinned).count();
         names.extend(deps.into_iter().map(|d| d.name.to_lowercase()));
@@ -460,10 +550,20 @@ fn dockerfile_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
         Finding::new(C, &format!("{C}.{r}"), cat, sev, title, loc)
     };
     let mut out = vec![];
+    let mut skips = Skips::default();
     for df in &ctx.facts.dockerfiles {
-        let Some(text) = read(snap, df) else { continue };
+        let text = match read_checked(snap, df) {
+            Ok(t) => t,
+            Err(why) => {
+                skips.add(df, why);
+                continue;
+            }
+        };
         let stages = parse_stages(&text);
-        let Some(last) = stages.last() else { continue };
+        let Some(last) = stages.last() else {
+            skips.add(df, "no FROM instruction found, nothing to analyse");
+            continue;
+        };
         let user = last
             .instrs
             .iter()
@@ -541,7 +641,7 @@ fn dockerfile_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
             );
         }
     }
-    CheckOutput::findings(out)
+    skips.finish(out)
 }
 
 // ---------- readiness.deps ----------
@@ -576,8 +676,15 @@ fn deps_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
         }
     }
     let mut out = vec![];
+    let mut skips = Skips::default();
     for rel in fc.requirement_files.iter().chain(&fc.package_jsons) {
-        let deps = manifest_deps(snap, rel);
+        let deps = match manifest_deps(snap, rel) {
+            Ok(d) => d,
+            Err(why) => {
+                skips.add(rel, why);
+                continue;
+            }
+        };
         if deps.is_empty() {
             continue;
         }
@@ -682,7 +789,7 @@ fn deps_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
             );
         }
     }
-    CheckOutput::findings(out)
+    skips.finish(out)
 }
 
 // ---------- readiness.compose ----------
@@ -741,12 +848,21 @@ fn compose_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
     }
     let url_re = Regex::new(r#"https?://[^/\s'"]+(/[^\s'"]*)?"#).unwrap();
     let mut out = vec![];
+    let mut skips = Skips::default();
     for file in &ctx.facts.compose_files {
-        let Some(text) = read(snap, file) else {
-            continue;
+        let text = match read_checked(snap, file) {
+            Ok(t) => t,
+            Err(why) => {
+                skips.add(file, why);
+                continue;
+            }
         };
-        let Ok(mut root) = serde_norway::from_str::<Value>(&text) else {
-            continue;
+        let mut root = match serde_norway::from_str::<Value>(&text) {
+            Ok(r) => r,
+            Err(e) => {
+                skips.add(file, format!("YAML parse error: {e}"));
+                continue;
+            }
         };
         root.apply_merge().ok();
         let Some(services) = root.get("services").and_then(Value::as_mapping) else {
@@ -931,7 +1047,7 @@ fn compose_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
             }
         }
     }
-    CheckOutput::findings(out)
+    skips.finish(out)
 }
 
 // ---------- readiness.k8s ----------
@@ -961,13 +1077,23 @@ fn k8s_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
         return na("no Kubernetes manifests");
     }
     let mut out = vec![];
+    let mut skips = Skips::default();
     for file in &ctx.facts.k8s_files {
-        let Some(text) = read(snap, file) else {
-            continue;
+        let text = match read_checked(snap, file) {
+            Ok(t) => t,
+            Err(why) => {
+                skips.add(file, why);
+                continue;
+            }
         };
         // Low-severity, highly repetitive rules: one finding per file listing the objects.
         let mut grouped: std::collections::BTreeMap<&'static str, Vec<String>> = Default::default();
-        for doc in k8s_docs(&text) {
+        // a document that does not parse is named, and the documents after it are still checked
+        let (docs, doc_errors) = k8s_docs_checked(&text);
+        for e in doc_errors {
+            skips.add(file, e);
+        }
+        for doc in docs {
             let kind = str_of(doc.get("kind"));
             let name = str_of(path(&doc, &["metadata", "name"]));
             if kind == "Secret"
@@ -1121,12 +1247,119 @@ fn k8s_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
             );
         }
     }
-    CheckOutput::findings(out)
+    skips.finish(out)
 }
 
 // ---------- readiness.ci ----------
 
-const SCANNERS: &str = "trivy|grype|snyk|semgrep|gitleaks|trufflehog|bandit|sonar|osv-scanner|dependency-check|pip-audit|npm audit|detect-secrets|ggshield|checkmarx|codeql|opengrep|readyhai";
+/// Scanner names. `readyhai` counts only as an actual `readyhai scan` invocation: the bare word
+/// (a comment-free `name: readyhai`, `pip install readyhai`, a repo name) proves no scan runs.
+const SCANNERS: &str = r"trivy|grype|snyk|semgrep|gitleaks|trufflehog|bandit|sonar|osv-scanner|dependency-check|pip-audit|npm audit|detect-secrets|ggshield|checkmarx|codeql|opengrep|readyhai(?:\.exe)?\s+scan";
+
+/// The real readyhai scan step: `readyhai scan ...` on one line, without `--no-tools` (which
+/// turns the SAST / secret / dependency scanners off).
+fn runs_readyhai_scan(all_lower: &str) -> bool {
+    let rs = Regex::new(r"\breadyhai(?:\.exe)?\s+scan\b").unwrap();
+    all_lower
+        .lines()
+        .any(|l| rs.is_match(l) && !l.contains("--no-tools"))
+}
+
+fn indent(l: &str) -> usize {
+    l.len() - l.trim_start().len()
+}
+
+fn blank_or_comment(l: &str) -> bool {
+    let t = l.trim();
+    t.is_empty() || t.starts_with('#') || t.starts_with("//")
+}
+
+fn is_item_start(l: &str) -> bool {
+    let t = l.trim_start();
+    t == "-" || t.starts_with("- ")
+}
+
+/// Lines `[start, end)` of the YAML list item (`- ...`, a GitHub Actions step) holding line `i`.
+fn enclosing_item(lines: &[&str], i: usize) -> Option<(usize, usize)> {
+    let at = indent(lines[i]);
+    let s = (0..=i).rev().find(|&j| {
+        !blank_or_comment(lines[j]) && is_item_start(lines[j]) && (j == i || indent(lines[j]) < at)
+    })?;
+    let si = indent(lines[s]);
+    let e = (s + 1..lines.len())
+        .find(|&k| !blank_or_comment(lines[k]) && indent(lines[k]) <= si)
+        .unwrap_or(lines.len());
+    // the nearest dash must really enclose the line (nothing at its own indent in between)
+    (i < e).then_some((s, e))
+}
+
+/// A parent key of line `i` (a line with a smaller indent than `below`), nearest first.
+fn parent_key(lines: &[&str], i: usize, below: usize) -> Option<usize> {
+    (0..i)
+        .rev()
+        .find(|&j| !blank_or_comment(lines[j]) && indent(lines[j]) < below)
+}
+
+/// Does a DIRECT child of the key at line `p` (a job: `continue-on-error: true`, `allow_failure:
+/// true`) say the job can never fail the pipeline?
+fn child_never(lines: &[&str], p: usize, never_key: &Regex) -> bool {
+    let pi = indent(lines[p]);
+    let Some(first) = (p + 1..lines.len()).find(|&k| !blank_or_comment(lines[k])) else {
+        return false;
+    };
+    let ci = indent(lines[first]);
+    if ci <= pi {
+        return false;
+    }
+    for line in lines.iter().skip(p + 1) {
+        if blank_or_comment(line) {
+            continue;
+        }
+        let ik = indent(line);
+        if ik <= pi {
+            break;
+        }
+        if ik == ci && never_key.is_match(line.trim()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Why the scanner on line `i` can never fail the pipeline, beyond its own line: a
+/// `continue-on-error: true` / `allow_failure: true` in the same step (list item), or on one of
+/// the jobs / keys that enclose it. GitHub Actions and GitLab CI both put these on separate lines.
+fn never_fails_nearby(
+    lines: &[&str],
+    i: usize,
+    never_key: &Regex,
+) -> Option<(usize, &'static str)> {
+    let item = enclosing_item(lines, i);
+    if let Some((s, e)) = item
+        && (s..e).any(|k| {
+            !blank_or_comment(lines[k])
+                && never_key.is_match(lines[k].trim().trim_start_matches("- "))
+        })
+    {
+        return Some((s, "in the same step"));
+    }
+    let mut below = item
+        .map(|(s, _)| indent(lines[s]))
+        .unwrap_or(indent(lines[i]));
+    let mut at = item.map(|(s, _)| s).unwrap_or(i);
+    for _ in 0..6 {
+        let p = parent_key(lines, at, below)?;
+        if child_never(lines, p, never_key) {
+            return Some((p, "on the enclosing job"));
+        }
+        below = indent(lines[p]);
+        at = p;
+        if below == 0 {
+            break;
+        }
+    }
+    None
+}
 
 fn ci_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
     const C: &str = "readiness.ci";
@@ -1147,18 +1380,35 @@ fn ci_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
         ]);
     }
     let scan = Regex::new(&format!("(?i)({SCANNERS})")).unwrap();
-    let never =
-        Regex::new(r"(?i)(--exit-code[= ]0\b|\|\|\s*true|--soft-fail|continue-on-error:\s*true)")
-            .unwrap();
+    // scanner and failure-swallowing on ONE line
+    let never = Regex::new(
+        r"(?i)(--exit-code[= ]0\b|\|\|\s*true|--soft-fail|continue-on-error:\s*true|allow_failure:\s*true)",
+    )
+    .unwrap();
+    // ... or on its own line elsewhere in the step / job (GitHub Actions, GitLab CI)
+    let never_key = Regex::new(
+        r#"(?i)^(continue-on-error|allow_failure)\s*:\s*['"]?(true|yes|on)['"]?\s*(#.*)?$"#,
+    )
+    .unwrap();
     let guard = Regex::new(&format!(
-        r"(?i)(command\s+-v|which|type\s+-p|hash)\s+({SCANNERS})"
+        r"(?i)(command\s+-v|which|type\s+-p|hash)\s+({SCANNERS}|readyhai)"
     ))
     .unwrap();
     let mut all = String::new();
     let mut out = vec![];
+    let mut skips = Skips::default();
     for f in ci {
-        let Some(t) = read(snap, f) else { continue };
-        for (i, l) in t.lines().enumerate() {
+        let t = match read_checked(snap, f) {
+            Ok(t) => t,
+            Err(why) => {
+                skips.add(f, why);
+                continue;
+            }
+        };
+        let lines: Vec<&str> = t.lines().collect();
+        // (step/item start) already reported for a multi-line "never fails"
+        let mut reported: HashSet<usize> = HashSet::new();
+        for (i, l) in lines.iter().enumerate() {
             let tr = l.trim();
             if tr.starts_with('#') || tr.starts_with("//") {
                 continue;
@@ -1167,7 +1417,16 @@ fn ci_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
             all.push('\n');
             if scan.is_match(l) {
                 let loc = format!("{f}:{}", i + 1);
-                if never.is_match(l) {
+                let mut never_found = never.is_match(l);
+                let mut why = "on the same line";
+                if !never_found
+                    && let Some((anchor, w)) = never_fails_nearby(&lines, i, &never_key)
+                    && reported.insert(anchor)
+                {
+                    never_found = true;
+                    why = w;
+                }
+                if never_found {
                     out.push(
                         mk(
                             "scanner_never_fails",
@@ -1176,8 +1435,9 @@ fn ci_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
                             "Security scanner can never fail the pipeline",
                             loc.clone(),
                         )
+                        .detail(format!("The scanner step is set to ignore its own failure ({why})."))
                         .remediation(
-                            "Remove `|| true` / `--exit-code 0` so findings gate the build.",
+                            "Remove `|| true` / `--exit-code 0` / `continue-on-error: true` / `allow_failure: true` so findings gate the build.",
                         ),
                     );
                 }
@@ -1199,6 +1459,7 @@ fn ci_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
         }
     }
     let files = ci.join(", ");
+    let readyhai_scan = runs_readyhai_scan(&all);
     for (rule, title, words) in [
         (
             "no_sast",
@@ -1211,19 +1472,12 @@ fn ci_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
                 "snyk code",
                 "checkmarx",
                 "opengrep",
-                "readyhai",
             ][..],
         ),
         (
             "no_secret_scan",
             "No secret-scanning stage in CI",
-            &[
-                "gitleaks",
-                "trufflehog",
-                "detect-secrets",
-                "ggshield",
-                "readyhai",
-            ][..],
+            &["gitleaks", "trufflehog", "detect-secrets", "ggshield"][..],
         ),
         (
             "no_dep_scan",
@@ -1236,11 +1490,10 @@ fn ci_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
                 "dependency-check",
                 "pip-audit",
                 "npm audit",
-                "readyhai",
             ][..],
         ),
     ] {
-        if !words.iter().any(|w| all.contains(w)) {
+        if !readyhai_scan && !words.iter().any(|w| all.contains(w)) {
             out.push(
                 mk(
                     rule,
@@ -1251,11 +1504,14 @@ fn ci_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
                 )
                 .detail(format!("Checked: {files}"))
                 .fp_key(rule.to_string())
-                .remediation(format!("Add one of: {}.", words.join(", "))),
+                .remediation(format!(
+                    "Add one of: {}, or a `readyhai scan` step (without --no-tools).",
+                    words.join(", ")
+                )),
             );
         }
     }
-    CheckOutput::findings(out)
+    skips.finish(out)
 }
 
 // ---------- readiness.repo ----------
@@ -1526,5 +1782,264 @@ mod tests {
             .find(|x| x.rule == "readiness.deps.unpinned")
             .expect("unpinned");
         assert_eq!(u.severity, Severity::Medium);
+    }
+
+    fn out_of(ctx: &Ctx, id: &str) -> CheckOutput {
+        let c = checks().into_iter().find(|c| c.id == id).unwrap();
+        (c.run)(ctx).unwrap()
+    }
+
+    fn ci_findings(tag: &str, files: &[(&str, &str)]) -> Vec<Finding> {
+        let src = tmp_repo(tag, files);
+        out_of(&ctx_for(&src, tag, false), "readiness.ci").findings
+    }
+
+    fn never_fails_at(f: &[Finding]) -> Vec<String> {
+        f.iter()
+            .filter(|x| x.rule == "readiness.ci.scanner_never_fails")
+            .map(|x| x.location.clone())
+            .collect()
+    }
+
+    const GH: &str = ".github/workflows/ci.yml";
+
+    #[test]
+    fn unreadable_or_unparseable_files_make_the_check_partial_and_name_the_file() {
+        let big = format!(
+            "FROM alpine:3.19\nUSER app\n# {}\n",
+            "x".repeat(2 * 1024 * 1024 + 10)
+        );
+        let src = tmp_repo(
+            "partial",
+            &[
+                ("Dockerfile", &big),
+                ("package.json", "{ not json"),
+                ("docker-compose.yml", "services: [unclosed\n  web: {"),
+            ],
+        );
+        let ctx = ctx_for(&src, "partial", false);
+        for (id, file, why) in [
+            ("readiness.dockerfile", "Dockerfile", "read limit"),
+            ("readiness.deps", "package.json", "invalid JSON"),
+            (
+                "readiness.compose",
+                "docker-compose.yml",
+                "YAML parse error",
+            ),
+        ] {
+            match out_of(&ctx, id).status {
+                Some(CheckStatus::Partial(r)) => {
+                    assert!(r.contains(file) && r.contains(why), "{id}: {r}")
+                }
+                other => panic!("{id}: expected Partial, got {other:?}"),
+            }
+        }
+        // a clean repo: no status override (Passed / Failed by findings)
+        let ok = tmp_repo(
+            "clean",
+            &[(
+                "Dockerfile",
+                "FROM alpine:3.19\nUSER app\nHEALTHCHECK CMD true\n",
+            )],
+        );
+        assert!(
+            out_of(&ctx_for(&ok, "clean", false), "readiness.dockerfile")
+                .status
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn k8s_parsing_continues_past_a_bad_document() {
+        let manifest = "\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: good
+spec:
+  template:
+    spec:
+      containers:
+        - name: c
+          image: nginx:1.25
+          securityContext:
+            privileged: true
+---
+apiVersion: v1
+kind: ConfigMap
+data: [unclosed
+  - : :
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: leaked
+stringData:
+  k: v
+";
+        let src = tmp_repo("k8sbad", &[("k8s/all.yaml", manifest)]);
+        let ctx = ctx_for(&src, "k8sbad", false);
+        assert_eq!(ctx.facts.k8s_files, vec!["k8s/all.yaml"]);
+        let o = out_of(&ctx, "readiness.k8s");
+        let rules: Vec<&str> = o.findings.iter().map(|f| f.rule.as_str()).collect();
+        assert!(rules.contains(&"readiness.k8s.privileged"), "{rules:?}");
+        assert!(
+            rules.contains(&"readiness.k8s.plaintext_secret"),
+            "the document AFTER the bad one must still be checked: {rules:?}"
+        );
+        match o.status {
+            Some(CheckStatus::Partial(r)) => assert!(
+                r.contains("k8s/all.yaml") && r.contains("document 2"),
+                "{r}"
+            ),
+            other => panic!("expected Partial, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn yaml_documents_split_on_markers() {
+        let d = split_yaml_docs("# c\n---\na: 1\n---\n\n---\nb: 2\n...\n");
+        assert_eq!(
+            d.iter().map(|x| x.1.trim().to_string()).collect::<Vec<_>>(),
+            ["a: 1", "b: 2"]
+        );
+        assert_eq!(d[0].0, 3);
+        let (docs, errs) = k8s_docs_checked("a: 1\n---\nb: [\n---\nc: 3\n");
+        assert_eq!((docs.len(), errs.len()), (2, 1), "{errs:?}");
+        assert!(errs[0].starts_with("document 2 (line 3)"), "{errs:?}");
+    }
+
+    #[test]
+    fn multi_line_continue_on_error_is_a_scanner_that_never_fails() {
+        let wf = "\
+name: ci
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.20.0
+        continue-on-error: true
+      - name: Lint
+        run: make lint
+        continue-on-error: true
+";
+        let f = ci_findings("ci-step", &[(GH, wf)]);
+        assert_eq!(
+            never_fails_at(&f),
+            [format!("{GH}:7")],
+            "one finding for the Trivy step; the Lint step is not a scanner"
+        );
+        // the step that is a scanner but does NOT carry the key is fine, even when the next step does
+        let wf = "\
+jobs:
+  scan:
+    steps:
+      - run: trivy fs .
+      - run: echo done
+        continue-on-error: true
+";
+        assert!(never_fails_at(&ci_findings("ci-next", &[(GH, wf)])).is_empty());
+        // the key as the first line of the step
+        let wf = "\
+jobs:
+  scan:
+    steps:
+      - continue-on-error: true
+        run: |
+          gitleaks detect
+";
+        assert_eq!(
+            never_fails_at(&ci_findings("ci-first", &[(GH, wf)])).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn job_level_continue_on_error_and_gitlab_allow_failure_are_detected() {
+        let wf = "\
+jobs:
+  scan:
+    continue-on-error: true
+    steps:
+      - run: gitleaks detect
+  build:
+    steps:
+      - run: trivy fs .
+";
+        let f = ci_findings("ci-job", &[(GH, wf)]);
+        assert_eq!(
+            never_fails_at(&f),
+            [format!("{GH}:5")],
+            "only the job that swallows failure"
+        );
+        let gl = "\
+trivy:
+  stage: test
+  script:
+    - trivy fs .
+  allow_failure: true
+semgrep:
+  script:
+    - semgrep ci
+";
+        let f = ci_findings("ci-gl", &[(".gitlab-ci.yml", gl)]);
+        assert_eq!(never_fails_at(&f), [".gitlab-ci.yml:4".to_string()]);
+        // the single-line forms keep working
+        let f = ci_findings(
+            "ci-same",
+            &[(
+                GH,
+                "jobs:\n  s:\n    steps:\n      - run: trivy fs . || true\n",
+            )],
+        );
+        assert_eq!(never_fails_at(&f).len(), 1);
+    }
+
+    #[test]
+    fn the_word_readyhai_alone_does_not_satisfy_the_scan_rules() {
+        let has = |f: &[Finding], r: &str| f.iter().any(|x| x.rule == format!("readiness.ci.{r}"));
+        let all3 = |f: &[Finding]| {
+            ["no_sast", "no_secret_scan", "no_dep_scan"]
+                .iter()
+                .all(|r| has(f, r))
+        };
+        // mentions of the name, an install, a tools update: no scan runs
+        let wf = "\
+name: readyhai
+jobs:
+  x:
+    steps:
+      - run: pip install readyhai
+      - run: readyhai tools update
+";
+        let f = ci_findings("rh-word", &[(GH, wf)]);
+        assert!(
+            all3(&f),
+            "{:?}",
+            f.iter().map(|x| &x.rule).collect::<Vec<_>>()
+        );
+        // the actual scan step satisfies all three (it runs SAST, secrets and dependency scanners)
+        let wf = "jobs:\n  x:\n    steps:\n      - run: readyhai scan . --profile quick\n";
+        let f = ci_findings("rh-scan", &[(GH, wf)]);
+        assert!(!has(&f, "no_sast") && !has(&f, "no_secret_scan") && !has(&f, "no_dep_scan"));
+        // --no-tools turns the scanners off: it is not a scan stage
+        let wf = "jobs:\n  x:\n    steps:\n      - run: readyhai scan . --no-tools\n";
+        assert!(all3(&ci_findings("rh-notools", &[(GH, wf)])));
+        // a Jenkins stage that only updates tools
+        assert!(all3(&ci_findings(
+            "rh-jenkins",
+            &[(
+                "Jenkinsfile",
+                "pipeline { stages { stage('t') { steps { sh 'readyhai tools update' } } } }\n"
+            )]
+        )));
+        // a real scanner still satisfies exactly its own rule
+        let f = ci_findings(
+            "rh-trivy",
+            &[(GH, "jobs:\n  x:\n    steps:\n      - run: trivy fs .\n")],
+        );
+        assert!(has(&f, "no_sast") && has(&f, "no_secret_scan") && !has(&f, "no_dep_scan"));
     }
 }

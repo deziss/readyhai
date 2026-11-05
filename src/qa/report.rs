@@ -20,6 +20,8 @@ fn rec_text(r: Recommendation) -> (&'static str, &'static str) {
         Recommendation::Go => ("GO", "go"),
         Recommendation::ConditionalGo => ("CONDITIONAL GO", "cgo"),
         Recommendation::NoGo => ("NO-GO", "nogo"),
+        // shares the red badge: no evidence is never a pass
+        Recommendation::Inconclusive => ("INCONCLUSIVE", "nogo"),
     }
 }
 

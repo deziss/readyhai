@@ -71,6 +71,9 @@ pub struct UiPage {
     pub vitals: Option<UiVitals>,
     #[serde(default)]
     pub shots: Vec<UiShot>,
+    /// HTTP status of the navigation (0 = no response). None when the runner did not report it.
+    #[serde(default)]
+    pub status: Option<u16>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -412,56 +415,79 @@ pub fn build(rep: &UiReport, env: &str, unmap: &dyn Fn(&str) -> String) -> Built
                 vec![format!("Load {url}"), "Observe LCP and CLS".into()],
                 "Good web vitals",
             );
-            let mut failed = None;
-            if v.lcp_ms > 2500.0 {
-                let i = b.defect(
-                    "qa.ui.slow_page",
-                    Category::Performance,
-                    Severity::Medium,
-                    format!("Slow LCP: {:.1}s", v.lcp_ms / 1000.0),
-                    url.clone(),
-                    format!("qa.ui.slow_page|lcp|{path}"),
+            // No LCP at all (0) or an error / no-response navigation: the page painted nothing
+            // meaningful, so "LCP 0 ms, CLS 0" is the absence of data, not a good score.
+            let no_data = match p.status {
+                Some(0) => Some("no HTTP response".to_string()),
+                Some(st) if st >= 400 => Some(format!("the page answered HTTP {st}")),
+                _ if v.lcp_ms <= 0.0 => {
+                    Some("no largest contentful paint was observed (blank page?)".to_string())
+                }
+                _ => None,
+            };
+            if let Some(why) = no_data {
+                b.out.results.push(TestResult {
+                    case_id: id.clone(),
+                    status: ResultStatus::Blocked,
+                    actual: format!("web vitals not measurable: {why}"),
+                    duration_ms: 0,
+                    attempts: 1,
+                    evidence: vec![],
+                    defect_id: None,
+                });
+                m.set(&path, "vitals", Cell::Untested);
+            } else {
+                let mut failed = None;
+                if v.lcp_ms > 2500.0 {
+                    let i = b.defect(
+                        "qa.ui.slow_page",
+                        Category::Performance,
+                        Severity::Medium,
+                        format!("Slow LCP: {:.1}s", v.lcp_ms / 1000.0),
+                        url.clone(),
+                        format!("qa.ui.slow_page|lcp|{path}"),
+                    );
+                    b.out.defects[i].expected = "LCP <= 2.5s".into();
+                    b.out.defects[i].actual = format!("LCP {:.0} ms", v.lcp_ms);
+                    b.out.defects[i].steps_to_reproduce = vec![
+                        format!("Open {url} in Chrome with an empty cache"),
+                        "Read LCP from Performance panel".into(),
+                    ];
+                    b.out.defects[i].remediation = "Optimise the largest above-the-fold element: compress/preload images, cut render-blocking resources.".into();
+                    b.out.defects[i].cases.push(id.clone());
+                    failed = Some(b.out.defects[i].clone());
+                }
+                if v.cls > 0.1 {
+                    let i = b.defect(
+                        "qa.ui.slow_page",
+                        Category::Performance,
+                        Severity::Low,
+                        format!("Layout shift: CLS {:.2}", v.cls),
+                        url.clone(),
+                        format!("qa.ui.slow_page|cls|{path}"),
+                    );
+                    b.out.defects[i].expected = "CLS <= 0.1".into();
+                    b.out.defects[i].actual = format!("CLS {:.3}", v.cls);
+                    b.out.defects[i].steps_to_reproduce = vec![
+                        format!("Open {url}"),
+                        "Record layout shifts in the Performance panel".into(),
+                    ];
+                    b.out.defects[i].remediation = "Reserve space for images/embeds (width/height, aspect-ratio) and avoid late-injected content.".into();
+                    b.out.defects[i].cases.push(id.clone());
+                    failed.get_or_insert(b.out.defects[i].clone());
+                }
+                let act = format!("LCP {:.0} ms, CLS {:.3}", v.lcp_ms, v.cls);
+                b.result(&id, failed.as_ref(), act, vec![]);
+                m.set(
+                    &path,
+                    "vitals",
+                    if failed.is_some() {
+                        Cell::Fail
+                    } else {
+                        Cell::Pass
+                    },
                 );
-                b.out.defects[i].expected = "LCP <= 2.5s".into();
-                b.out.defects[i].actual = format!("LCP {:.0} ms", v.lcp_ms);
-                b.out.defects[i].steps_to_reproduce = vec![
-                    format!("Open {url} in Chrome with an empty cache"),
-                    "Read LCP from Performance panel".into(),
-                ];
-                b.out.defects[i].remediation = "Optimise the largest above-the-fold element: compress/preload images, cut render-blocking resources.".into();
-                b.out.defects[i].cases.push(id.clone());
-                failed = Some(b.out.defects[i].clone());
             }
-            if v.cls > 0.1 {
-                let i = b.defect(
-                    "qa.ui.slow_page",
-                    Category::Performance,
-                    Severity::Low,
-                    format!("Layout shift: CLS {:.2}", v.cls),
-                    url.clone(),
-                    format!("qa.ui.slow_page|cls|{path}"),
-                );
-                b.out.defects[i].expected = "CLS <= 0.1".into();
-                b.out.defects[i].actual = format!("CLS {:.3}", v.cls);
-                b.out.defects[i].steps_to_reproduce = vec![
-                    format!("Open {url}"),
-                    "Record layout shifts in the Performance panel".into(),
-                ];
-                b.out.defects[i].remediation = "Reserve space for images/embeds (width/height, aspect-ratio) and avoid late-injected content.".into();
-                b.out.defects[i].cases.push(id.clone());
-                failed.get_or_insert(b.out.defects[i].clone());
-            }
-            let act = format!("LCP {:.0} ms, CLS {:.3}", v.lcp_ms, v.cls);
-            b.result(&id, failed.as_ref(), act, vec![]);
-            m.set(
-                &path,
-                "vitals",
-                if failed.is_some() {
-                    Cell::Fail
-                } else {
-                    Cell::Pass
-                },
-            );
         }
         // visual
         if !p.shots.is_empty() {
@@ -1279,5 +1305,56 @@ mod tests {
             "https://example.com"
         );
         assert_eq!(origin("http://a:1/x?y"), "http://a:1");
+    }
+
+    #[test]
+    fn vitals_of_zero_on_an_error_or_blank_page_are_not_a_pass() {
+        let page = |status: &str, lcp: f64, cls: f64, path: &str| {
+            format!(
+                r#"{{"url":"http://x{path}","path":"{path}"{status},"vitals":{{"lcp_ms":{lcp},"cls":{cls}}}}}"#
+            )
+        };
+        let json = format!(
+            r#"{{"pages":[{},{},{},{},{}]}}"#,
+            page(r#","status":200"#, 0.0, 0.0, "/blank"), // nothing painted
+            page(r#","status":500"#, 120.0, 0.0, "/err"), // an error page
+            page(r#","status":0"#, 0.0, 0.0, "/down"),    // no response
+            page(r#","status":200"#, 900.0, 0.02, "/good"), // a real, fast page
+            page("", 900.0, 0.02, "/legacy")              // runner did not report a status
+        );
+        let rep: UiReport = serde_json::from_str(&json).unwrap();
+        let b = build(&rep, "nonprod", &|s| s.to_string());
+        let st = |p: &str| {
+            b.results
+                .iter()
+                .find(|r| r.case_id == format!("ui.{p}.vitals"))
+                .unwrap()
+                .clone()
+        };
+        for p in ["/blank", "/err", "/down"] {
+            let r = st(p);
+            assert_eq!(r.status, ResultStatus::Blocked, "{p}: {r:?}");
+            assert!(r.actual.contains("not measurable"), "{r:?}");
+            assert!(r.defect_id.is_none());
+        }
+        assert!(st("/err").actual.contains("HTTP 500"));
+        assert_eq!(st("/good").status, ResultStatus::Pass);
+        assert_eq!(
+            st("/legacy").status,
+            ResultStatus::Pass,
+            "no status reported: judged on the vitals"
+        );
+        let cell = |r: &str| {
+            let m = &b.coverage;
+            let (ri, ci) = (
+                m.rows.iter().position(|x| x == r).unwrap(),
+                m.columns.iter().position(|x| x == "vitals").unwrap(),
+            );
+            m.cells.iter().find(|x| x.0 == ri && x.1 == ci).unwrap().2
+        };
+        assert_eq!(cell("/blank"), Cell::Untested);
+        assert_eq!(cell("/err"), Cell::Untested);
+        assert_eq!(cell("/good"), Cell::Pass);
+        assert!(b.defects.is_empty());
     }
 }

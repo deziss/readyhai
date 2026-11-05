@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from runners.context_retriever import config, files, safety, store
+from runners.context_retriever import config, files, output, safety, store
 
 PKG = Path(__file__).resolve().parent.parent
 
@@ -163,3 +163,31 @@ class IndexStore(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JsonOutput(unittest.TestCase):
+    """`query --json`: plain, redacted, bounded data for ReadyHai's agent."""
+
+    def test_payload_is_redacted_bounded_and_markup_free(self):
+        result = {
+            "evidence_blocks": [
+                {"source": "app/search.py\n[bold red]x[/]", "kind": "code", "summary": "DB_PASSWORD=hunter2hunter2 builds SQL " + "x" * 2000},
+            ]
+            * 20,
+            "final_synthesis": "token=abcdef0123456789abcdef0123456789 is used",
+            "llm_error": None,
+        }
+        p = output.evidence_payload(result)
+        self.assertEqual(len(p["evidence"]), output.MAX_EVIDENCE)
+        first = p["evidence"][0]
+        self.assertNotIn("hunter2hunter2", first["summary"])
+        self.assertLessEqual(len(first["summary"]), output.MAX_SUMMARY)
+        self.assertNotIn("\n", first["source"])
+        self.assertNotIn("abcdef0123456789abcdef0123456789", p["synthesis"])
+        self.assertIsNone(p["llm_error"])
+        # one JSON object, round-trips
+        self.assertEqual(json.loads(output.dumps(p))["evidence"][0]["kind"], "code")
+
+    def test_an_empty_result_is_an_empty_payload(self):
+        p = output.evidence_payload({})
+        self.assertEqual(p, {"evidence": [], "synthesis": None, "llm_error": None})

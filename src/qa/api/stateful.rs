@@ -74,6 +74,20 @@ fn ok_result(r: &Runner, cid: &str, ex: &Exchange, pass: bool, note: &str, defs:
     );
 }
 
+/// Statuses a role-B request can get that say nothing about ownership enforcement: its own
+/// credential was refused (401), it was rate limited (429), the request was redirected, or the
+/// input was rejected before any ownership check could matter. Not a Pass, not counted as a role
+/// that tested authorization.
+pub fn bola_blocked(status: u16) -> Option<&'static str> {
+    match status {
+        401 => Some("the role's credential was rejected (401)"),
+        429 => Some("rate limited (429)"),
+        300..=399 => Some("redirect not followed"),
+        400 | 405 | 415 | 422 => Some("input rejected before ownership could be judged"),
+        _ => None,
+    }
+}
+
 /// Does the re-read response carry `newv` in `field`? Looks through `{data:{...}}` wrappers.
 fn persisted(ex: &Exchange, field_name: &str, newv: &Value) -> bool {
     ex.json()
@@ -82,12 +96,14 @@ fn persisted(ex: &Exchange, field_name: &str, newv: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn mutate(body: &Value, op: &Op) -> Option<(Value, String, Value)> {
+pub(super) fn mutate(body: &Value, op: &Op) -> Option<(Value, String, Value)> {
     let o = body.as_object()?;
     let props = super::synth::flatten(op.body.as_ref()?);
     let props = props.get("properties")?.as_object()?.clone();
     for (k, v) in o {
-        let ps = props.get(k)?;
+        // a body key the PUT schema does not declare is not mutable here: try the next key
+        // (never abort the whole mutation, that would silently skip the update step)
+        let Some(ps) = props.get(k) else { continue };
         if let Some(s) = v.as_str()
             && ps.get("format").is_none()
             && ps.get("enum").is_none()
@@ -207,9 +223,14 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
         }
         let id = id.unwrap();
         resources += 1;
+        // Cleanup is registered the moment the resource exists, before any later step can fail
+        // or return early; a lifecycle that deletes it successfully un-registers it again.
+        r.register_created(post, &ex, Some(a));
         ok_result(&r, &ccid, &ex, true, "", &defs);
         defs.clear();
         let mut fail = false;
+        // lifecycle steps that were planned but could not run (coverage is not Pass with these)
+        let mut skipped_steps: Vec<String> = vec![];
         let ipv = r.id_map(get, Some(&id));
         let gurl = r.url(get, &ipv, &[]);
         // read + echo
@@ -261,11 +282,31 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
             }
             fail |= !pass;
             ok_result(&r, &rcid, &ex, pass, "", &defs);
+        } else {
+            skipped_steps.push("read-back (blocked or skipped)".into());
         }
         // update + persisted + idempotent
-        if let (Some(put), Some(b0)) = (put, body.as_ref())
-            && let Some((nb, field, newv)) = mutate(b0, put)
-        {
+        let mutated = match (put, body.as_ref()) {
+            (Some(put), Some(b0)) => {
+                let m = mutate(b0, put);
+                if m.is_none() {
+                    skipped_steps.push(format!(
+                        "update (no string field of the body can be changed through {})",
+                        put.key()
+                    ));
+                }
+                m.map(|m| (put, m))
+            }
+            (Some(put), None) => {
+                skipped_steps.push(format!(
+                    "update ({} needs a body the create did not send)",
+                    put.key()
+                ));
+                None
+            }
+            _ => None, // the spec has no PUT/PATCH for the item: nothing was planned
+        };
+        if let Some((put, (nb, field, newv))) = mutated {
             let uurl = r.url(put, &r.id_map(put, Some(&id)), &[]);
             let ucid = format!("api.{}.{}.state.update", put.method, put.path);
             if let Some((ex, defs)) = step(
@@ -282,6 +323,7 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                     contract: true,
                 },
             ) {
+                fail |= !ex.is_2xx();
                 ok_result(&r, &ucid, &ex, ex.is_2xx(), "", &defs);
                 if ex.is_2xx() {
                     let pcid = format!("api.GET.{}.state.persisted", get.path);
@@ -325,6 +367,8 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                             fail = true;
                         }
                         ok_result(&r, &pcid, &ex2, pass, "", &defs);
+                    } else {
+                        skipped_steps.push("update-persisted re-read (blocked or skipped)".into());
                     }
                     if put.method == "PUT" {
                         let icid = format!("api.PUT.{}.state.idempotent", put.path);
@@ -372,19 +416,32 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                                     ex: Some(&ex2),
                                 }));
                             }
+                            fail |= !same;
                             ok_result(&r, &icid, &ex2, same, "", &defs);
+                        } else {
+                            skipped_steps.push("idempotent PUT repeat (blocked or skipped)".into());
                         }
                     }
+                } else {
+                    skipped_steps
+                        .push("update-persisted and idempotency (the update was not 2xx)".into());
                 }
+            } else {
+                skipped_steps.push("update (blocked or skipped)".into());
             }
         }
-        // BOLA
+        // BOLA: only against a resource that is NOT public by design (an unsecured operation, or a
+        // GET that answers an anonymous caller with 2xx, cannot be broken object-level auth), and
+        // role B must actually be heard: a 401/429/redirect says nothing and is Blocked.
         match b {
-            None => qa.with(|c| {
-                c.notes.push(
-                    "BOLA checks skipped: need a second non-admin role with credentials".into(),
-                )
-            }),
+            None => {
+                skipped_steps.push("BOLA (needs a second non-admin role with credentials)".into());
+                qa.with(|c| {
+                    c.notes.push(
+                        "BOLA checks skipped: need a second non-admin role with credentials".into(),
+                    )
+                })
+            }
             Some(b) => {
                 let admin_like = |role: &Role, path: &str| {
                     role.expects(path) == Some(true)
@@ -392,6 +449,7 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                 };
                 let gpath = r.path_of(get, &ipv);
                 if admin_like(b, &gpath) {
+                    skipped_steps.push(format!("BOLA (role '{}' is admin-like)", b.name));
                     qa.with(|c| {
                         c.notes.push(format!(
                             "BOLA skipped for {}: role '{}' is admin-like",
@@ -400,6 +458,11 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                         ))
                     });
                 } else {
+                    // public by behaviour: an anonymous GET of the created resource succeeds
+                    let anon_reads = get.secured
+                        && exec::send(r.qa, None, "GET", &gurl, None, &[])
+                            .map(|e| e.is_2xx())
+                            .unwrap_or(false);
                     let mut targets: Vec<(&Op, &str, Option<Value>)> = vec![(get, "GET", None)];
                     if let (Some(p), Some(b0)) = (put, body.as_ref()) {
                         targets.push((
@@ -409,6 +472,20 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                         ));
                     }
                     for (op, m, bd) in targets {
+                        if !op.secured || (m == "GET" && anon_reads) {
+                            qa.with(|c| {
+                                c.notes.push(format!(
+                                    "BOLA skipped for {}: {}",
+                                    op.key(),
+                                    if !op.secured {
+                                        "the operation is public in the spec (no security)"
+                                    } else {
+                                        "an anonymous GET of the created resource returns 2xx (public by behaviour)"
+                                    }
+                                ))
+                            });
+                            continue;
+                        }
                         let url = r.url(op, &r.id_map(op, Some(&id)), &[]);
                         let cid = format!("api.{m}.{}.state.bola.{}", op.path, b.name);
                         if let Some((ex, mut defs)) = step(
@@ -442,7 +519,32 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                                 }));
                                 fail = true;
                             }
-                            ok_result(&r, &cid, &ex, !bad, "", &defs);
+                            match bola_blocked(ex.status).filter(|_| defs.is_empty() && !bad) {
+                                Some(why) => {
+                                    skipped_steps.push(format!(
+                                        "BOLA {} as '{}': {why}",
+                                        op.key(),
+                                        b.name
+                                    ));
+                                    r.result(
+                                        &cid,
+                                        ResultStatus::Blocked,
+                                        &format!(
+                                            "HTTP {}: {why}; ownership enforcement not tested",
+                                            ex.status
+                                        ),
+                                        ex.ms,
+                                        &[],
+                                    );
+                                }
+                                None => ok_result(&r, &cid, &ex, !bad, "", &defs),
+                            }
+                        } else {
+                            skipped_steps.push(format!(
+                                "BOLA {} as '{}' (blocked or skipped)",
+                                op.key(),
+                                b.name
+                            ));
                         }
                     }
                 }
@@ -467,6 +569,7 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                 },
             ) {
                 let okd = ex.is_2xx();
+                fail |= !okd;
                 ok_result(&r, &dcid, &ex, okd, "", &defs);
                 if okd {
                     let gcid = format!("api.GET.{}.state.gone", get.path);
@@ -494,23 +597,42 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                                 role: Some(a), method: "GET", url: &gurl, body: None, ex: Some(&ex2),
                             }));
                             fail = true;
-                            r.cleanup.push((durl.clone(), a.name.clone()));
+                            if !r.cleanup.iter().any(|(u, _)| *u == durl) {
+                                r.cleanup.push((durl.clone(), a.name.clone()));
+                            }
+                        } else if gone {
+                            // deleted AND proven gone: nothing is left to clean up
+                            r.forget_cleanup(&durl);
                         }
+                        fail |= !gone && !ex2.is_2xx();
                         ok_result(&r, &gcid, &ex2, gone, "", &defs);
+                    } else {
+                        skipped_steps.push("delete-then-gone re-read (blocked or skipped)".into());
                     }
                 }
+            } else {
+                skipped_steps.push("delete (blocked or skipped)".into());
             }
+        }
+        // (no DELETE in the spec: `register_created` already recorded the leaked resource)
+        let cell = if fail {
+            Cell::Fail
+        } else if skipped_steps.is_empty() {
+            Cell::Pass
         } else {
+            // some lifecycle steps never ran: the lifecycle is not proven
+            Cell::Untested
+        };
+        if !skipped_steps.is_empty() {
             qa.with(|c| {
                 c.notes.push(format!(
-                    "leftover: {pk} created resource {id} and the spec has no DELETE to clean up"
+                    "stateful: {pk}: {} lifecycle step(s) skipped, coverage is not Pass: {}",
+                    skipped_steps.len(),
+                    skipped_steps.join("; ")
                 ))
             });
         }
-        qa.with(|c| {
-            c.coverage
-                .set(&pk, "stateful", if fail { Cell::Fail } else { Cell::Pass })
-        });
+        qa.with(|c| c.coverage.set(&pk, "stateful", cell));
     }
     r.explain_failures();
     r.run_cleanup();
@@ -520,5 +642,5 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
             r.tag
         ))
     });
-    Ok(CheckOutput::findings(std::mem::take(&mut r.findings)))
+    Ok(r.finish(false))
 }

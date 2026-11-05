@@ -26,6 +26,9 @@ ENV READYHAI_DATA=/data
 VOLUME /data
 USER 10001:10001
 EXPOSE 8080
-HEALTHCHECK CMD ["readyhai", "ping"]
+# SIGTERM (docker stop) drains for 8 s, removes the running scan's containers, then exits; give the
+# container at least 15 s (`docker stop -t 20`; compose sets stop_grace_period: 20s) and run it with `--init`.
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 CMD ["readyhai", "ping"]
 ENTRYPOINT ["readyhai"]
 CMD ["serve", "--bind", "0.0.0.0:8080"]

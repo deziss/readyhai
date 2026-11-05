@@ -18,10 +18,23 @@ pub enum Subject {
     },
 }
 
+/// Statuses that say nothing about authentication when the request used an id that does not
+/// exist (a guess or the unlikely id): the route may validate input or look the record up before
+/// it ever checks credentials.
+fn says_nothing_about_auth(status: u16) -> bool {
+    matches!(status, 400 | 404 | 405 | 422)
+}
+
 /// Pure judgement of one response (status 0 = no response): the result status and the rule of
 /// the defect to raise, if any. 5xx is Fail without a rule here: `Runner::send` already raised
-/// `qa.api.server_error` for it.
-pub fn judge(subject: Subject, status: u16) -> (ResultStatus, Option<&'static str>) {
+/// `qa.api.server_error` for it. `synthetic_id` = the URL carries an id that was not harvested
+/// from the target: then a 400/404/405/422 proves neither protection nor its absence, so an
+/// anonymous / invalid-token / denied-role case that got one is Blocked, not Pass.
+pub fn judge(
+    subject: Subject,
+    status: u16,
+    synthetic_id: bool,
+) -> (ResultStatus, Option<&'static str>) {
     if status == 0 {
         return (ResultStatus::Blocked, None);
     }
@@ -30,6 +43,11 @@ pub fn judge(subject: Subject, status: u16) -> (ResultStatus, Option<&'static st
     match subject {
         Subject::Anon | Subject::Invalid if ok2 => {
             (ResultStatus::Fail, Some("qa.api.authz_missing"))
+        }
+        Subject::Anon | Subject::Invalid | Subject::Role { allowed: false }
+            if synthetic_id && says_nothing_about_auth(status) =>
+        {
+            (ResultStatus::Blocked, None)
         }
         Subject::Role { allowed: false } if ok2 => {
             (ResultStatus::Fail, Some("qa.api.privilege_escalation"))
@@ -95,17 +113,19 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
             qa.with(|c| c.untested.push(format!("{key}: {why} (auth matrix)")));
         }
         // Resource ids: real ones for reads, an unlikely one for writes (never touch real data).
-        let ids = if stopped.is_some() {
+        let ids = if stopped.is_some() || op.is_write() {
             vec![]
         } else {
             r.ids_for(op)
         };
-        let id = if op.is_write() {
-            Some("999999".to_string())
+        let pv = if op.is_write() {
+            super::unlikely_ids(op)
         } else {
-            ids.first().cloned()
+            r.id_map(op, ids.first())
         };
-        let pv = r.id_map(op, id.as_ref());
+        // The id in the URL is not a harvested one (writes, or a read with nothing to harvest):
+        // a 404/400/405/422 then proves nothing about protection (see `judge`).
+        let synthetic = op.path_params().count() > 0 && (op.is_write() || ids.is_empty());
         let q: Vec<(String, String)> = op
             .params
             .iter()
@@ -217,7 +237,7 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                 };
             match attempt(&mut r) {
                 Ok((ex, mut defs)) => {
-                    let (mut st, rule) = judge(c.subject, ex.status);
+                    let (mut st, rule) = judge(c.subject, ex.status, synthetic);
                     if let Some(rule) = rule {
                         defs.push(raise(&mut r, rule, &key, &c, &ex, op, &url, body.as_ref()));
                         if op.is_write() {
@@ -227,9 +247,9 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                     if st != ResultStatus::Pass && st != ResultStatus::Blocked && !op.is_write() {
                         // is the failure stable? (read-only requests only; writes are never repeated)
                         let rr = r.rerun(reserve, |me| {
-                            attempt(me)
-                                .ok()
-                                .map(|(e, _)| judge(c.subject, e.status).0 == ResultStatus::Fail)
+                            attempt(me).ok().map(|(e, _)| {
+                                judge(c.subject, e.status, synthetic).0 == ResultStatus::Fail
+                            })
                         });
                         r.note_reproduced(&defs, &rr);
                         st = rr.status();
@@ -274,7 +294,7 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     }
     r.explain_failures();
     r.run_cleanup();
-    Ok(CheckOutput::findings(std::mem::take(&mut r.findings)))
+    Ok(r.finish(true))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -356,30 +376,61 @@ mod tests {
     #[test]
     fn judgement_table() {
         use ResultStatus::*;
-        assert_eq!(judge(Subject::Anon, 401), (Pass, None));
+        let j = |s, st| judge(s, st, false);
+        assert_eq!(j(Subject::Anon, 401), (Pass, None));
+        assert_eq!(j(Subject::Anon, 200), (Fail, Some("qa.api.authz_missing")));
         assert_eq!(
-            judge(Subject::Anon, 200),
+            j(Subject::Invalid, 204),
             (Fail, Some("qa.api.authz_missing"))
         );
+        assert_eq!(j(Subject::Invalid, 400), (Pass, None));
         assert_eq!(
-            judge(Subject::Invalid, 204),
-            (Fail, Some("qa.api.authz_missing"))
-        );
-        assert_eq!(judge(Subject::Invalid, 400), (Pass, None));
-        assert_eq!(
-            judge(Subject::Role { allowed: false }, 200),
+            j(Subject::Role { allowed: false }, 200),
             (Fail, Some("qa.api.privilege_escalation"))
         );
-        assert_eq!(judge(Subject::Role { allowed: false }, 403), (Pass, None));
-        assert_eq!(judge(Subject::Role { allowed: true }, 200), (Pass, None));
-        assert_eq!(judge(Subject::Role { allowed: true }, 404), (Pass, None));
+        assert_eq!(j(Subject::Role { allowed: false }, 403), (Pass, None));
+        assert_eq!(j(Subject::Role { allowed: true }, 200), (Pass, None));
+        assert_eq!(j(Subject::Role { allowed: true }, 404), (Pass, None));
         assert_eq!(
-            judge(Subject::Role { allowed: true }, 403),
+            j(Subject::Role { allowed: true }, 403),
             (Fail, Some("qa.api.access_denied"))
         );
-        assert_eq!(judge(Subject::Anon, 502), (Fail, None));
+        assert_eq!(j(Subject::Anon, 502), (Fail, None));
         // a transport failure proves nothing: never a Pass
-        assert_eq!(judge(Subject::Anon, 0), (Blocked, None));
-        assert_eq!(judge(Subject::Role { allowed: false }, 0), (Blocked, None));
+        assert_eq!(j(Subject::Anon, 0), (Blocked, None));
+        assert_eq!(j(Subject::Role { allowed: false }, 0), (Blocked, None));
+    }
+
+    #[test]
+    fn synthetic_id_404_400_405_422_cannot_prove_protection() {
+        use ResultStatus::*;
+        for st in [400u16, 404, 405, 422] {
+            for s in [
+                Subject::Anon,
+                Subject::Invalid,
+                Subject::Role { allowed: false },
+            ] {
+                assert_eq!(judge(s, st, true), (Blocked, None), "{s:?} {st}");
+            }
+        }
+        // a real denial still proves protection, and a 2xx is still a hole, synthetic id or not
+        assert_eq!(judge(Subject::Anon, 401, true), (Pass, None));
+        assert_eq!(judge(Subject::Invalid, 403, true), (Pass, None));
+        assert_eq!(
+            judge(Subject::Anon, 200, true),
+            (Fail, Some("qa.api.authz_missing"))
+        );
+        assert_eq!(
+            judge(Subject::Role { allowed: false }, 204, true),
+            (Fail, Some("qa.api.privilege_escalation"))
+        );
+        assert_eq!(judge(Subject::Anon, 500, true), (Fail, None));
+        // an allowed role is judged on "not denied": unchanged
+        assert_eq!(
+            judge(Subject::Role { allowed: true }, 404, true),
+            (Pass, None)
+        );
+        // a harvested id keeps the old verdicts
+        assert_eq!(judge(Subject::Anon, 404, false), (Pass, None));
     }
 }

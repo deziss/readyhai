@@ -1,432 +1,243 @@
-//! Auto-Remediation & Patch Engine.
+//! Remediation guidance for a triaged defect.
 //!
-//! Generates actionable git unified diff patches, architectural explanations, and minimal reproduction
-//! scripts customized to the defect class (OWASP API1 BOLA/IDOR, API5 BFLA, SQLi, XSS, TOCTOU, rate limiting).
+//! What this is NOT: a patch. The agent only ever saw HTTP responses; it never saw the target's
+//! source, so it cannot know a file name, a line number, a framework or a data model. Earlier
+//! builds printed unified diffs with invented paths and hunks; those were fabrications and are gone.
+//!
+//! What this is: short, generic, clearly labelled example guidance ("example — adapt to your code")
+//! keyed by the DEFECT CLASS, which the deterministic triager decides from the failed oracle check.
+//! The class is read from the fixed title template and the fixed OWASP label triage writes, never
+//! from substrings of text the target controls (route paths, response excerpts, failure reasons).
+//! A 5xx is a server-error class (validate input, handle the failing path); it never becomes a
+//! rate-limit recommendation.
+//!
+//! Reproduction scripts embed the exact curl the run sent. Without one they use a `BASE_URL`
+//! placeholder for the real target origin; they never assume a local address.
 
 use super::types::TriagedDefect;
 
-/// Synthesizes a unified diff patch, fix explanation, and reproduction script for a triaged defect.
+/// Label every piece of guidance carries.
+pub const EXAMPLE_LABEL: &str = "example — adapt to your code";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefectClass {
+    AccessControl,
+    SensitiveExposure,
+    ErrorDisclosure,
+    ReflectedInjection,
+    InjectionServerError,
+    ServerError,
+    Contract,
+    ContentType,
+    Generic,
+}
+
+impl DefectClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            DefectClass::AccessControl => "access control",
+            DefectClass::SensitiveExposure => "sensitive exposure",
+            DefectClass::ErrorDisclosure => "error disclosure",
+            DefectClass::ReflectedInjection => "reflected injection (XSS)",
+            DefectClass::InjectionServerError => "server error on injection-style input",
+            DefectClass::ServerError => "unhandled server error",
+            DefectClass::Contract => "API contract violation",
+            DefectClass::ContentType => "unexpected content type",
+            DefectClass::Generic => "unexpected response",
+        }
+    }
+}
+
+/// The defect class, from the deterministic parts of the defect only: the fixed title template
+/// (the text before the first ": " -- everything after it is `METHOD route`, target-controlled and
+/// never read) and, failing that, the fixed OWASP label.
+pub fn classify(d: &TriagedDefect) -> DefectClass {
+    let head = d.title.split(": ").next().unwrap_or("");
+    match head {
+        "Access control bypass" | "Forged token accepted" => return DefectClass::AccessControl,
+        "Sensitive file publicly readable" => return DefectClass::SensitiveExposure,
+        "Internal error details disclosed" => return DefectClass::ErrorDisclosure,
+        "Injected markup reflected unescaped" => return DefectClass::ReflectedInjection,
+        "Server error after injection-style input" => return DefectClass::InjectionServerError,
+        "Unhandled server error on invalid input" => return DefectClass::ServerError,
+        "Response violates the API contract" => return DefectClass::Contract,
+        "Unexpected response content type" => return DefectClass::ContentType,
+        "Unexpected response status" => return DefectClass::Generic,
+        _ => {}
+    }
+    let o = d.owasp_category.as_str();
+    if o.starts_with("OWASP API1:2023") || o.starts_with("OWASP API5:2023") {
+        DefectClass::AccessControl
+    } else if o.starts_with("OWASP A03:2021 Injection (XSS)") {
+        DefectClass::ReflectedInjection
+    } else if o.starts_with("OWASP A03:2021") {
+        DefectClass::InjectionServerError
+    } else if o.starts_with("OWASP API4:2023") {
+        DefectClass::ServerError
+    } else if o.starts_with("OWASP API9:2023") {
+        DefectClass::Contract
+    } else {
+        DefectClass::Generic
+    }
+}
+
+/// A path safe to print and to put inside single quotes: no query, no whitespace/control
+/// characters, no quote characters, at most 120 chars. Anything else becomes `_`.
+fn display_path(component: &str) -> String {
+    let p = component.split(['?', '#']).next().unwrap_or("");
+    let mut s: String = p
+        .chars()
+        .take(120)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || "/_-.~%:@+,;=!*(){}".contains(c) {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if !s.starts_with('/') {
+        s.insert(0, '/');
+    }
+    s
+}
+
+fn safe_method(method: &str) -> String {
+    let m = method.trim().to_ascii_uppercase();
+    if !m.is_empty() && m.len() <= 8 && m.chars().all(|c| c.is_ascii_alphabetic()) {
+        m
+    } else {
+        "GET".into()
+    }
+}
+
+/// The curl the run sent, if it is a single plain line we are willing to put in a script.
+fn usable_curl(sample: &str) -> Option<&str> {
+    let s = sample.trim();
+    (s.starts_with("curl ") && s.len() <= 4000 && !s.chars().any(|c| c.is_control())).then_some(s)
+}
+
+fn script(
+    defect: &TriagedDefect,
+    class: DefectClass,
+    method: &str,
+    path: &str,
+    curl: &str,
+    note: &str,
+) -> String {
+    let id: String = defect
+        .id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+        .take(24)
+        .collect();
+    let request = match usable_curl(curl) {
+        Some(c) => format!("# the exact request the run sent\n{c}"),
+        None => format!(
+            ": \"${{BASE_URL:?set BASE_URL to the target origin the run used, e.g. https://app.example.test}}\"\ncurl -g -sS -i -X {} \"$BASE_URL\"'{}'",
+            safe_method(method),
+            path
+        ),
+    };
+    format!(
+        "#!/usr/bin/env bash\n# Reproduction for {id} ({}). {note}\n# Run it only against a target you are allowed to test.\nset -euo pipefail\n{request}\n",
+        class.label()
+    )
+}
+
+struct Guidance {
+    explanation: &'static str,
+    snippet: &'static str,
+    expect: &'static str,
+}
+
+fn guidance(class: DefectClass) -> Guidance {
+    match class {
+        DefectClass::AccessControl => Guidance {
+            explanation: "The run observed the request being served although it carried no valid credentials, a forged token, or the wrong role. Authentication and authorization should be enforced centrally and deny by default: verify the token (signature, issuer, audience, expiry), then check the caller's right to this action and to this specific object (owner / tenant) before any data is read or changed.",
+            snippet: "def guard(request):\n    identity = verify_token(request.headers.get(\"Authorization\"))   # signature, issuer, audience, expiry\n    if identity is None:\n        return respond(401)                                        # unauthenticated or forged\n    if not identity.is_allowed(request.action, request.object):    # role AND ownership/tenant\n        return respond(403)\n    return handle(request)",
+            expect: "Expected 401 or 403; the run saw access granted.",
+        },
+        DefectClass::SensitiveExposure => Guidance {
+            explanation: "A file that normally holds configuration, credentials or repository metadata answered with content. Remove it from the document root, deny dotfiles, backups and VCS folders at the web server or reverse proxy, and rotate every secret it may have contained.",
+            snippet: "# web server / reverse proxy: deny hidden files and backups by default\ndeny requests matching  /\\.(?!well-known/)  and  *.bak, *.old, *.swp, *~\nanswer 404 (not 403, so the file's existence is not confirmed)\n# then: rotate any secret that was readable",
+            expect: "Expected 404 (or 403); the run received file content.",
+        },
+        DefectClass::ErrorDisclosure => Guidance {
+            explanation: "A response exposed internal details such as a stack trace, a SQL fragment or a file path. Return a generic error body to the client, keep the details in server-side logs keyed by a request id, and turn debug output off in this environment.",
+            snippet: "on unhandled error:\n    log.error(error, request_id=request.id)          # details stay on the server\n    return respond(500, {\"error\": \"internal error\", \"request_id\": request.id})\n# framework setting: debug / verbose errors = off outside local development",
+            expect: "Expected a generic error body; the response contained internal details.",
+        },
+        DefectClass::ReflectedInjection => Guidance {
+            explanation: "Injected markup came back in the response unescaped, which is the precondition for reflected cross-site scripting. Encode untrusted values for the context they are written into (HTML body, attribute, JavaScript, URL), prefer a templating layer that escapes by default, and add a Content-Security-Policy as a second layer.",
+            snippet: "output = html_escape(untrusted_value)           # context-aware encoding at the point of output\n# response header (defence in depth):\n# Content-Security-Policy: default-src 'self'; script-src 'self'; object-src 'none'",
+            expect: "Expected the payload to be encoded or rejected; it was reflected verbatim.",
+        },
+        DefectClass::InjectionServerError => Guidance {
+            explanation: "Injection-style input made the server fail (5xx). Hostile input should be rejected with a 4xx before it reaches the failing code path: validate type, length and format at the edge, and keep untrusted values out of query strings, commands and templates by using parameterised queries and strict parsers.",
+            snippet: "params = parse_and_validate(request, schema)      # reject bad type / length / format with 400 or 422\nrows = db.query(\"... WHERE name = :name\", {\"name\": params.name})   # bound parameter, never string-built SQL",
+            expect: "Expected a 4xx rejection; the server answered 5xx.",
+        },
+        DefectClass::ServerError => Guidance {
+            explanation: "Invalid or unexpected input produced an unhandled server error (5xx). That is an input-validation and error-handling gap, not a rate-limiting one: validate the shape and size of the input at the edge, answer 4xx for what is invalid, and handle the failing code path so it cannot surface as a crash.",
+            snippet: "params = parse_and_validate(request, schema)      # 400 / 413 / 422 for invalid or oversized input\ntry:\n    result = handle(params)\nexcept ExpectedFailure as e:\n    return respond(e.status, e.public_message)   # a client-side problem is a 4xx\n# unexpected errors: log with a request id, return a generic 500",
+            expect: "Expected a 4xx (or a handled response); the server answered 5xx.",
+        },
+        DefectClass::Contract => Guidance {
+            explanation: "The response did not contain every field the API description marks as required. Either make the implementation return the documented fields, or correct the description if the description is what is wrong; then check the response in a contract test.",
+            snippet: "response = serialize(resource, fields=REQUIRED_FIELDS_FROM_SPEC)\n# contract test: assert every required field of the spec is present for this operation",
+            expect: "Expected every required response field to be present.",
+        },
+        DefectClass::ContentType => Guidance {
+            explanation: "The response used a different Content-Type than the API description documents. Return the documented media type for this operation, and keep the description and the implementation in step.",
+            snippet: "return respond(200, body, content_type=\"<media type from the spec>\")",
+            expect: "Expected the documented Content-Type.",
+        },
+        DefectClass::Generic => Guidance {
+            explanation: "The endpoint answered with a status other than the one expected for this case. Decide which side is right: align the endpoint's status codes with the documented behaviour, or update the expectation if the endpoint is correct.",
+            snippet: "# compare the observed status with the documented one for this operation,\n# then change the handler (or the documentation) so they agree",
+            expect: "The observed status differed from the expected one.",
+        },
+    }
+}
+
+/// Generic, labelled guidance for a triaged defect: (example snippet, explanation, reproduction
+/// script). Nothing here names a file of the target, a line, or a framework.
 pub fn synthesize_remediation(
     defect: &TriagedDefect,
     component: &str,
     method: &str,
     sample_curl: &str,
 ) -> (String, String, String) {
-    let method_upper = method.to_ascii_uppercase();
-    let method_lower = method.to_ascii_lowercase();
-    let norm_comp = if component.starts_with('/') {
-        component.to_string()
-    } else {
-        format!("/{component}")
-    };
+    let class = classify(defect);
+    let g = guidance(class);
+    let path = display_path(component);
+    let m = safe_method(method);
 
-    let title_lower = defect.title.to_ascii_lowercase();
-    let owasp = &defect.owasp_category;
-    let root_cause = defect.root_cause_hypothesis.to_ascii_lowercase();
-
-    // 1. OWASP API1:2023 BOLA / IDOR (Broken Object Level Authorization)
-    if owasp.contains("API1")
-        || title_lower.contains("bola")
-        || title_lower.contains("idor")
-        || title_lower.contains("tenant isolation")
-        || root_cause.contains("bola")
-        || root_cause.contains("tenant")
-    {
-        let patch = format!(
-            r#"--- a/src/api/handlers.py
-+++ b/src/api/handlers.py
-@@ -32,8 +32,12 @@
- @router.{method_lower}("{norm_comp}")
- async def handle_resource(resource_id: str, current_user: CurrentUser = Depends(get_current_user)):
--    # Vulnerable: fetches object without verifying user/tenant ownership
--    resource = await db.fetch_one("SELECT * FROM resources WHERE id = :id", {{"id": resource_id}})
-+    # Mitigated: enforce strict tenant boundary and object ownership (BOLA/IDOR prevention)
-+    resource = await db.fetch_one(
-+        "SELECT * FROM resources WHERE id = :id AND tenant_id = :tenant_id",
-+        {{"id": resource_id, "tenant_id": current_user.tenant_id}}
-+    )
-     if not resource:
--        raise HTTPException(status_code=404, detail="Resource not found")
-+        raise HTTPException(status_code=404, detail="Resource not found or access denied")
-     return resource"#
-        );
-
-        let explanation = format!(
-            "Broken Object Level Authorization (BOLA/IDOR) on {method_upper} {norm_comp}. \
-             The endpoint queried or mutated records by raw identifier without scoping to the authenticated caller's tenant. \
-             Enforce ownership checks (`tenant_id = current_user.tenant_id`) at the data access layer or middleware so cross-tenant queries return 404/403."
-        );
-
-        let repro = format!(
-            r#"#!/usr/bin/env python3
-"""Reproduction script for BOLA defect: {defect_id}"""
-import requests
-
-TARGET = "http://localhost:8000"
-
-def test_bola():
-    alice_headers = {{"Authorization": "Bearer token-alice"}}
-    bob_headers = {{"Authorization": "Bearer token-bob"}}
-
-    # Step 1: Alice creates or owns an object
-    print("[1] Alice creating private resource on {norm_comp}...")
-    create_res = requests.post(f"{{TARGET}}{norm_comp}", json={{"title": "Alice Private Data"}}, headers=alice_headers)
-    print(f"    Alice creation status: {{create_res.status_code}}")
-    resource_id = create_res.json().get("id", "1")
-
-    # Step 2: Bob attempts to read/mutate Alice's object
-    print(f"[2] Bob accessing Alice's resource: {norm_comp}/{{resource_id}}...")
-    access_res = requests.get(f"{{TARGET}}{norm_comp}/{{resource_id}}", headers=bob_headers)
-    print(f"    Bob access status: {{access_res.status_code}}")
-
-    if access_res.status_code in [200, 204]:
-        print("[FAIL] BOLA Confirmed: Bob accessed Alice's private resource!")
-    else:
-        print("[PASS] Access denied correctly (HTTP 403/404).")
-
-if __name__ == "__main__":
-    test_bola()
-"#,
-            defect_id = defect.id,
-            norm_comp = norm_comp
-        );
-
-        return (patch, explanation, repro);
-    }
-
-    // 2. OWASP API5:2023 BFLA (Broken Function Level Authorization / Forged Token / Unauthenticated)
-    if owasp.contains("API5")
-        || title_lower.contains("access control")
-        || title_lower.contains("forged")
-        || title_lower.contains("unauth")
-    {
-        let patch = format!(
-            r#"--- a/src/middleware/auth.py
-+++ b/src/middleware/auth.py
-@@ -14,6 +14,13 @@
- async def auth_guard(request: Request, call_next):
-+    # Enforce authentication & cryptographic signature validation on protected endpoints
-+    auth_header = request.headers.get("Authorization")
-+    if not auth_header or not auth_header.startswith("Bearer "):
-+        return JSONResponse(status_code=401, content={{"error": "Unauthorized: missing bearer token"}})
-+    
-+    token = auth_header.split(" ", 1)[1]
-+    if not verify_jwt_signature(token, expected_issuer="ReadyHaiAuth"):
-+        return JSONResponse(status_code=401, content={{"error": "Unauthorized: invalid or forged token"}})
-     return await call_next(request)"#
-        );
-
-        let explanation = format!(
-            "Broken Function Level Authorization / Missing Authentication on {method_upper} {norm_comp}. \
-             The endpoint permitted access with missing, forged, or improperly signed credentials. \
-             Enforce mandatory cryptographic signature verification and role checks in middleware before routing to handler logic."
-        );
-
-        let repro = if !sample_curl.is_empty() {
-            format!(
-                r#"#!/usr/bin/env bash
-# Reproduction script for Authorization defect: {defect_id}
-set -euo pipefail
-echo "Executing reproduction curl (expecting 401/403, observed bypass):"
-{sample_curl}
-"#,
-                defect_id = defect.id
-            )
-        } else {
-            format!(
-                r#"#!/usr/bin/env bash
-set -euo pipefail
-TOKEN="${{RH_AUTH_TOKEN:-forged-signature-token}}"
-curl -sS -i -X {method_upper} 'http://localhost:8000{norm_comp}' \
-  -H "Authorization: Bearer $TOKEN"
-"#
-            )
-        };
-
-        return (patch, explanation, repro);
-    }
-
-    // 3. TOCTOU Concurrency / Race Condition
-    if title_lower.contains("toctou")
-        || title_lower.contains("race")
-        || root_cause.contains("burst")
-        || root_cause.contains("concurrent")
-    {
-        let patch = format!(
-            r#"--- a/src/services/action.py
-+++ b/src/services/action.py
-@@ -21,8 +21,11 @@
- async def execute_state_action(record_id: str, caller_id: str):
--    record = await db.fetch_one("SELECT * FROM records WHERE id = :id", {{"id": record_id}})
--    if record.status == "PENDING":
--        await db.execute("UPDATE records SET status = 'COMPLETED' WHERE id = :id", {{"id": record_id}})
-+    # Use atomic transaction with pessimistic lock (SELECT ... FOR UPDATE) to prevent TOCTOU races
-+    async with db.transaction():
-+        record = await db.fetch_one(
-+            "SELECT * FROM records WHERE id = :id FOR UPDATE", {{"id": record_id}}
-+        )
-+        if record.status != "PENDING":
-+            raise HTTPException(status_code=409, detail="Resource state collision or already processed")
-+        await db.execute("UPDATE records SET status = 'COMPLETED' WHERE id = :id", {{"id": record_id}})"#
-        );
-
-        let explanation = format!(
-            "TOCTOU (Time-of-Check to Time-of-Use) race condition detected on {method_upper} {norm_comp}. \
-             Multiple parallel requests executed simultaneously without mutual exclusion. \
-             Enforce atomic transactions with database pessimistic locking (`FOR UPDATE`) or optimistic version concurrency control (`WHERE version = :expected`)."
-        );
-
-        let repro = format!(
-            r#"#!/usr/bin/env python3
-"""Reproduction script for TOCTOU Concurrency Burst: {defect_id}"""
-import concurrent.futures
-import requests
-
-TARGET = "http://localhost:8000"
-
-def fire_burst_request(req_id):
-    headers = {{"Authorization": "Bearer test-user-token"}}
-    resp = requests.{method_lower}(f"{{TARGET}}{norm_comp}", headers=headers)
-    return resp.status_code
-
-def test_race():
-    print("Firing 5 concurrent requests against {norm_comp}...")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(fire_burst_request, i) for i in range(5)]
-        statuses = [f.result() for f in futures]
-    print(f"Burst response status codes: {{statuses}}")
-
-if __name__ == "__main__":
-    test_race()
-"#,
-            defect_id = defect.id,
-            method_lower = method_lower,
-            norm_comp = norm_comp
-        );
-
-        return (patch, explanation, repro);
-    }
-
-    // 4. SQL Injection
-    if owasp.contains("Injection")
-        && (title_lower.contains("sql")
-            || root_cause.contains("sql")
-            || sample_curl.contains("' OR '1'='1"))
-    {
-        let patch = format!(
-            r#"--- a/src/db/repository.py
-+++ b/src/db/repository.py
-@@ -10,5 +10,5 @@
- def search_query(query_param: str):
--    # Vulnerable: string concatenation leads to SQL injection
--    return db.execute(f"SELECT * FROM entries WHERE name LIKE '%{{query_param}}%'")
-+    # Mitigated: parameterized query binding
-+    return db.execute("SELECT * FROM entries WHERE name LIKE :pattern", {{"pattern": f"%{{query_param}}%"}})"#
-        );
-
-        let explanation = format!(
-            "SQL Injection detected on {method_upper} {norm_comp}. \
-             Untrusted user input was interpolated directly into SQL syntax. \
-             Replace raw string formatting with prepared statements / parameterized bindings."
-        );
-
-        let repro = if !sample_curl.is_empty() {
-            format!(
-                r#"#!/usr/bin/env bash
-# Reproduction script for SQLi defect: {defect_id}
-set -euo pipefail
-echo "Sending SQL injection tautology vector:"
-{sample_curl}
-"#,
-                defect_id = defect.id
-            )
-        } else {
-            format!(
-                r#"#!/usr/bin/env bash
-curl -sS -i -G 'http://localhost:8000{norm_comp}' --data-urlencode "q=' OR '1'='1' --"
-"#
-            )
-        };
-
-        return (patch, explanation, repro);
-    }
-
-    // 5. Cross-Site Scripting (XSS)
-    if owasp.contains("Injection")
-        && (title_lower.contains("xss")
-            || root_cause.contains("xss")
-            || sample_curl.contains("<script>"))
-    {
-        let patch = format!(
-            r#"--- a/src/views/render.py
-+++ b/src/views/render.py
-@@ -4,5 +4,6 @@
-+import html
- def render_response(user_value: str) -> str:
--    # Vulnerable: reflects raw unescaped input into HTML
--    return f"<div class=\"output\">{{user_value}}</div>"
-+    # Mitigated: context-aware HTML encoding
-+    escaped = html.escape(user_value, quote=True)
-+    return f"<div class=\"output\">{{escaped}}</div>""#
-        );
-
-        let explanation = format!(
-            "Reflected Cross-Site Scripting (XSS) on {method_upper} {norm_comp}. \
-             Injected markup was echoed back in the response body without contextual HTML entity encoding. \
-             Encode all dynamic values before rendering and enforce Content-Security-Policy (CSP)."
-        );
-
-        let repro = if !sample_curl.is_empty() {
-            format!(
-                r#"#!/usr/bin/env bash
-# Reproduction script for XSS defect: {defect_id}
-set -euo pipefail
-echo "Sending reflected XSS vector:"
-{sample_curl}
-"#,
-                defect_id = defect.id
-            )
-        } else {
-            format!(
-                r#"#!/usr/bin/env bash
-curl -sS -i -G 'http://localhost:8000{norm_comp}' --data-urlencode "q=\"><script>alert(1)</script>"
-"#
-            )
-        };
-
-        return (patch, explanation, repro);
-    }
-
-    // 6. Rate Limiting / Resource Consumption (OWASP API4)
-    if owasp.contains("API4")
-        || title_lower.contains("rate")
-        || title_lower.contains("oversized")
-        || root_cause.contains("resource consumption")
-    {
-        let patch = format!(
-            r#"--- a/src/middleware/rate_limit.py
-+++ b/src/middleware/rate_limit.py
-@@ -8,6 +8,11 @@
- async def rate_limiter(request: Request, call_next):
-+    client_ip = request.client.host
-+    key = f"rl:{{client_ip}}"
-+    count = await redis.incr(key)
-+    if count == 1:
-+        await redis.expire(key, 60)
-+    if count > 100:
-+        return JSONResponse(status_code=429, content={{"error": "Rate limit exceeded. Try again in 60s."}})
-     return await call_next(request)"#
-        );
-
-        let explanation = format!(
-            "Unrestricted Resource Consumption / Missing Rate Limiting on {method_upper} {norm_comp}. \
-             The endpoint does not restrict request frequencies or payload size limits. \
-             Implement sliding window rate limiting (HTTP 429) and request body size caps."
-        );
-
-        let repro = if !sample_curl.is_empty() {
-            format!(
-                r#"#!/usr/bin/env bash
-# Reproduction script for Resource Consumption defect: {defect_id}
-set -euo pipefail
-echo "Sending payload:"
-{sample_curl}
-"#,
-                defect_id = defect.id
-            )
-        } else {
-            format!(
-                r#"#!/usr/bin/env bash
-for i in {{1..20}}; do
-  curl -sS -o /dev/null -w "%%{{http_code}}\n" 'http://localhost:8000{norm_comp}'
-done
-"#
-            )
-        };
-
-        return (patch, explanation, repro);
-    }
-
-    // 7. Sensitive Exposure (OWASP API8)
-    if owasp.contains("API8") && (norm_comp.starts_with("/.") || title_lower.contains("sensitive")) {
-        let patch = r#"--- a/nginx.conf
-+++ b/nginx.conf
-@@ -20,6 +20,10 @@
-     server {
-         listen 80;
-+        # Deny access to sensitive hidden files (.env, .git, etc.)
-+        location ~ /\.(?!well-known) {
-+            deny all;
-+            return 404;
-+        }
-         location / {
-             proxy_pass http://app_upstream;
-         }"#
-            .to_string();
-
-        let explanation = format!(
-            "Sensitive file exposure on {norm_comp}. \
-             Configuration metadata or secrets are publicly readable from the web root. \
-             Deny access to hidden dotfiles at the web server / reverse proxy layer and rotate any exposed secrets."
-        );
-
-        let repro = format!(
-            r#"#!/usr/bin/env bash
-set -euo pipefail
-curl -sS -i 'http://localhost:8000{norm_comp}'
-"#
-        );
-
-        return (patch, explanation, repro);
-    }
-
-    // 8. General / Contract / Unexpected Status
-    let patch = format!(
-        r#"--- a/src/api/routes.py
-+++ b/src/api/routes.py
-@@ -16,4 +16,7 @@
- async def route_handler(payload: RequestSchema):
-+    # Validate input schema and reject invalid requests with 400
-+    if not payload.validate():
-+        return JSONResponse(status_code=400, content={{"error": "Invalid input format"}})
-     return await service.process(payload)"#
+    let snippet = format!(
+        "# {EXAMPLE_LABEL}\n# Illustrative pseudocode for the \"{}\" class. It is not a patch: the agent saw HTTP\n# responses only and never your source code, so no file, line or framework is assumed.\n{}",
+        class.label(),
+        g.snippet
     );
-
     let explanation = format!(
-        "Unexpected response status or contract violation on {method_upper} {norm_comp}. \
-         Align endpoint validation and status codes with expected API contracts and handle error edge cases gracefully."
+        "Guidance ({EXAMPLE_LABEL}) for {} on {m} {path}. {} Generic advice for this class of defect; check it against how your service is built.",
+        class.label(),
+        g.explanation
     );
-
-    let repro = if !sample_curl.is_empty() {
-        format!(
-            r#"#!/usr/bin/env bash
-# Reproduction script for defect: {defect_id}
-set -euo pipefail
-{sample_curl}
-"#,
-            defect_id = defect.id
-        )
-    } else {
-        format!(
-            r#"#!/usr/bin/env bash
-curl -sS -i -X {method_upper} 'http://localhost:8000{norm_comp}'
-"#
-        )
-    };
-
-    (patch, explanation, repro)
+    let repro = script(defect, class, &m, &path, sample_curl, g.expect);
+    (snippet, explanation, repro)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn sample_defect(id: &str, title: &str, owasp: &str, cause: &str) -> TriagedDefect {
+    fn defect(id: &str, title: &str, owasp: &str, cause: &str) -> TriagedDefect {
         TriagedDefect {
             id: id.into(),
             title: title.into(),
-            severity: "critical".into(),
-            priority: "P0".into(),
+            severity: "high".into(),
+            priority: "P1".into(),
             component: "/api/orders/1".into(),
             root_cause_hypothesis: cause.into(),
             blast_radius: "service".into(),
@@ -439,72 +250,176 @@ mod tests {
             remediation_patch: None,
             remediation_explanation: None,
             reproduction_script: None,
+            ..Default::default()
+        }
+    }
+
+    const ALL: [(&str, &str); 9] = [
+        (
+            "Access control bypass: GET /a",
+            "OWASP API5:2023 Broken Function Level Authorization",
+        ),
+        (
+            "Sensitive file publicly readable: GET /.env",
+            "OWASP API8:2023 Security Misconfiguration",
+        ),
+        (
+            "Internal error details disclosed: GET /a",
+            "OWASP API8:2023 Security Misconfiguration",
+        ),
+        (
+            "Injected markup reflected unescaped: GET /a",
+            "OWASP A03:2021 Injection (XSS)",
+        ),
+        (
+            "Server error after injection-style input: GET /a",
+            "OWASP A03:2021 Injection",
+        ),
+        (
+            "Unhandled server error on invalid input: POST /a",
+            "OWASP API4:2023 Unrestricted Resource Consumption",
+        ),
+        (
+            "Response violates the API contract: GET /a",
+            "OWASP API9:2023 Improper Inventory Management",
+        ),
+        (
+            "Unexpected response content type: GET /a",
+            "OWASP API8:2023 Security Misconfiguration",
+        ),
+        (
+            "Unexpected response status: GET /a",
+            "OWASP API8:2023 Security Misconfiguration",
+        ),
+    ];
+
+    #[test]
+    fn no_fabricated_diffs_paths_or_local_addresses_for_any_class() {
+        for (i, (title, owasp)) in ALL.iter().enumerate() {
+            let d = defect(&format!("DEF-{i:03}"), title, owasp, "Observed: x");
+            let (patch, exp, script) = synthesize_remediation(&d, "/api/orders/1", "GET", "");
+            for text in [&patch, &exp, &script] {
+                for bad in [
+                    "--- a/",
+                    "+++ b/",
+                    "@@ ",
+                    "localhost:8000",
+                    "src/",
+                    ".py",
+                    ".conf",
+                ] {
+                    assert!(!text.contains(bad), "{title}: '{bad}' in {text}");
+                }
+                assert!(
+                    !text
+                        .lines()
+                        .any(|l| l.starts_with('+') || l.starts_with('-')),
+                    "{title}: a diff-looking line in {text}"
+                );
+            }
+            assert!(
+                patch.contains(EXAMPLE_LABEL) && exp.contains(EXAMPLE_LABEL),
+                "{title}"
+            );
+            assert!(
+                script.contains("BASE_URL"),
+                "{title}: placeholder, not a hard-coded host"
+            );
         }
     }
 
     #[test]
-    fn test_bola_remediation_generation() {
-        let defect = sample_defect(
+    fn a_5xx_never_maps_to_a_rate_limit_patch() {
+        // the server-error classes, with target-controlled text that screams "rate limit"
+        let d = defect(
             "DEF-001",
-            "BOLA multi-tenant isolation bypass",
-            "OWASP API1:2023 Broken Object Level Authorization",
-            "Observed BOLA cross-tenant access",
-        );
-        let (patch, exp, repro) =
-            synthesize_remediation(&defect, "/api/orders/1", "GET", "curl -i http://target/api/orders/1");
-
-        assert!(patch.contains("--- a/src/api/handlers.py"));
-        assert!(patch.contains("tenant_id"));
-        assert!(exp.contains("Broken Object Level Authorization"));
-        assert!(repro.contains("requests.post"));
-        assert!(repro.contains("requests.get"));
-    }
-
-    #[test]
-    fn test_toctou_remediation_generation() {
-        let defect = sample_defect(
-            "DEF-002",
-            "TOCTOU race condition burst check",
+            "Unhandled server error on invalid input: POST /ratelimit-burst",
             "OWASP API4:2023 Unrestricted Resource Consumption",
-            "Observed concurrent burst race condition",
+            "Observed: HTTP 429 500 too many requests rate limit race idor burst",
         );
-        let (patch, exp, repro) =
-            synthesize_remediation(&defect, "/api/checkout", "POST", "");
-
-        assert!(patch.contains("FOR UPDATE"));
-        assert!(exp.contains("TOCTOU"));
-        assert!(repro.contains("ThreadPoolExecutor"));
+        assert_eq!(classify(&d), DefectClass::ServerError);
+        let (patch, exp, _) = synthesize_remediation(&d, "/ratelimit-burst", "POST", "");
+        let all = format!("{patch}\n{exp}").to_ascii_lowercase();
+        assert!(
+            !all.contains("429") && !all.contains("rate limit") && !all.contains("sliding window"),
+            "{all}"
+        );
+        assert!(all.contains("validate") && all.contains("5xx"), "{all}");
+        // the OWASP API4 label alone (title missing) is still a server error, not rate limiting
+        let d2 = defect(
+            "DEF-002",
+            "",
+            "OWASP API4:2023 Unrestricted Resource Consumption",
+            "",
+        );
+        assert_eq!(classify(&d2), DefectClass::ServerError);
     }
 
     #[test]
-    fn test_sqli_remediation_generation() {
-        let defect = sample_defect(
+    fn class_comes_from_the_template_not_from_target_controlled_text() {
+        // the route and the failure reason try to steer the class toward BOLA / SQLi / XSS / TOCTOU
+        let d = defect(
             "DEF-003",
-            "SQL injection error probe",
-            "OWASP A03:2021 Injection",
-            "Observed SQL syntax error disclosure",
+            "Unexpected response status: GET /idor-bola-sql-xss-toctou-tenant",
+            "OWASP API8:2023 Security Misconfiguration",
+            "Observed: BOLA cross-tenant IDOR SQL injection <script> TOCTOU race burst",
         );
-        let (patch, exp, repro) =
-            synthesize_remediation(&defect, "/search", "GET", "curl -i 'http://target/search?q=%27'");
-
-        assert!(patch.contains("parameterized query binding"));
-        assert!(exp.contains("SQL Injection"));
-        assert!(repro.contains("curl"));
+        assert_eq!(classify(&d), DefectClass::Generic);
+        let (patch, exp, _) = synthesize_remediation(
+            &d,
+            "/idor-bola-sql-xss-toctou-tenant",
+            "GET",
+            "' OR '1'='1 <script>",
+        );
+        for k in ["tenant_id", "FOR UPDATE", "html.escape", "parameterized"] {
+            assert!(!patch.contains(k) && !exp.contains(k), "{k}");
+        }
+        assert_eq!(
+            classify(&defect(
+                "D",
+                "Forged token accepted: GET /x",
+                "OWASP API5:2023 x",
+                ""
+            )),
+            DefectClass::AccessControl
+        );
     }
 
     #[test]
-    fn test_xss_remediation_generation() {
-        let defect = sample_defect(
+    fn repro_script_uses_the_real_curl_or_a_base_url_placeholder_and_cannot_be_injected() {
+        let d = defect(
             "DEF-004",
-            "Reflected XSS probe",
-            "OWASP A03:2021 Injection",
-            "Observed script vector reflection",
+            "Access control bypass: GET /admin",
+            "OWASP API5:2023 x",
+            "",
         );
-        let (patch, exp, repro) =
-            synthesize_remediation(&defect, "/view", "GET", "curl -i 'http://target/view?q=<script>'");
-
-        assert!(patch.contains("html.escape"));
-        assert!(exp.contains("Cross-Site Scripting"));
-        assert!(repro.contains("curl"));
+        let real = "curl -sS -i -X GET 'https://qa.example.test/admin'";
+        let (_, _, s) = synthesize_remediation(&d, "/admin", "GET", real);
+        assert!(
+            s.contains(real) && !s.contains("BASE_URL") && !s.contains("localhost"),
+            "{s}"
+        );
+        // a curl line with a newline (or anything that is not one plain curl line) is not embedded
+        let (_, _, s) = synthesize_remediation(&d, "/admin", "GET", "curl x\nrm -rf /");
+        assert!(!s.contains("rm -rf") && s.contains("BASE_URL"), "{s}");
+        // a hostile route: quotes, command substitution, newlines and spaces cannot leave the quotes
+        let (_, exp, s) = synthesize_remediation(
+            &d,
+            "/a'; touch /tmp/pwn; echo '$(id)`id`\n x",
+            "GET; rm",
+            "",
+        );
+        let url_line = s.lines().find(|l| l.starts_with("curl")).unwrap();
+        assert!(
+            !url_line.contains('`')
+                && !url_line.contains("$(")
+                && url_line.matches('\'').count() == 2,
+            "{url_line}"
+        );
+        assert!(url_line.contains("-X GET"), "{url_line}");
+        assert!(
+            !exp.contains('\n') && !exp.contains('`') && !exp.contains('$'),
+            "{exp}"
+        );
     }
 }
