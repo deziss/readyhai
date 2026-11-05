@@ -728,9 +728,12 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
     };
     let mut run = run;
     if let Some(q) = &ctx.qa {
-        let configured = crate::llm::LlmConfig::from_env()
+        let env_cfg = crate::llm::LlmConfig::from_env();
+        let configured = env_cfg
+            .as_ref()
             .ok()
-            .filter(|c| c.base_url().is_ok()); // no base URL = not configured
+            .filter(|c| c.base_url().is_ok()) // no base URL = not configured
+            .cloned();
         // Offline = no internet/registries. A LAN LLM is still allowed; cloud providers are
         // already refused unless READYHAI_LLM_ALLOW_CLOUD is set.
         let cfg = configured.clone().filter(crate::llm::probe);
@@ -745,6 +748,15 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
             report.notes.push(
                 "LLM configured but unreachable (2s probe): report is deterministic-only".into(),
             );
+        }
+        // a requested LLM that the config refuses (cloud provider or public URL without
+        // READYHAI_LLM_ALLOW_CLOUD, bad URL, unknown provider) must not vanish silently
+        if let Err(e) = &env_cfg
+            && crate::llm::env_requested()
+        {
+            report
+                .notes
+                .push(format!("LLM not used: {e}; report is deterministic-only"));
         }
         if let Some(c) = &cfg {
             crate::qa::ai::enrich(&mut report, &run, c);

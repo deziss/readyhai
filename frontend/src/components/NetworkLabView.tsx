@@ -579,28 +579,6 @@ export function NetworkLabView({
             <Download className="w-3.5 h-3.5" aria-hidden="true" />
             <span>Export HAR</span>
           </button>
-
-          {activeTab === "regress" && (
-            <button
-              id="btn-run-regress"
-              type="button"
-              onClick={handleRunRegress}
-              disabled={isRegressRunning}
-              className={BTN_PRIMARY}
-            >
-              {isRegressRunning ? (
-                <>
-                  <RotateCw className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
-                  <span className="tabular-nums">Probing ({iterations}x)...</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" />
-                  <span>Run regressive test</span>
-                </>
-              )}
-            </button>
-          )}
         </div>
       </div>
 
@@ -896,6 +874,29 @@ export function NetworkLabView({
                   />
                 </div>
               )}
+            </div>
+
+            {/* Primary action: run the regressive test */}
+            <div className="pt-0.5">
+              <button
+                id="btn-run-regress"
+                type="button"
+                onClick={handleRunRegress}
+                disabled={isRegressRunning}
+                className={`${BTN_PRIMARY} w-full`}
+              >
+                {isRegressRunning ? (
+                  <>
+                    <RotateCw className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                    <span className="tabular-nums">Probing ({iterations}x)...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" />
+                    <span>Run regressive test</span>
+                  </>
+                )}
+              </button>
             </div>
 
             {/* cURL action */}

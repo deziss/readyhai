@@ -64,32 +64,47 @@ pub fn checks() -> Vec<Check> {
 
 /// Operation with its plan risk (1..=25) and the number of cases the plan budgets for it.
 #[derive(Clone)]
-pub struct Planned {
-    pub op: Op,
+pub struct Planned<'a> {
+    pub op: &'a Op,
     pub risk: u8,
     pub budget: usize,
 }
 
 /// Spec operations ordered by plan risk (highest first, spec order within a tie). Risk and budget
 /// come from the `qa.plan` items; an operation the plan does not know is scored on the fly.
-pub fn plan_order(qa: &QaCtx, spec: &Spec) -> Vec<Planned> {
-    let plan: Vec<PlanItem> = qa.with(|c| c.plan.clone());
-    let mut v: Vec<Planned> = spec
-        .ops
-        .iter()
-        .map(|op| match plan.iter().find(|p| p.component == op.key()) {
-            Some(p) => Planned {
-                op: op.clone(),
-                risk: p.risk,
-                budget: p.budget,
-            },
-            None => Planned {
-                op: op.clone(),
-                risk: crate::qa::plan::risk_of(&op.method, &op.path, op.secured, op.body.is_some()),
-                budget: 60,
-            },
-        })
-        .collect();
+/// Linear in operations + plan items (a hash lookup per operation, no operation is cloned).
+pub fn plan_order<'a>(qa: &QaCtx, spec: &'a Spec) -> Vec<Planned<'a>> {
+    let mut v: Vec<Planned<'a>> = qa.with(|c| {
+        let mut by_key: HashMap<&str, (u8, usize)> = HashMap::with_capacity(c.plan.len());
+        for p in &c.plan {
+            // the first item of a component wins, as a front-to-back search did
+            by_key
+                .entry(p.component.as_str())
+                .or_insert((p.risk, p.budget));
+        }
+        let mut key = String::new();
+        spec.ops
+            .iter()
+            .map(|op| {
+                use std::fmt::Write;
+                key.clear();
+                let _ = write!(key, "{} {}", op.method, op.path);
+                match by_key.get(key.as_str()) {
+                    Some(&(risk, budget)) => Planned { op, risk, budget },
+                    None => Planned {
+                        op,
+                        risk: crate::qa::plan::risk_of(
+                            &op.method,
+                            &op.path,
+                            op.secured,
+                            op.body.is_some(),
+                        ),
+                        budget: 60,
+                    },
+                }
+            })
+            .collect()
+    });
     v.sort_by(|a, b| b.risk.cmp(&a.risk));
     v
 }
@@ -338,27 +353,49 @@ impl<'a> Runner<'a> {
     /// 4xx, an assertion nobody attached a finding to) gets a `qa.api.case_failed` defect, so no
     /// failure is ever invisible to the gate, the report and the recommendation.
     pub fn explain_failures(&mut self) {
-        let mine: Vec<(String, String)> = self
+        let mine: HashMap<String, String> = self
             .my_cases
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone();
+            .iter()
+            .map(|(id, comp)| (id.clone(), comp.clone()))
+            .collect();
         let orphans: Vec<(String, String, String, Vec<String>)> = self.qa.with(|c| {
-            c.results
+            let cand: Vec<(&TestResult, &String)> = c
+                .results
                 .iter()
                 .filter(|r| r.status == ResultStatus::Fail && r.defect_id.is_none())
-                .filter_map(|r| {
-                    let comp = mine.iter().find(|m| m.0 == r.case_id)?.1.clone();
-                    let steps = c
-                        .cases
-                        .iter()
-                        .find(|x| x.id == r.case_id)
-                        .map(|x| x.steps.clone())
-                        .unwrap_or_default();
-                    Some((r.case_id.clone(), comp, r.actual.clone(), steps))
+                .filter_map(|r| Some((r, mine.get(&r.case_id)?)))
+                .collect();
+            if cand.is_empty() {
+                return vec![];
+            }
+            // one pass over the cases instead of one search per orphan
+            let wanted: std::collections::HashSet<&str> =
+                cand.iter().map(|(r, _)| r.case_id.as_str()).collect();
+            let mut steps: HashMap<&str, &Vec<String>> = HashMap::with_capacity(wanted.len());
+            for x in &c.cases {
+                if wanted.contains(x.id.as_str()) {
+                    steps.entry(x.id.as_str()).or_insert(&x.steps);
+                }
+            }
+            cand.into_iter()
+                .map(|(r, comp)| {
+                    let st = steps.get(r.case_id.as_str()).map(|s| (*s).clone());
+                    (
+                        r.case_id.clone(),
+                        comp.clone(),
+                        r.actual.clone(),
+                        st.unwrap_or_default(),
+                    )
                 })
                 .collect()
         });
+        if orphans.is_empty() {
+            return;
+        }
+        let mut defect_of_case: HashMap<String, String> = HashMap::new();
+        let mut steps_of_defect: HashMap<String, Vec<String>> = HashMap::new();
         for (cid, comp, actual, steps) in orphans {
             let base = self.base.clone();
             let d = self.defect(NewDefect {
@@ -367,17 +404,24 @@ impl<'a> Runner<'a> {
                 remediation: "Re-run the case (steps to reproduce) and compare the response with the documented behaviour.",
                 area_cases: &cid, component: comp, role: None, method: "GET", url: &base, body: None, ex: None,
             });
-            self.qa.with(|c| {
-                for r in c.results.iter_mut().filter(|r| r.case_id == cid) {
-                    r.defect_id = Some(d.id.clone());
-                }
-                if !steps.is_empty()
-                    && let Some(x) = c.defects.iter_mut().find(|x| x.id == d.id)
-                {
-                    x.steps_to_reproduce = steps.clone();
-                }
-            });
+            if !steps.is_empty() {
+                steps_of_defect.insert(d.id.clone(), steps);
+            }
+            defect_of_case.insert(cid, d.id);
         }
+        // one pass over the results and the defects, however many orphans there were
+        self.qa.with(|c| {
+            for r in c.results.iter_mut() {
+                if let Some(id) = defect_of_case.get(&r.case_id) {
+                    r.defect_id = Some(id.clone());
+                }
+            }
+            for x in c.defects.iter_mut() {
+                if let Some(st) = steps_of_defect.get(&x.id) {
+                    x.steps_to_reproduce = st.clone();
+                }
+            }
+        });
     }
 
     pub fn result(
@@ -769,6 +813,7 @@ impl<'a> Runner<'a> {
             .iter()
             .map(|m| m.0.clone())
             .collect();
+        let mine_set: std::collections::HashSet<&str> = mine.iter().map(String::as_str).collect();
         if mine.is_empty() {
             return Some(CheckStatus::Skipped(format!(
                 "no case was planned for {}",
@@ -778,7 +823,7 @@ impl<'a> Runner<'a> {
         let results: HashMap<String, (ResultStatus, String)> = self.qa.with(|c| {
             c.results
                 .iter()
-                .filter(|r| mine.contains(&r.case_id))
+                .filter(|r| mine_set.contains(r.case_id.as_str()))
                 .map(|r| (r.case_id.clone(), (r.status, r.actual.clone())))
                 .collect()
         });
@@ -853,14 +898,14 @@ impl<'a> Runner<'a> {
             return None; // PUT/PATCH/DELETE act on an existing item: nothing was created
         }
         let id = created_id(ex)?;
+        let prefix = format!("{}/{{", post.path.trim_end_matches('/'));
         let item = self
             .spec
             .ops
             .iter()
             .find(|o| {
                 o.method == "DELETE"
-                    && o.path
-                        .starts_with(&format!("{}/{{", post.path.trim_end_matches('/')))
+                    && o.path.starts_with(&prefix)
                     && o.path_params().count() == post.path_params().count() + 1
             })
             .cloned();
@@ -890,7 +935,15 @@ impl<'a> Runner<'a> {
             if latency::is_slow(p95)
                 && n >= 2
                 && let (Some(op), Some((ex, url))) = (
-                    self.spec.ops.iter().find(|o| o.key() == k).cloned(),
+                    self.spec
+                        .ops
+                        .iter()
+                        .find(|o| {
+                            k.strip_prefix(o.method.as_str())
+                                .and_then(|r| r.strip_prefix(' '))
+                                == Some(o.path.as_str())
+                        })
+                        .cloned(),
                     self.slowest.get(&k).cloned(),
                 )
             {
@@ -1292,7 +1345,22 @@ pub(crate) fn functional_in(ctx: &Ctx, data: &Path) -> anyhow::Result<CheckOutpu
     };
     let spec = r.spec.clone();
     let qa = r.qa;
-    qa.with(|c| c.untested.extend(spec.untested.iter().cloned()));
+    qa.with(|c| {
+        c.untested.extend(spec.untested.iter().cloned());
+        c.notes.extend(spec.notes.iter().cloned());
+        // Operations beyond the cap are never planned: their coverage cell says Untested
+        // instead of the matrix not knowing them (a missing row would read as "nothing to test").
+        for k in &spec.over_cap {
+            c.coverage.set(k, "functional", Cell::Untested);
+        }
+        if spec.over_cap_total > spec.over_cap.len() {
+            c.notes.push(format!(
+                "{} more operation(s) over the {}-operation cap are not listed in the coverage matrix",
+                spec.over_cap_total - spec.over_cap.len(),
+                spec.cap
+            ));
+        }
+    });
     let deep = ctx.profile == Profile::Deep;
     let roles = r.usable_roles();
     let reserve = stateful_reserve(ctx, roles.len());
@@ -1304,7 +1372,7 @@ pub(crate) fn functional_in(ctx: &Ctx, data: &Path) -> anyhow::Result<CheckOutpu
     }
     // Highest plan risk first; each operation gets at most its plan budget of cases.
     for pl in plan_order(qa, &spec) {
-        let op = &pl.op;
+        let op = pl.op;
         if matches!(op.method.as_str(), "HEAD" | "OPTIONS") {
             continue;
         }

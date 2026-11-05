@@ -5,6 +5,18 @@ use anyhow::{Context, Result, bail};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+pub mod init;
+
+/// Name of the env var that carries a role's secret: `RH_<ROLE>_<SUFFIX>` (`TOKEN`, `USER`,
+/// `PASS`). The role name is upper-cased and `-` becomes `_`, the same form repro steps print.
+pub fn env_var(role: &str, suffix: &str) -> String {
+    format!(
+        "RH_{}_{suffix}",
+        role.to_ascii_uppercase().replace('-', "_")
+    )
+}
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -41,6 +53,10 @@ pub struct Role {
     /// Path globs this role must NOT reach (e.g. "/api/admin/**").
     #[serde(default)]
     pub deny: Vec<String>,
+    /// Compiled `allow` / `deny` sets, built on first use: `expects` runs once per operation and
+    /// role, so a 1000-operation spec must not recompile the globs every time.
+    #[serde(skip)]
+    compiled: OnceLock<(Option<GlobSet>, Option<GlobSet>)>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -106,10 +122,7 @@ impl Roles {
 impl Role {
     /// Placeholder used in repro steps instead of the secret.
     pub fn placeholder(&self) -> String {
-        format!(
-            "$RH_{}_TOKEN",
-            self.name.to_ascii_uppercase().replace('-', "_")
-        )
+        format!("${}", env_var(&self.name, "TOKEN"))
     }
 
     /// (header name, header value) resolved from env at call time. None for auth=none/cookie
@@ -157,10 +170,14 @@ impl Role {
     /// Expected access for a request path: Some(true) allowed, Some(false) denied,
     /// None when the role file says nothing about it. Deny wins.
     pub fn expects(&self, path: &str) -> Option<bool> {
-        if set(&self.deny).map(|s| s.is_match(path)).unwrap_or(false) {
+        // An uncompilable glob never matches (as before); `Roles::load` rejects such files.
+        let (allow, deny) = self
+            .compiled
+            .get_or_init(|| (set(&self.allow).ok(), set(&self.deny).ok()));
+        if deny.as_ref().is_some_and(|s| s.is_match(path)) {
             return Some(false);
         }
-        if set(&self.allow).map(|s| s.is_match(path)).unwrap_or(false) {
+        if allow.as_ref().is_some_and(|s| s.is_match(path)) {
             return Some(true);
         }
         None
@@ -215,5 +232,33 @@ deny = ["/api/admin/**"]
         assert_eq!(r.roles[0].placeholder(), "$RH_ADMIN_TOKEN");
         assert!(r.roles[0].credential().is_none());
         assert_eq!(b64(b"qa:pw"), "cWE6cHc=");
+    }
+
+    #[test]
+    fn compiled_globs_are_cached_per_role_and_clones_agree() {
+        let r: Roles = toml::from_str(
+            r#"
+[[role]]
+name = "u"
+auth = "none"
+allow = ["/api/**"]
+deny = ["/api/admin/**", "/api/admin"]
+"#,
+        )
+        .unwrap();
+        let u = r.roles[0].clone();
+        for _ in 0..3 {
+            assert_eq!(u.expects("/api/admin/x"), Some(false));
+            assert_eq!(u.expects("/api/admin"), Some(false));
+            assert_eq!(u.expects("/api/orders"), Some(true));
+            assert_eq!(u.expects("/other"), None);
+            // `/api/**` is everything UNDER /api: the bare prefix needs its own entry
+            assert_eq!(u.expects("/api"), None);
+        }
+        // a clone made before and after first use behaves the same
+        assert_eq!(r.roles[0].expects("/api/orders"), Some(true));
+        assert_eq!(u.clone().expects("/api/admin/x"), Some(false));
+        assert_eq!(env_var("svc-a", "TOKEN"), "RH_SVC_A_TOKEN");
+        assert_eq!(u.placeholder(), "$RH_U_TOKEN");
     }
 }

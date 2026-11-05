@@ -61,7 +61,7 @@ All rows except `/health` require the bearer token.
 |---|---|---|
 | GET | `/health` | `{"status":"ok","version":"<crate version>"}` (the only public route) |
 | GET | `/`, `/ui` | Endpoint index (JSON, including `frontend_url`); needs the bearer token like every route but `/health` |
-| GET | `/api/agent/status` | LLM health, latency, active model, capabilities |
+| GET | `/api/agent/status` | LLM health, latency, active model, `configured_models` (primary first, then fallbacks), `api_key_configured`, capabilities |
 | POST | `/api/agent/run` | Autonomous multi-agent QA run; returns the complete `AgentRunReport` |
 | GET | `/api/agent/runs` | All historical agent runs with scores, verdict, test counts |
 | GET | `/api/agent/runs/{id}` | Detailed report and execution traces for one agent run |

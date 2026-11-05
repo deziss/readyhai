@@ -8,6 +8,7 @@ Binary: `readyhai` (dev build: `target/debug/readyhai`; `cargo` lives in `~/.car
 |---|---|
 | `readyhai scan <target> [flags]` | Scan a target, write reports, exit with the verdict code (0 PASS, 1 WARN, 2 FAIL) |
 | `readyhai qa <url> [flags]` | Senior-QA run (API, UI, perf, resilience, suite and release quality) with a Go / Conditional Go / No-Go / Inconclusive recommendation. See [qa.md](qa.md) and the table at the end of this page |
+| `readyhai roles init --spec FILE [--out FILE\|-] [--force]` | Derive a `roles.toml` skeleton from an OpenAPI spec (roles, `RH_<ROLE>_TOKEN` env var names, allow/deny globs inferred from scopes). See [Generating roles.toml](#generating-rolestoml-from-the-spec) |
 | `readyhai agent <url> [--spec URL] [--scope FILE] [--max-steps N] [--dry-run] [--repo DIR --diff-base REF]` | Autonomous Agentic AI QA run; exit 0 `GO`, 1 `CONDITIONAL_GO`, 2 `NO_GO` or not evaluated. See below |
 | `readyhai agent-memory show <target> [--json]` | What the agent remembers about a target: known defects (with the fingerprint `accept` takes), flaky case classes, operations, baselines |
 | `readyhai agent-memory accept <target> <fingerprint> --reason TEXT --expires YYYY-MM-DD [--by NAME]` | Accept a known open defect until a date: listed in every report, not blocking |
@@ -57,7 +58,7 @@ Every agent run and discovery scan is archived on disk under `<data>/agent-runs/
 
 ## Autonomous Agentic AI (`readyhai agent`)
 
-Runs the autonomous testing pipeline against an HTTP target: **Discovery -> Planner -> Explorer -> Verifier -> Cleanup -> Triager -> Readiness gate**. Verdicts are computed by deterministic code. A local reasoning model (vLLM / Ollama, `READYHAI_VLLM_URL`) is optional; when it is unreachable the run is deterministic and says so.
+Runs the autonomous testing pipeline against an HTTP target: **Discovery -> Planner -> Explorer -> Verifier -> Cleanup -> Triager -> Readiness gate**. Verdicts are computed by deterministic code. An LLM (a local vLLM / Ollama, or any OpenAI-compatible endpoint: `READYHAI_LLM_URL`, optional `READYHAI_LLM_API_KEY`, `READYHAI_LLM_MODEL` as one model or a fallback list) is optional; when it is unreachable the run is deterministic and says so.
 
 ```bash
 readyhai agent https://staging.example.com --spec https://staging.example.com/openapi.json --max-steps 25
@@ -249,4 +250,48 @@ readyhai qa https://app.nonprod.example --repo ./svc --spec openapi.json \
     --roles ~/.config/readyhai/secrets/app/roles.toml --scope scope.toml \
     --profile standard --format html,pdf,md,jira --out qa-out
 readyhai dashboard --out dash/
+```
+
+### Large specs (1,000+ operations)
+
+`qa` plans and tests the first **2000** operations of the spec (document order); the agent's spec-driven cases come from the same parser and share the cap (the agent also applies its own per-profile operation limits). `READYHAI_MAX_OPS` changes the number; it is clamped to a ceiling of **10000**, and a value that is not a positive integer falls back to 2000 with a note in the report.
+
+```bash
+READYHAI_MAX_OPS=5000 readyhai qa https://app.nonprod.example --spec openapi.json --roles roles.toml
+```
+
+- **Nothing over the cap is passed silently.** Each operation beyond it appears as `Untested` in the `functional` column of the coverage matrix, the first 25 are named in the report's out-of-scope list, and one roll-up line says how many there are (`N of M operation(s) are over the K-operation cap`) and how to raise the cap.
+- **The request budget still bounds execution** (`max_requests`, 2000 per run). Operations the budget did not reach have their cases recorded as planned and skipped, and an `Untested` cell. Operations are tried highest plan risk first, so a small budget spends itself on the risky ones.
+- **Memory is bounded.** A spec file or HTTP body over 64 MiB is refused. `$ref` expansion copies at most 50,000 nodes per path item and 6 million per spec; past that a ref collapses to `{}` ("any") and the report says that some schemas were truncated, so cases for those operations are weaker, not wrong.
+- Building the spec, the plan, the cases and the coverage matrix is linear in the number of operations (a synthetic 1500-operation spec with nested `$ref` schemas parses, plans and generates cases in about a second in a debug build; the test asserts under 5 s).
+
+The cap is an environment variable only: `ScanOpts` and the engine are shared, so there is no `--max-ops` flag.
+
+### Generating roles.toml from the spec
+
+```
+readyhai roles init --spec openapi.json [--out roles.toml | --out -] [--force]
+```
+
+Reads a local OpenAPI 3.x file (JSON or YAML; a URL is refused, the command makes no requests) and writes a `roles.toml` skeleton in the format of [qa.md](qa.md#rolestoml):
+
+| The spec says | The file gets |
+|---|---|
+| `components.securitySchemes`: `http` `bearer`, `oauth2`, `openIdConnect` | `auth = "bearer"`, `token_env = "RH_<ROLE>_TOKEN"` |
+| `http` `basic` | `auth = "basic"`, `username_env = "RH_<ROLE>_USER"`, `password_env = "RH_<ROLE>_PASS"` |
+| `apiKey` in a header | `auth = "header"`, `header_name` = the key name, `token_env` |
+| `apiKey` in a cookie | `auth = "cookie"`, `storage_state = "<role>.state.json"` (record it with a logged-in test account) |
+| `apiKey` in a query string, `mutualTLS` | not expressible in roles.toml: no role, a `# NOTE:` line |
+| global `security` and per-operation `security` (an empty list = public) | which operations each role can reach; a role for a second scheme that only some operations accept is allowed those and denied the rest |
+| OAuth2 scope names, `x-roles` / `x-required-roles` (operation, document or scheme level) | privileged names (`admin`, `root`, `superuser`, `internal`, `staff`, `sudo`) make an `admin` role plus ordinary `user` / `user2` (a second account of the same level, for BOLA); `x-roles` make one role per name |
+| paths only a privileged scope or role reaches (or, with no scopes at all, a path with an `admin` or `internal` segment) | `deny` globs for the ordinary roles, `allow = ["/**"]` for admin |
+
+The secret values never touch the file: only env var names. The header comment lists what to `export` (with `...` as the value). `allow` and `deny` are globs over the full request path, so the `servers[0].url` base path is part of them (`/api/v1/admin/**`); a subtree whose operations all agree becomes one `<prefix>/**` entry (plus the bare prefix when it is an operation itself), so 1000 admin paths are one glob. Globs match paths, not methods: when the methods of one path disagree, or neighbouring wildcards overlap (deny wins), no glob is written and a `# NOTE:` line in the header says which. The result is a starting point, so review it.
+
+Without `--out` the file goes to `$XDG_CONFIG_HOME/readyhai/secrets/roles.toml` (default `~/.config/readyhai/secrets/roles.toml`), outside any repo; a missing directory is created mode 0700. The file is written mode **0600**, an existing file is refused unless `--force`, and a symlink at the target is always refused. `--out -` prints to stdout instead.
+
+```bash
+readyhai roles init --spec openapi.json --out ~/.config/readyhai/secrets/app/roles.toml
+export RH_USER_TOKEN=... RH_USER2_TOKEN=... RH_ADMIN_TOKEN=...     # test accounts, never real users
+readyhai qa https://app.nonprod.example --spec openapi.json --roles ~/.config/readyhai/secrets/app/roles.toml
 ```

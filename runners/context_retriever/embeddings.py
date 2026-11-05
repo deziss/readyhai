@@ -3,9 +3,11 @@
 Supports three provider backends:
 1. "ollama": Connects to local Ollama instance running `bge-m3:latest`.
 2. "huggingface": Uses local PyTorch / sentence-transformers `BAAI/bge-m3`.
-3. "openai_compatible": Connects to a vLLM or TEI endpoint serving `BAAI/bge-m3` (READYHAI_VLLM_URL, no default).
+3. "openai_compatible": Connects to a vLLM or TEI endpoint serving `BAAI/bge-m3` (READYHAI_LLM_URL, no default;
+   READYHAI_VLLM_URL is the deprecated alias).
 
-OPENAI_API_KEY is sent only to api.openai.com; other endpoints get READYHAI_EMBEDDING_API_KEY or "EMPTY".
+OPENAI_API_KEY is sent only to api.openai.com; other endpoints get READYHAI_EMBEDDING_API_KEY, else
+READYHAI_LLM_API_KEY when the endpoint is the one READYHAI_LLM_URL names, else "EMPTY".
 """
 
 import os

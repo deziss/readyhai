@@ -22,23 +22,41 @@ A declarative stage to paste into a pipeline. It replaces steps like `if command
 - `post { always }` archives `readyhai-report/**` and publishes `readyhai-report.junit.xml` through the JUnit plugin.
 - Requires `readyhai` on the agent PATH. Add `--baseline .readyhai/baseline.json` to gate only on new findings. A `readyhai scan` step (without `--no-tools`) also satisfies the `readiness.ci.no_sast/no_secret_scan/no_dep_scan` rules; the bare word "readyhai" alone does not.
 
-## GitHub Actions (`ci/github-action.yml`)
+## Pull-request bot
 
-Workflow `readyhai` on push and pull request, `permissions: contents read, security-events write`.
+`--format pr` writes `readyhai-pr-comment.md`: a compact Markdown summary (verdict, reasons, per-category counts, top 15 open findings) that starts with the hidden marker `<!-- readyhai-pr-comment -->`. The GitHub Action and the GitLab recipe use that marker to keep **one** comment per PR/MR and edit it on every push instead of adding a new one. All finding text is escaped, so nothing from the scanned code becomes links, markup or @mentions. Nothing needs to be installed on developer machines: the gate runs in CI and reports back on the PR.
 
-1. `actions/checkout@v4`.
-2. Install: `curl -sSfL https://github.com/deziss/readyhai/releases/latest/download/readyhai-linux-x86_64.tar.gz | sudo tar xz -C /usr/local/bin`. The release workflow (`.github/workflows/release.yml`) publishes exactly this version-independent asset name (plus a `.sha256` file) on every `v*` tag; before the first tag exists, build from source.
-3. `readyhai tools update` (needs Docker, which hosted runners have).
-4. Scan with `set +e`, capture the exit code into `steps.scan.outputs.code`.
-5. `github/codeql-action/upload-sarif@v3` with `readyhai-report/readyhai-report.sarif` (`if: always()`); results appear under Code scanning, with `partialFingerprints["readyhai/v1"]` for dedup.
-6. `actions/upload-artifact@v4` for the HTML report.
-7. Gate step: fails if the code is empty (scan never ran) or `>= 2`. WARN (1) passes.
+## GitHub Actions (`action.yml`, `ci/github-action.yml`)
 
-Note: SARIF upload to private repos requires GitHub code scanning (Advanced Security) to be enabled. Pull requests from forks get a read-only token and cannot upload SARIF. Tool images are pulled by tag unless you commit a lock file and set `READYHAI_TOOLS_LOCK`.
+The repo root is a composite action, so a workflow only needs:
+
+```yaml
+permissions: { contents: read, pull-requests: write, security-events: write }
+steps:
+  - uses: actions/checkout@v4
+  - uses: deziss/readyhai@v0.5.0
+    with:
+      profile: quick      # quick | standard | deep
+      fail-on: fail       # fail | warn | never
+      # no-tools: "true"  # native checks only, no Docker
+```
+
+Inputs: `target` (default `.`), `profile`, `version` (release tag or `latest`), `no-tools`, `comment` (default `true`), `fail-on`, `out` (default `readyhai-report`), `github-token`. Outputs: `verdict`, `exit-code`, `report-dir`.
+
+What it does:
+1. Downloads `readyhai-linux-x86_64.tar.gz` from the release and checks it against the published `.sha256`.
+2. `readyhai tools update` unless `no-tools` (hosted runners have Docker).
+3. `readyhai scan --format sarif,html,json,junit,pr`; the summary is also appended to the job summary page.
+4. On pull requests, creates or updates the single ReadyHai comment through `gh api`. Fork PRs get a read-only token, so the comment step is `continue-on-error`.
+5. Gate: fails on exit `>= 2` (or no exit code); with `fail-on: warn` also on `1`; `never` only reports.
+
+`ci/github-action.yml` is a complete workflow using the action plus SARIF upload (`github/codeql-action/upload-sarif@v3`, needs code scanning on private repos) and the report artifact.
 
 ## GitLab CI (`ci/gitlab-ci.yml`)
 
 Job `readyhai` in stage `test`, image `ghcr.io/deziss/readyhai:latest` (pin a version tag or digest in production) with `entrypoint: [""]` (the image's entrypoint is `readyhai`). Artifacts always include `readyhai-report/` and the JUnit report (`reports: junit`). `allow_failure: exit_codes: [1]` makes WARN non-blocking.
+
+On merge requests the job also writes `--format pr` and posts or updates one MR note (found by the `<!-- readyhai-pr-comment -->` marker) through the GitLab API. Set a masked CI/CD variable `READYHAI_GITLAB_TOKEN` (project access token, scope `api`, Reporter or higher); without it the note is skipped and the job still gates. The image ships `curl` and `jq` for this.
 
 Caveats: the job needs Docker to run scanners (docker-in-docker or a runner with the host socket) and `adb` is not in the image. Without Docker only native rules run: every container check is `skipped("docker not available")`, which is visible but not failing.
 

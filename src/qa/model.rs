@@ -3,6 +3,7 @@
 //! gate, baseline, SARIF and JUnit keep working unchanged.
 use crate::model::{Category, Finding, FindingStatus, Severity};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -216,28 +217,70 @@ pub struct CoverageMatrix {
     pub columns: Vec<String>,
     /// (row index, column index, cell)
     pub cells: Vec<(usize, usize, Cell)>,
+    /// Lookup tables over the three vectors above (not serialized, rebuilt when they drift).
+    #[serde(skip)]
+    index: CoverageIndex,
+}
+
+/// Hash lookups for `CoverageMatrix::set`, so building a matrix of N operations is linear in N
+/// instead of a scan of every row and cell per update.
+#[derive(Debug, Clone, Default)]
+struct CoverageIndex {
+    rows: HashMap<String, usize>,
+    columns: HashMap<String, usize>,
+    cells: HashMap<(usize, usize), usize>,
+    /// Lengths of the vectors the maps describe; a mismatch (a deserialized matrix, a direct
+    /// push) triggers a rebuild.
+    seen: (usize, usize, usize),
 }
 
 impl CoverageMatrix {
     pub fn set(&mut self, row: &str, col: &str, cell: Cell) {
-        let r = idx(&mut self.rows, row);
-        let c = idx(&mut self.columns, col);
-        if let Some(x) = self.cells.iter_mut().find(|x| x.0 == r && x.1 == c) {
-            // Fail wins over Pass; anything wins over Untested.
-            if !(x.2 == Cell::Fail && cell == Cell::Pass) {
-                x.2 = cell;
+        self.sync();
+        let r = Self::idx(&mut self.index.rows, &mut self.rows, row);
+        let c = Self::idx(&mut self.index.columns, &mut self.columns, col);
+        match self.index.cells.get(&(r, c)) {
+            Some(&i) => {
+                let x = &mut self.cells[i];
+                // Fail wins over Pass; anything wins over Untested.
+                if !(x.2 == Cell::Fail && cell == Cell::Pass) {
+                    x.2 = cell;
+                }
             }
-        } else {
-            self.cells.push((r, c, cell));
+            None => {
+                self.index.cells.insert((r, c), self.cells.len());
+                self.cells.push((r, c, cell));
+            }
         }
+        self.index.seen = (self.rows.len(), self.columns.len(), self.cells.len());
     }
-}
 
-fn idx(v: &mut Vec<String>, s: &str) -> usize {
-    v.iter().position(|x| x == s).unwrap_or_else(|| {
+    fn idx(map: &mut HashMap<String, usize>, v: &mut Vec<String>, s: &str) -> usize {
+        if let Some(&i) = map.get(s) {
+            return i;
+        }
         v.push(s.to_string());
+        map.insert(s.to_string(), v.len() - 1);
         v.len() - 1
-    })
+    }
+
+    fn sync(&mut self) {
+        if self.index.seen == (self.rows.len(), self.columns.len(), self.cells.len()) {
+            return;
+        }
+        let mut ix = CoverageIndex::default();
+        for (i, r) in self.rows.iter().enumerate() {
+            ix.rows.entry(r.clone()).or_insert(i);
+        }
+        for (i, c) in self.columns.iter().enumerate() {
+            ix.columns.entry(c.clone()).or_insert(i);
+        }
+        for (i, x) in self.cells.iter().enumerate() {
+            ix.cells.entry((x.0, x.1)).or_insert(i);
+        }
+        ix.seen = (self.rows.len(), self.columns.len(), self.cells.len());
+        self.index = ix;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -342,4 +385,70 @@ pub struct QaReport {
     pub risks: Vec<Risk>,
     pub exit_criteria: Vec<ExitCriterion>,
     pub notes: Vec<String>,
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn set_keeps_one_cell_per_row_and_column_and_the_old_precedence() {
+        let mut m = CoverageMatrix::default();
+        m.set("GET /a", "anon", Cell::Untested);
+        m.set("GET /a", "anon", Cell::Pass);
+        m.set("GET /a", "role", Cell::Fail);
+        m.set("GET /b", "anon", Cell::Pass);
+        assert_eq!(m.rows, ["GET /a", "GET /b"]);
+        assert_eq!(m.columns, ["anon", "role"]);
+        assert_eq!(
+            m.cells,
+            [(0, 0, Cell::Pass), (0, 1, Cell::Fail), (1, 0, Cell::Pass)]
+        );
+        // Fail wins over a later Pass; anything else overwrites
+        m.set("GET /a", "role", Cell::Pass);
+        assert_eq!(m.cells[1].2, Cell::Fail);
+        m.set("GET /a", "anon", Cell::Untested);
+        assert_eq!(m.cells[0].2, Cell::Untested);
+        assert_eq!(m.cells.len(), 3);
+    }
+
+    #[test]
+    fn a_deserialized_or_hand_edited_matrix_is_indexed_again() {
+        let mut m = CoverageMatrix::default();
+        m.set("r1", "c1", Cell::Pass);
+        let mut back: CoverageMatrix =
+            serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        // the index is not serialized: setting a known cell must update it, not append a copy
+        back.set("r1", "c1", Cell::Fail);
+        back.set("r2", "c1", Cell::Pass);
+        assert_eq!(back.rows, ["r1", "r2"]);
+        assert_eq!(back.cells, [(0, 0, Cell::Fail), (1, 0, Cell::Pass)]);
+        // rows pushed behind its back are picked up too
+        back.rows.push("r3".into());
+        back.set("r3", "c1", Cell::Untested);
+        assert_eq!(back.rows.len(), 3);
+        assert_eq!(back.cells.last(), Some(&(2, 0, Cell::Untested)));
+        let json = serde_json::to_value(&back).unwrap();
+        assert!(
+            json.get("index").is_none(),
+            "the index must not be serialized"
+        );
+    }
+
+    #[test]
+    fn building_a_large_matrix_is_linear() {
+        let mut m = CoverageMatrix::default();
+        let t = std::time::Instant::now();
+        for i in 0..5000 {
+            for c in ["anon", "invalid", "functional", "stateful", "alice", "bob"] {
+                m.set(&format!("GET /r{i}/{{id}}"), c, Cell::Untested);
+            }
+        }
+        assert_eq!(m.cells.len(), 30_000);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            t.elapsed()
+        );
+    }
 }

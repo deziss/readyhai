@@ -5,7 +5,7 @@ Increment 2 (2026-10-25). Two independent modes; they can be combined only partl
 | Mode | Network at scan time | AI | How to get there |
 |---|---|---|---|
 | Air-gapped (`offline`) | none; tool containers already run with network none, pulls and DB updates hard-fail | none (deterministic engine) | `bundle export` on a connected machine, `bundle import` on the target, `READYHAI_OFFLINE=1` |
-| LAN LLM (`lan-llm`) | LAN only, to your vLLM/Ollama endpoint | single-shot advisory prose, triage hints, test ideas | set `READYHAI_VLLM_URL` (or `READYHAI_LLM_PROVIDER`) |
+| LAN LLM (`lan-llm`) | LAN only, to your vLLM/Ollama endpoint | single-shot advisory prose, triage hints, test ideas | set `READYHAI_LLM_URL` (or `READYHAI_LLM_PROVIDER`) |
 | `deterministic` | whatever you allow | none | default when no LLM is configured/reachable |
 
 `readyhai doctor` prints the current mode.
@@ -57,7 +57,7 @@ Why IDs: an image pinned as `repo@sha256:digest` does not resolve after `docker 
 - `bundle export`, `tools pull`/`tools update` and registry pulls fail hard.
 - Grype runs with DB auto-update off; ReadyHai checks DB age itself: more than 7 days old makes the scan Partial, more than 30 days is flagged stale.
 - `doctor` reports mode `offline`.
-- **Offline + LAN LLM together:** `READYHAI_OFFLINE=1` blocks internet and registry access, but the LAN LLM is still probed and used. The report mode reads `offline+lan-llm`. Cloud providers stay refused unless `READYHAI_LLM_ALLOW_CLOUD` is set.
+- **Offline + LAN LLM together:** `READYHAI_OFFLINE=1` blocks internet and registry access, but the LAN LLM is still probed and used. The report mode reads `offline+lan-llm`. Cloud providers, and a public LLM URL, stay refused unless `READYHAI_LLM_ALLOW_CLOUD` is set.
 - Data dir: `READYHAI_DATA`.
 
 ## `readyhai doctor`
@@ -72,10 +72,11 @@ Prints: version, mode, LLM probe result (2 s timeout on `<base>/models`), data d
 
 | Setting | Value |
 |---|---|
-| `READYHAI_VLLM_URL` | OpenAI-compatible base, e.g. `http://vllm.lan:8000/v1`; setting it alone selects the `vllm` provider |
-| `READYHAI_LLM_PROVIDER` | `vllm`, `ollama` (default `http://localhost:11434/v1`), or cloud providers `openai`, `anthropic`, `openrouter` |
-| `READYHAI_LLM_MODEL` | default `qwen3.8-flash-next` for vllm (`qwen2.5-coder` for ollama) |
-| `READYHAI_LLM_ALLOW_CLOUD` | `1`/`true` required for any cloud provider; otherwise the config is refused |
+| `READYHAI_LLM_URL` | base URL of the endpoint, e.g. `http://vllm.lan:8000/v1`; works for every provider, and alone it selects the generic OpenAI-compatible provider (`vllm`). `READYHAI_VLLM_URL` is the deprecated alias |
+| `READYHAI_LLM_PROVIDER` | `vllm` (also `openai-compatible`, `custom`), `ollama` (default `http://localhost:11434/v1`), or cloud providers `openai`, `anthropic`, `openrouter` |
+| `READYHAI_LLM_API_KEY` | optional for a LAN server; sent as a bearer token (`x-api-key` for `anthropic`), never logged |
+| `READYHAI_LLM_MODEL` | default `qwen3.8-flash-next` for vllm (`qwen2.5-coder` for ollama); a comma list `a,b,c` makes `b` and `c` fallbacks for a failed call to `a` |
+| `READYHAI_LLM_ALLOW_CLOUD` | `1`/`true` required for any cloud provider, and when `READYHAI_LLM_URL` points a local provider at a public host (not loopback, private, `.local`/`.lan`/`.internal`, or single-label); otherwise the config is refused |
 
 At the end of a `qa` run the endpoint is probed (GET `<base>/models`, 2 s). Unreachable: the run proceeds deterministically and the report carries the note "LLM configured but unreachable (2s probe): report is deterministic-only".
 

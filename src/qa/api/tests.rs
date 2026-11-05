@@ -1467,3 +1467,259 @@ fn the_pieces_the_agent_reuses_need_no_run_context() {
     many.push(2000);
     assert!(!latency::is_slow(latency::p95(&many)));
 }
+
+// ------------------------------------------------------------------ enterprise-size specs
+
+/// Synthetic enterprise OpenAPI 3 spec: `resources` x 5 operations (list, create, get, put,
+/// delete) over shared `$ref` schemas, parameters and responses. The schemas nest 3 levels deep
+/// and point at each other in a ring (`child` -> next model, `tags[]` -> the one 7 further).
+fn big_spec(resources: usize) -> Value {
+    const MODELS: usize = 120;
+    let sref = |i: usize| json!({"$ref": format!("#/components/schemas/Model{}", i % MODELS)});
+    let mut schemas = serde_json::Map::new();
+    for i in 0..MODELS {
+        schemas.insert(
+            format!("Model{i}"),
+            json!({"type": "object", "required": ["id"], "properties": {
+                "id": {"type": "string"},
+                "name": {"type": "string", "maxLength": 40},
+                "count": {"type": "integer", "minimum": 0, "maximum": 1000},
+                "child": sref(i + 1),
+                "tags": {"type": "array", "items": sref(i + 7)},
+                "meta": {"type": "object", "properties": {"a": {"type": "string"}, "b": {"type": "number"}}}
+            }}),
+        );
+    }
+    let ok = |i: usize| json!({"description": "ok", "content": {"application/json": {"schema": sref(i)}}});
+    let mut paths = serde_json::Map::new();
+    for k in 0..resources {
+        let list = format!("/v1/res{k}");
+        let item = format!("/v1/res{k}/{{id}}");
+        let body = json!({"required": true, "content": {"application/json": {"schema": sref(k)}}});
+        let err = json!({"$ref": "#/components/responses/Err"});
+        paths.insert(
+            list,
+            json!({
+                "parameters": [{"$ref": "#/components/parameters/Limit"}],
+                "get": {"operationId": format!("list{k}"), "security": if k % 3 == 0 { json!([]) } else { json!([{"bearer": []}]) },
+                        "responses": {"200": ok(k + 2), "default": err.clone()}},
+                "post": {"operationId": format!("create{k}"), "requestBody": body.clone(),
+                         "responses": {"201": ok(k), "400": err.clone()}}
+            }),
+        );
+        paths.insert(
+            item,
+            json!({
+                "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "string"}}],
+                "get": {"operationId": format!("get{k}"), "responses": {"200": ok(k), "404": err.clone()}},
+                "put": {"operationId": format!("put{k}"), "requestBody": body, "responses": {"200": ok(k), "404": err.clone()}},
+                "delete": {"operationId": format!("del{k}"), "responses": {"204": {"description": "gone"}, "404": err}}
+            }),
+        );
+    }
+    json!({
+        "openapi": "3.0.3",
+        "info": {"title": "big", "version": "1"},
+        "servers": [{"url": "/"}],
+        "security": [{"bearer": []}],
+        "paths": paths,
+        "components": {
+            "schemas": schemas,
+            "parameters": {"Limit": {"name": "limit", "in": "query", "schema": {"type": "integer", "minimum": 1, "maximum": 100}}},
+            "responses": {"Err": {"description": "error", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"message": {"type": "string"}}}}}}},
+            "securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}}
+        }
+    })
+}
+
+#[test]
+fn a_1500_operation_spec_parses_plans_and_generates_within_the_time_bound() {
+    let doc = big_spec(300);
+    let text = doc.to_string();
+    let t0 = std::time::Instant::now();
+    let spec = spec::parse(doc.clone()).unwrap();
+    let parsed = t0.elapsed();
+    assert_eq!(
+        spec.ops.len(),
+        1500,
+        "every operation under the default cap is kept"
+    );
+    assert!(spec.over_cap.is_empty() && spec.over_cap_total == 0);
+    // $refs were resolved (body, params, responses), not left as pointers
+    let post = spec
+        .ops
+        .iter()
+        .find(|o| o.method == "POST" && o.path == "/v1/res5")
+        .unwrap();
+    assert!(post.body.as_ref().unwrap()["properties"]["child"]["properties"]["id"].is_object());
+    assert!(
+        spec.ops
+            .iter()
+            .find(|o| o.path == "/v1/res5")
+            .unwrap()
+            .params
+            .iter()
+            .any(|p| p.name == "limit")
+    );
+    assert!(!post.body.as_ref().unwrap().to_string().contains("\"$ref\""));
+    assert!(spec.untested.is_empty(), "{:?}", spec.untested);
+
+    // case generation for every operation
+    let t1 = std::time::Instant::now();
+    let cases: usize = spec
+        .ops
+        .iter()
+        .map(|o| synth::generate(o, "t-", false, &HashMap::new()).len())
+        .sum();
+    let generated = t1.elapsed();
+    assert!(cases >= 1500, "{cases}");
+
+    // planning: the qa.plan items and the order the API checks follow
+    let env = mk_env(&dead_base(), &text, FIXTURE_ROLES, false, Profile::Quick);
+    let t2 = std::time::Instant::now();
+    crate::qa::plan::run_in(&env.ctx, &env.data).unwrap();
+    let loaded = spec::load(&env.ctx).unwrap().unwrap();
+    let order = plan_order(env.qa(), &loaded);
+    let planned = t2.elapsed();
+    assert_eq!(order.len(), 1500);
+    assert!(order.windows(2).all(|w| w[0].risk >= w[1].risk));
+    assert_eq!(env.qa().with(|c| c.plan.len()), 1500);
+
+    // coverage matrix building is linear: 1500 rows x 3 columns, each set twice
+    let t3 = std::time::Instant::now();
+    env.qa().with(|c| {
+        for o in &loaded.ops {
+            for col in ["anon", "functional", "stateful"] {
+                c.coverage.set(&o.key(), col, Cell::Untested);
+                c.coverage.set(&o.key(), col, Cell::Pass);
+            }
+        }
+        assert_eq!(c.coverage.rows.len(), 1500);
+        assert_eq!(c.coverage.cells.len(), 4500);
+    });
+    let covered = t3.elapsed();
+
+    let total = t0.elapsed();
+    eprintln!(
+        "1500 ops: parse {parsed:?}, generate {generated:?}, plan {planned:?}, coverage {covered:?}, total {total:?}"
+    );
+    assert!(
+        total < std::time::Duration::from_secs(5),
+        "parse {parsed:?} + generate {generated:?} + plan {planned:?} + coverage {covered:?} = {total:?}"
+    );
+}
+
+#[test]
+fn operations_beyond_the_cap_are_reported_not_planned_and_not_silently_passed() {
+    let doc = big_spec(300); // 1500 operations
+    let spec = spec::parse_with_cap(doc.clone(), 1000).unwrap();
+    assert_eq!(spec.cap, 1000);
+    assert_eq!(spec.ops.len(), 1000);
+    assert_eq!(spec.over_cap_total, 500);
+    assert_eq!(spec.over_cap.len(), 500);
+    // none of them is also kept, and the first kept / dropped follow document order
+    let kept: std::collections::HashSet<String> = spec.ops.iter().map(|o| o.key()).collect();
+    assert!(
+        spec.over_cap.iter().all(|k| !kept.contains(k)),
+        "an operation is both kept and over the cap"
+    );
+    // named one by one (first 25) plus one roll-up line with the totals and the way out
+    let named = spec
+        .untested
+        .iter()
+        .filter(|u| u.ends_with("over the 1000-operation cap"))
+        .count();
+    assert_eq!(
+        named,
+        25,
+        "{:?}",
+        spec.untested.iter().take(30).collect::<Vec<_>>()
+    );
+    assert!(
+        spec.untested.iter().any(|u| u
+            .starts_with("500 of 1500 operation(s) are over the 1000-operation cap")
+            && u.contains("READYHAI_MAX_OPS")),
+        "{:?}",
+        spec.untested
+    );
+    assert!(
+        spec.notes
+            .iter()
+            .any(|n| n.contains("first 1000 are tested, 500 are reported as untested"))
+    );
+    // the cap is a hard ceiling too: asking for more than 10000 is clamped
+    assert_eq!(
+        spec::parse_with_cap(big_spec(2), 1_000_000).unwrap().cap,
+        spec::HARD_MAX_OPS
+    );
+    // the plan keeps the same first N operations as the API checks
+    let ops = crate::qa::plan::ops_from_doc(&doc);
+    assert_eq!(ops.len(), 1500);
+    assert_eq!(
+        ops.iter()
+            .take(1000)
+            .map(|o| o.component())
+            .collect::<Vec<_>>(),
+        spec.ops.iter().map(|o| o.key()).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_spec_over_the_default_cap_runs_within_the_budget_and_reports_the_rest_as_untested() {
+    // 420 resources = 2100 operations: 100 over the default cap of 2000
+    let (srv, _) = orders_server(Opts::default());
+    let mut e = mk_env(
+        &srv.base,
+        &big_spec(420).to_string(),
+        &alice_only(),
+        false,
+        Profile::Quick,
+    );
+    e.ctx.qa.as_mut().unwrap().max_requests = 40;
+    let t0 = std::time::Instant::now();
+    crate::qa::plan::run_in(&e.ctx, &e.data).unwrap();
+    functional_in(&e.ctx, &e.data).unwrap();
+    authz::run(&e.ctx).unwrap();
+    let took = t0.elapsed();
+    let spec = spec::load(&e.ctx).unwrap().unwrap();
+    assert_eq!((spec.ops.len(), spec.over_cap.len()), (2000, 100));
+    // the budget bounded what was sent
+    assert!(
+        srv.requests().len() <= 41,
+        "{} requests for a budget of 40",
+        srv.requests().len()
+    );
+    // an operation beyond the cap is Untested in the coverage matrix, with a note that names the cap
+    let over = &spec.over_cap[0];
+    assert_eq!(e.cell(over, "functional"), Some(Cell::Untested), "{over}");
+    assert!(e.qa().with(|c| {
+        c.untested
+            .iter()
+            .any(|u| u.contains("100 of 2100 operation(s) are over the 2000-operation cap"))
+    }));
+    // almost everything else is Untested too (budget), and nothing was passed without a request
+    let (pass, untested) = e.qa().with(|c| {
+        (
+            c.coverage
+                .cells
+                .iter()
+                .filter(|x| x.2 == Cell::Pass)
+                .count(),
+            c.coverage
+                .cells
+                .iter()
+                .filter(|x| x.2 == Cell::Untested)
+                .count(),
+        )
+    });
+    assert!(pass <= 41, "{pass} passing cells from at most 41 requests");
+    assert!(untested > 1900, "{untested}");
+    assert!(
+        e.results()
+            .iter()
+            .any(|r| r.status == ResultStatus::Skipped && r.actual.contains("budget"))
+    );
+    eprintln!("2100 ops, budget 40: plan + functional + authz in {took:?}");
+    assert!(took < std::time::Duration::from_secs(60), "{took:?}");
+}

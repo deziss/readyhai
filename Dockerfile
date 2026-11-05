@@ -16,13 +16,14 @@ RUN touch src/main.rs && cargo build --release --locked
 FROM debian:bookworm-slim
 # hadolint ignore=DL3008
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates git openssh-client curl \
+ && apt-get install -y --no-install-recommends ca-certificates git openssh-client curl jq \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=docker:29-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=builder /app/target/release/readyhai /usr/local/bin/readyhai
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin readyhai \
  && mkdir /data && chown readyhai:readyhai /data
 ENV READYHAI_DATA=/data
+ENV READYHAI_IN_CONTAINER=1
 VOLUME /data
 USER 10001:10001
 EXPOSE 8080

@@ -426,7 +426,9 @@ export function Scenarios({
 
   return (
     <div className={`flex flex-col gap-3 ${className}`}>
-      <div className="sticky top-0 z-10 bg-rh-surface flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-rh-line">
+      {/* The toolbar owns the panel's top padding (the scroll container has none) so its opaque
+          surface reaches the very top of the scrollport and rows never show through above it. */}
+      <div className="sticky top-0 z-20 bg-rh-surface flex flex-wrap items-center justify-between gap-3 pt-4 pb-3 border-b border-rh-line">
         <div className="flex items-center gap-3 flex-wrap">
           <h3 className="text-sm font-semibold text-rh-text flex items-center gap-2">
             <SlidersHorizontal className="w-4 h-4 text-rh-muted" aria-hidden="true" />
@@ -508,7 +510,7 @@ export function Scenarios({
             : "No scenarios match your search or filters. Clear the search box or choose All statuses and All techniques."}
         </div>
       ) : (
-        <div className="flex flex-col gap-2.5">
+        <div className="isolate flex flex-col gap-2.5">
           {filteredCases.map((tc) => {
             const isExpanded = expandedRowId === tc.id;
             const owasp = getOwaspClassification(tc);

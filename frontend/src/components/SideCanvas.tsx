@@ -209,7 +209,7 @@ export function SideCanvas({
 
       {/* Scenarios and payload inspector */}
       {activeTab === "scenarios" && (
-        <div className="p-4 min-h-0 overflow-y-auto flex-1 flex flex-col gap-3" role="tabpanel">
+        <div className="px-4 pb-4 pt-0 min-h-0 overflow-y-auto flex-1 flex flex-col gap-3" role="tabpanel">
           <Scenarios testCases={testCases} onRetestCase={onRetestCase} />
         </div>
       )}

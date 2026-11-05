@@ -131,6 +131,11 @@ enum Cmd {
         #[arg(long, env = "READYHAI_PLUGINS")]
         plugins: Option<PathBuf>,
     },
+    /// Test-account roles for `qa --roles`
+    Roles {
+        #[command(subcommand)]
+        cmd: RolesCmd,
+    },
     /// Offline bundle: export (connected machine) / import (air-gapped machine)
     Bundle {
         #[command(subcommand)]
@@ -204,6 +209,22 @@ enum Cmd {
     Ping {
         #[arg(long, default_value = "http://127.0.0.1:8080/health")]
         url: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum RolesCmd {
+    /// Derive a roles.toml skeleton from an OpenAPI spec: roles from its security schemes, scopes and x-roles, env var names only (RH_<ROLE>_TOKEN), allow/deny globs inferred from scopes
+    Init {
+        /// OpenAPI 3.x file (JSON or YAML). A URL is refused: roles init makes no network requests
+        #[arg(long)]
+        spec: String,
+        /// Where to write it (`-` = stdout). Default: ~/.config/readyhai/secrets/roles.toml ($XDG_CONFIG_HOME), mode 0600
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Overwrite an existing file (refused without it)
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -388,6 +409,12 @@ fn run() -> anyhow::Result<u8> {
             }
             let qa_code = run.qa.as_ref().map_or(0, |q| q.recommendation.exit_code());
             Ok(run.verdict.exit_code().max(qa_code) as u8)
+        }
+        Cmd::Roles {
+            cmd: RolesCmd::Init { spec, out, force },
+        } => {
+            qa::roles::init::run(&spec, out.as_deref(), force)?;
+            Ok(0)
         }
         Cmd::Bundle {
             cmd:

@@ -1,7 +1,6 @@
 """CLI and execution entrypoint for ReadyHai LangGraph BGE-M3 Context Retriever."""
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -10,7 +9,7 @@ from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
-from .config import ConfigError, api_key_for, openai_compatible_base_url
+from .config import ConfigError, api_key_for, llm_models, openai_compatible_base_url
 from .embeddings import embedding_model_name, get_bge_m3_embeddings
 from .ingest import build_bge_m3_index
 from .output import dumps, evidence_payload
@@ -22,25 +21,32 @@ console = Console()
 def get_default_llm():
     """OpenAI-compatible chat model for synthesis, or None (with a printed reason) when not configured.
 
-    The endpoint comes from READYHAI_VLLM_URL (no built-in address). OPENAI_API_KEY is only sent to
-    api.openai.com; any other endpoint needs READYHAI_LLM_API_KEY, otherwise it gets "EMPTY".
+    The endpoint comes from READYHAI_LLM_URL (deprecated alias READYHAI_VLLM_URL; no built-in address).
+    READYHAI_LLM_MODEL may list several models: the first is used and the others are tried, in order,
+    when a call fails. OPENAI_API_KEY is only sent to api.openai.com; any other endpoint needs
+    READYHAI_LLM_API_KEY, otherwise it gets "EMPTY". The key is never printed.
     """
     base = openai_compatible_base_url(required=False)
     if not base:
-        console.print("[yellow]LLM synthesis skipped: READYHAI_VLLM_URL is not set.[/yellow]")
+        console.print("[yellow]LLM synthesis skipped: READYHAI_LLM_URL is not set.[/yellow]")
         return None
     try:
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(
-            base_url=base,
-            model=os.environ.get("READYHAI_LLM_MODEL", "qwen3.8-flash-next"),
-            api_key=api_key_for(base, "READYHAI_LLM_API_KEY"),
-            temperature=0.1,
-            max_tokens=4096,
-            timeout=60,
-            max_retries=2,
-        )
+        api_key = api_key_for(base, "READYHAI_LLM_API_KEY")
+        clients = [
+            ChatOpenAI(
+                base_url=base,
+                model=model,
+                api_key=api_key,
+                temperature=0.1,
+                max_tokens=4096,
+                timeout=60,
+                max_retries=2,
+            )
+            for model in llm_models()
+        ]
+        return clients[0].with_fallbacks(clients[1:]) if len(clients) > 1 else clients[0]
     except Exception as e:
         console.print(f"[yellow]LLM synthesis skipped: could not create the client ({escape(type(e).__name__)}).[/yellow]")
         return None
