@@ -16,8 +16,8 @@ use crate::llm::{Budget, LlmConfig, ask_typed};
 
 static NULL: Value = Value::Null;
 
-pub const MAX_CASES: usize = 40;
-const MAX_LLM_CASES: usize = 8;
+pub const MAX_CASES: usize = 60;
+const MAX_LLM_CASES: usize = 12;
 const XSS: &str = "\"><script>alert(1)</script>";
 const SQLI: &str = "' OR '1'='1' --";
 
@@ -288,6 +288,58 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
             user,
             "deterministic",
         ));
+        out.push(mk(
+            "authz",
+            format!("CORS preflight validation ({target_path})"),
+            "OPTIONS",
+            target_path.clone(),
+            "Verify CORS preflight does not reflect arbitrary origins or wildcards with credentials",
+            None,
+            "OPTIONS is handled cleanly with safe CORS headers",
+            Some(200),
+            "medium",
+            "anon",
+            "deterministic",
+        ));
+        out.push(mk(
+            "injection",
+            format!("Path traversal probe ({target_path})"),
+            "GET",
+            target_path.clone(),
+            "Inject directory traversal sequences into query parameters",
+            Some("file=..%2f..%2f..%2fetc%2fpasswd&path=%2e%2e%2f%2e%2e%2fetc%2fpasswd".into()),
+            "Path traversal is sanitized or blocked without reading filesystem",
+            None,
+            "high",
+            user,
+            "deterministic",
+        ));
+        out.push(mk(
+            "injection",
+            format!("NoSQL operator injection probe ({target_path})"),
+            "GET",
+            target_path.clone(),
+            "Inject NoSQL query selectors into query parameters",
+            Some("filter[$ne]=null&search[$gt]=".into()),
+            "NoSQL query operators are sanitized and cause no database or server error",
+            None,
+            "high",
+            user,
+            "deterministic",
+        ));
+        out.push(mk(
+            "boundary",
+            format!("Integer overflow & numeric boundary tolerance ({target_path})"),
+            "GET",
+            target_path.clone(),
+            "Inject maximum 64-bit integer and negative bounds",
+            Some("id=9223372036854775807&limit=18446744073709551615&offset=-1".into()),
+            "Numeric boundaries are handled gracefully without panic or 500 error",
+            None,
+            "medium",
+            user,
+            "deterministic",
+        ));
     }
     if let Some(s) = secondary {
         let st = routes.iter().find(|r| r.path == s).map(|r| r.status_code);
@@ -332,6 +384,20 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
         );
         c.concurrency_burst = Some(5);
         out.push(c);
+
+        out.push(mk(
+            "boundary",
+            format!("Mass assignment & BOPLA property escalation ({f})"),
+            "POST",
+            f.clone(),
+            "Inject elevated administrative attributes into request body",
+            Some(r#"{"role": "admin", "is_admin": true, "is_superuser": true, "permissions": ["*"]}"#.into()),
+            "Privilege escalation parameters are safely ignored or rejected",
+            None,
+            "high",
+            user,
+            "deterministic",
+        ));
     }
     // Stateful BOLA tenant isolation check on discovered API resource routes (never root '/', and never sensitive probe files like .env or .git)
     let is_sensitive_or_static_file = |path: &str| {
@@ -742,11 +808,16 @@ fn spec_cases(spec: &SpecDoc, creds: &Credentials) -> Vec<PlannedCase> {
 
 // ---------------------------------------------------------------- LLM additions
 
-const PLANNER_ROLE: &str = "You are a senior adversarial QA planner. Propose EXTRA test cases for a web application. \
-Components must be copied exactly from the known_endpoints list; never invent routes. Allowed methods: GET, HEAD, OPTIONS, POST, PUT, PATCH, DELETE. \
+const PLANNER_ROLE: &str = "You are a senior adversarial QA planner and principal security researcher. \
+Propose creative, randomized, non-repetitive test cases for a web application exploring modern OWASP API Security 2023 vectors, \
+unexpected encodings, boundary limits, and complex state attacks. \
+Components MUST be copied exactly from the known_endpoints list; never invent routes. \
+Allowed methods: GET, HEAD, OPTIONS, POST, PUT, PATCH, DELETE. \
 Format: {\"cases\": [{\"title\": string, \"component\": string, \"method\": string, \"technique\": \"authz\"|\"boundary\"|\"injection\"|\"negative\"|\"state_transition\", \
 \"input_hint\": string, \"payload\": string|null, \"expected_behavior\": string, \"expected_status\": int|null, \"risk_level\": \"critical\"|\"high\"|\"medium\"|\"low\"}]}. \
-For GET/HEAD/OPTIONS the payload becomes the query string (use k=v&k2=v2); for other methods it is the request body.";
+For GET/HEAD/OPTIONS the payload becomes the query string (use k=v&k2=v2); for other methods it is the request body. \
+Ensure high diversity across attack archetypes: BOPLA/Mass Assignment, SSRF, Unicode/Homoglyph normalization, NoSQL/Filter tampering, \
+Prototype Pollution, Header injection/IP spoofing, XML/MIME confusion, Exponential boundaries, and Business logic bypasses.";
 
 #[derive(Debug, Deserialize)]
 struct PlannerOutput {
@@ -909,10 +980,38 @@ fn llm_extras(
         "target": target, "profile": profile, "app_architecture": d.tech.app_architecture, "primary_framework": d.tech.primary_framework,
         "known_endpoints": endpoints, "operator_instructions": instructions.map(|i| clean(i, 500)).unwrap_or_default(),
     });
+    let entropy = {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(42);
+        format!("{:016x}", nanos)
+    };
+    let archetypes_pool = [
+        "BOPLA & Mass Assignment (e.g. injecting 'is_admin': true, 'role': 'superuser', 'account_tier': 'enterprise')",
+        "SSRF & Cloud Metadata Probing (e.g. 'url=http://169.254.169.254/latest/meta-data/', 'target=http://127.0.0.1:8080/internal')",
+        "Unicode Normalization & Homoglyphs (e.g. full-width '＜script＞', null byte '%00', zero-width spaces)",
+        "NoSQL / JSON Filter Selector Injection (e.g. '$where', '$regex', '$gt', '[$ne]=null')",
+        "Prototype Pollution & Object Key Tampering (e.g. '__proto__.isAdmin', 'constructor.prototype')",
+        "Header Spoofing & Cache Poisoning (e.g. 'X-Forwarded-Host', 'X-Original-URL', 'X-Rewrite-URL')",
+        "Boundary Spikes & Exponential Overflows (e.g. '1e309', negative numbers, massive arrays, deeply nested JSON)",
+        "MIME & Strict Type Confusion (e.g. unexpected Content-Type, malformed schema types, float where int expected)",
+        "JWT Algorithm Confusion & Weak Bearer Tokens (e.g. 'alg: none', empty bearer token, truncated signatures)",
+        "Business Logic & State Sequencing Bypasses (e.g. skip intermediate steps, double-spend operations)",
+    ];
     let prompt = format!(
-        "Target under test:\n{}\nPropose up to {} additional adversarial test cases that complement the baseline (authz, boundary, injection, negative inputs, state transitions).\nImportant rules:\n- Do not propose mutating HTTP methods (POST, PUT, PATCH, DELETE) on static files or sensitive file probes (e.g. /.env, /.git/config).\n- Only propose methods and paths that are valid for the target.",
+        "Target under test:\n{}\n\
+Random Exploration Seed: {}\n\
+Synthesize up to {} unique, randomized adversarial test cases. Focus on high-entropy edge cases and modern attack archetypes:\n- {}\n\
+Important rules:\n\
+- Components must be copied EXACTLY from known_endpoints; never invent routes.\n\
+- Do not propose mutating HTTP methods (POST, PUT, PATCH, DELETE) on static files or sensitive file probes (e.g. /.env, /.git/config).\n\
+- Strive for novel, unique vectors (vary parameter names, boundaries, encodings, and payloads across cases).\n\
+- Allowed techniques: authz, boundary, injection, negative, state_transition.",
         fence_capped(&facts, 200),
-        MAX_LLM_CASES
+        entropy,
+        MAX_LLM_CASES,
+        archetypes_pool.join("\n- ")
     );
     let out = ask_typed::<PlannerOutput>(
         cfg,
@@ -1050,6 +1149,22 @@ mod tests {
         );
         assert_eq!(out.cases[0].id, "TC-001");
         assert_eq!(out.source, "deterministic");
+    }
+
+    #[test]
+    fn new_baseline_security_scenarios_are_generated() {
+        let mut d = Discovery::default();
+        d.routes = vec![
+            route("/", 200),
+            route("/api/items", 200),
+        ];
+        d.routes[1].has_form = true;
+        let out = plan_cases(None, "http://readyhai:8080", "standard", &d, None, &Credentials::none());
+        assert!(out.cases.iter().any(|c| c.title.contains("CORS preflight")));
+        assert!(out.cases.iter().any(|c| c.title.contains("Path traversal")));
+        assert!(out.cases.iter().any(|c| c.title.contains("NoSQL operator")));
+        assert!(out.cases.iter().any(|c| c.title.contains("Integer overflow")));
+        assert!(out.cases.iter().any(|c| c.title.contains("Mass assignment")));
     }
 
     #[test]

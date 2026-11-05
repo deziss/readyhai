@@ -663,8 +663,9 @@ mod tests {
                     } else {
                         "HTTP/1.1 409 Conflict\r\n"
                     };
-                    let resp = format!("{status_line}Content-Length: 2\r\n\r\nOK");
+                    let resp = format!("{status_line}Connection: close\r\nContent-Length: 2\r\n\r\nOK");
                     let _ = stream.write_all(resp.as_bytes());
+                    let _ = stream.flush();
                 }
             }
         });
