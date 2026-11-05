@@ -5,6 +5,8 @@ on:
     branches: [ master, main ]
   pull_request:
     branches: [ master, main ]
+  # image.yml calls this workflow so that images are only published after these jobs pass.
+  workflow_call:
 
 permissions:
   contents: read
@@ -42,6 +44,47 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
+  eval:
+    # Scores the QA engine and the agent against fixtures with seeded defects (recall, false
+    # positives, pass^k, request/time budgets). Loopback only: no network, no docker, no LLM.
+    # The fixture servers are python3 stdlib scripts. Fails when a threshold in tests/eval/*.toml
+    # is missed. See docs/eval.md.
+    name: Eval (QA engine + agent)
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Run eval (all suites, k = 2)
+        run: cargo run --quiet -- eval --suite all --k 2 --out eval-report
+
+      - name: Publish summary
+        if: always()
+        run: |
+          if [ -f eval-report/eval-report.md ]; then
+            cat eval-report/eval-report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eval-report
+          path: eval-report/
+          if-no-files-found: warn
+
   frontend:
     name: Frontend lint, typecheck & test
     runs-on: ubuntu-latest
@@ -70,3 +113,39 @@ jobs:
           python-version: "3.12"
       - name: Run unit tests
         run: python -m unittest discover -s runners/context_retriever/tests -t . -v
+
+  docker:
+    # Pull requests only: prove the images still build. Nothing is pushed or loaded anywhere.
+    # (Skipped when image.yml calls this workflow for a release: it builds the images itself.)
+    name: Docker build (${{ matrix.name }}, no push)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: readyhai
+            context: .
+            file: Dockerfile
+          - name: readyhai-frontend
+            context: frontend
+            file: frontend/Dockerfile
+          - name: readyhai-playwright-runner
+            context: runners/playwright
+            file: runners/playwright/Dockerfile
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build (amd64, no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          push: false
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}

@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::process::Command;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------- limits
@@ -59,7 +59,19 @@ const SUBRESOURCE_BYTES_CAP: usize = 2 * 1024 * 1024;
 const HTML_BYTES_CAP: usize = 1024 * 1024;
 const NOT_MEASURED: &str = "not measured";
 
-static REQUESTER_IP_CACHE: OnceLock<RequesterIpInfo> = OnceLock::new();
+/// How long a successful public-IP detection is reused.
+const IP_CACHE_OK_TTL: Duration = Duration::from_secs(600);
+/// A failed detection (only the local-interface fallback was available) is retried soon: a
+/// flaky first call must not pin a wrong answer for the life of the process.
+const IP_CACHE_FAIL_TTL: Duration = Duration::from_secs(30);
+/// Connect / total timeout per IP-echo provider, and the budget for all of them together.
+const IP_PROVIDER_CONNECT: Duration = Duration::from_millis(1000);
+const IP_PROVIDER_TIMEOUT: Duration = Duration::from_millis(1500);
+const IP_LOOKUP_BUDGET: Duration = Duration::from_millis(4000);
+
+/// (when stored, how long it is valid, the result). The lock is held while detecting, so
+/// concurrent callers share one lookup instead of each hitting the providers.
+static REQUESTER_IP_CACHE: Mutex<Option<(Instant, Duration, RequesterIpInfo)>> = Mutex::new(None);
 
 // ---------------------------------------------------------------- shared helpers
 
@@ -215,92 +227,138 @@ pub struct RequesterIpInfo {
     pub detected_at: String,
 }
 
+/// The egress IP as seen by targets, for firewall allow-listing. **Blocking** (may contact IP-echo
+/// services): async callers use the blocking pool. Not contacted at all in offline mode
+/// (`READYHAI_OFFLINE`); results are cached with a TTL (short for a failed lookup).
 pub fn detect_requester_public_ip() -> RequesterIpInfo {
-    if let Some(cached) = REQUESTER_IP_CACHE.get() {
-        return cached.clone();
+    // An operator override is read on every call: cheap, and a change takes effect at once.
+    if let Some(info) = env_override_ip() {
+        return info;
     }
-    let detected = resolve_public_ip();
-    let _ = REQUESTER_IP_CACHE.set(detected.clone());
-    detected
+    cached_or(
+        &REQUESTER_IP_CACHE,
+        IP_CACHE_OK_TTL,
+        IP_CACHE_FAIL_TTL,
+        resolve_public_ip,
+    )
 }
 
-fn resolve_public_ip() -> RequesterIpInfo {
+type IpCache = Mutex<Option<(Instant, Duration, RequesterIpInfo)>>;
+
+/// The cached value while it is fresh, else whatever `resolve` returns (and cache that for
+/// `ok_ttl` if it was a real detection, `fail_ttl` if it was only the local fallback).
+fn cached_or(
+    cache: &IpCache,
+    ok_ttl: Duration,
+    fail_ttl: Duration,
+    resolve: impl FnOnce() -> (RequesterIpInfo, bool),
+) -> RequesterIpInfo {
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, ttl, info)) = guard.as_ref()
+        && at.elapsed() < *ttl
+    {
+        return info.clone();
+    }
+    let (info, detected) = resolve();
+    let ttl = if detected { ok_ttl } else { fail_ttl };
+    *guard = Some((Instant::now(), ttl, info.clone()));
+    info
+}
+
+fn env_override_ip() -> Option<RequesterIpInfo> {
+    let env_ip = std::env::var("READYHAI_PUBLIC_IP")
+        .or_else(|_| std::env::var("READYHAI_EGRESS_IP"))
+        .ok()?;
+    let trimmed = env_ip.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let is_priv = is_private_ip(trimmed);
+    Some(RequesterIpInfo {
+        egress_public_ip: trimmed.to_string(),
+        ip_type: if is_priv {
+            "Private Intranet (Manual)"
+        } else {
+            "Public Egress (Manual)"
+        }
+        .to_string(),
+        is_private: is_priv,
+        allowlist_guidance: format!(
+            "Add `{trimmed}/32` to target firewall allowlist, AWS Security Group, Cloudflare WAF, or iptables."
+        ),
+        detected_via: "Environment Variable (READYHAI_PUBLIC_IP)".to_string(),
+        detected_at: crate::engine::now(),
+    })
+}
+
+/// The IP-echo providers, tried in order.
+const IP_PROVIDERS: [(&str, &str); 4] = [
+    ("api.ipify.org", "https://api.ipify.org"),
+    ("checkip.amazonaws.com", "https://checkip.amazonaws.com"),
+    ("icanhazip.com", "https://icanhazip.com"),
+    ("ifconfig.me", "https://ifconfig.me/ip"),
+];
+
+/// Ask the providers for our address. Short timeouts and one overall budget: a blackholed
+/// network costs seconds, not minutes. The answer must be a bare IP address.
+fn query_ip_providers(providers: &[(&str, &str)]) -> Option<(String, String)> {
+    let client = reqwest::blocking::Client::builder()
+        .connect_timeout(IP_PROVIDER_CONNECT)
+        .timeout(IP_PROVIDER_TIMEOUT)
+        .build()
+        .ok()?;
+    let t0 = Instant::now();
+    for (name, url) in providers {
+        if t0.elapsed() >= IP_LOOKUP_BUDGET {
+            break;
+        }
+        let Ok(resp) = client.get(*url).send() else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let (body, _) = read_capped(resp, 128);
+        let text = String::from_utf8_lossy(&body);
+        if let Ok(ip) = text.trim().parse::<std::net::IpAddr>() {
+            return Some((ip.to_string(), (*name).to_string()));
+        }
+    }
+    None
+}
+
+/// Returns the info and whether it came from a real detection (vs the local-interface fallback).
+fn resolve_public_ip() -> (RequesterIpInfo, bool) {
+    resolve_with(crate::bundle::offline(), &IP_PROVIDERS)
+}
+
+fn resolve_with(offline: bool, providers: &[(&str, &str)]) -> (RequesterIpInfo, bool) {
     let now = crate::engine::now();
 
-    // 1. User manual override via ENV
-    if let Ok(env_ip) =
-        std::env::var("READYHAI_PUBLIC_IP").or_else(|_| std::env::var("READYHAI_EGRESS_IP"))
-    {
-        let trimmed = env_ip.trim();
-        if !trimmed.is_empty() {
-            let is_priv = is_private_ip(trimmed);
-            return RequesterIpInfo {
-                egress_public_ip: trimmed.to_string(),
+    // Query external IP check providers, unless offline (no internet by definition).
+    if !offline && let Some((ip, name)) = query_ip_providers(providers) {
+        let is_priv = is_private_ip(&ip);
+        return (
+            RequesterIpInfo {
+                egress_public_ip: ip.clone(),
                 ip_type: if is_priv {
-                    "Private Intranet (Manual)"
+                    "Private Network (RFC1918)"
                 } else {
-                    "Public Egress (Manual)"
+                    "Public Egress (Direct)"
                 }
                 .to_string(),
                 is_private: is_priv,
                 allowlist_guidance: format!(
-                    "Add `{}/32` to target firewall allowlist, AWS Security Group, Cloudflare WAF, or iptables.",
-                    trimmed
+                    "Add `{ip}/32` to your target's firewall, AWS Security Group, Cloudflare WAF, or iptables to allow ReadyHai automated QA probes."
                 ),
-                detected_via: "Environment Variable (READYHAI_PUBLIC_IP)".to_string(),
+                detected_via: name,
                 detected_at: now,
-            };
-        }
+            },
+            true,
+        );
     }
 
-    // 2. Query external IP check providers with short timeout
-    let providers = [
-        ("api.ipify.org", "https://api.ipify.org"),
-        ("checkip.amazonaws.com", "https://checkip.amazonaws.com"),
-        ("icanhazip.com", "https://icanhazip.com"),
-        ("ifconfig.me", "https://ifconfig.me/ip"),
-    ];
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_millis(2200))
-        .build()
-        .ok();
-
-    if let Some(c) = client {
-        for (name, url) in providers {
-            if let Ok(resp) = c.get(url).send()
-                && resp.status().is_success()
-                && let Ok(text) = resp.text()
-            {
-                let ip = text.trim();
-                if (ip.contains('.') || ip.contains(':'))
-                    && ip.len() >= 7
-                    && ip.len() <= 45
-                    && !ip.contains('<')
-                {
-                    let is_priv = is_private_ip(ip);
-                    return RequesterIpInfo {
-                        egress_public_ip: ip.to_string(),
-                        ip_type: if is_priv {
-                            "Private Network (RFC1918)"
-                        } else {
-                            "Public Egress (Direct)"
-                        }
-                        .to_string(),
-                        is_private: is_priv,
-                        allowlist_guidance: format!(
-                            "Add `{}/32` to your target's firewall, AWS Security Group, Cloudflare WAF, or iptables to allow ReadyHai automated QA probes.",
-                            ip
-                        ),
-                        detected_via: name.to_string(),
-                        detected_at: now,
-                    };
-                }
-            }
-        }
-    }
-
-    // 3. Fallback: Local outbound socket address for intranet / airgapped environments
+    // Fallback: local outbound socket address (connecting a UDP socket sends no packet).
     let local_ip = std::net::UdpSocket::bind("0.0.0.0:0")
         .ok()
         .and_then(|s| {
@@ -310,36 +368,38 @@ fn resolve_public_ip() -> RequesterIpInfo {
         .unwrap_or_else(|| "127.0.0.1".to_string());
 
     let is_priv = is_private_ip(&local_ip);
-    RequesterIpInfo {
-        egress_public_ip: local_ip.clone(),
-        ip_type: if is_priv {
-            "Private Intranet (RFC1918)"
-        } else {
-            "Local Egress"
-        }
-        .to_string(),
-        is_private: is_priv,
-        allowlist_guidance: format!(
-            "Add `{}/32` to your local firewall or internal gateway allowlist.",
-            local_ip
-        ),
-        detected_via: "Local Network Interface Socket".to_string(),
-        detected_at: now,
-    }
+    (
+        RequesterIpInfo {
+            egress_public_ip: local_ip.clone(),
+            ip_type: if is_priv {
+                "Private Intranet (RFC1918)"
+            } else {
+                "Local Egress"
+            }
+            .to_string(),
+            is_private: is_priv,
+            allowlist_guidance: format!(
+                "Add `{local_ip}/32` to your local firewall or internal gateway allowlist."
+            ),
+            detected_via: if offline {
+                "Local Network Interface Socket (offline mode: no external lookup)".to_string()
+            } else {
+                "Local Network Interface Socket (external lookup failed)".to_string()
+            },
+            detected_at: now,
+        },
+        false,
+    )
 }
 
+/// Is this address internal (loopback, RFC1918, link-local, CGNAT, unique-local v6, ...)? One
+/// definition for the crate: [`crate::scope::is_internal_ip`]. Text that is not an IP is not private.
 pub fn is_private_ip(ip: &str) -> bool {
-    if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
-        match addr {
-            std::net::IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
-            std::net::IpAddr::V6(v6) => v6.is_loopback(),
-        }
-    } else {
-        ip.starts_with("10.")
-            || ip.starts_with("192.168.")
-            || ip.starts_with("172.")
-            || ip.starts_with("127.")
-    }
+    let t = ip.trim().trim_start_matches('[').trim_end_matches(']');
+    let t = t.split('%').next().unwrap_or(t); // drop an IPv6 zone id
+    t.parse::<std::net::IpAddr>()
+        .map(crate::scope::is_internal_ip)
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2824,6 +2884,158 @@ mod tests {
     }
 
     // ------------------------------------------------------------ target / clamp validation
+
+    // ---------------------------------------------------------------- public IP detection
+
+    fn dummy_info(ip: &str) -> RequesterIpInfo {
+        RequesterIpInfo {
+            egress_public_ip: ip.into(),
+            ip_type: "t".into(),
+            is_private: false,
+            allowlist_guidance: String::new(),
+            detected_via: "test".into(),
+            detected_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn private_ip_uses_the_one_internal_definition() {
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "172.16.5.4",
+            "192.168.1.1",
+            "169.254.169.254",
+            "100.64.0.1", // CGNAT
+            "::1",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:10.0.0.1",
+            "[fd00::1]",
+            "fe80::1%eth0",
+            " 10.1.1.1 ",
+        ] {
+            assert!(is_private_ip(ip), "{ip}");
+        }
+        for ip in [
+            "8.8.8.8",
+            "172.32.0.1", // just outside 172.16/12 (the old string-prefix check called it private)
+            "172.200.1.1",
+            "100.128.0.1",
+            "2606:4700:4700::1111",
+            "not an ip",
+            "",
+        ] {
+            assert!(!is_private_ip(ip), "{ip}");
+        }
+    }
+
+    #[test]
+    fn ip_providers_must_return_a_bare_ip() {
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = hits.clone();
+        let good = stub(move |_| {
+            h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            reply("200 OK", "203.0.113.5\n")
+        });
+        let html = stub(|_| reply_html("200 OK", "<html>blocked</html>"));
+        let down = stub(|_| reply("503 Service Unavailable", "no"));
+        // a provider that answers with HTML or an error is skipped; the next one is used
+        let r = query_ip_providers(&[
+            ("html", html.as_str()),
+            ("down", down.as_str()),
+            ("good", good.as_str()),
+        ]);
+        assert_eq!(r, Some(("203.0.113.5".to_string(), "good".to_string())));
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // nobody usable: None, and quickly (a closed port, then a hanging one: bounded by the timeouts)
+        let closed = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}/", l.local_addr().unwrap())
+        };
+        let hang = stub(|_| None);
+        let t0 = Instant::now();
+        assert_eq!(
+            query_ip_providers(&[("closed", closed.as_str()), ("hang", hang.as_str())]),
+            None
+        );
+        assert!(t0.elapsed() < Duration::from_secs(4), "{:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn offline_mode_never_contacts_an_ip_service() {
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = hits.clone();
+        let url = stub(move |_| {
+            h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            reply("200 OK", "203.0.113.5")
+        });
+        let (info, detected) = resolve_with(true, &[("stub", url.as_str())]);
+        assert!(!detected);
+        assert!(
+            info.detected_via.contains("offline"),
+            "{}",
+            info.detected_via
+        );
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // online, the same stub is used
+        let (info, detected) = resolve_with(false, &[("stub", url.as_str())]);
+        assert!(detected);
+        assert_eq!(info.egress_public_ip, "203.0.113.5");
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // and READYHAI_OFFLINE is what resolve_public_ip consults
+        let _g = crate::bundle::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("READYHAI_OFFLINE", "1") };
+        let (info, detected) = resolve_public_ip();
+        unsafe { std::env::remove_var("READYHAI_OFFLINE") };
+        assert!(!detected && info.detected_via.contains("offline"));
+    }
+
+    #[test]
+    fn a_failed_detection_is_not_cached_forever() {
+        let cache: IpCache = Mutex::new(None);
+        let calls = std::cell::Cell::new(0);
+        let mk = |ip: &'static str, ok: bool| {
+            let calls = &calls;
+            move || {
+                calls.set(calls.get() + 1);
+                (dummy_info(ip), ok)
+            }
+        };
+        let hour = Duration::from_secs(3600);
+        // a failure whose TTL has run out is looked up again, and the new answer replaces it
+        assert_eq!(
+            cached_or(&cache, hour, Duration::ZERO, mk("10.0.0.1", false)).egress_public_ip,
+            "10.0.0.1"
+        );
+        assert_eq!(
+            cached_or(&cache, hour, Duration::ZERO, mk("203.0.113.9", true)).egress_public_ip,
+            "203.0.113.9"
+        );
+        assert_eq!(calls.get(), 2);
+        // a success is reused while fresh
+        assert_eq!(
+            cached_or(&cache, hour, Duration::ZERO, mk("198.51.100.1", true)).egress_public_ip,
+            "203.0.113.9"
+        );
+        assert_eq!(calls.get(), 2);
+        // a failure is reused only for the short TTL
+        let cache: IpCache = Mutex::new(None);
+        let calls2 = std::cell::Cell::new(0);
+        for _ in 0..3 {
+            cached_or(&cache, hour, hour, || {
+                calls2.set(calls2.get() + 1);
+                (dummy_info("10.0.0.2"), false)
+            });
+        }
+        assert_eq!(
+            calls2.get(),
+            1,
+            "within the fail TTL the failure is served from cache"
+        );
+    }
 
     #[test]
     fn targets_must_be_http_or_https() {

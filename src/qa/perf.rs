@@ -382,7 +382,7 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
         )));
     };
     let host = crate::scope::url_host(&url)?;
-    let scope = crate::scope::active();
+    let scope = crate::scope::active()?;
     let limits = effective_limits(
         scope
             .as_ref()
@@ -516,18 +516,7 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
             serde_json::to_string_pretty(&m)?,
         );
     }
-    let mut note = format!(
-        "perf: {} req, {:.1} rps, p50 {:.0} ms, p95 {:.0} ms, p99 {:.0} ms, errors {:.2}% ({} VUs, {} s, {} personas)",
-        m.requests,
-        m.rps,
-        m.p50,
-        m.p95,
-        m.p99,
-        m.error_rate * 100.0,
-        limits.vus,
-        limits.duration_secs,
-        personas.len()
-    );
+    let mut note = summary_note(&m, &limits, personas.len());
     if old.is_none() && !aborted && m.error_rate <= limits.max_error_rate && m.requests > 0 {
         store_baseline(&data, &key, &m)?;
         note.push_str("; perf baseline recorded");
@@ -646,8 +635,34 @@ fn run(ctx: &Ctx) -> Result<CheckOutput> {
             },
         );
         c.notes.push(note.clone());
+        // the one canonical machine-readable p95 (the dashboard trend reads exactly this)
+        if m.requests > 0 && m.p95 > 0.0 {
+            c.notes.push(p95_note(m.p95));
+        }
     });
     Ok(CheckOutput::findings(findings))
+}
+
+/// Human one-line summary of a k6 run (report note and the perf case's `actual`).
+pub fn summary_note(m: &PerfMetrics, limits: &Limits, personas: usize) -> String {
+    format!(
+        "perf: {} req, {:.1} rps, p50 {:.0} ms, p95 {:.0} ms, p99 {:.0} ms, errors {:.2}% ({} VUs, {} s, {} personas)",
+        m.requests,
+        m.rps,
+        m.p50,
+        m.p95,
+        m.p99,
+        m.error_rate * 100.0,
+        limits.vus,
+        limits.duration_secs,
+        personas
+    )
+}
+
+/// The canonical p95 note `perf p95=<ms>ms`: the overall p95 of the k6 run. The trend dashboard
+/// (`dashboard::parse_p95`) parses this exact shape, so change both together.
+pub fn p95_note(p95_ms: f64) -> String {
+    format!("perf p95={p95_ms:.0}ms")
 }
 
 fn origin(url: &str) -> String {

@@ -37,19 +37,43 @@ pub struct IndexLine {
     pub p95: Option<f64>,
 }
 
-fn parse_p95(notes: &[String]) -> Option<f64> {
-    for n in notes {
-        if let Some(i) = n.find("perf p95=") {
-            let t: String = n[i + 9..]
-                .chars()
-                .take_while(|c| c.is_ascii_digit() || *c == '.')
-                .collect();
-            if let Ok(v) = t.parse() {
-                return Some(v);
-            }
-        }
-    }
-    None
+/// Digits (and a dot) right after `marker` in `n`.
+fn number_after(n: &str, marker: &str) -> Option<f64> {
+    let i = n.find(marker)? + marker.len();
+    let t: String = n[i..]
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.')
+        .collect();
+    t.parse().ok()
+}
+
+/// Run-level p95 (ms) from the notes the QA engine really emits:
+/// 1. `perf p95=<ms>ms` (qa::perf::p95_note): the k6 overall p95, preferred;
+/// 2. `perf: ..., p95 <ms> ms, ...` (qa::perf::summary_note): the same figure in runs that
+///    predate the canonical note;
+/// 3. `latency <op> p95=<ms>ms (n=..)` (qa::api::latency_note): per API endpoint, so the WORST
+///    endpoint stands for the run when no k6 result exists.
+pub(crate) fn parse_p95(notes: &[String]) -> Option<f64> {
+    notes
+        .iter()
+        .find_map(|n| {
+            n.strip_prefix("perf p95=")
+                .and_then(|r| number_after(r, ""))
+        })
+        .or_else(|| {
+            notes
+                .iter()
+                .filter(|n| n.starts_with("perf:"))
+                .find_map(|n| number_after(n, ", p95 "))
+        })
+        .or_else(|| {
+            notes
+                .iter()
+                .filter(|n| n.starts_with("latency "))
+                .filter_map(|n| number_after(n, " p95="))
+                .fold(None, |m: Option<f64>, v| Some(m.map_or(v, |x| x.max(v))))
+        })
 }
 
 pub fn index_line(run: &Run) -> IndexLine {
@@ -88,6 +112,7 @@ pub fn index_line(run: &Run) -> IndexLine {
                 crate::qa::model::Recommendation::Go => "GO",
                 crate::qa::model::Recommendation::ConditionalGo => "CONDITIONAL GO",
                 crate::qa::model::Recommendation::NoGo => "NO-GO",
+                crate::qa::model::Recommendation::Inconclusive => "INCONCLUSIVE",
             }
             .to_string()
         }),
@@ -279,5 +304,37 @@ mod tests {
         assert!(!h.contains("<b>x</b>"));
         assert!(h.contains("<polyline"));
         assert!(h.contains("NO-GO") && !h.contains("<script"));
+    }
+
+    #[test]
+    fn p95_is_parsed_from_the_notes_the_engine_really_emits() {
+        // perf.rs: the real emitters, fed with the real k6 fixture
+        let m = crate::qa::perf::parse_summary(include_str!(
+            "../tests/fixtures/qa-perf/k6-summary.json"
+        ))
+        .unwrap();
+        let limits = crate::qa::perf::effective_limits(None);
+        let canonical = crate::qa::perf::p95_note(m.p95);
+        let human = crate::qa::perf::summary_note(&m, &limits, 2);
+        assert_eq!(canonical, "perf p95=165ms");
+        assert_eq!(parse_p95(std::slice::from_ref(&canonical)), Some(165.0));
+        // the human summary carries the same figure (runs recorded before the canonical note)
+        assert_eq!(
+            parse_p95(std::slice::from_ref(&human)),
+            Some(165.0),
+            "{human}"
+        );
+        // canonical wins over the summary and over per-endpoint latency notes
+        let lat = crate::qa::api::latency_note("GET /orders", 900, 12);
+        assert_eq!(parse_p95(&[lat.clone(), human, canonical]), Some(165.0));
+        // api-only run: the worst endpoint stands for the run
+        let a = crate::qa::api::latency_note("GET /a", 40, 5);
+        let b = crate::qa::api::latency_note("GET /b", 230, 5);
+        assert_eq!(parse_p95(&[a, b, lat]), Some(900.0));
+        // unrelated notes never match
+        assert_eq!(
+            parse_p95(&["spec baseline stored".into(), "perf: 0 req".into()]),
+            None
+        );
     }
 }

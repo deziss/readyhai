@@ -1,0 +1,81 @@
+# Suite: `readyhai qa` (engine::scan with QA options, profile standard, no tools) against the
+# qa-api fixture. Each seeded bug in tests/fixtures/qa-api/server.py has one [[expect]] below.
+# Tokens are the FAKE fixture values from tests/fixtures/qa-api/README.md.
+name = "qa-api"
+kind = "qa"
+description = "QA engine vs the 7 seeded bugs of the qa-api fixture"
+# 7 defects are seeded and every one is detected by `readyhai qa`: the verdict is a firm No-Go.
+expect_verdict = "NoGo/Fail"
+
+[target]
+server = "tests/fixtures/qa-api/server.py"
+spec = "tests/fixtures/qa-api/openapi.json"
+roles = "tests/fixtures/qa-api/roles.toml"
+profile = "standard"
+
+[target.tokens]
+alice = "alice-token"
+bob = "bob-token"
+admin = "admin-token"
+
+[thresholds]
+min_recall = 0.85
+max_false_positives = 2
+pass_k = true
+stable_verdict = true
+# A full run sends ~125 requests and takes ~35 s; the budgets leave room for slower CI runners.
+max_requests = 300
+max_seconds = 150
+
+[[expect]]
+id = "idor"
+rule = "qa.api.bola"
+component = "GET /orders/{id}"
+note = "bug 1: GET /orders/{id} returns any user's order"
+
+[[expect]]
+id = "admin-no-auth"
+rule = "qa.api.authz_missing"
+component = "GET /admin/stats"
+note = "bug 2: /admin/stats needs no token"
+
+[[expect]]
+id = "note-500"
+rule = "qa.api.server_error"
+component = "POST /orders"
+note = "bug 3: note longer than 100 chars -> 500"
+
+[[expect]]
+id = "traceback-leak"
+rule = "qa.api.error_leak"
+component = "GET /search"
+note = "bug 4: q=' -> 500 with a Python traceback in the body"
+
+[[expect]]
+id = "contract-total"
+rule = "qa.api.contract_violation"
+component = "GET /orders/{id}"
+note = "bug 5: GET /orders/2 omits the required field total"
+
+[[expect]]
+id = "delete-noop"
+rule = "qa.api.delete_not_effective"
+component = "DELETE /orders/{id}"
+note = "bug 6: DELETE answers 204 but keeps the order"
+
+[[expect]]
+id = "slow-report"
+rule = "qa.api.slow_response"
+component = "GET /reports/slow"
+note = "bug 7: /reports/slow sleeps 1.5 s"
+
+# Real extra views of seeded bugs; they are not false positives.
+[[allow]]
+rule = "qa.api.privilege_escalation"
+component = "GET /admin/stats"
+reason = "bug 2 seen through the role matrix: alice is denied by roles.toml but reaches the endpoint"
+
+[[allow]]
+rule = "qa.api.server_error"
+component = "GET /search"
+reason = "bug 4 also surfaces as a plain 500 on the same endpoint"

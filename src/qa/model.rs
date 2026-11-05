@@ -274,6 +274,21 @@ pub enum Recommendation {
     Go,
     ConditionalGo,
     NoGo,
+    /// Not enough was executed to recommend anything (fewer than half of the planned cases ran,
+    /// or a requested core area never ran). Neither a pass nor a proven failure: never "Go".
+    Inconclusive,
+}
+
+impl Recommendation {
+    /// Process exit code of `readyhai qa` for this recommendation: 0 Go, 1 Conditional Go,
+    /// 2 No-Go and Inconclusive (no evidence is not a pass).
+    pub fn exit_code(self) -> i32 {
+        match self {
+            Recommendation::Go => 0,
+            Recommendation::ConditionalGo => 1,
+            Recommendation::NoGo | Recommendation::Inconclusive => 2,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -299,6 +314,10 @@ pub struct QaCollector {
     pub notes: Vec<String>,
     /// Out-of-scope items / unsupported spec parts (listed, never silently passed).
     pub untested: Vec<String>,
+    /// Filled by triage: final defect id -> (rule, fp_key) of EVERY raw defect folded into it
+    /// (the surviving one included), so the status of a merged defect is judged over all of its
+    /// members' fingerprints, not the first one's.
+    pub merged: std::collections::BTreeMap<String, Vec<(String, String)>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

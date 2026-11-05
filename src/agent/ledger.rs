@@ -1,13 +1,15 @@
 //! Readiness ledger. Everything here is computed from results: a technique-coverage matrix feeds
 //! four pillars, the pillars feed the verdict, and every claim cites case ids and evidence files.
 //! A pillar nobody exercised is "not evaluated" (None) -- there are no default scores. The LLM may
-//! add prose and an advisory opinion; the final verdict is the WORST of computed and LLM, never better.
+//! add prose and an advisory opinion, which is stored next to the verdict and never changes it: the
+//! gate is the deterministic one. LLM-proposed (exploratory) cases are listed but not scored unless a
+//! deterministic oracle failed them.
 use std::collections::BTreeMap;
 
 use super::oracle::Severity;
 use super::types::{
     CaseExecutionResult, CoverageCell, EvidenceLedger, ExitCheckItem, LedgerClaim, LlmAdvisory,
-    PillarResult, TriagedDefect,
+    PillarResult, TriagedDefect, VerificationSummary, evidence_share,
 };
 
 const TECHNIQUES: [&str; 5] = [
@@ -154,11 +156,126 @@ pub fn not_evaluated(
         claims: vec![],
         llm_advisory: None,
         ai_summary: None,
+        verification: None,
     }
 }
 
+/// An LLM-proposed case that no deterministic oracle failed: its outcome is not evidence either
+/// way (a PASS against an LLM-written expectation proves nothing), so it is not scored.
+fn is_unconfirmed_exploratory(r: &CaseExecutionResult) -> bool {
+    r.status != "FAIL" && r.oracle.as_ref().is_some_and(|o| o.exploratory)
+}
+
+/// Whether a defect counts toward the gate. The verifier decides which failures are real:
+/// * no verification data (an older run, verification off): counts, as before the verifier existed;
+/// * confirmed (every replay reproduced it): counts;
+/// * flaky: counts when high/critical (a flaky Medium/Low is a WARN and never reaches the gate as a
+///   defect);
+/// * unverified (not replayable: a write on a real record, a burst, a stopped budget): counts when
+///   high/critical. A failure the verifier could not examine is not evidence that it is gone, so it
+///   is never allowed to soften the gate; it is listed as unverified for a person to confirm.
+///
+/// A failure that did not reproduce is INCONCLUSIVE and is not a defect at all.
+pub fn is_blocking(d: &TriagedDefect) -> bool {
+    if d.accepted.is_some() {
+        return false; // an unexpired acceptance (memory): listed, not blocking
+    }
+    let severe = matches!(d.severity.as_str(), "critical" | "high");
+    match d.verification.as_deref() {
+        Some("flaky") | Some("unverified") => severe,
+        _ => true,
+    }
+}
+
+/// The ledger of a run. A defect that carries an unexpired acceptance (`TriagedDefect::accepted`,
+/// set from the agent's memory by an explicit operator decision) does not block: its failing cases
+/// are run and listed but not scored, like unconfirmed exploratory cases, and the verdict basis says
+/// what the computed verdict would be without the acceptance. Nothing else in a run is waived.
 pub fn compute(inp: &LedgerInput) -> EvidenceLedger {
-    let results = inp.results;
+    let waived: Vec<&TriagedDefect> = inp
+        .defects
+        .iter()
+        .filter(|d| d.accepted.is_some())
+        .collect();
+    if waived.is_empty() {
+        return compute_scored(inp);
+    }
+    let waived_cases: std::collections::BTreeSet<&str> = waived
+        .iter()
+        .flat_map(|d| d.case_ids.iter().map(String::as_str))
+        .collect();
+    let kept: Vec<CaseExecutionResult> = inp
+        .results
+        .iter()
+        .filter(|r| !(r.status == "FAIL" && waived_cases.contains(r.case_id.as_str())))
+        .cloned()
+        .collect();
+    let live: Vec<TriagedDefect> = inp
+        .defects
+        .iter()
+        .filter(|d| d.accepted.is_none())
+        .cloned()
+        .collect();
+    let mut l = compute_scored(&LedgerInput {
+        results: &kept,
+        defects: &live,
+        dry_run: inp.dry_run,
+        budget_stop: inp.budget_stop,
+    });
+    let unwaived: Vec<TriagedDefect> = inp
+        .defects
+        .iter()
+        .map(|d| TriagedDefect {
+            accepted: None,
+            ..d.clone()
+        })
+        .collect();
+    let without = compute_scored(&LedgerInput {
+        results: inp.results,
+        defects: &unwaived,
+        dry_run: inp.dry_run,
+        budget_stop: inp.budget_stop,
+    })
+    .computed_verdict;
+    for d in &waived {
+        let a = d.accepted.as_ref();
+        l.claims.push(LedgerClaim {
+            claim: format!(
+                "{} [{}] {} is accepted by {} until {} ({}): it does not block the gate and its failing case(s) are not scored",
+                d.id,
+                d.severity,
+                d.title,
+                a.map(|a| a.by.as_str()).unwrap_or("?"),
+                a.map(|a| a.expires.as_str()).unwrap_or("?"),
+                a.map(|a| a.reason.as_str()).unwrap_or("")
+            ),
+            status: "partial".into(),
+            case_ids: d.case_ids.clone(),
+            evidence_files: d.evidence_files.clone(),
+        });
+    }
+    let note = format!(
+        "{} defect(s) covered by an unexpired acceptance do not block; without the acceptance the computed verdict would be {without}",
+        waived.len()
+    );
+    l.verdict_basis = format!("{}; {note}", l.verdict_basis);
+    l.executive_summary.push_str(&format!(" {note}."));
+    l
+}
+
+fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
+    let exploratory: Vec<&CaseExecutionResult> = inp
+        .results
+        .iter()
+        .filter(|r| is_unconfirmed_exploratory(r))
+        .collect();
+    let scored: Vec<CaseExecutionResult> = inp
+        .results
+        .iter()
+        .filter(|r| !is_unconfirmed_exploratory(r))
+        .cloned()
+        .collect();
+    let results = &scored[..];
     // 1. technique coverage matrix
     let mut cells: BTreeMap<String, CoverageCell> = BTreeMap::new();
     for t in TECHNIQUES {
@@ -187,11 +304,11 @@ pub fn compute(inp: &LedgerInput) -> EvidenceLedger {
     let coverage: Vec<CoverageCell> = cells.into_values().filter(|c| c.planned > 0).collect();
     let cell = |t: &str| coverage.iter().find(|c| c.technique == t);
 
-    // 2. severities of failures decide caps
+    // 2. severities of failures decide caps; only blocking defects count (see `is_blocking`)
     let sev = |s: Severity| {
         inp.defects
             .iter()
-            .filter(|d| d.severity == s.as_str())
+            .filter(|d| is_blocking(d) && d.severity == s.as_str())
             .count()
     };
     let (critical, high) = (sev(Severity::Critical), sev(Severity::High));
@@ -246,13 +363,12 @@ pub fn compute(inp: &LedgerInput) -> EvidenceLedger {
             evidence_files: m.evidence_files,
         });
     }
-    // evidence pillar: did every executed case leave a reproduction command and an evidence file?
+    // evidence pillar: the share of executed cases that have a stored request/response pair (the
+    // target answered and the evidence file exists). A reproduction command is generated for every
+    // case, so it proves nothing; a transport error or a missing file is not evidence.
     let executed: Vec<&CaseExecutionResult> =
         results.iter().filter(|r| r.status != "SKIPPED").collect();
-    let repro_ok = executed
-        .iter()
-        .filter(|r| !r.reproduction_curl.is_empty() && r.evidence_file.is_some())
-        .count();
+    let (repro_ok, _) = evidence_share(results);
     pillars.push(if executed.is_empty() {
         PillarResult {
             id: "evidence".into(),
@@ -277,13 +393,14 @@ pub fn compute(inp: &LedgerInput) -> EvidenceLedger {
             }
             .into(),
             claim: format!(
-                "{repro_ok} of {} executed cases have a reproduction command and an evidence file",
+                "{repro_ok} of {} executed cases have a stored request/response evidence file",
                 executed.len()
             ),
             techniques: vec![],
             case_ids: executed.iter().map(|r| r.case_id.clone()).collect(),
             evidence_files: executed
                 .iter()
+                .filter(|r| r.has_stored_evidence())
                 .filter_map(|r| r.evidence_file.clone())
                 .collect(),
         }
@@ -437,6 +554,10 @@ pub fn compute(inp: &LedgerInput) -> EvidenceLedger {
                     "budget"
                 } else if reason.starts_with("invalid") {
                     "invalid case"
+                } else if reason.contains("missing credential") {
+                    "missing credentials"
+                } else if reason.starts_with("stateful check skipped") {
+                    "stateful check not applicable"
                 } else {
                     "other"
                 };
@@ -465,6 +586,21 @@ pub fn compute(inp: &LedgerInput) -> EvidenceLedger {
             status: "not_evaluated".into(),
             case_ids: blocked_cases.iter().map(|r| r.case_id.clone()).collect(),
             evidence_files: blocked_cases
+                .iter()
+                .filter_map(|r| r.evidence_file.clone())
+                .collect(),
+        });
+    }
+
+    if !exploratory.is_empty() {
+        claims.push(LedgerClaim {
+            claim: format!(
+                "{} exploratory case(s) proposed by the LLM were run but are not scored: an LLM-written expectation is not evidence, and none of them was failed by a deterministic oracle",
+                exploratory.len()
+            ),
+            status: "not_evaluated".into(),
+            case_ids: exploratory.iter().map(|r| r.case_id.clone()).collect(),
+            evidence_files: exploratory
                 .iter()
                 .filter_map(|r| r.evidence_file.clone())
                 .collect(),
@@ -555,7 +691,7 @@ pub fn compute(inp: &LedgerInput) -> EvidenceLedger {
             ids(&|r| r.status == "BLOCKED" || r.flaky),
         ),
         item(
-            "Every executed case has a reproduction command and evidence file",
+            "Every executed case has stored request/response evidence",
             !executed.is_empty() && repro_ok == executed.len(),
             format!("{repro_ok} of {} executed", executed.len()),
             ids(&|r| r.status != "SKIPPED"),
@@ -600,15 +736,77 @@ pub fn compute(inp: &LedgerInput) -> EvidenceLedger {
         claims,
         llm_advisory: None,
         ai_summary: None,
+        verification: None,
     }
+}
+
+/// Record what the independent verifier did: the summary (with pass^k) on the ledger, one claim that
+/// cites every verified case and its evidence file, and a sentence in the executive summary. The gate
+/// itself was computed from the defects' verification status (`is_blocking`) and is not changed here.
+pub fn attach_verification(
+    l: &mut EvidenceLedger,
+    v: VerificationSummary,
+    defects: &[TriagedDefect],
+) {
+    let text = if v.k == 0 {
+        "Verification: off (READYHAI_VERIFY_K=0); failures were not replayed".to_string()
+    } else if v.candidates == 0 {
+        format!("Verification (k={}): no failed case needed replaying", v.k)
+    } else {
+        let mut t = format!(
+            "Verification (k={}): {} of {} failed case(s) fully replayed: {} confirmed, {} flaky, {} not reproduced (INCONCLUSIVE, not defects); {} unverified; pass^{} {}",
+            v.k,
+            v.replayed,
+            v.candidates,
+            v.confirmed,
+            v.flaky,
+            v.not_reproduced,
+            v.unverified,
+            v.k,
+            v.pass_k_text()
+        );
+        if let Some(s) = &v.stopped {
+            t.push_str(&format!("; stopped: {s}"));
+        }
+        t
+    };
+    let unverified_severe = defects
+        .iter()
+        .filter(|d| d.verification.as_deref() == Some("unverified") && is_blocking(d))
+        .count();
+    if v.k > 0 && v.candidates > 0 {
+        l.claims.push(LedgerClaim {
+            claim: text.clone(),
+            status: if v.unverified == 0 && v.flaky == 0 && v.not_reproduced == 0 {
+                "pass"
+            } else {
+                "partial"
+            }
+            .into(),
+            case_ids: v.records.iter().map(|r| r.case_id.clone()).collect(),
+            evidence_files: v
+                .records
+                .iter()
+                .filter_map(|r| r.evidence_file.clone())
+                .collect(),
+        });
+    }
+    l.executive_summary.push_str(&format!(" {text}."));
+    if unverified_severe > 0 {
+        l.verdict_basis.push_str(&format!(
+            "; {unverified_severe} unverified high/critical defect(s) kept as blocking (not replayable, a person must confirm them)"
+        ));
+    }
+    l.verification = Some(v);
 }
 
 fn clamp(v: i64) -> u32 {
     v.clamp(0, 100) as u32
 }
 
-/// Fold the LLM's opinion in. Scores are stored clamped to 0..=100 as advisory only; the verdict
-/// becomes the worse of computed and LLM. A computed NOT_EVALUATED can never be upgraded.
+/// Record the LLM's opinion. It is advisory and stored in `llm_advisory` (scores clamped to
+/// 0..=100); it never changes `gate_verdict`, `verdict` or any computed score: the gate is the
+/// deterministic verdict, whatever the model says, stricter or softer.
 pub fn apply_llm(
     l: &mut EvidenceLedger,
     verdict: Option<&str>,
@@ -625,25 +823,20 @@ pub fn apply_llm(
     };
     l.ai_summary = summary;
     let computed = l.computed_verdict.clone();
-    let final_v = match (rank(&computed), verdict.and_then(rank)) {
-        (Some(c), Some(a)) if a > c => {
-            l.verdict_basis = format!(
-                "worst-of(computed={computed}, llm={}): the LLM was stricter",
-                verdict.unwrap_or("")
-            );
-            verdict.unwrap_or("").to_string()
-        }
-        (Some(_), Some(_)) => {
-            l.verdict_basis = format!(
-                "worst-of(computed={computed}, llm={}): computed verdict stands",
-                verdict.unwrap_or("")
-            );
-            computed
-        }
-        _ => computed,
-    };
-    l.gate_verdict = final_v.clone();
-    l.verdict = Some(final_v);
+    // the gate is, by construction, the computed verdict
+    l.gate_verdict = computed.clone();
+    l.verdict = Some(computed.clone());
+    if let (Some(v), Some(a), Some(c)) = (verdict, verdict.and_then(rank), rank(&computed)) {
+        let rel = match a.cmp(&c) {
+            std::cmp::Ordering::Greater => "stricter than",
+            std::cmp::Ordering::Equal => "the same as",
+            std::cmp::Ordering::Less => "softer than",
+        };
+        l.verdict_basis = format!(
+            "{}; LLM advisory verdict {v} ({rel} the computed {computed}) is recorded separately and does not change the gate",
+            l.verdict_basis
+        );
+    }
     l.llm_advisory = Some(adv);
 }
 
@@ -680,6 +873,7 @@ mod tests {
                         detail: "d".into(),
                     }],
                     warnings: vec![],
+                    exploratory: false,
                 })
             } else {
                 None
@@ -762,6 +956,35 @@ mod tests {
     }
 
     #[test]
+    fn evidence_pillar_is_the_share_of_cases_with_stored_evidence() {
+        // 5 executed cases, 2 of them without a stored request/response pair: the pillar is 60,
+        // not 100, even though every case has a reproduction command.
+        let mut r = all_pass();
+        r[1].evidence_file = None; // evidence file never written
+        r[3].status_code = None; // target never answered (transport error)
+        assert!(r.iter().all(|x| !x.reproduction_curl.is_empty()));
+        let l = ledger(&r, &[], false);
+        let p = l.pillars.iter().find(|p| p.id == "evidence").unwrap();
+        assert_eq!((p.score, p.status.as_str()), (Some(60), "partial"));
+        assert!(p.claim.starts_with("3 of 5 executed cases"), "{}", p.claim);
+        assert_eq!(p.evidence_files.len(), 3, "only stored evidence is cited");
+        assert_eq!(l.evidence_score, Some(60));
+        assert!(l.evidence_score.unwrap() < 100);
+        // the exit check agrees
+        assert!(
+            l.exit_criteria_checklist
+                .iter()
+                .any(|c| c.criterion.contains("stored request/response evidence") && !c.met),
+            "{:?}",
+            l.exit_criteria_checklist
+        );
+        // skipped cases are not executed and do not count against the share
+        let mut r = all_pass();
+        r.push(res("TC-006", "authz", "SKIPPED"));
+        assert_eq!(ledger(&r, &[], false).evidence_score, Some(100));
+    }
+
+    #[test]
     fn blocked_warn_skipped_and_inconclusive_all_move_the_score() {
         let base = ledger(&all_pass(), &[], false).overall_readiness;
         for st in ["WARN", "BLOCKED", "SKIPPED", "INCONCLUSIVE"] {
@@ -802,6 +1025,7 @@ mod tests {
             remediation_patch: None,
             remediation_explanation: None,
             reproduction_script: None,
+            ..Default::default()
         };
         assert_eq!(
             ledger(&r, &[defect("medium")], false).gate_verdict,
@@ -882,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn llm_is_advisory_worst_of_and_clamped() {
+    fn llm_opinion_is_recorded_separately_and_never_moves_the_gate() {
         let mut l = ledger(&all_pass(), &[], false);
         assert_eq!(l.gate_verdict, "GO");
         // LLM tries to inflate: nothing changes
@@ -899,7 +1123,7 @@ mod tests {
             (Some(100), Some(0)),
             "advisory scores are clamped to 0..=100"
         );
-        // LLM stricter: the worse verdict wins, scores still untouched
+        // LLM stricter: the opinion is stored, the gate stays the deterministic one
         let mut l = ledger(&all_pass(), &[], false);
         apply_llm(
             &mut l,
@@ -910,12 +1134,21 @@ mod tests {
         assert_eq!(
             (
                 l.gate_verdict.as_str(),
+                l.verdict.as_deref(),
                 l.overall_readiness,
                 l.computed_verdict.as_str()
             ),
-            ("NO_GO", 100, "GO")
+            ("GO", Some("GO"), 100, "GO")
         );
-        assert!(l.verdict_basis.contains("worst-of"));
+        assert_eq!(
+            l.llm_advisory.as_ref().unwrap().verdict.as_deref(),
+            Some("NO_GO"),
+            "the opinion is kept next to the verdict"
+        );
+        assert!(
+            l.verdict_basis.contains("recorded separately")
+                && l.verdict_basis.contains("stricter than")
+        );
         // computed worse than LLM: computed stands
         let mut r = all_pass();
         r.push(res("TC-006", "boundary", "FAIL"));
@@ -923,6 +1156,7 @@ mod tests {
         let comp = l.computed_verdict.clone();
         apply_llm(&mut l, Some("GO"), [Some(100); 5], None);
         assert_eq!(l.gate_verdict, comp);
+        assert!(l.verdict_basis.contains("softer than"));
         // NOT_EVALUATED is final
         let mut l = ledger(&[], &[], false);
         apply_llm(&mut l, Some("GO"), [Some(100); 5], None);
@@ -931,5 +1165,168 @@ mod tests {
         let mut l = ledger(&all_pass(), &[], false);
         apply_llm(&mut l, Some("YOLO"), [None; 5], None);
         assert_eq!(l.gate_verdict, "GO");
+    }
+
+    #[test]
+    fn exploratory_cases_are_not_scored_unless_a_deterministic_oracle_failed_them() {
+        let exploratory = |id: &str, status: &str| {
+            let mut r = res(id, "authz", status);
+            let mut o = r.oracle.take().unwrap_or(OracleOutcome {
+                verdict: Verdict::Pass,
+                checks: vec![],
+                warnings: vec![],
+                exploratory: false,
+            });
+            o.exploratory = true;
+            r.oracle = Some(o);
+            r
+        };
+        let base = ledger(&all_pass(), &[], false);
+        // exploratory PASS/INCONCLUSIVE neither raise nor lower anything
+        let mut r = all_pass();
+        r.push(exploratory("TC-006", "PASS"));
+        r.push(exploratory("TC-007", "INCONCLUSIVE"));
+        let l = ledger(&r, &[], false);
+        assert_eq!(
+            (l.overall_readiness, l.gate_verdict.as_str()),
+            (base.overall_readiness, "GO")
+        );
+        assert!(
+            l.claims
+                .iter()
+                .any(|c| c.claim.contains("exploratory") && c.case_ids == ["TC-006", "TC-007"])
+        );
+        // an exploratory FAIL that a deterministic oracle produced counts like any other
+        let mut r = all_pass();
+        r.push(exploratory("TC-006", "FAIL"));
+        let l = ledger(&r, &[], false);
+        assert_ne!(l.gate_verdict, "GO");
+    }
+    fn defect_with(sev: &str, verification: Option<&str>) -> TriagedDefect {
+        TriagedDefect {
+            id: "DEF-001".into(),
+            title: "t".into(),
+            severity: sev.into(),
+            case_ids: vec!["TC-006".into()],
+            verification: verification.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_confirmed_and_flaky_or_unverified_high_defects_block_the_gate() {
+        // verified / no verifier data: blocks
+        assert!(is_blocking(&defect_with("critical", None)));
+        assert!(is_blocking(&defect_with("critical", Some("confirmed"))));
+        assert!(is_blocking(&defect_with("medium", Some("confirmed"))));
+        // flaky and unverified: only when high or critical (never softened for what could not be examined)
+        assert!(is_blocking(&defect_with("high", Some("flaky"))));
+        assert!(!is_blocking(&defect_with("medium", Some("flaky"))));
+        assert!(is_blocking(&defect_with("critical", Some("unverified"))));
+        assert!(!is_blocking(&defect_with("low", Some("unverified"))));
+        // and the gate follows it
+        let mut r = all_pass();
+        r.push(res("TC-006", "boundary", "FAIL"));
+        let blocked = |sev: &str, v: Option<&str>| ledger(&r, &[defect_with(sev, v)], false);
+        assert_eq!(blocked("critical", Some("confirmed")).gate_verdict, "NO_GO");
+        assert_eq!(blocked("critical", Some("flaky")).gate_verdict, "NO_GO");
+        assert_eq!(
+            blocked("critical", Some("unverified")).gate_verdict,
+            "NO_GO"
+        );
+        let m = blocked("medium", Some("unverified"));
+        assert_eq!(
+            m.gate_verdict, "CONDITIONAL_GO",
+            "a failed case still keeps the gate from GO"
+        );
+    }
+
+    #[test]
+    fn the_verification_summary_pass_k_and_claim_reach_the_ledger() {
+        use crate::agent::types::{VerificationRecord, VerifyVerdict};
+        let rec = |id: &str, v: VerifyVerdict, rep: u32| VerificationRecord {
+            case_id: id.into(),
+            method: "GET".into(),
+            component: "/x".into(),
+            verdict: v,
+            severity: "high".into(),
+            k: 2,
+            completed: 2,
+            reproduced: rep,
+            replays: vec![],
+            note: None,
+            original_status: "FAIL".into(),
+            final_status: "FAIL".into(),
+            evidence_file: Some(format!("evidence/{id}.json")),
+        };
+        let mut v = VerificationSummary {
+            k: 2,
+            records: vec![
+                rec("TC-001", VerifyVerdict::Confirmed, 2),
+                rec("TC-002", VerifyVerdict::Confirmed, 2),
+                rec("TC-003", VerifyVerdict::Flaky, 1),
+                rec("TC-004", VerifyVerdict::NotReproduced, 0),
+            ],
+            ..Default::default()
+        };
+        v.tally();
+        assert_eq!((v.replayed, v.pass_k), (4, Some(0.5)));
+        let mut l = ledger(&all_pass(), &[], false);
+        let verdict_before = l.gate_verdict.clone();
+        attach_verification(&mut l, v, &[]);
+        assert_eq!(
+            l.gate_verdict, verdict_before,
+            "attaching changes no verdict"
+        );
+        let s = l.verification.as_ref().unwrap();
+        assert_eq!(s.pass_k_text(), "50%");
+        assert!(
+            l.executive_summary.contains("pass^2 50%"),
+            "{}",
+            l.executive_summary
+        );
+        assert!(
+            l.executive_summary
+                .contains("2 confirmed, 1 flaky, 1 not reproduced"),
+            "{}",
+            l.executive_summary
+        );
+        let claim = l
+            .claims
+            .iter()
+            .find(|c| c.claim.starts_with("Verification"))
+            .unwrap();
+        assert_eq!(claim.status, "partial");
+        assert_eq!(claim.case_ids.len(), 4);
+        assert_eq!(claim.evidence_files.len(), 4);
+        // verification off
+        let mut off = ledger(&all_pass(), &[], false);
+        attach_verification(&mut off, VerificationSummary::default(), &[]);
+        assert!(off.executive_summary.contains("Verification: off"));
+        assert!(
+            off.claims
+                .iter()
+                .all(|c| !c.claim.starts_with("Verification"))
+        );
+        // unverified high defects are called out in the basis
+        let mut u = ledger(
+            &all_pass(),
+            &[defect_with("critical", Some("unverified"))],
+            false,
+        );
+        attach_verification(
+            &mut u,
+            VerificationSummary {
+                k: 2,
+                ..Default::default()
+            },
+            &[defect_with("critical", Some("unverified"))],
+        );
+        assert!(
+            u.verdict_basis
+                .contains("1 unverified high/critical defect(s) kept as blocking"),
+            "{}",
+            u.verdict_basis
+        );
     }
 }

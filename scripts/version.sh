@@ -92,8 +92,19 @@ set_version() {
     rm -f "${PLAYWRIGHT_PKG}.bak"
   fi
   if [[ -f "$PLAYWRIGHT_LOCK" ]]; then
-    sed -i.bak -E "s/\"version\": \"[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?\"/\"version\": \"$new_v\"/g" "$PLAYWRIGHT_LOCK"
-    rm -f "${PLAYWRIGHT_LOCK}.bak"
+    # Only the root package's own version (top level and packages[""]), never dependency versions.
+    python3 - "$PLAYWRIGHT_LOCK" "$new_v" <<'PY'
+import json, sys
+path, v = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    lock = json.load(f)
+lock["version"] = v
+if "" in lock.get("packages", {}):
+    lock["packages"][""]["version"] = v
+with open(path, "w") as f:
+    json.dump(lock, f, indent=2)
+    f.write("\n")
+PY
   fi
 
   check_version

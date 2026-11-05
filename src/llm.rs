@@ -8,6 +8,30 @@ use std::time::Duration;
 
 pub mod untrusted;
 
+/// Smallest reasoning budget Anthropic accepts.
+pub const MIN_THINKING_BUDGET: u32 = 1024;
+/// Largest reasoning budget a run may ask for, whatever the request says.
+pub const MAX_THINKING_BUDGET: u32 = 32_768;
+/// Room left for the JSON answer after the reasoning budget.
+const ANSWER_HEADROOM: u32 = 2048;
+/// Hard ceiling for `max_tokens` on any call.
+pub const MAX_OUTPUT_TOKENS: u32 = MAX_THINKING_BUDGET + ANSWER_HEADROOM + 6144;
+/// Temperature of every structured planning / triage / verdict call.
+pub const STRUCTURED_TEMPERATURE: f64 = 0.1;
+
+/// Clamp a requested reasoning budget into `MIN_THINKING_BUDGET..=MAX_THINKING_BUDGET`.
+pub fn clamp_thinking_budget(n: u32) -> u32 {
+    n.clamp(MIN_THINKING_BUDGET, MAX_THINKING_BUDGET)
+}
+
+/// `max_tokens` for a call that reasons: budget + answer headroom, saturating and capped
+/// (`budget + 2048` used to overflow `u32` for a hostile budget).
+pub fn max_tokens_with_thinking(budget: u32) -> u32 {
+    clamp_thinking_budget(budget)
+        .saturating_add(ANSWER_HEADROOM)
+        .min(MAX_OUTPUT_TOKENS)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     OpenAiChat,
@@ -146,8 +170,37 @@ impl LlmConfig {
     pub fn with_thinking(mut self, thinking: bool, tier: &str, budget: u32) -> Self {
         self.thinking = thinking;
         self.model_tier = tier.to_string();
-        self.thinking_budget_tokens = budget;
+        self.thinking_budget_tokens = clamp_thinking_budget(budget);
         self
+    }
+
+    /// What reasoning settings a structured call really carries, for the run log. The request's
+    /// token budget is not "forwarded" as such: OpenAI-compatible servers get `reasoning_effort`
+    /// (from the tier) and a `max_tokens` cap; Anthropic thinking blocks require temperature 1.0,
+    /// so they are not attached to planning/verdict calls, which stay at a low temperature.
+    pub fn thinking_summary(&self) -> String {
+        let p = call_params(self);
+        let temp = p
+            .temperature
+            .map(|t| format!("temperature {t}"))
+            .unwrap_or_else(|| "provider-default temperature".into());
+        if !self.thinking {
+            return format!("thinking off; max_tokens {}, {temp}", p.max_tokens);
+        }
+        match (p.anthropic_thinking, p.reasoning_effort) {
+            (Some(b), _) => format!(
+                "thinking block attached (budget {b} tokens), max_tokens {}, {temp}",
+                p.max_tokens
+            ),
+            (None, Some(e)) => format!(
+                "reasoning_effort={e} (tier '{}'), max_tokens cap {} (budget {} tokens is a cap, not a reasoning allocation), {temp}",
+                self.model_tier, p.max_tokens, self.thinking_budget_tokens
+            ),
+            (None, None) => format!(
+                "requested (tier '{}', budget {} tokens) but NOT sent: Anthropic extended thinking forces temperature 1.0, so structured planning/verdict calls run without it at {temp}, max_tokens {}",
+                self.model_tier, self.thinking_budget_tokens, p.max_tokens
+            ),
+        }
     }
 
     pub fn base_url(&self) -> Result<String> {
@@ -570,13 +623,19 @@ pub fn query_models(cfg: &LlmConfig) -> Result<Value> {
     Ok(r)
 }
 
-/// Per-run call and wall-clock budget. Cache hits are free.
+/// Per-run call and wall-clock budget. Cache hits are free. A run hands one of these to every LLM
+/// stage (`RunBudget::llm_budget`) and reads the totals back with `RunBudget::sync_llm`, so calls
+/// and time count against the run's own budget.
 #[derive(Debug)]
 pub struct Budget {
     pub max_calls: usize,
     pub max_total: Duration,
     pub calls: usize,
+    /// Time spent inside provider calls (successful or not).
+    pub elapsed: Duration,
     started: std::time::Instant,
+    /// The run's wall-clock deadline: no call starts after it.
+    deadline: Option<std::time::Instant>,
 }
 
 impl Budget {
@@ -585,11 +644,23 @@ impl Budget {
             max_calls,
             max_total,
             calls: 0,
+            elapsed: Duration::ZERO,
             started: std::time::Instant::now(),
+            deadline: None,
         }
     }
     pub fn per_run() -> Self {
         Self::new(20, Duration::from_secs(300))
+    }
+    pub fn with_deadline(mut self, deadline: std::time::Instant) -> Self {
+        self.deadline = Some(deadline);
+        self
+    }
+    pub fn elapsed_ms(&self) -> u64 {
+        self.elapsed.as_millis() as u64
+    }
+    pub fn remaining_calls(&self) -> usize {
+        self.max_calls.saturating_sub(self.calls)
     }
     fn check(&self) -> Result<()> {
         if self.calls >= self.max_calls {
@@ -597,6 +668,12 @@ impl Budget {
         }
         if self.started.elapsed() >= self.max_total {
             bail!("LLM time budget exhausted");
+        }
+        if self
+            .deadline
+            .is_some_and(|d| std::time::Instant::now() >= d)
+        {
+            bail!("run wall-clock budget exhausted: no further LLM call");
         }
         Ok(())
     }
@@ -705,36 +782,75 @@ fn openai_answer(v: &Value) -> Result<String> {
     Ok(content)
 }
 
+/// How one structured (planning / triage / verdict) call is sent. Pure, so it can be tested
+/// without a server: every number is clamped and nothing here can overflow.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallParams {
+    pub max_tokens: u32,
+    /// None = leave it to the provider default (only when the API forbids a custom value).
+    pub temperature: Option<f64>,
+    /// Anthropic extended-thinking budget when a thinking block is attached.
+    pub anthropic_thinking: Option<u32>,
+    /// OpenAI-style `reasoning_effort`.
+    pub reasoning_effort: Option<&'static str>,
+}
+
+pub fn call_params(cfg: &LlmConfig) -> CallParams {
+    match cfg.provider.transport {
+        Transport::OpenAiChat => {
+            let effort = cfg
+                .thinking
+                .then(|| match cfg.model_tier.to_ascii_lowercase().as_str() {
+                    "low" => "low",
+                    "medium" => "medium",
+                    "high" | "max" | "max_pro" => "high",
+                    _ => "medium",
+                });
+            CallParams {
+                max_tokens: if cfg.thinking {
+                    max_tokens_with_thinking(cfg.thinking_budget_tokens).max(4096)
+                } else {
+                    2048
+                },
+                temperature: Some(STRUCTURED_TEMPERATURE),
+                anthropic_thinking: None,
+                reasoning_effort: effort,
+            }
+        }
+        // A thinking block forces temperature 1.0 on this API. Planning and verdict-adjacent calls
+        // must stay near-deterministic, so they never carry one.
+        Transport::AnthropicMessages => CallParams {
+            max_tokens: 2048,
+            temperature: Some(STRUCTURED_TEMPERATURE),
+            anthropic_thinking: None,
+            reasoning_effort: None,
+        },
+    }
+}
+
 fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
     let base = cfg.base_url()?;
     let c = http(Duration::from_secs(60))?;
     let key = key(cfg)?;
+    let p = call_params(cfg);
     match cfg.provider.transport {
         Transport::OpenAiChat => {
             let url = format!("{}/chat/completions", base.trim_end_matches('/'));
-            let max_tok = if cfg.thinking {
-                std::cmp::max(cfg.thinking_budget_tokens as usize, 4096)
-            } else {
-                2048
-            };
             let mut body = json!({
                 "model": cfg.model,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                "temperature": 0.1,
-                "max_tokens": max_tok,
+                "max_tokens": p.max_tokens,
                 "response_format": {"type": "json_object"},
             });
-            if cfg.thinking {
-                let effort = match cfg.model_tier.to_ascii_lowercase().as_str() {
-                    "low" => "low",
-                    "medium" => "medium",
-                    "high" => "high",
-                    "max" | "max_pro" => "high",
-                    _ => "medium",
-                };
-                body["reasoning_effort"] = json!(effort);
+            if let Some(t) = p.temperature {
+                body["temperature"] = json!(t);
             }
-            for attempt in 0..2 {
+            if let Some(e) = p.reasoning_effort {
+                body["reasoning_effort"] = json!(e);
+            }
+            // Servers that reject an optional field answer 400: drop the optional fields (first the
+            // response format and reasoning effort, then the temperature) and ask again.
+            for attempt in 0..3 {
                 let r = send_retrying(cfg, || {
                     let rq = c.post(&url).json(&body);
                     match &key {
@@ -742,11 +858,15 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
                         None => rq,
                     }
                 })?;
-                if r.status().as_u16() == 400 && attempt == 0 {
-                    body.as_object_mut().map(|o| {
-                        o.remove("response_format");
-                        o.remove("reasoning_effort");
-                    });
+                if r.status().as_u16() == 400 && attempt < 2 {
+                    if let Some(o) = body.as_object_mut() {
+                        if attempt == 0 {
+                            o.remove("response_format");
+                            o.remove("reasoning_effort");
+                        } else {
+                            o.remove("temperature");
+                        }
+                    }
                     continue;
                 }
                 let v: Value = r.error_for_status()?.json()?;
@@ -764,48 +884,35 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
                 }],
                 &[],
             );
-            if cfg.thinking {
-                let budget = std::cmp::max(cfg.thinking_budget_tokens, 1024);
+            b["max_tokens"] = json!(p.max_tokens);
+            if let Some(t) = p.temperature {
+                b["temperature"] = json!(t);
+            }
+            if let Some(budget) = p.anthropic_thinking {
                 b["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
-                b["max_tokens"] = json!(budget + 2048);
-                b["temperature"] = json!(1.0);
-            } else {
-                b["max_tokens"] = json!(2048);
-                b["temperature"] = json!(0.1);
             }
             let url = format!("{}/v1/messages", base.trim_end_matches('/'));
-            for attempt in 0..2 {
-                let r = send_retrying(cfg, || {
-                    let rq = c
-                        .post(&url)
-                        .header("anthropic-version", "2023-06-01")
-                        .json(&b);
-                    match &key {
-                        Some(k) => rq.header("x-api-key", k),
-                        None => rq,
-                    }
-                })?;
-                if r.status().as_u16() == 400 && attempt == 0 && cfg.thinking {
-                    b.as_object_mut().map(|o| {
-                        o.remove("thinking");
-                        o.insert("temperature".into(), json!(0.1));
-                        o.insert("max_tokens".into(), json!(2048));
-                    });
-                    continue;
+            let r = send_retrying(cfg, || {
+                let rq = c
+                    .post(&url)
+                    .header("anthropic-version", "2023-06-01")
+                    .json(&b);
+                match &key {
+                    Some(k) => rq.header("x-api-key", k),
+                    None => rq,
                 }
-                let v: Value = r.error_for_status()?.json()?;
-                let text = v["content"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|c| c["text"].as_str())
-                    .collect::<String>();
-                if text.trim().is_empty() {
-                    bail!("LLM returned empty content");
-                }
-                return Ok(text);
+            })?;
+            let v: Value = r.error_for_status()?.json()?;
+            let text = v["content"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|c| c["text"].as_str())
+                .collect::<String>();
+            if text.trim().is_empty() {
+                bail!("LLM returned empty content");
             }
-            bail!("Anthropic rejected the request")
+            Ok(text)
         }
     }
 }
@@ -843,7 +950,10 @@ pub fn ask_json_with(
     }
     budget.check()?;
     budget.calls += 1;
-    let text = raw_chat(cfg, system, prompt)?;
+    let t0 = std::time::Instant::now();
+    let reply = raw_chat(cfg, system, prompt);
+    budget.elapsed += t0.elapsed();
+    let text = reply?;
     let v = parse_json_object(&text)?;
     validate(&v).map_err(|e| anyhow::anyhow!("LLM output failed schema validation: {e}"))?;
     let _ = write_atomic(&path, v.to_string().as_bytes());
@@ -1212,6 +1322,127 @@ mod tests {
                 .to_string_lossy()
                 .ends_with(".tmp"))
         );
+    }
+
+    #[test]
+    fn thinking_budget_arithmetic_cannot_overflow_and_is_clamped() {
+        // `budget + 2048` used to overflow u32 for a hostile budget
+        for hostile in [
+            0,
+            1,
+            1023,
+            8192,
+            32768,
+            32769,
+            u32::MAX - 2047,
+            u32::MAX - 1,
+            u32::MAX,
+        ] {
+            let m = max_tokens_with_thinking(hostile);
+            assert!(
+                m <= MAX_OUTPUT_TOKENS && m > MIN_THINKING_BUDGET,
+                "{hostile} -> {m}"
+            );
+            let c = clamp_thinking_budget(hostile);
+            assert!(
+                (MIN_THINKING_BUDGET..=MAX_THINKING_BUDGET).contains(&c),
+                "{hostile} -> {c}"
+            );
+        }
+        assert_eq!(
+            max_tokens_with_thinking(u32::MAX),
+            MAX_THINKING_BUDGET + 2048
+        );
+        assert_eq!(clamp_thinking_budget(0), MIN_THINKING_BUDGET);
+        let cfg = LlmConfig::resolve(Some("ollama"), None, false)
+            .unwrap()
+            .with_thinking(true, "high", u32::MAX);
+        assert_eq!(cfg.thinking_budget_tokens, MAX_THINKING_BUDGET);
+        // even a config that bypassed `with_thinking` (pub field) cannot overflow the request
+        for provider in ["ollama", "anthropic"] {
+            let mut c = LlmConfig::resolve(Some(provider), None, true).unwrap();
+            c.thinking = true;
+            c.thinking_budget_tokens = u32::MAX;
+            let p = call_params(&c);
+            assert!(p.max_tokens <= MAX_OUTPUT_TOKENS, "{provider}: {p:?}");
+            assert_eq!(p.temperature, Some(STRUCTURED_TEMPERATURE), "{provider}");
+        }
+    }
+
+    #[test]
+    fn thinking_never_forces_temperature_one_on_structured_calls() {
+        // OpenAI-compatible: reasoning effort rides along, temperature stays low
+        let mut o = LlmConfig::resolve(Some("ollama"), None, false)
+            .unwrap()
+            .with_thinking(true, "max", 8192);
+        let p = call_params(&o);
+        assert_eq!(
+            (p.temperature, p.reasoning_effort, p.anthropic_thinking),
+            (Some(0.1), Some("high"), None)
+        );
+        o.thinking = false;
+        assert_eq!(call_params(&o).reasoning_effort, None);
+        // Anthropic: a thinking block would force temperature 1.0, so none is attached
+        let a = LlmConfig::resolve(Some("anthropic"), None, true)
+            .unwrap()
+            .with_thinking(true, "high", 16000);
+        let p = call_params(&a);
+        assert_eq!(
+            (p.temperature, p.anthropic_thinking, p.max_tokens),
+            (Some(0.1), None, 2048)
+        );
+        // the log says what was sent, not that the budget was "forwarded"
+        let s = a.thinking_summary();
+        assert!(
+            s.contains("NOT sent") && s.contains("temperature 1.0"),
+            "{s}"
+        );
+        let s = o.with_thinking(true, "medium", 4096).thinking_summary();
+        assert!(
+            s.contains("reasoning_effort=medium")
+                && s.contains("cap, not a reasoning allocation")
+                && !s.contains("forwarded"),
+            "{s}"
+        );
+    }
+
+    #[test]
+    fn structured_call_carries_a_low_temperature_and_a_bounded_max_tokens_on_the_wire() {
+        let m = mock::start(|_| "{\"ok\": true}".into());
+        let mut c = mock::cfg(&m.base, &tmpdir("wire-temp"));
+        c.thinking = true;
+        c.thinking_budget_tokens = u32::MAX;
+        c.model_tier = "high".into();
+        assert_eq!(
+            ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap()["ok"],
+            true
+        );
+        let raw = m.requests.lock().unwrap()[0].clone();
+        let body: Value = serde_json::from_str(raw.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(body["temperature"], 0.1, "{body}");
+        assert_eq!(body["reasoning_effort"], "high");
+        let max = body["max_tokens"].as_u64().unwrap();
+        assert!(max <= MAX_OUTPUT_TOKENS as u64 && max >= 4096, "{max}");
+    }
+
+    #[test]
+    fn calls_and_time_are_recorded_on_the_budget() {
+        let m = mock::start(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            "{\"ok\": true}".into()
+        });
+        let c = mock::cfg(&m.base, &tmpdir("budget-time"));
+        let mut b = Budget::per_run();
+        ask_json(&c, &mut b, "s", "p").unwrap();
+        ask_json(&c, &mut b, "s", "p").unwrap(); // cached: free
+        assert_eq!(b.calls, 1);
+        assert!(b.elapsed_ms() >= 20, "{}", b.elapsed_ms());
+        // a failed call is still a call and its time still counts
+        let bad = mock::start_status(|_, _| (401, "{}".into()));
+        let c = mock::cfg(&bad.base, &tmpdir("budget-time-bad"));
+        let mut b2 = Budget::per_run();
+        assert!(ask_json(&c, &mut b2, "s", "p").is_err());
+        assert_eq!(b2.calls, 1);
     }
 
     #[test]

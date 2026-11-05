@@ -18,6 +18,7 @@ mod config;
 mod ctx;
 mod dashboard;
 mod engine;
+mod eval;
 mod facts;
 mod host;
 mod llm;
@@ -97,7 +98,7 @@ enum Cmd {
     /// Senior-QA run against a running app (+ optional repo): functional API/UI tests,
     /// auth/role matrix, perf baseline, release quality → QA test summary report
     Qa {
-        /// App base URL (must be in scope.toml; writes only on env=nonprod hosts)
+        /// App base URL. Internal hosts must be listed in scope.toml; a host listed as env="prod" gets read-only tests
         url: String,
         /// Source repo of the app (adds repo/readiness/suite checks)
         #[arg(long)]
@@ -158,12 +159,34 @@ enum Cmd {
         /// OpenAPI spec URL: plan cases from real operations instead of probing a few paths
         #[arg(long)]
         spec: Option<String>,
-        /// Scope file (scope.toml); the agent sends writes and attack payloads, so a public target must be listed with env = "nonprod"
+        /// Scope file (scope.toml). The agent sends writes and adversarial inputs: a host listed as env="prod" is refused; internal hosts must be listed
         #[arg(long, env = "READYHAI_SCOPE")]
         scope: Option<PathBuf>,
         /// Plan only: validate scope and print what would run, send no requests
         #[arg(long)]
         dry_run: bool,
+        /// Local checkout of the service under test. With --diff-base the run plans around what the code changed: changed operations get the full case set, first
+        #[arg(long, requires = "diff_base")]
+        repo: Option<PathBuf>,
+        /// Git ref the change is measured from (`git diff REF...HEAD` in --repo), e.g. origin/main
+        #[arg(long, requires = "repo")]
+        diff_base: Option<String>,
+    },
+    /// What the agent remembers about a target between runs: known defects, flaky cases, coverage
+    AgentMemory {
+        #[command(subcommand)]
+        cmd: AgentMemoryCmd,
+    },
+    /// Score the QA engine and agent against seeded-defect fixtures (recall, false positives, pass^k)
+    Eval {
+        #[arg(long, value_delimiter = ',', default_value = "all")]
+        suite: Vec<String>,
+        #[arg(long, default_value_t = 2)]
+        k: usize,
+        #[arg(long, default_value = "eval-report")]
+        out: PathBuf,
+        #[arg(long, default_value = "tests/eval")]
+        dir: PathBuf,
     },
     /// REST API + job worker
     Serve {
@@ -193,6 +216,35 @@ enum BaselineCmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+}
+
+#[derive(Subcommand)]
+enum AgentMemoryCmd {
+    /// Show the known defects (with fingerprints), flaky cases, operations and baselines of a target
+    Show {
+        /// The target URL the agent runs against
+        target: String,
+        /// The raw memory file instead of the summary
+        #[arg(long)]
+        json: bool,
+    },
+    /// Accept a known open defect until a date: it stays listed in every report but stops blocking the gate
+    Accept {
+        target: String,
+        /// Fingerprint from `show` or the report (a unique prefix of 6+ characters is enough)
+        fingerprint: String,
+        /// Why it is accepted (recorded in the report)
+        #[arg(long)]
+        reason: String,
+        /// Last day the acceptance holds, YYYY-MM-DD (afterwards the defect blocks again)
+        #[arg(long)]
+        expires: String,
+        /// Who accepts it (default: $USER)
+        #[arg(long)]
+        by: Option<String>,
+    },
+    /// Delete the memory of a target (the next run starts from the profile alone)
+    Forget { target: String },
 }
 
 #[derive(Subcommand)]
@@ -334,7 +386,8 @@ fn run() -> anyhow::Result<u8> {
             for f in files {
                 eprintln!("report: {}", f.display());
             }
-            Ok(run.verdict.exit_code() as u8)
+            let qa_code = run.qa.as_ref().map_or(0, |q| q.recommendation.exit_code());
+            Ok(run.verdict.exit_code().max(qa_code) as u8)
         }
         Cmd::Bundle {
             cmd:
@@ -414,7 +467,19 @@ fn run() -> anyhow::Result<u8> {
             spec,
             scope,
             dry_run,
+            repo,
+            diff_base,
         } => {
+            // The checkout and ref are validated like the API does (no roots: this is the operator's own machine).
+            let (repo, diff_base) = match (&repo, &diff_base) {
+                (Some(r), Some(b)) => {
+                    let (root, base) =
+                        agent::change::validate_request(&r.display().to_string(), Some(b), None)
+                            .map_err(|e| anyhow::anyhow!("--repo/--diff-base: {e}"))?;
+                    (Some(root.display().to_string()), base)
+                }
+                _ => (None, None),
+            };
             // Same egress guard as the API (intrusive: writes, attack payloads).
             let sc = match &scope {
                 Some(p) => Some(scope::Scope::load(p)?),
@@ -434,6 +499,11 @@ fn run() -> anyhow::Result<u8> {
                     spec.as_deref().unwrap_or("none (probe a few common paths)")
                 );
                 println!("  max steps: {max_steps}");
+                if let (Some(r), Some(b)) = (&repo, &diff_base) {
+                    println!(
+                        "  change:    git diff {b}...HEAD in {r}: changed operations are planned in full, first"
+                    );
+                }
                 println!(
                     "  plan:      discover routes -> plan cases -> execute (reads and writes) -> triage -> evidence ledger"
                 );
@@ -449,6 +519,8 @@ fn run() -> anyhow::Result<u8> {
                 thinking: true,
                 model_tier: "high".to_string(),
                 thinking_budget_tokens: 8192,
+                repo,
+                diff_base,
             };
             let run_id = engine::new_run_id();
             eprintln!("readyhai agent: starting autonomous loop for {target} (run {run_id})...");
@@ -492,7 +564,120 @@ fn run() -> anyhow::Result<u8> {
             println!("Summary:      {}", summary);
             println!("Defects:      {}", report.triaged_defects.len());
             println!("Test Cases:   {}", report.executed_results.len());
-            Ok(if verdict == "GO" { 0 } else { 1 })
+            if let Some(s) = &report.since_last_run {
+                println!("Since last:   {}", s.summary_line());
+                for (label, list) in [
+                    ("new", &s.new),
+                    ("regressed", &s.regressed),
+                    ("fixed", &s.fixed),
+                    ("accepted", &s.accepted),
+                    ("acceptance expired", &s.expired),
+                ] {
+                    for l in list.iter().take(5) {
+                        println!(
+                            "  {label}: [{}] {} {}  {}",
+                            l.severity, l.rule, l.endpoint, l.fingerprint
+                        );
+                    }
+                }
+                for n in &s.notes {
+                    println!("  note: {n}");
+                }
+            }
+            if let Some(ci) = &report.change_impact {
+                let (sent, planned) = agent::change::coverage_totals(&ci.coverage);
+                println!(
+                    "Change:       {} changed file(s), {} changed operation(s) ({}); {sent} of {planned} planned case(s) for them ran",
+                    ci.changed_files_total,
+                    ci.operations.len(),
+                    ci.status
+                );
+            }
+            // Same contract as `qa`: GO 0, CONDITIONAL_GO 1, NO_GO / not evaluated 2.
+            Ok(match verdict {
+                "GO" => 0,
+                "CONDITIONAL_GO" => 1,
+                _ => 2,
+            })
+        }
+        Cmd::AgentMemory { cmd } => {
+            // an operator action on the local data directory: no request is sent
+            let dir = agent::memory::dir();
+            let check = |t: &str| -> anyhow::Result<String> {
+                scope::parse_web_url(t)
+                    .map_err(|e| anyhow::anyhow!("the agent memory is per http(s) target: {e}"))?;
+                Ok(t.trim().to_string())
+            };
+            match cmd {
+                AgentMemoryCmd::Show { target, json } => {
+                    let target = check(&target)?;
+                    match agent::memory::inspect(&dir, &target)? {
+                        None => eprintln!(
+                            "no agent memory for {target} (it is created by the next `readyhai agent` run)"
+                        ),
+                        Some(m) if json => println!("{}", serde_json::to_string_pretty(&m)?),
+                        Some(m) => print!("{}", agent::memory::render_text(&m, &engine::today())),
+                    }
+                    Ok(0)
+                }
+                AgentMemoryCmd::Accept {
+                    target,
+                    fingerprint,
+                    reason,
+                    expires,
+                    by,
+                } => {
+                    let target = check(&target)?;
+                    let by = by
+                        .or_else(|| std::env::var("USER").ok())
+                        .or_else(|| std::env::var("LOGNAME").ok())
+                        .unwrap_or_else(|| "operator".into());
+                    let a = agent::memory::accept(
+                        &dir,
+                        &target,
+                        &fingerprint,
+                        &by,
+                        &reason,
+                        &expires,
+                        &engine::today(),
+                        &engine::now(),
+                    )?;
+                    println!(
+                        "accepted {} {} {} ({}) until {} by {}: {}",
+                        a.fingerprint,
+                        a.rule,
+                        a.endpoint,
+                        a.severity,
+                        a.acceptance.expires,
+                        a.acceptance.by,
+                        a.acceptance.reason
+                    );
+                    println!(
+                        "it stays listed in every report and stops blocking the gate; after {} it blocks again",
+                        a.acceptance.expires
+                    );
+                    Ok(0)
+                }
+                AgentMemoryCmd::Forget { target } => {
+                    let target = check(&target)?;
+                    if agent::memory::forget(&dir, &target)? {
+                        println!("forgot the agent memory of {target}");
+                    } else {
+                        println!("no agent memory for {target}");
+                    }
+                    Ok(0)
+                }
+            }
+        }
+        Cmd::Eval { suite, k, out, dir } => {
+            let s = eval::run_eval(eval::EvalOpts {
+                suites: suite,
+                k,
+                out,
+                dir,
+                ..Default::default()
+            })?;
+            Ok(s.exit_code())
         }
         Cmd::Serve { bind } => {
             serve::serve(&bind)?;

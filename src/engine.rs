@@ -415,6 +415,16 @@ fn git_clone(url: &str, dest: &Path, timeout: Duration) -> Result<()> {
     Ok(())
 }
 
+/// Status for a check that returned an error. Tool output over the read cap is incomplete
+/// coverage (`Partial`, a warning): not a pass, and not a crash of the check.
+pub(crate) fn error_status(e: &anyhow::Error) -> CheckStatus {
+    if crate::tools::is_oversize(e) {
+        CheckStatus::Partial(format!("{e:#}"))
+    } else {
+        CheckStatus::Errored(format!("{e:#}"))
+    }
+}
+
 pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
     let started = now();
     let _deadline = DeadlineGuard::new(run_id, opts.deadline);
@@ -459,17 +469,17 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
         bail!("path is outside READYHAI_ALLOWED_ROOTS");
     }
 
-    // Web scope
+    // Web scope. A scope file that is configured but unusable aborts the run: never "no scope".
     let scope = match &opts.scope {
         Some(p) => {
             crate::scope::set_active(p);
             Some(Scope::load(p)?)
         }
-        None => None,
+        None => crate::scope::from_env()?,
     };
     let mut nonprod = false;
     if let Some(url) = &target.url {
-        nonprod = scope::check(url, scope.as_ref(), opts.server)?;
+        nonprod = scope::check(url, scope.as_ref())?;
     }
 
     let mut cfg = match &opts.config {
@@ -580,7 +590,7 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
         };
         notes.extend(roles.warnings.iter().cloned());
         if !nonprod {
-            notes.push("QA: host is not tagged env=nonprod in scope.toml — read-only testing (no writes, forms, load or fault injection)".into());
+            notes.push("QA: host is tagged env = \"prod\" in scope.toml — read-only testing (no writes, forms, load or fault injection)".into());
         }
         Some(crate::qa::QaCtx::new(
             roles,
@@ -626,7 +636,7 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
         } else if c.intrusive && (profile != Profile::Deep || !nonprod) {
             (
                 CheckStatus::Skipped(
-                    "intrusive: needs --profile deep and a nonprod host in scope.toml".into(),
+                    "intrusive: needs --profile deep and a nonprod host (any host not marked env = \"prod\" in scope.toml)".into(),
                 ),
                 vec![],
             )
@@ -641,7 +651,7 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
                     });
                     (st, out.findings)
                 }
-                Ok(Err(e)) => (CheckStatus::Errored(format!("{e:#}")), vec![]),
+                Ok(Err(e)) => (error_status(&e), vec![]),
                 Err(_) => (CheckStatus::Errored("check panicked".into()), vec![]),
             }
         };

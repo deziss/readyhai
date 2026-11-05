@@ -3,6 +3,7 @@
 pub mod authz;
 pub mod contract;
 pub mod exec;
+pub mod latency;
 pub mod spec;
 pub mod stateful;
 pub mod synth;
@@ -622,8 +623,7 @@ impl<'a> Runner<'a> {
         }
         if r.contract {
             let st = ex.status;
-            if !contract::status_documented(r.op, st) && !matches!(st, 401 | 403 | 429) && st < 500
-            {
+            if contract::undocumented(&r.op.responses, st) {
                 out.push(mk(
                     self,
                     "qa.api.undocumented_status",
@@ -638,8 +638,8 @@ impl<'a> Runner<'a> {
                 ));
             }
             if ex.is_2xx()
-                && let (Some(Some(schema)), Some(j)) = (contract::schema_for(r.op, st), ex.json())
-                && let Some(m) = contract::validate(schema, &j, "$")
+                && let Some(j) = ex.json()
+                && let Some(m) = contract::schema_mismatch(&r.op.responses, st, &j)
             {
                 out.push(mk(
                     self,
@@ -663,16 +663,9 @@ impl<'a> Runner<'a> {
 
     /// Ids of existing resources for `{param}` of `op` (from the collection endpoint), cap 3.
     pub fn ids_for(&mut self, op: &Op) -> Vec<String> {
-        let Some(last) = op.path_params().last() else {
+        let Some((list_path, param)) = collection_of(op) else {
             return vec![];
         };
-        let Some(i) = op.path.rfind('/') else {
-            return vec![];
-        };
-        if op.path[i + 1..] != format!("{{{}}}", last.name) || op.path_params().count() != 1 {
-            return vec![];
-        }
-        let list_path = op.path[..i].to_string();
         if let Some(v) = self.ids.get(&list_path) {
             return v.clone();
         }
@@ -691,20 +684,9 @@ impl<'a> Runner<'a> {
                 if let Ok(ex) = exec::send(self.qa, role, "GET", &url, None, &[])
                     && let Some(j) = ex.json()
                 {
-                    for it in list_items(&j) {
-                        let v = [last.name.as_str(), "id", "uuid", "_id"]
-                            .iter()
-                            .find_map(|k| field(&it, k))
-                            .map(synth::value_str);
-                        if let Some(v) = v
-                            && !found.contains(&v)
-                            && found.len() < 3
-                        {
-                            found.push(v);
-                        }
-                    }
+                    ids_in_list(&j, &param, &mut found);
                 }
-                if found.len() >= 3 {
+                if found.len() >= MAX_IDS {
                     break;
                 }
             }
@@ -721,10 +703,16 @@ impl<'a> Runner<'a> {
         m
     }
 
-    /// DELETE leftovers created during this check; unresolved ones become a note.
+    /// Stop cleaning up `url`: the lifecycle itself deleted it and the re-read proved it gone.
+    pub fn forget_cleanup(&mut self, url: &str) {
+        self.cleanup.retain(|(u, _)| u != url);
+    }
+
+    /// DELETE leftovers created during this check. Whatever could not be deleted is LEAKED test
+    /// data: it is named in a note (url + role) and recorded as a risk, never dropped silently.
     pub fn run_cleanup(&mut self) {
         let items = std::mem::take(&mut self.cleanup);
-        let mut left = 0;
+        let mut leaked: Vec<String> = vec![];
         for (url, role) in items {
             let r = self.qa.roles.roles.iter().find(|x| x.name == role);
             // 404 = already gone (e.g. the test deleted it itself)
@@ -732,17 +720,126 @@ impl<'a> Runner<'a> {
                 .map(|e| e.is_2xx() || e.status == 404)
                 .unwrap_or(false);
             if !ok {
-                left += 1;
+                leaked.push(format!("DELETE {url} (as {role})"));
             }
         }
-        if left > 0 {
-            self.qa.with(|c| {
-                c.notes.push(format!(
-                    "cleanup: {left} resource(s) tagged '{}' could not be deleted",
-                    self.tag
-                ))
+        self.record_leaked(leaked);
+    }
+
+    /// Note + risk for test data this check could not remove (also for creates that have no
+    /// DELETE endpoint at all).
+    pub fn record_leaked(&self, leaked: Vec<String>) {
+        if leaked.is_empty() {
+            return;
+        }
+        let shown: Vec<&str> = leaked.iter().take(10).map(|s| s.as_str()).collect();
+        let more = leaked.len().saturating_sub(10);
+        self.qa.with(|c| {
+            c.notes.push(format!(
+                "cleanup: {} resource(s) tagged '{}' could not be deleted and are LEAKED in the target: {}{}",
+                leaked.len(),
+                self.tag,
+                shown.join("; "),
+                if more > 0 { format!("; ... {more} more") } else { String::new() }
+            ));
+            if !c.risks.iter().any(|r| r.title.starts_with("QA test data left")) {
+                c.risks.push(Risk {
+                    title: format!(
+                        "QA test data left in the target ({} resource(s) tagged '{}')",
+                        leaked.len(),
+                        self.tag
+                    ),
+                    level: "medium".into(),
+                    mitigation: "Delete the tagged resources by hand (see the cleanup note) and give the spec a DELETE endpoint for them.".into(),
+                });
+            }
+        });
+    }
+
+    /// The check status the executed evidence supports, or None to derive it from the findings.
+    /// Counted over the cases THIS runner planned: no case executed = Errored (`strict`; Partial
+    /// otherwise), more than half blocked or skipped = Partial, nothing planned = Skipped. A run
+    /// whose only unexecuted cases are the read-only skips of a non-nonprod host is Skipped, not
+    /// Errored: that gap is policy, not a failure.
+    pub fn evidence_status(&self, strict: bool) -> Option<CheckStatus> {
+        let mine: Vec<String> = self
+            .my_cases
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|m| m.0.clone())
+            .collect();
+        if mine.is_empty() {
+            return Some(CheckStatus::Skipped(format!(
+                "no case was planned for {}",
+                self.check
+            )));
+        }
+        let results: HashMap<String, (ResultStatus, String)> = self.qa.with(|c| {
+            c.results
+                .iter()
+                .filter(|r| mine.contains(&r.case_id))
+                .map(|r| (r.case_id.clone(), (r.status, r.actual.clone())))
+                .collect()
+        });
+        let (mut executed, mut blocked, mut skipped, mut read_only) =
+            (0usize, 0usize, 0usize, 0usize);
+        let mut why: HashMap<String, usize> = HashMap::new();
+        for id in &mine {
+            match results.get(id) {
+                Some((ResultStatus::Pass | ResultStatus::Fail | ResultStatus::Flaky, _)) => {
+                    executed += 1
+                }
+                Some((st, actual)) => {
+                    if *st == ResultStatus::Blocked {
+                        blocked += 1;
+                    } else {
+                        skipped += 1;
+                        if actual.starts_with("read-only") {
+                            read_only += 1;
+                        }
+                    }
+                    *why.entry(actual.chars().take(90).collect()).or_default() += 1;
+                }
+                None => skipped += 1,
+            }
+        }
+        let planned = mine.len();
+        let top = why
+            .into_iter()
+            .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(&a.0)))
+            .map(|(w, n)| format!("; most common: {w} (x{n})"))
+            .unwrap_or_default();
+        if executed == 0 {
+            if blocked == 0 && read_only == skipped {
+                return Some(CheckStatus::Skipped(
+                    "every case writes and the host is not nonprod (read-only)".into(),
+                ));
+            }
+            let m = format!(
+                "no case executed: {blocked} blocked, {skipped} skipped of {planned} planned{top}"
+            );
+            return Some(if strict {
+                CheckStatus::Errored(m)
+            } else {
+                CheckStatus::Partial(m)
             });
         }
+        if (blocked + skipped) * 2 > planned {
+            return Some(CheckStatus::Partial(format!(
+                "{} of {planned} cases blocked or skipped ({blocked} blocked, {skipped} skipped): the run covers only part of the API{top}",
+                blocked + skipped
+            )));
+        }
+        None
+    }
+
+    /// Findings + the evidence-based status (see `evidence_status`).
+    pub fn finish(&mut self, strict: bool) -> CheckOutput {
+        let f = std::mem::take(&mut self.findings);
+        let mut out = CheckOutput::findings(f);
+        out.status = self.evidence_status(strict);
+        out
     }
 
     /// If `ex` is a successful create, schedule DELETE of the new item (when the spec has one).
@@ -775,12 +872,10 @@ impl<'a> Runner<'a> {
             let url = self.url(&d, &pv, &[]);
             self.cleanup.push((url, r.name.clone()));
         } else {
-            self.qa.with(|c| {
-                c.notes.push(format!(
-                    "leftover: {} created a resource (id {id}) with no DELETE endpoint to clean up",
-                    post.key()
-                ))
-            });
+            self.record_leaked(vec![format!(
+                "{} created resource id {id}: no DELETE endpoint (or no role) to remove it",
+                post.key()
+            )]);
         }
         Some(id)
     }
@@ -789,13 +884,10 @@ impl<'a> Runner<'a> {
         let mut keys: Vec<_> = self.lat.keys().cloned().collect();
         keys.sort();
         for k in keys {
-            let mut v = self.lat[&k].clone();
-            v.sort();
-            let p95 = v[((v.len() as f64 * 0.95).ceil() as usize).clamp(1, v.len()) - 1];
-            let n = v.len();
-            self.qa
-                .with(|c| c.notes.push(format!("latency {k} p95={p95}ms (n={n})")));
-            if p95 > 1000
+            let p95 = latency::p95(&self.lat[&k]);
+            let n = self.lat[&k].len();
+            self.qa.with(|c| c.notes.push(latency_note(&k, p95, n)));
+            if latency::is_slow(p95)
                 && n >= 2
                 && let (Some(op), Some((ex, url))) = (
                     self.spec.ops.iter().find(|o| o.key() == k).cloned(),
@@ -804,13 +896,121 @@ impl<'a> Runner<'a> {
             {
                 self.defect(NewDefect {
                         rule: "qa.api.slow_response", cat: Category::Performance, sev: Severity::Low, prio: Priority::P3,
-                        title: format!("{k} is slow (p95 {p95} ms)"), expected: "p95 under 1000 ms".into(),
+                        title: format!("{k} is slow (p95 {p95} ms)"), expected: format!("p95 under {} ms", latency::SLOW_P95_MS),
                         actual: format!("p95={p95}ms over {n} requests"), fp: format!("{k}|slow"),
                         remediation: "Profile the endpoint; add caching, pagination or async processing.",
                         area_cases: &format!("api.{}.{}.perf", op.method, op.path), component: k.clone(),
                         role: None, method: &op.method, url: &url, body: None, ex: Some(&ex),
                     });
             }
+        }
+    }
+}
+
+/// Path-parameter id that no record has: what write cases (and the auth matrix) use instead of a
+/// harvested id.
+pub const UNLIKELY_ID: &str = "999999";
+
+/// Values for EVERY path parameter of a write operation: an id nobody owns (a fixed uuid for
+/// `format: uuid`; the first member for an `enum`, which cannot be invented). Never a harvested
+/// id and never the default synthesised value (`1`, a very real id).
+pub fn unlikely_ids(op: &Op) -> HashMap<String, String> {
+    op.path_params()
+        .map(|p| {
+            let v = if let Some(e) = p
+                .schema
+                .get("enum")
+                .and_then(|e| e.as_array())
+                .and_then(|e| e.first())
+            {
+                synth::value_str(e)
+            } else if p.schema.get("format").and_then(|f| f.as_str()) == Some("uuid") {
+                "00000000-0000-4000-8000-000000999999".to_string()
+            } else {
+                UNLIKELY_ID.to_string()
+            };
+            (p.name.clone(), v)
+        })
+        .collect()
+}
+
+/// An id of a resource THIS run created for a PUT/PATCH on `/x/{id}`: POST the collection
+/// (`/x`) with a synthesised body, register the DELETE cleanup, return the new id. Only on a
+/// nonprod host, only when the spec has the DELETE that makes cleanup possible, and `None`
+/// otherwise (the caller then uses `unlikely_ids`). It never reads or touches a harvested record.
+fn scratch_id(r: &mut Runner, op: &Op, role: Option<&Role>) -> Option<String> {
+    if !matches!(op.method.as_str(), "PUT" | "PATCH")
+        || !r.qa.nonprod
+        || op.path_params().count() != 1
+    {
+        return None;
+    }
+    let role = role?;
+    let last = op.path_params().next()?.name.clone();
+    let i = op.path.rfind('/')?;
+    if op.path[i + 1..] != format!("{{{last}}}") {
+        return None;
+    }
+    let list_path = op.path[..i].to_string();
+    let prefix = format!("{list_path}/{{");
+    let post = r
+        .spec
+        .ops
+        .iter()
+        .find(|o| o.method == "POST" && o.path == list_path && o.path_params().count() == 0)
+        .cloned()?;
+    let has_delete = r.spec.ops.iter().any(|o| {
+        o.method == "DELETE" && o.path.starts_with(&prefix) && o.path_params().count() == 1
+    });
+    if !has_delete {
+        return None;
+    }
+    let body = post
+        .body
+        .as_ref()
+        .map(|b| synth::synth(b, "body", &r.tag, 0));
+    let url = r.url(&post, &HashMap::new(), &[]);
+    let ex = exec::send(r.qa, Some(role), "POST", &url, body.as_ref(), &[]).ok()?;
+    if !ex.is_2xx() {
+        return None;
+    }
+    r.register_created(&post, &ex, Some(role))
+}
+
+/// Per-endpoint latency note of the API checks: `latency <METHOD /path> p95=<ms>ms (n=<requests>)`.
+/// The trend dashboard (`dashboard::parse_p95`) falls back to the worst of these when a run has
+/// no k6 result; change both together.
+pub fn latency_note(key: &str, p95_ms: u128, n: usize) -> String {
+    format!("latency {key} p95={p95_ms}ms (n={n})")
+}
+
+/// Ids harvested per collection: enough to look at a few real records, never a crawl.
+pub const MAX_IDS: usize = 3;
+
+/// `GET /x/{param}` reads one item of the collection `/x`: (`/x`, `param`). None unless the path
+/// is `<collection>/{param}` with exactly one path parameter.
+pub fn collection_of(op: &Op) -> Option<(String, String)> {
+    let last = op.path_params().last()?;
+    let i = op.path.rfind('/')?;
+    if op.path[i + 1..] != format!("{{{}}}", last.name) || op.path_params().count() != 1 {
+        return None;
+    }
+    Some((op.path[..i].to_string(), last.name.clone()))
+}
+
+/// Add the ids of the items of a list response to `found` (named by `param`, `id`, `uuid` or
+/// `_id`; at most [`MAX_IDS`] in all, no duplicates).
+pub fn ids_in_list(list: &Value, param: &str, found: &mut Vec<String>) {
+    for it in list_items(list) {
+        let v = [param, "id", "uuid", "_id"]
+            .iter()
+            .find_map(|k| field(&it, k))
+            .map(synth::value_str);
+        if let Some(v) = v
+            && !found.contains(&v)
+            && found.len() < MAX_IDS
+        {
+            found.push(v);
         }
     }
 }
@@ -1002,7 +1202,8 @@ fn run_case(r: &mut Runner, c: &CaseRun, first: bool) -> Result<Outcome, String>
                         defs.push(d);
                     }
                 }
-                if first && !op.is_write() && ex.ms > 800 && case.kind == "positive" {
+                if first && !op.is_write() && ex.ms > latency::RECHECK_MS && case.kind == "positive"
+                {
                     for _ in 0..2 {
                         let _ = r.send(&Req {
                             op,
@@ -1119,13 +1320,30 @@ pub(crate) fn functional_in(ctx: &Ctx, data: &Path) -> anyhow::Result<CheckOutpu
             .iter()
             .find(|x| x.expects(&op.path) != Some(false))
             .copied();
-        let idv = if stopped.is_some() {
+        // Real (harvested) ids are for reads only. A write (PUT/PATCH/DELETE/...) gets an id
+        // nobody owns, so no generated body can ever modify or delete a real record; the case
+        // then proves validation/contract, and a 404 for the unknown id is Blocked, not Pass.
+        let idv = if stopped.is_some() || op.is_write() {
             vec![]
         } else {
             r.ids_for(op)
         };
-        let has_id = !idv.is_empty();
-        let ids0 = r.id_map(op, idv.first());
+        // PUT/PATCH get a resource THIS run created (so server-side validation is reachable, not
+        // hidden behind a 404); everything else that writes gets the unlikely id.
+        let scratch = if stopped.is_none() {
+            scratch_id(&mut r, op, role)
+        } else {
+            None
+        };
+        let has_id = !idv.is_empty() || scratch.is_some();
+        let ids0 = if op.is_write() {
+            match &scratch {
+                Some(id) => r.id_map(op, Some(id)),
+                None => unlikely_ids(op),
+            }
+        } else {
+            r.id_map(op, idv.first())
+        };
         let mut cases: Vec<Case> = synth::generate(op, &r.tag, deep, &ids0);
         // Extra positive cases for the other harvested ids (catches per-record contract bugs).
         if !op.is_write() {
@@ -1275,8 +1493,7 @@ pub(crate) fn functional_in(ctx: &Ctx, data: &Path) -> anyhow::Result<CheckOutpu
         });
     }
     r.finish_latency();
-    let f = std::mem::take(&mut r.findings);
-    Ok(CheckOutput::findings(f))
+    Ok(r.finish(true))
 }
 
 fn pagination(r: &mut Runner, op: &Op, role: Option<&Role>, reserve: usize) {
@@ -1407,11 +1624,38 @@ fn breaking(r: &mut Runner, data: &Path) -> anyhow::Result<()> {
     let st = stage_dir(&r.ctx.run_dir);
     std::fs::create_dir_all(&st)?;
     std::fs::write(st.join("spec-full.json"), serde_json::to_vec(&r.spec.raw)?)?;
-    match std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .and_then(|v| spec::parse(v).ok())
-    {
+    // A baseline that exists but cannot be read back is NOT silently replaced: it is kept as a
+    // `.corrupt-<run>` backup, the run says so, and only then is a fresh baseline seeded.
+    let loaded: Option<Spec> = match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        // unreadable for another reason (permissions, not a directory): leave it alone and say so
+        Err(e) => anyhow::bail!(
+            "cannot read the spec baseline {} (left untouched): {e}",
+            path.display()
+        ),
+        Ok(t) => match serde_json::from_str::<Value>(&t)
+            .map_err(|e| e.to_string())
+            .and_then(|v| spec::parse(v).map_err(|e| format!("{e:#}")))
+        {
+            Ok(old) => Some(old),
+            Err(why) => {
+                let bak = path.with_extension(format!("json.corrupt-{}", r.ctx.run_id));
+                let kept = std::fs::copy(&path, &bak).is_ok();
+                r.qa.with(|c| {
+                    c.notes.push(format!(
+                        "spec baseline {} is corrupt ({why}): {}; no breaking-change comparison this run, a fresh baseline is stored from the current spec",
+                        path.display(),
+                        if kept { format!("backup kept as {}", bak.display()) } else { "COULD NOT back it up".into() }
+                    ))
+                });
+                if !kept {
+                    return Ok(()); // never overwrite what we could not preserve
+                }
+                None
+            }
+        },
+    };
+    match loaded {
         Some(old) => {
             for b in contract::breaking_changes(&old, &r.spec) {
                 let base = r.base.clone();

@@ -74,10 +74,15 @@ impl ToolSpec {
     }
 }
 
+/// Most stdout a tool container may return before the rest is discarded (see [`ToolRun::stdout_truncated`]).
+pub(crate) const TOOL_STDOUT_CAP: usize = 32 * 1024 * 1024;
+
 #[derive(Debug, Clone)]
 pub struct ToolRun {
     pub exit_code: i32,
     pub stdout: String,
+    /// stdout exceeded [`TOOL_STDOUT_CAP`]: `stdout` holds only its head and is not valid to parse.
+    pub stdout_truncated: bool,
     pub stderr_tail: String,
     #[allow(dead_code)]
     pub image: String,
@@ -334,6 +339,18 @@ fn mount_args(docker: &Docker, m: &Mount) -> Result<Vec<String>> {
 }
 
 fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Result<ToolRun> {
+    exec_with("docker", TOOL_STDOUT_CAP, docker, run_id, mounts, spec)
+}
+
+/// [`exec`] with the docker binary and the stdout cap made explicit (tests drive it with a stub).
+fn exec_with(
+    bin: &str,
+    stdout_cap: usize,
+    docker: &Docker,
+    run_id: &str,
+    mounts: &[Mount],
+    spec: &ToolSpec,
+) -> Result<ToolRun> {
     if !docker.available {
         bail!("docker not available");
     }
@@ -426,20 +443,17 @@ fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Res
         bail!("create-policy: docker socket reference in tool args rejected");
     }
 
-    let mut cmd = Command::new("docker");
+    let mut cmd = Command::new(bin);
     cmd.arg("run").args(&flags).arg(&image).args(&spec.args);
     cmd.envs(spec.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().context("spawning docker")?;
-    let mut out = child.stdout.take().unwrap();
+    // stdout is bounded like every other subprocess here: the head is kept up to TOOL_STDOUT_CAP,
+    // the rest is drained and discarded so the child never blocks on a full pipe.
+    let rx_out = drain_capped(child.stdout.take().unwrap(), stdout_cap);
     let mut err = child.stderr.take().unwrap();
-    let t_out = std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = out.read_to_end(&mut b);
-        b
-    });
     let t_err = std::thread::spawn(move || {
         let mut tail: Vec<u8> = Vec::new();
         let mut buf = [0u8; 8192];
@@ -470,7 +484,7 @@ fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Res
         }
         if Instant::now() >= deadline {
             let _ = run_capped(
-                Command::new("docker").args(["rm", "-f", &name]),
+                Command::new(bin).args(["rm", "-f", &name]),
                 DOCKER_QUICK,
                 4096,
                 None,
@@ -484,11 +498,14 @@ fn exec(docker: &Docker, run_id: &str, mounts: &[Mount], spec: &ToolSpec) -> Res
         }
         std::thread::sleep(Duration::from_millis(150));
     };
-    let stdout = t_out.join().unwrap_or_default();
+    let (stdout, _, stdout_truncated) = rx_out
+        .recv_timeout(Duration::from_secs(5))
+        .unwrap_or_default();
     let stderr = t_err.join().unwrap_or_default();
     Ok(ToolRun {
         exit_code: status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stdout_truncated,
         stderr_tail: String::from_utf8_lossy(&stderr).into_owned(),
         image,
     })
@@ -704,13 +721,19 @@ impl Docker {
 
 /// Remove containers labelled `readyhai.run=<run_id>` (end of run, run deadline, shutdown).
 pub fn reap_run(run_id: &str) {
-    reap_label(&format!("label=readyhai.run={run_id}"));
+    reap_label(&format!("label=readyhai.run={run_id}"), DOCKER_QUICK);
 }
 
-fn reap_label(filter: &str) {
+/// [`reap_run`] with each docker call limited to `per_call` (server shutdown has to finish inside
+/// the orchestrator's stop grace period).
+pub fn reap_run_within(run_id: &str, per_call: Duration) {
+    reap_label(&format!("label=readyhai.run={run_id}"), per_call);
+}
+
+fn reap_label(filter: &str, per_call: Duration) {
     let Ok(o) = run_capped(
         Command::new("docker").args(["ps", "-aq", "--filter", filter]),
-        DOCKER_QUICK,
+        per_call,
         1 << 16,
         None,
     ) else {
@@ -724,7 +747,7 @@ fn reap_label(filter: &str) {
     if !ids.is_empty() {
         let _ = run_capped(
             Command::new("docker").arg("rm").arg("-f").args(&ids),
-            DOCKER_QUICK,
+            per_call,
             4096,
             None,
         );
@@ -810,25 +833,99 @@ pub(crate) fn missing_image(tool: &str) -> Option<CheckOutput> {
     None
 }
 
+/// Largest tool output file read into memory. Bigger outputs are not parsed: the check reports
+/// `Partial` (see [`OutTooLarge`]) instead of exhausting memory or silently passing.
+pub(crate) const MAX_OUT_BYTES: u64 = 50 * 1024 * 1024;
+
+/// A tool output file over [`MAX_OUT_BYTES`]. Travels as an `anyhow` error; the engine turns it
+/// into `CheckStatus::Partial` (never `Passed`, never a hard `Errored`).
+#[derive(Debug)]
+pub(crate) struct OutTooLarge {
+    pub name: String,
+    /// The cap that was exceeded, in bytes.
+    pub cap: u64,
+}
+
+impl std::fmt::Display for OutTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} exceeds the {} MB read cap: not parsed, findings from it are missing",
+            self.name,
+            self.cap / (1024 * 1024)
+        )
+    }
+}
+
+impl std::error::Error for OutTooLarge {}
+
+pub(crate) fn is_oversize(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<OutTooLarge>().is_some()
+}
+
+/// Keep an [`OutTooLarge`] error (the engine reports it as Partial); anything else becomes `other()`.
+pub(crate) fn out_err(e: anyhow::Error, other: impl FnOnce() -> anyhow::Error) -> anyhow::Error {
+    if is_oversize(&e) { e } else { other() }
+}
+
+/// Read a tool-written text file after checking its size first. Refuses non-regular files
+/// (a symlink planted in a tool's output directory must not be followed to host files), and
+/// stops reading at `max + 1` bytes even if the file grows after the size check.
+pub(crate) fn read_text_capped(p: &Path, max: u64) -> Result<String> {
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let meta = std::fs::symlink_metadata(p)?;
+    if !meta.is_file() {
+        bail!("{name} is not a regular file");
+    }
+    if meta.len() > max {
+        return Err(OutTooLarge { name, cap: max }.into());
+    }
+    let mut buf = String::new();
+    std::fs::File::open(p)?
+        .take(max + 1)
+        .read_to_string(&mut buf)?;
+    if buf.len() as u64 > max {
+        return Err(OutTooLarge { name, cap: max }.into());
+    }
+    Ok(buf)
+}
+
 pub(crate) fn read_out(ctx: &Ctx, name: &str) -> Result<String> {
-    std::fs::read_to_string(ctx.out_dir().join(name))
-        .with_context(|| format!("tool did not write /out/{name}"))
+    read_text_capped(&ctx.out_dir().join(name), MAX_OUT_BYTES).map_err(|e| {
+        if is_oversize(&e) {
+            e
+        } else {
+            e.context(format!("tool did not write /out/{name}"))
+        }
+    })
 }
 
 pub(crate) fn tool_failed(name: &str, r: &ToolRun) -> anyhow::Error {
     anyhow!("{name} exited {}: {}", r.exit_code, r.stderr_tail.trim())
 }
 
+/// Replace a tool output file with its scrubbed form (or delete it when it cannot be scrubbed).
+/// A missing file is left alone; an oversized or unreadable one is removed rather than left behind
+/// with secret-bearing text it was never possible to scrub.
 fn rewrite_scrubbed(ctx: &Ctx, name: &str, f: impl Fn(&str) -> Option<String>) {
     let p = ctx.out_dir().join(name);
-    if let Ok(t) = std::fs::read_to_string(&p) {
-        match f(&t) {
+    if std::fs::symlink_metadata(&p).is_err() {
+        return;
+    }
+    match read_text_capped(&p, MAX_OUT_BYTES) {
+        Ok(t) => match f(&t) {
             Some(n) => {
                 let _ = std::fs::write(&p, n);
             }
             None => {
                 let _ = std::fs::remove_file(&p);
             }
+        },
+        Err(_) => {
+            let _ = std::fs::remove_file(&p);
         }
     }
 }
@@ -1458,12 +1555,13 @@ pub fn checks() -> Vec<Check> {
                 );
                 spec.timeout_secs = 300;
                 let r = ctx.docker.run(ctx, &spec)?;
-                let txt = match read_out(ctx, "gitleaks.json") {
-                    Ok(t) => t,
-                    Err(_) if r.exit_code != 0 => return Err(tool_failed("gitleaks", &r)),
-                    Err(_) => "[]".into(),
+                let f = match read_out(ctx, "gitleaks.json") {
+                    Ok(t) => parse_gitleaks(&t),
+                    // Never "no findings" for output that was too big to read.
+                    Err(e) if is_oversize(&e) => Err(e),
+                    Err(_) if r.exit_code != 0 => Err(tool_failed("gitleaks", &r)),
+                    Err(_) => Ok(vec![]),
                 };
-                let f = parse_gitleaks(&txt);
                 rewrite_scrubbed(ctx, "gitleaks.json", scrub_gitleaks);
                 Ok(CheckOutput::findings(f?))
             },
@@ -1595,8 +1693,10 @@ pub fn checks() -> Vec<Check> {
                 spec.memory = "3g".into();
                 spec.timeout_secs = 900;
                 let r = ctx.docker.run(ctx, &spec)?;
-                let txt = read_out(ctx, "semgrep.json").map_err(|_| tool_failed("semgrep", &r))?;
-                let f = parse_semgrep(&txt);
+                let f = match read_out(ctx, "semgrep.json") {
+                    Ok(t) => parse_semgrep(&t),
+                    Err(e) => Err(out_err(e, || tool_failed("semgrep", &r))),
+                };
                 rewrite_scrubbed(ctx, "semgrep.json", scrub_semgrep);
                 Ok(CheckOutput::findings(f?))
             },
@@ -1628,6 +1728,13 @@ pub fn checks() -> Vec<Check> {
                     spec.args.push(format!("/src/{d}"));
                 }
                 let r = ctx.docker.run(ctx, &spec)?;
+                if r.stdout_truncated {
+                    return Err(OutTooLarge {
+                        name: "hadolint stdout".into(),
+                        cap: TOOL_STDOUT_CAP as u64,
+                    }
+                    .into());
+                }
                 if r.stdout.trim().is_empty() && r.exit_code != 0 {
                     return Err(tool_failed("hadolint", &r));
                 }
@@ -1685,9 +1792,10 @@ pub fn checks() -> Vec<Check> {
                 spec.env
                     .push(("CKV_IGNORE_HIDDEN_DIRECTORIES".into(), "true".into()));
                 let r = ctx.docker.run(ctx, &spec)?;
-                let txt =
-                    read_out(ctx, "results_json.json").map_err(|_| tool_failed("checkov", &r))?;
-                let found = parse_checkov(&txt);
+                let found = match read_out(ctx, "results_json.json") {
+                    Ok(t) => parse_checkov(&t),
+                    Err(e) => Err(out_err(e, || tool_failed("checkov", &r))),
+                };
                 rewrite_scrubbed(ctx, "results_json.json", scrub_checkov);
                 Ok(CheckOutput::findings(found?))
             },
@@ -1723,7 +1831,8 @@ pub fn checks() -> Vec<Check> {
                 );
                 spec.entrypoint = Some("dockle".into());
                 let r = ctx.docker.run(ctx, &spec)?;
-                let txt = read_out(ctx, "dockle.json").map_err(|_| tool_failed("dockle", &r))?;
+                let txt = read_out(ctx, "dockle.json")
+                    .map_err(|e| out_err(e, || tool_failed("dockle", &r)))?;
                 let image = ctx
                     .target
                     .image
@@ -1797,12 +1906,16 @@ pub fn checks() -> Vec<Check> {
             spec.timeout_secs = t.timeout_secs;
             // /src is read-only: tests must write caches (pytest, .pyc, node_modules/.cache) to /tmp.
             let r = ctx.docker.run(ctx, &spec)?;
-            let Ok(xml) = read_out(ctx, "junit.xml") else {
-                return Ok(CheckOutput::status(CheckStatus::Errored(format!(
-                    "no /out/junit.xml (exit {}; /src is read-only, write caches to /tmp): {}",
-                    r.exit_code,
-                    first_line(r.stderr_tail.trim(), 200)
-                ))));
+            let xml = match read_out(ctx, "junit.xml") {
+                Ok(x) => x,
+                Err(e) if is_oversize(&e) => return Err(e),
+                Err(_) => {
+                    return Ok(CheckOutput::status(CheckStatus::Errored(format!(
+                        "no /out/junit.xml (exit {}; /src is read-only, write caches to /tmp): {}",
+                        r.exit_code,
+                        first_line(r.stderr_tail.trim(), 200)
+                    ))));
+                }
             };
             Ok(junit_output(&xml, r.exit_code))
         },
@@ -1891,7 +2004,7 @@ fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
     }
     let r = ctx.docker.run(ctx, &spec)?;
     let name = p.output.strip_prefix("/out/").unwrap_or(&p.output);
-    let txt = read_out(ctx, name).map_err(|_| tool_failed(&p.id, &r))?;
+    let txt = read_out(ctx, name).map_err(|e| out_err(e, || tool_failed(&p.id, &r)))?;
     let mut findings = match p.format.as_str() {
         "sarif" => parse_sarif(&txt, &check)?,
         "junit" => match junit_output(&txt, r.exit_code) {
@@ -2526,6 +2639,149 @@ format = "sarif"
         std::fs::write(d.join("grype/6/vulnerability.db"), "x").unwrap();
         assert_eq!(db_age_days(&d), Some(0));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // ---------------------------------------------------------------- bounded reads
+
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("readyhai-tools-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn out_ctx(tag: &str) -> Ctx {
+        let d = scratch(tag);
+        std::fs::create_dir_all(d.join("out")).unwrap();
+        Ctx {
+            run_id: "t".into(),
+            target: crate::model::Target {
+                kind: TargetKind::Repo,
+                raw: "/t".into(),
+                path: None,
+                image: None,
+                url: None,
+                openapi: None,
+                host: None,
+                apk: None,
+                device: None,
+            },
+            profile: Profile::Quick,
+            run_dir: d,
+            snapshot: None,
+            facts: Default::default(),
+            docker: Docker {
+                available: false,
+                mode: MountMode::Bind,
+                cache_dir: PathBuf::new(),
+            },
+            cfg: Default::default(),
+            error_lines: Default::default(),
+            nonprod: false,
+            qa: None,
+        }
+    }
+
+    #[test]
+    fn read_text_capped_checks_the_size_first() {
+        let d = scratch("cap");
+        let f = d.join("big.json");
+        std::fs::write(&f, "x".repeat(100)).unwrap();
+        assert_eq!(read_text_capped(&f, 100).unwrap().len(), 100);
+        let e = read_text_capped(&f, 99).unwrap_err();
+        assert!(is_oversize(&e), "{e:#}");
+        assert!(e.to_string().contains("exceeds"), "{e:#}");
+        // a missing file is an ordinary error, not an oversize
+        let e = read_text_capped(&d.join("nope.json"), 100).unwrap_err();
+        assert!(!is_oversize(&e));
+        // out_err keeps an oversize error and replaces everything else
+        let kept = out_err(read_text_capped(&f, 10).unwrap_err(), || anyhow!("other"));
+        assert!(is_oversize(&kept));
+        let other = out_err(e, || anyhow!("other"));
+        assert_eq!(other.to_string(), "other");
+        #[cfg(unix)]
+        {
+            // a symlink planted in a tool's output dir is not followed
+            let l = d.join("link.json");
+            std::os::unix::fs::symlink(&f, &l).unwrap();
+            let e = read_text_capped(&l, 1000).unwrap_err();
+            assert!(e.to_string().contains("not a regular file"), "{e:#}");
+        }
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn oversized_output_is_removed_not_left_unscrubbed_and_reads_as_partial() {
+        let ctx = out_ctx("scrub");
+        let p = ctx.out_dir().join("gitleaks.json");
+        // normal file: scrubbed in place
+        std::fs::write(&p, r#"[{"Secret":"hunter2","RuleID":"x"}]"#).unwrap();
+        rewrite_scrubbed(&ctx, "gitleaks.json", scrub_gitleaks);
+        let t = std::fs::read_to_string(&p).unwrap();
+        assert!(!t.contains("hunter2") && t.contains("RuleID"), "{t}");
+        // read_out over the cap: an oversize error, which the engine reports as Partial
+        let big = std::fs::File::create(&p).unwrap();
+        big.set_len(MAX_OUT_BYTES + 1).unwrap(); // sparse: no real disk or memory use
+        drop(big);
+        let e = read_out(&ctx, "gitleaks.json").unwrap_err();
+        assert!(is_oversize(&e), "{e:#}");
+        assert!(matches!(
+            crate::engine::error_status(&e),
+            CheckStatus::Partial(r) if r.contains("exceeds")
+        ));
+        // ...and the unscrubbable file is deleted rather than kept with secrets in it
+        rewrite_scrubbed(&ctx, "gitleaks.json", scrub_gitleaks);
+        assert!(!p.exists());
+        // a missing output is untouched by the scrubber
+        rewrite_scrubbed(&ctx, "gitleaks.json", scrub_gitleaks);
+        let _ = std::fs::remove_dir_all(&ctx.run_dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exec_caps_a_tools_stdout() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("fakedocker");
+        // a stand-in `docker` that writes 200 000 bytes then a marker line
+        let bin = d.join("docker");
+        std::fs::write(
+            &bin,
+            "#!/bin/sh\nhead -c 200000 /dev/zero | tr '\\0' x\necho END\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let docker = Docker {
+            available: true,
+            mode: MountMode::Bind,
+            cache_dir: d.clone(),
+        };
+        let mut spec = ToolSpec::new("fake", &[]);
+        spec.image = Some("example/fake:1".into());
+        spec.timeout_secs = 30;
+        let bin_s = bin.to_str().unwrap();
+        // Another test thread forking while the script was open for writing can make the first exec
+        // fail with "Text file busy"; that is a property of the test setup, so retry it.
+        let run = |cap: usize| {
+            for _ in 0..20 {
+                match exec_with(bin_s, cap, &docker, "run-x", &[], &spec) {
+                    Err(e) if format!("{e:#}").contains("Text file busy") => {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    r => return r.unwrap(),
+                }
+            }
+            panic!("script stayed busy");
+        };
+        let r = run(1024);
+        assert!(r.stdout_truncated);
+        assert_eq!(r.stdout.len(), 1024, "head only, bounded by the cap");
+        assert_eq!(r.exit_code, 0);
+        // under the cap nothing is lost and nothing is flagged
+        let r = run(1 << 20);
+        assert!(!r.stdout_truncated);
+        assert_eq!(r.stdout.len(), 200_004);
+        assert!(r.stdout.ends_with("END\n"));
+        let _ = std::fs::remove_dir_all(d);
     }
 
     #[test]

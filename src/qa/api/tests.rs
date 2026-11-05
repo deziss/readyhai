@@ -857,3 +857,613 @@ fn envelope_helpers() {
     let ex = exec::Exchange::default().with_body(br#"{"data":{"id":"abc"}}"#);
     assert_eq!(created_id(&ex).as_deref(), Some("abc"));
 }
+
+// ------------------------------------------------------------------ write safety, evidence status, BOLA, cleanup
+
+/// Spec = the fixture with `f` applied to its JSON.
+fn fixture_spec_with(f: impl FnOnce(&mut Value)) -> String {
+    let mut v: Value = serde_json::from_str(FIXTURE_SPEC).unwrap();
+    f(&mut v);
+    v.to_string()
+}
+
+/// alice (valid) + mallory (the server answers 401 to her token).
+fn roles_alice_mallory() -> String {
+    let alice = FIXTURE_ROLES.split("[[role]]").nth(1).unwrap();
+    format!(
+        "[[role]]{alice}\n[[role]]\nname = \"mallory\"\nauth = \"bearer\"\ntoken_env = \"RH_MALLORY_TOKEN\"\nallow = [\"/**\"]\n"
+    )
+}
+
+fn alice_only() -> String {
+    format!(
+        "[[role]]{}",
+        FIXTURE_ROLES.split("[[role]]").nth(1).unwrap()
+    )
+}
+
+/// The orders fixture with its "DELETE does nothing" bug fixed: a deleted order is gone.
+fn orders_server_clean() -> Server {
+    let o = Orders::new(Opts::default());
+    let gone: Mutex<Vec<String>> = Mutex::new(vec![]);
+    serve(move |r| {
+        if r.user().is_some() && r.path.starts_with("/orders/") {
+            if r.method == "DELETE" {
+                gone.lock().unwrap().push(r.path.clone());
+                return Resp::empty(204);
+            }
+            if gone.lock().unwrap().contains(&r.path) {
+                return Resp::json(404, json!({"error": "not found"}));
+            }
+        }
+        o.handle(r)
+    })
+}
+
+#[test]
+fn unlikely_ids_cover_every_path_param_and_never_default_to_one() {
+    let op = |params: Vec<spec::Param>| Op {
+        method: "PUT".into(),
+        path: "/a/{aid}/b/{bid}".into(),
+        params,
+        body: None,
+        body_required: false,
+        responses: Default::default(),
+        secured: true,
+    };
+    let p = |name: &str, schema: Value| spec::Param {
+        name: name.into(),
+        loc: "path".into(),
+        required: true,
+        schema,
+    };
+    let ids = unlikely_ids(&op(vec![
+        p("aid", json!({"type": "integer"})),
+        p("bid", json!({"type": "string", "format": "uuid"})),
+    ]));
+    assert_eq!(ids["aid"], UNLIKELY_ID);
+    assert_eq!(ids["bid"], "00000000-0000-4000-8000-000000999999");
+    // an enum cannot be invented: its first member
+    let ids = unlikely_ids(&op(vec![p("aid", json!({"enum": ["users", "teams"]}))]));
+    assert_eq!(ids["aid"], "users");
+    assert!(ids.values().all(|v| v != "1"));
+}
+
+#[test]
+fn functional_writes_never_touch_harvested_ids() {
+    let (srv, _) = orders_server(Opts::default());
+    let e = fixture_env(&srv, true, Profile::Quick);
+    functional_in(&e.ctx, &e.data).unwrap();
+    let reqs = srv.requests();
+    // the seeded (real) orders are 1..=3; this run's own creations get 4 and up
+    let id_of = |l: &str| -> Option<u64> { l.rsplit('/').next().and_then(|x| x.parse().ok()) };
+    let mut put_ids = vec![];
+    for l in &reqs {
+        let (m, p) = l.split_once(' ').unwrap();
+        if !p.starts_with("/orders/") {
+            continue;
+        }
+        match m {
+            "PUT" | "PATCH" | "DELETE" => {
+                let id = id_of(p).unwrap_or(0);
+                assert!(
+                    id == 999_999 || id >= 4,
+                    "a write reached the real record {p}: {reqs:?}"
+                );
+                if m == "PUT" {
+                    put_ids.push(id);
+                }
+            }
+            _ => {}
+        }
+    }
+    assert!(!put_ids.is_empty(), "PUT cases must still run: {reqs:?}");
+    // PUT cases ran against a resource this run created (validation is reachable)
+    assert!(put_ids.iter().any(|i| *i >= 4), "{put_ids:?}");
+    // reads still use the real, harvested ids
+    assert!(srv.count("GET /orders/1") >= 1, "{reqs:?}");
+    // ...and every created record was cleaned up
+    assert!(srv.count("DELETE /orders/") >= 1);
+}
+
+#[test]
+fn write_cases_without_a_scratch_resource_use_the_unlikely_id_and_a_404_is_blocked() {
+    let (srv, _) = orders_server(Opts::default());
+    // no POST for the collection: nothing this run could create -> the unlikely id
+    let spec = fixture_spec_with(|v| {
+        v["paths"]["/orders"]
+            .as_object_mut()
+            .unwrap()
+            .remove("post");
+    });
+    let e = mk_env(&srv.base, &spec, FIXTURE_ROLES, true, Profile::Quick);
+    functional_in(&e.ctx, &e.data).unwrap();
+    for l in srv.requests() {
+        let (m, p) = l.split_once(' ').unwrap();
+        if matches!(m, "PUT" | "PATCH" | "DELETE") {
+            assert_eq!(p, "/orders/999999", "{l}");
+        }
+    }
+    let res = e.results();
+    let put: Vec<&TestResult> = res
+        .iter()
+        .filter(|r| r.case_id.starts_with("api.PUT./orders/{id}."))
+        .collect();
+    assert!(!put.is_empty());
+    assert!(
+        put.iter().all(|r| r.status == ResultStatus::Blocked
+            && r.actual.contains("no valid resource id")),
+        "a 404 for the unknown id proves nothing: {put:?}"
+    );
+}
+
+#[test]
+fn functional_status_follows_the_evidence() {
+    let (srv, _) = orders_server(Opts::default());
+    // target down: nothing executed -> Errored
+    let e = mk_env(
+        &dead_base(),
+        FIXTURE_SPEC,
+        FIXTURE_ROLES,
+        true,
+        Profile::Quick,
+    );
+    let out = functional_in(&e.ctx, &e.data).unwrap();
+    assert!(
+        matches!(&out.status, Some(CheckStatus::Errored(r)) if r.contains("no case executed")),
+        "{:?}",
+        out.status
+    );
+    // no credentials: /health passes, every secured call is a 401 -> mostly blocked -> Partial
+    let e = mk_env(&srv.base, FIXTURE_SPEC, "", true, Profile::Quick);
+    let out = functional_in(&e.ctx, &e.data).unwrap();
+    assert!(
+        matches!(&out.status, Some(CheckStatus::Partial(r)) if r.contains("blocked")),
+        "{:?}",
+        out.status
+    );
+    // a healthy run keeps the findings-derived status (None = Passed / Failed by findings)
+    let e = fixture_env(&srv, true, Profile::Quick);
+    let out = functional_in(&e.ctx, &e.data).unwrap();
+    assert!(out.status.is_none(), "{:?}", out.status);
+    assert!(!out.findings.is_empty());
+}
+
+#[test]
+fn a_read_only_host_with_only_write_operations_is_skipped_not_errored() {
+    let (srv, _) = orders_server(Opts::default());
+    let spec = spec_of(json!({
+        "/items": {"post": {"security": [], "requestBody": {"required": true, "content": {"application/json": {"schema": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string"}}}}}}, "responses": {"201": {"description": "ok"}}}}
+    }));
+    let e = mk_env(&srv.base, &spec, "", false, Profile::Quick);
+    let out = functional_in(&e.ctx, &e.data).unwrap();
+    assert!(
+        matches!(&out.status, Some(CheckStatus::Skipped(r)) if r.contains("read-only")),
+        "{:?}",
+        out.status
+    );
+    assert!(srv.requests().iter().all(|l| l.starts_with("GET ")));
+}
+
+#[test]
+fn authz_status_follows_the_evidence() {
+    let e = mk_env(
+        &dead_base(),
+        FIXTURE_SPEC,
+        FIXTURE_ROLES,
+        false,
+        Profile::Quick,
+    );
+    let out = authz::run(&e.ctx).unwrap();
+    assert!(
+        matches!(&out.status, Some(CheckStatus::Errored(_))),
+        "{:?}",
+        out.status
+    );
+    let (srv, _) = orders_server(Opts::default());
+    let e = fixture_env(&srv, true, Profile::Quick);
+    let out = authz::run(&e.ctx).unwrap();
+    assert!(out.status.is_none(), "{:?}", out.status);
+}
+
+#[test]
+fn authz_anon_404_on_a_synthetic_id_is_blocked_not_pass() {
+    // a server that answers 404 to everything: it never reaches an authentication decision
+    let srv = serve(|_| Resp::json(404, json!({"error": "no such thing"})));
+    let spec = spec_of(json!({
+        "/things/{id}": {
+            "get": {"security": [{"bearerAuth": []}], "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "integer"}}], "responses": {"200": {"description": "ok"}}},
+            "delete": {"security": [{"bearerAuth": []}], "parameters": [{"name": "id", "in": "path", "required": true, "schema": {"type": "integer"}}], "responses": {"204": {"description": "ok"}}}
+        }
+    }));
+    let e = mk_env(&srv.base, &spec, "", true, Profile::Quick);
+    let out = authz::run(&e.ctx).unwrap();
+    let res = e.results();
+    assert!(!res.is_empty());
+    assert!(
+        res.iter().all(|r| r.status == ResultStatus::Blocked),
+        "a 404 for a made-up id cannot prove protection: {res:?}"
+    );
+    assert_eq!(e.cell("GET /things/{id}", "anon"), Some(Cell::Untested));
+    assert_eq!(
+        e.cell("DELETE /things/{id}", "invalid"),
+        Some(Cell::Untested)
+    );
+    assert!(e.defects().is_empty());
+    assert!(
+        matches!(&out.status, Some(CheckStatus::Errored(_))),
+        "{:?}",
+        out.status
+    );
+    // the write used the unlikely id, never a real one
+    assert!(srv.requests().iter().any(|l| l == "DELETE /things/999999"));
+}
+
+#[test]
+fn bola_role_b_401_is_blocked_and_is_not_a_tested_role() {
+    let srv = orders_server_clean();
+    let e = mk_env(
+        &srv.base,
+        FIXTURE_SPEC,
+        &roles_alice_mallory(),
+        true,
+        Profile::Standard,
+    );
+    stateful::run(&e.ctx).unwrap();
+    let res = e.results();
+    let bola: Vec<&TestResult> = res
+        .iter()
+        .filter(|r| r.case_id.contains(".state.bola.mallory"))
+        .collect();
+    assert!(!bola.is_empty(), "{res:?}");
+    assert!(
+        bola.iter()
+            .all(|r| r.status == ResultStatus::Blocked && r.actual.contains("401")),
+        "{bola:?}"
+    );
+    assert!(!e.rules().iter().any(|r| r == "qa.api.bola"));
+    // the lifecycle is not proven: coverage is Untested and the skipped steps are noted
+    assert_eq!(e.cell("POST /orders", "stateful"), Some(Cell::Untested));
+    assert!(
+        e.notes()
+            .iter()
+            .any(|n| n.contains("lifecycle step(s) skipped") && n.contains("BOLA")),
+        "{:?}",
+        e.notes()
+    );
+    // mallory did not test authorization: she is not counted toward ">= 2 roles"
+    let r = crate::qa::build_report(e.qa(), &run_stub(Verdict::Pass), "t");
+    let c = r
+        .exit_criteria
+        .iter()
+        .find(|c| c.name.starts_with("Authorization tested"))
+        .unwrap();
+    assert!(!c.met && !c.detail.contains("mallory"), "{c:?}");
+}
+
+#[test]
+fn bola_is_skipped_for_a_get_that_is_public_in_the_spec() {
+    let (srv, _) = orders_server(Opts {
+        envelope: true,
+        ..Default::default()
+    });
+    let spec = fixture_spec_with(|v| {
+        v["paths"]["/orders/{id}"]["get"]["security"] = json!([]);
+    });
+    let e = mk_env(&srv.base, &spec, FIXTURE_ROLES, true, Profile::Standard);
+    stateful::run(&e.ctx).unwrap();
+    // the fixture's BOLA hole is on GET; a public GET is not a BOLA, so no defect and no GET case
+    assert!(
+        !e.rules().iter().any(|r| r == "qa.api.bola"),
+        "{:?}",
+        e.rules()
+    );
+    assert!(
+        !e.cases()
+            .iter()
+            .any(|c| c.id.starts_with("api.GET./orders/{id}.state.bola"))
+    );
+    assert!(
+        e.notes()
+            .iter()
+            .any(|n| n.contains("BOLA skipped for GET /orders/{id}") && n.contains("public")),
+        "{:?}",
+        e.notes()
+    );
+    // the (secured) PUT is still tested
+    assert!(
+        e.cases()
+            .iter()
+            .any(|c| c.id.starts_with("api.PUT./orders/{id}.state.bola"))
+    );
+}
+
+#[test]
+fn bola_is_skipped_for_a_get_an_anonymous_caller_can_read() {
+    let o = Orders::new(Opts::default());
+    // anonymous GET /orders/<id> is answered as admin: public by behaviour
+    let srv = serve(move |r| {
+        if r.method == "GET" && r.path.starts_with("/orders/") && r.user().is_none() {
+            let mut headers = r.headers.clone();
+            headers.insert("authorization".into(), "Bearer admin-token".into());
+            return o.handle(&HReq {
+                method: r.method.clone(),
+                path: r.path.clone(),
+                query: r.query.clone(),
+                headers,
+                body: r.body.clone(),
+            });
+        }
+        o.handle(r)
+    });
+    let e = mk_env(
+        &srv.base,
+        FIXTURE_SPEC,
+        FIXTURE_ROLES,
+        true,
+        Profile::Standard,
+    );
+    stateful::run(&e.ctx).unwrap();
+    assert!(
+        !e.rules().iter().any(|r| r == "qa.api.bola"),
+        "{:?}",
+        e.rules()
+    );
+    assert!(
+        e.notes()
+            .iter()
+            .any(|n| n.contains("BOLA skipped for GET /orders/{id}") && n.contains("anonymous")),
+        "{:?}",
+        e.notes()
+    );
+}
+
+#[test]
+fn stateful_coverage_is_not_pass_when_steps_were_skipped() {
+    let (srv, _) = orders_server(Opts::default());
+    // one role only: BOLA cannot run (on a server whose DELETE works, so nothing else fails)
+    let clean = orders_server_clean();
+    let e = mk_env(
+        &clean.base,
+        FIXTURE_SPEC,
+        &alice_only(),
+        true,
+        Profile::Standard,
+    );
+    stateful::run(&e.ctx).unwrap();
+    assert_eq!(e.cell("POST /orders", "stateful"), Some(Cell::Untested));
+    assert!(
+        e.notes()
+            .iter()
+            .any(|n| n.contains("POST /orders") && n.contains("BOLA")),
+        "{:?}",
+        e.notes()
+    );
+    // with two real roles the same lifecycle runs fully (BOLA found by the fixture bug -> Fail)
+    let e = fixture_env(&srv, true, Profile::Standard);
+    stateful::run(&e.ctx).unwrap();
+    assert_eq!(e.cell("POST /orders", "stateful"), Some(Cell::Fail));
+}
+
+#[test]
+fn mutate_skips_body_keys_the_put_schema_does_not_declare() {
+    let put = Op {
+        method: "PUT".into(),
+        path: "/orders/{id}".into(),
+        params: vec![],
+        body: Some(json!({"type": "object", "properties": {"item": {"type": "string"}}})),
+        body_required: true,
+        responses: Default::default(),
+        secured: true,
+    };
+    // "extra" sorts before "item": it used to abort the whole mutation
+    let body = json!({"extra": 7, "item": "keyboard"});
+    let (nb, field, newv) = stateful::mutate(&body, &put).expect("the declared key is mutated");
+    assert_eq!(field, "item");
+    assert_eq!(newv, "keyboard-upd");
+    assert_eq!(nb["extra"], 7);
+    // nothing mutable at all: still None
+    assert!(stateful::mutate(&json!({"extra": 7}), &put).is_none());
+}
+
+#[test]
+fn stateful_cleanup_is_registered_at_create_even_if_the_lifecycle_never_deletes() {
+    let (srv, _) = orders_server(Opts::default());
+    let mut e = fixture_env(&srv, true, Profile::Standard);
+    // the budget runs out right after create/read/update: the lifecycle DELETE is never sent
+    e.ctx.qa.as_mut().unwrap().max_requests = 3;
+    stateful::run(&e.ctx).unwrap();
+    assert!(
+        e.results()
+            .iter()
+            .any(|r| r.status == ResultStatus::Skipped && r.actual.contains("budget")),
+        "{:?}",
+        e.results()
+    );
+    assert_eq!(srv.count("DELETE /orders/4"), 1, "{:?}", srv.requests());
+    assert!(
+        !e.notes().iter().any(|n| n.contains("LEAKED")),
+        "{:?}",
+        e.notes()
+    );
+}
+
+#[test]
+fn a_resource_that_cannot_be_deleted_is_recorded_as_leaked() {
+    let o = Orders::new(Opts::default());
+    let srv = serve(move |r| {
+        if r.method == "DELETE" && r.user().is_some() {
+            return Resp::json(500, json!({"message": "cannot delete"}));
+        }
+        o.handle(r)
+    });
+    let e = fixture_env(&srv, true, Profile::Standard);
+    stateful::run(&e.ctx).unwrap();
+    // lifecycle DELETE + the cleanup retry
+    assert!(srv.count("DELETE /orders/4") >= 2, "{:?}", srv.requests());
+    let leak = e
+        .notes()
+        .into_iter()
+        .find(|n| n.contains("LEAKED"))
+        .expect("a leak note");
+    assert!(leak.contains("/orders/4"), "{leak}");
+    assert!(e.qa().with(|c| {
+        c.risks
+            .iter()
+            .any(|r| r.title.starts_with("QA test data left"))
+    }));
+}
+
+#[test]
+fn a_create_without_a_delete_endpoint_is_recorded_as_leaked() {
+    let (srv, _) = orders_server(Opts::default());
+    let spec = fixture_spec_with(|v| {
+        v["paths"]["/orders/{id}"]
+            .as_object_mut()
+            .unwrap()
+            .remove("delete");
+    });
+    let e = mk_env(&srv.base, &spec, FIXTURE_ROLES, true, Profile::Standard);
+    stateful::run(&e.ctx).unwrap();
+    assert!(
+        e.notes()
+            .iter()
+            .any(|n| n.contains("LEAKED") && n.contains("no DELETE endpoint")),
+        "{:?}",
+        e.notes()
+    );
+    assert!(e.qa().with(|c| {
+        c.risks
+            .iter()
+            .any(|r| r.title.starts_with("QA test data left"))
+    }));
+}
+
+#[test]
+fn a_corrupt_baseline_spec_is_backed_up_not_silently_overwritten() {
+    let (srv, _) = orders_server(Opts::default());
+    let spec = spec_of(
+        json!({"/health": {"get": {"security": [], "responses": {"200": {"description": "ok"}}}}}),
+    );
+    let e = mk_env(&srv.base, &spec, "", false, Profile::Quick);
+    let path = e.data.join("baselines").join(format!(
+        "{}.spec-full.json",
+        crate::engine::target_key(&e.ctx.target)
+    ));
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, "{ this is not json").unwrap();
+    functional_in(&e.ctx, &e.data).unwrap();
+    let bak = path.with_extension(format!("json.corrupt-{}", e.ctx.run_id));
+    assert_eq!(std::fs::read_to_string(&bak).unwrap(), "{ this is not json");
+    assert!(
+        e.notes()
+            .iter()
+            .any(|n| n.contains("corrupt") && n.contains("backup kept")),
+        "{:?}",
+        e.notes()
+    );
+    // a fresh, valid baseline replaced it only after the backup existed
+    assert!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).is_ok());
+    assert!(!e.rules().iter().any(|r| r == "qa.api.breaking_change"));
+}
+
+#[test]
+fn p95_notes_of_the_api_checks_feed_the_dashboard() {
+    let (srv, _) = orders_server(Opts::default());
+    let e = fixture_env(&srv, true, Profile::Quick);
+    functional_in(&e.ctx, &e.data).unwrap();
+    let notes = e.notes();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.starts_with("latency ") && n.contains(" p95=")),
+        "{notes:?}"
+    );
+    // the REAL notes, parsed by the real dashboard parser
+    let p = crate::dashboard::parse_p95(&notes).expect("a p95 from the real latency notes");
+    assert!(p >= 0.0);
+    // the helper is the single source of the note shape
+    assert_eq!(
+        latency_note("GET /a", 230, 5),
+        "latency GET /a p95=230ms (n=5)"
+    );
+    assert_eq!(
+        crate::dashboard::parse_p95(&[latency_note("GET /a", 230, 5)]),
+        Some(230.0)
+    );
+}
+
+#[test]
+fn the_pieces_the_agent_reuses_need_no_run_context() {
+    // everything below is plain data in, plain data out: no Ctx, no QaCtx, no network
+    let spec = spec::parse(serde_json::from_str(FIXTURE_SPEC).unwrap()).unwrap();
+    let op = |m: &str, p: &str| {
+        spec.ops
+            .iter()
+            .find(|o| o.method == m && o.path == p)
+            .unwrap()
+            .clone()
+    };
+    // the item path of a collection, and only that
+    assert_eq!(
+        collection_of(&op("GET", "/orders/{id}")),
+        Some(("/orders".to_string(), "id".to_string()))
+    );
+    assert_eq!(collection_of(&op("GET", "/orders")), None);
+    // ids come out of a list (or an envelope), by the parameter name, capped and de-duplicated
+    let mut found = vec![];
+    ids_in_list(
+        &json!({"data": [{"id": 7}, {"id": 7}, {"uuid": "u-1"}, {"order_id": 9}, {"id": 8}, {"id": 9}]}),
+        "order_id",
+        &mut found,
+    );
+    assert_eq!(
+        found,
+        ["7", "u-1", "9"],
+        "at most {MAX_IDS}, first seen first"
+    );
+    let mut none = vec![];
+    ids_in_list(&json!({"error": "nope"}), "id", &mut none);
+    assert!(none.is_empty());
+    // case generation: the maxLength probe of POST /orders (bug 3 of the fixture)
+    let cases = synth::generate(
+        &op("POST", "/orders"),
+        "readyhai-t-",
+        false,
+        &HashMap::new(),
+    );
+    let m = cases
+        .iter()
+        .find(|c| c.kind == "boundary.maxlen.note")
+        .unwrap();
+    assert_eq!(m.expect, Expect::Reject);
+    assert_eq!(
+        m.body.as_ref().unwrap()["note"].as_str().unwrap().len(),
+        101
+    );
+    // response validation: bug 5 (GET /orders/2 omits `total`), judged from the response map alone
+    let get = op("GET", "/orders/{id}");
+    assert_eq!(
+        contract::schema_mismatch(
+            &get.responses,
+            200,
+            &json!({"id": 2, "item": "m", "qty": 1, "owner": "a"})
+        )
+        .as_deref(),
+        Some("$.total: required property missing")
+    );
+    assert!(contract::undocumented(&get.responses, 201));
+    assert!(!contract::undocumented(&get.responses, 404));
+    // error leakage (bug 4) and latency (bug 7)
+    assert_eq!(
+        contract::leak_kind(
+            "Traceback (most recent call last):\n  File \"/home/app/server.py\", line 88"
+        ),
+        Some("python_traceback")
+    );
+    assert!(latency::is_slow(latency::p95(&[1500, 1520, 1490])));
+    // one outlier among many samples is not a slow endpoint
+    let mut many: Vec<u128> = vec![25; 39];
+    many.push(2000);
+    assert!(!latency::is_slow(latency::p95(&many)));
+}

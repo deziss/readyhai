@@ -1,100 +1,221 @@
-//! Stateful Scenario Chains & TOCTOU Concurrency Burst Engine.
+//! Stateful scenario chains and the TOCTOU concurrency burst.
 //!
-//! Enables multi-step adversarial workflows (e.g. Alice creates private resource -> Bob accesses it: BOLA/IDOR)
-//! and rapid parallel concurrency bursts to expose race conditions and TOCTOU vulnerabilities.
+//! A chain is "actor A creates a resource, actor B tries to read it" (BOLA/IDOR). The executor
+//! collects facts; `oracle::judge_stateful` decides. What it guarantees:
+//!
+//! * both actors' credentials are required, otherwise the chain is skipped (nothing is sent);
+//! * `{{placeholders}}` must resolve before a request is built, otherwise nothing is sent;
+//! * the creating POST and the reading GET are about the same resource path;
+//! * ids are taken only from the response's top-level / primary object, never from nested
+//!   sub-resources;
+//! * a second actor's 401/403/429/3xx is not evidence of isolation (INCONCLUSIVE); an
+//!   owner-control read must prove the resource exists first;
+//! * a "second actor can read it" finding is confirmed by one safe GET re-run and dropped when the
+//!   same GET works without credentials (a public resource);
+//! * values extracted from responses under secret-looking keys (token, key, secret, password,
+//!   session, auth) are redacted before they are stored, and reproduction curls carry
+//!   `${RH_<ROLE>_TOKEN}` placeholders, never a token.
+//!
+//! The concurrency burst reports facts (responses plus a before/after read); the verdict is
+//! `oracle::judge_burst`: only a violated invariant can fail it.
 
+use regex::Regex;
+use serde_json::Value;
 use std::collections::HashMap;
-use std::io::Read;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
 use super::budget::RunBudget;
-use super::exec::{Credentials, normalize_method};
-use super::types::{StatefulStep, StatefulStepExecution};
+use super::exec::role_of;
+use super::exec::{
+    Auth, Bearer, Clients, Credentials, OutReq, RequestSpec, Seen, body_and_type, curl_for,
+    is_safe_method, normalize_component, normalize_method, resolve_auth,
+};
+use super::oracle::{BurstResponse, OracleOutcome, StatefulFacts, judge_stateful, primary_object};
+use super::types::{StatefulStep, StatefulStepExecution, current_ledger, record_creation_response};
+use crate::llm::untrusted::redact_then_truncate;
+use crate::llm::{is_sensitive_key, redact_for_llm};
 
-const BODY_CAP: usize = 64 * 1024;
+/// Keys extracted from a response even when the step names none.
+pub const DEFAULT_ID_KEYS: [&str; 6] = [
+    "id",
+    "uuid",
+    "item_id",
+    "order_id",
+    "user_id",
+    "resource_id",
+];
 
 #[derive(Debug, Clone)]
 pub struct StatefulScenarioResult {
-    pub passed: bool,
-    pub violation_triggered: bool,
-    pub setup_failed: bool,
+    /// Why nothing (or nothing conclusive) was run: the chain is SKIPPED, not judged.
+    pub skipped: Option<String>,
+    /// The oracle's verdict for the chain.
+    pub outcome: Option<OracleOutcome>,
     pub steps: Vec<StatefulStepExecution>,
-    pub failure_reason: Option<String>,
+    /// One curl per request, tokens as `${RH_<ROLE>_TOKEN}` placeholders.
     pub reproduction_curl: String,
     pub final_status: u16,
     pub total_latency_ms: u64,
+    /// One-line, redacted description of what happened.
+    pub summary: String,
+    // views of `outcome`, kept for callers that only need a flag
+    pub passed: bool,
+    pub violation_triggered: bool,
+    pub setup_failed: bool,
+    pub failure_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConcurrencyBurstResult {
-    pub status_codes: Vec<u16>,
-    pub has_race_condition: bool,
-    pub explanation: Option<String>,
+// ---------------------------------------------------------------- variables
+
+fn placeholder_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"\{\{\s*([^{}\s]*)\s*\}\}").unwrap())
 }
 
-/// Substitute context variables `{{var}}` and `{{ var }}` in a string.
+/// Names of every `{{name}}` / `{{ name }}` in `s`.
+pub fn placeholder_names(s: &str) -> Vec<String> {
+    placeholder_re()
+        .captures_iter(s)
+        .map(|c| c[1].to_string())
+        .collect()
+}
+
+/// Substitute context variables `{{var}}` and `{{ var }}` in a string. Unknown placeholders are
+/// left in place (the caller must reject them: see [`placeholder_names`]).
 pub fn substitute_vars(template: &str, context: &HashMap<String, String>) -> String {
-    let mut res = template.to_string();
-    for (k, v) in context {
-        let pattern1 = format!("{{{{{}}}}}", k);
-        let pattern2 = format!("{{{{ {} }}}}", k);
-        res = res.replace(&pattern1, v).replace(&pattern2, v);
-    }
-    res
+    placeholder_re()
+        .replace_all(template, |c: &regex::Captures| match context.get(&c[1]) {
+            Some(v) => v.clone(),
+            None => c[0].to_string(),
+        })
+        .into_owned()
 }
 
-/// Recursively extract JSON values into a string map.
+/// Key names whose values must never be stored: token, key, secret, password, session, auth.
+pub fn is_secret_key(k: &str) -> bool {
+    if is_sensitive_key(k) {
+        return true;
+    }
+    let low = k.to_ascii_lowercase();
+    [
+        "token",
+        "secret",
+        "password",
+        "passwd",
+        "session",
+        "credential",
+        "cookie",
+        "jwt",
+        "bearer",
+        "signature",
+        "private",
+    ]
+    .iter()
+    .any(|s| low.contains(s))
+        || (low.contains("auth") && !low.contains("author"))
+        || low.ends_with("key")
+        || low.starts_with("key_")
+        || low.starts_with("key-")
+}
+
+/// A value as it may be stored: redacted when its key looks secret, otherwise scrubbed.
+pub fn storable_value(key: &str, value: &str) -> String {
+    if is_secret_key(key) {
+        "[REDACTED]".to_string()
+    } else {
+        redact_for_llm(value)
+    }
+}
+
+fn scalar(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None, // objects and arrays are not identifiers
+    }
+}
+
+/// Extract ids (and any `wanted` names) from the response's top-level or primary object only:
+/// never from nested sub-resources (`owner.id`) and never from list items. A top-level object
+/// with no identifier of its own is looked through once, into its envelope (`data`, `result`...).
 pub fn extract_json_values(
     val: &Value,
     wanted: Option<&[String]>,
     out: &mut HashMap<String, String>,
 ) {
-    match val {
-        Value::Object(map) => {
-            for (k, v) in map {
-                let k_lower = k.to_ascii_lowercase();
-                let should_extract = wanted
-                    .map_or(false, |w| w.iter().any(|target| target.eq_ignore_ascii_case(k)))
-                    || matches!(
-                        k_lower.as_str(),
-                        "id" | "uuid" | "key" | "token" | "item_id" | "order_id" | "user_id" | "resource_id"
-                    );
-
-                if should_extract {
-                    let s = match v {
-                        Value::String(s) => s.clone(),
-                        Value::Number(n) => n.to_string(),
-                        Value::Bool(b) => b.to_string(),
-                        other => other.to_string(),
-                    };
-                    out.insert(k.clone(), s);
-                }
-                extract_json_values(v, wanted, out);
+    let is_wanted = |k: &str| {
+        wanted.is_some_and(|w| w.iter().any(|t| t.eq_ignore_ascii_case(k)))
+            || DEFAULT_ID_KEYS.contains(&k.to_ascii_lowercase().as_str())
+    };
+    let Some(top) = val.as_object() else { return };
+    let obj = if top
+        .keys()
+        .any(|k| is_wanted(k) || k.eq_ignore_ascii_case("_id"))
+    {
+        top
+    } else {
+        match primary_object(val) {
+            Some(o) => o,
+            None => return,
+        }
+    };
+    for (k, v) in obj {
+        if is_wanted(k)
+            && let Some(s) = scalar(v)
+        {
+            out.insert(k.clone(), s);
+        }
+    }
+    // a step that asks for `item_id` gets the primary `id` when the response has no such key
+    if let Some(w) = wanted
+        && let Some(id) = out.get("id").cloned()
+    {
+        for name in w {
+            if !out.contains_key(name) && (name == "id" || name.ends_with("_id")) {
+                out.insert(name.clone(), id.clone());
             }
         }
-        Value::Array(arr) => {
-            for item in arr {
-                extract_json_values(item, wanted, out);
-            }
-        }
-        _ => {}
     }
 }
 
-/// Resolve bearer token for an actor.
+// ---------------------------------------------------------------- actors
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Actor {
+    Anon,
+    Forged,
+    Role(String),
+}
+
+fn actor_of(s: &str) -> Actor {
+    let a = s.trim().to_ascii_lowercase();
+    match a.as_str() {
+        "anon" | "anonymous" | "none" | "" => Actor::Anon,
+        "forged" => Actor::Forged,
+        _ => Actor::Role(a),
+    }
+}
+
+impl Actor {
+    fn auth(&self) -> Auth {
+        match self {
+            Actor::Anon => Auth::None,
+            Actor::Forged => Auth::Forged,
+            Actor::Role(r) => Auth::Role(r.clone()),
+        }
+    }
+    fn is_anon(&self) -> bool {
+        *self == Actor::Anon
+    }
+}
+
+/// Resolve bearer header for an actor (kept for callers that only need the header value).
 pub fn actor_bearer(actor: &str, creds: &Credentials) -> Option<String> {
-    let a = actor.trim().to_ascii_lowercase();
-    if matches!(a.as_str(), "anon" | "anonymous" | "none") {
-        return None;
-    }
-    if a == "forged" {
-        return Some("Bearer forged.signature.token123".to_string());
-    }
-    creds.token(&a).map(|t| format!("Bearer {t}"))
+    resolve_auth(&actor_of(actor).auth(), creds)
+        .bearer
+        .map(|b| b.header)
 }
 
 /// Evaluate whether a violation condition is met.
@@ -118,25 +239,25 @@ pub fn evaluate_violation(condition: &str, status: u16, _body: &str) -> bool {
     }
 
     let part = cond.trim();
-    if let Some(rest) = part.strip_prefix("status ==") {
-        if let Ok(expected) = rest.trim().parse::<u16>() {
-            return status == expected;
-        }
+    if let Some(rest) = part.strip_prefix("status ==")
+        && let Ok(expected) = rest.trim().parse::<u16>()
+    {
+        return status == expected;
     }
-    if let Some(rest) = part.strip_prefix("status !=") {
-        if let Ok(expected) = rest.trim().parse::<u16>() {
-            return status != expected;
-        }
+    if let Some(rest) = part.strip_prefix("status !=")
+        && let Ok(expected) = rest.trim().parse::<u16>()
+    {
+        return status != expected;
     }
-    if let Some(rest) = part.strip_prefix("status <") {
-        if let Ok(threshold) = rest.trim().parse::<u16>() {
-            return status < threshold;
-        }
+    if let Some(rest) = part.strip_prefix("status <")
+        && let Ok(threshold) = rest.trim().parse::<u16>()
+    {
+        return status < threshold;
     }
-    if let Some(rest) = part.strip_prefix("status >=") {
-        if let Ok(threshold) = rest.trim().parse::<u16>() {
-            return status >= threshold;
-        }
+    if let Some(rest) = part.strip_prefix("status >=")
+        && let Ok(threshold) = rest.trim().parse::<u16>()
+    {
+        return status >= threshold;
     }
     if part == "status in 200..=299" || part == "2xx" {
         return (200..=299).contains(&status);
@@ -144,376 +265,712 @@ pub fn evaluate_violation(condition: &str, status: u16, _body: &str) -> bool {
     false
 }
 
-/// Build a single curl command string for reproduction.
-fn format_step_curl(
-    method: &str,
-    url: &str,
-    bearer: Option<&str>,
-    payload: Option<&str>,
-) -> String {
-    let mut parts = vec![format!("curl -sS -i -X {method} '{url}'")];
-    if let Some(b) = bearer {
-        parts.push(format!("-H 'Authorization: {b}'"));
-    }
-    if let Some(p) = payload {
-        let ct = if p.trim_start().starts_with('{') || p.trim_start().starts_with('[') {
-            "application/json"
-        } else {
-            "application/x-www-form-urlencoded"
-        };
-        parts.push(format!("-H 'Content-Type: {ct}'"));
-        parts.push(format!("--data '{}'", p.replace('\'', "'\\''")));
-    }
-    parts.join(" ")
+// ---------------------------------------------------------------- preflight
+
+/// `/items/{{id}}` -> `/items`. None when the path has no trailing placeholder segment.
+fn strip_trailing_placeholder(path: &str) -> Option<String> {
+    let p = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches('/');
+    let (head, last) = p.rsplit_once('/')?;
+    (last.starts_with("{{") && last.ends_with("}}")).then(|| head.to_string())
 }
 
-/// Execute a stateful scenario chain step-by-step.
-pub fn execute_stateful_scenario(
-    client: &reqwest::blocking::Client,
-    target: &str,
-    steps: &[StatefulStep],
-    creds: &Credentials,
-    budget: &mut RunBudget,
-    host: &str,
-) -> StatefulScenarioResult {
-    let mut context: HashMap<String, String> = HashMap::new();
-    let mut step_records: Vec<StatefulStepExecution> = Vec::with_capacity(steps.len());
-    let mut curl_repros: Vec<String> = Vec::new();
-    let mut total_latency = 0u64;
-    let mut last_status = 0u16;
-    let base_target = target.trim_end_matches('/');
+fn path_only(path: &str) -> String {
+    let p = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .trim_end_matches('/');
+    if p.starts_with('/') {
+        p.to_string()
+    } else {
+        format!("/{p}")
+    }
+}
 
-    for step in steps {
-        if let Err(m) = budget.take_request(host) {
-            let reason = format!("Budget exceeded before step {}: {m}", step.step_number);
-            return StatefulScenarioResult {
-                passed: false,
-                violation_triggered: false,
-                setup_failed: true,
-                steps: step_records,
-                failure_reason: Some(reason),
-                reproduction_curl: curl_repros.join("\n"),
-                final_status: last_status,
-                total_latency_ms: total_latency,
-            };
+/// Index of the access step: the last step that carries a violation condition.
+fn access_index(steps: &[StatefulStep]) -> Option<usize> {
+    steps.iter().rposition(|s| s.violation_condition.is_some())
+}
+
+/// Everything that can be decided without sending a request. `Err` = skip the chain, with a note.
+pub fn preflight(steps: &[StatefulStep], creds: &Credentials) -> Result<(), String> {
+    if steps.is_empty() {
+        return Err("the scenario has no steps".into());
+    }
+    // 1. methods: an unknown verb is rejected, never silently turned into GET
+    for s in steps {
+        if normalize_method(&s.method).is_none() {
+            return Err(format!(
+                "method '{}' in step {} is not allowed (GET, HEAD, OPTIONS, POST, PUT, PATCH, DELETE only)",
+                s.method.chars().take(16).collect::<String>(),
+                s.step_number
+            ));
         }
-
-        let resolved_path = substitute_vars(&step.path, &context);
-        let path_norm = if resolved_path.starts_with('/') {
-            resolved_path.clone()
-        } else {
-            format!("/{resolved_path}")
-        };
-        let full_url = format!("{base_target}{path_norm}");
-
-        let resolved_payload = step
-            .payload
-            .as_deref()
-            .map(|p| substitute_vars(p, &context));
-
-        let method_str = normalize_method(&step.method).unwrap_or("GET");
-        let bearer = actor_bearer(&step.actor, creds);
-        let step_curl = format_step_curl(
-            method_str,
-            &full_url,
-            bearer.as_deref(),
-            resolved_payload.as_deref(),
-        );
-        curl_repros.push(step_curl);
-
-        let t0 = Instant::now();
-        let method = match reqwest::Method::from_bytes(method_str.as_bytes()) {
-            Ok(m) => m,
-            Err(e) => {
-                let reason = format!("Invalid HTTP method '{}' in step {}: {e}", method_str, step.step_number);
-                return StatefulScenarioResult {
-                    passed: false,
-                    violation_triggered: false,
-                    setup_failed: true,
-                    steps: step_records,
-                    failure_reason: Some(reason),
-                    reproduction_curl: curl_repros.join("\n"),
-                    final_status: last_status,
-                    total_latency_ms: total_latency,
-                };
+    }
+    // 2. every real actor needs its credential: a two-actor check with one token proves nothing
+    let mut roles: Vec<String> = vec![];
+    for s in steps {
+        if let Actor::Role(r) = actor_of(&s.actor)
+            && !roles.contains(&r)
+        {
+            roles.push(r);
+        }
+    }
+    let missing: Vec<String> = roles
+        .iter()
+        .filter(|r| !creds.has_role(r))
+        .map(|r| format!("'{r}' (set {})", Credentials::env_var(r)))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "missing credential for role {}; a stateful check needs the token of every actor it uses, nothing was sent",
+            missing.join(", ")
+        ));
+    }
+    // 3. placeholders must be produced by an earlier step before they are used
+    let mut known: Vec<String> = vec![];
+    for (i, s) in steps.iter().enumerate() {
+        for text in std::iter::once(s.path.as_str()).chain(s.payload.as_deref()) {
+            for name in placeholder_names(text) {
+                // an id-like name may be filled by the default extraction of any earlier step
+                let ok = known.iter().any(|k| k.eq_ignore_ascii_case(&name))
+                    || (i > 0 && DEFAULT_ID_KEYS.contains(&name.to_ascii_lowercase().as_str()));
+                if !ok {
+                    return Err(format!(
+                        "unresolved placeholder {{{{{name}}}}} in step {}: no earlier step extracts it",
+                        s.step_number
+                    ));
+                }
             }
+        }
+        known.extend(s.extract_vars.iter().flatten().cloned());
+    }
+    // 4. shape of a cross-actor check
+    if let Some(ai) = access_index(steps) {
+        if ai == 0 {
+            return Err("the access step has no creating step before it".into());
+        }
+        let creator = &steps[0];
+        let access = &steps[ai];
+        let (ca, aa) = (actor_of(&creator.actor), actor_of(&access.actor));
+        if ca.is_anon() {
+            return Err("the creating step is anonymous: there is no owner to isolate from".into());
+        }
+        if ca == aa {
+            return Err(format!(
+                "both steps use the same actor '{}': that is not a cross-actor check",
+                creator.actor
+            ));
+        }
+        match strip_trailing_placeholder(&access.path) {
+            None => {
+                return Err(
+                    "the access step does not address the created resource (no trailing {{id}} segment)"
+                        .into(),
+                );
+            }
+            Some(base) => {
+                if base != path_only(&creator.path) {
+                    return Err(format!(
+                        "the creating step and the access step are not the same resource: {} vs {}",
+                        path_only(&creator.path),
+                        base
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------- runner
+
+struct Runner<'a> {
+    clients: &'a Clients,
+    /// Id of the case the chain belongs to (tags what the chain creates in the ledger).
+    case_id: &'a str,
+    base: String,
+    creds: &'a Credentials,
+    budget: &'a mut RunBudget,
+    host: &'a str,
+    log: Vec<StatefulStepExecution>,
+    curls: Vec<String>,
+    latency: u64,
+    last_status: u16,
+}
+
+struct Exchange<'a> {
+    step_number: u32,
+    /// Shown in the report, e.g. "bob" or "alice (owner control)".
+    label: String,
+    actor: &'a Actor,
+    method: &'static str,
+    path: String,
+    /// The path with secret-keyed variables redacted (what is stored and put in the curl).
+    disp_path: String,
+    payload: Option<String>,
+    disp_payload: Option<String>,
+}
+
+impl Runner<'_> {
+    /// Send one request. Err(reason) means it was not sent or failed before a response.
+    fn exchange(&mut self, e: &Exchange) -> Result<(Seen, usize), String> {
+        self.budget
+            .take_request(self.host)
+            .map_err(|m| format!("budget exceeded before step {}: {m}", e.step_number))?;
+        let path = normalize_component(&e.path)
+            .map_err(|m| format!("step {} cannot be sent: {m}", e.step_number))?;
+        let url = format!("{}{}", self.base, path);
+        let auth = resolve_auth(&e.actor.auth(), self.creds);
+        let bearer: Option<&Bearer> = auth.bearer.as_ref();
+        let body = e.payload.as_deref().map(body_and_type);
+        // reproduction: same request, redacted values, token as a placeholder
+        let disp_url = format!(
+            "{}{}",
+            self.base,
+            normalize_component(&e.disp_path).unwrap_or_else(|_| e.disp_path.clone())
+        );
+        let disp_spec = RequestSpec {
+            method: e.method,
+            url: disp_url,
+            path: e.disp_path.clone(),
+            body: e.disp_payload.as_deref().map(body_and_type),
+            auth: e.actor.auth(),
+            sent_values: vec![],
+            extra_headers: vec![],
         };
-
-        let mut rb = client.request(method, &full_url);
-        if let Some(b) = &bearer {
-            rb = rb.header("Authorization", b);
-        }
-        if let Some(body) = &resolved_payload {
-            let ct = if body.trim_start().starts_with('{') || body.trim_start().starts_with('[') {
-                "application/json"
-            } else {
-                "application/x-www-form-urlencoded"
-            };
-            rb = rb.header("Content-Type", ct).body(body.clone());
-        }
-
-        let resp_result = rb.send();
-        let step_latency = t0.elapsed().as_millis() as u64;
-        total_latency += step_latency;
-
-        let resp = match resp_result {
-            Ok(r) => r,
-            Err(e) => {
-                let reason = format!("Step {} transport error: {e}", step.step_number);
-                step_records.push(StatefulStepExecution {
-                    step_number: step.step_number,
-                    actor: step.actor.clone(),
-                    method: method_str.to_string(),
-                    resolved_path: path_norm,
+        self.curls.push(curl_for(&disp_spec));
+        let t0 = Instant::now();
+        let sent = self.clients.send(&OutReq {
+            method: e.method,
+            url: &url,
+            body: body.as_ref(),
+            headers: &[],
+            bearer,
+        });
+        let latency = t0.elapsed().as_millis() as u64;
+        self.latency += latency;
+        match sent {
+            Ok(seen) => {
+                // every 2xx POST of the chain (the creating step, or any other) goes on the run's
+                // ledger with its real id; a path that was redacted for display is not recorded
+                // (the pipeline reports it as unidentified instead of deleting a wrong path)
+                if e.path == e.disp_path {
+                    record_creation_response(
+                        None,
+                        e.method,
+                        &url,
+                        seen.status,
+                        &seen.headers,
+                        &seen.body,
+                        role_of(&e.actor.auth()),
+                        Some(self.case_id),
+                    );
+                }
+                self.last_status = seen.status;
+                self.log.push(StatefulStepExecution {
+                    step_number: e.step_number,
+                    actor: e.label.clone(),
+                    method: e.method.to_string(),
+                    resolved_path: e.disp_path.clone(),
+                    status_code: seen.status,
+                    latency_ms: latency,
+                    extracted_values: HashMap::new(),
+                    passed: true,
+                    violation_triggered: false,
+                    error_detail: None,
+                });
+                let idx = self.log.len() - 1;
+                Ok((seen, idx))
+            }
+            Err(m) => {
+                let reason = format!(
+                    "step {} transport error: {}",
+                    e.step_number,
+                    redact_then_truncate(&m, 300)
+                );
+                self.log.push(StatefulStepExecution {
+                    step_number: e.step_number,
+                    actor: e.label.clone(),
+                    method: e.method.to_string(),
+                    resolved_path: e.disp_path.clone(),
                     status_code: 0,
-                    latency_ms: step_latency,
+                    latency_ms: latency,
                     extracted_values: HashMap::new(),
                     passed: false,
                     violation_triggered: false,
                     error_detail: Some(reason.clone()),
                 });
-                return StatefulScenarioResult {
-                    passed: false,
-                    violation_triggered: false,
-                    setup_failed: true,
-                    steps: step_records,
-                    failure_reason: Some(reason),
-                    reproduction_curl: curl_repros.join("\n"),
-                    final_status: 0,
-                    total_latency_ms: total_latency,
-                };
+                Err(reason)
             }
-        };
-
-        let status = resp.status().as_u16();
-        last_status = status;
-
-        let mut body_buf = Vec::new();
-        let _ = resp.take(BODY_CAP as u64).read_to_end(&mut body_buf);
-        let body_str = String::from_utf8_lossy(&body_buf).into_owned();
-
-        // Extract values from JSON response
-        let mut extracted = HashMap::new();
-        if let Ok(json_val) = serde_json::from_str::<Value>(&body_str) {
-            extract_json_values(&json_val, step.extract_vars.as_deref(), &mut extracted);
-            // If explicit wanted vars were requested, ensure any generic "id" is mapped to named keys like "item_id"
-            if let Some(wanted) = &step.extract_vars {
-                for w in wanted {
-                    if !extracted.contains_key(w) {
-                        if let Some(id_val) = extracted.get("id").cloned() {
-                            if w.ends_with("_id") || w == "id" {
-                                extracted.insert(w.clone(), id_val);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Merge into scenario context
-        for (k, v) in &extracted {
-            context.insert(k.clone(), v.clone());
-        }
-
-        // Check violation condition
-        let mut step_passed = true;
-        let mut step_violation = false;
-        let mut failure_reason = None;
-
-        if let Some(cond) = &step.violation_condition {
-            if evaluate_violation(cond, status, &body_str) {
-                step_passed = false;
-                step_violation = true;
-                failure_reason = Some(format!(
-                    "Security violation triggered on step {} (actor '{}', {} {}): condition '{}' met with HTTP {}",
-                    step.step_number, step.actor, method_str, path_norm, cond, status
-                ));
-            }
-        }
-
-        if step_passed {
-            if let Some(expected) = step.expected_status {
-                let matches_expected = if expected == 201 {
-                    status == 200 || status == 201
-                } else {
-                    status == expected
-                };
-
-                if !matches_expected {
-                    step_passed = false;
-                    failure_reason = Some(format!(
-                        "Step {} expected status {} but received {}",
-                        step.step_number, expected, status
-                    ));
-                }
-            } else if status >= 400 {
-                step_passed = false;
-                failure_reason = Some(format!(
-                    "Step {} failed with HTTP {}",
-                    step.step_number, status
-                ));
-            }
-        }
-
-        step_records.push(StatefulStepExecution {
-            step_number: step.step_number,
-            actor: step.actor.clone(),
-            method: method_str.to_string(),
-            resolved_path: path_norm.clone(),
-            status_code: status,
-            latency_ms: step_latency,
-            extracted_values: extracted,
-            passed: step_passed,
-            violation_triggered: step_violation,
-            error_detail: failure_reason.clone(),
-        });
-
-        if !step_passed {
-            let is_setup = step.step_number == 1 && step.violation_condition.is_none();
-            let reason_text = if is_setup {
-                format!(
-                    "Prerequisite setup step 1 not met (actor '{}', {} {}): received HTTP {} ({})",
-                    step.actor,
-                    method_str,
-                    path_norm,
-                    status,
-                    if status == 401 || status == 403 {
-                        "authentication credentials required or denied"
-                    } else if status == 404 {
-                        "endpoint not found"
-                    } else if status == 405 {
-                        "method not allowed"
-                    } else {
-                        "resource setup prerequisite failed"
-                    }
-                )
-            } else {
-                failure_reason.unwrap_or_else(|| "Stateful step failed".into())
-            };
-
-            return StatefulScenarioResult {
-                passed: false,
-                violation_triggered: step_violation,
-                setup_failed: is_setup,
-                steps: step_records,
-                failure_reason: Some(reason_text),
-                reproduction_curl: curl_repros.join("\n"),
-                final_status: last_status,
-                total_latency_ms: total_latency,
-            };
         }
     }
 
-    StatefulScenarioResult {
-        passed: true,
-        violation_triggered: false,
-        setup_failed: false,
-        steps: step_records,
-        failure_reason: None,
-        reproduction_curl: curl_repros.join("\n"),
-        final_status: last_status,
-        total_latency_ms: total_latency,
+    fn finish(self, facts: StatefulFacts, summary: String) -> StatefulScenarioResult {
+        let outcome = judge_stateful(&facts);
+        let failure_reason = outcome.reason();
+        use super::oracle::Verdict;
+        StatefulScenarioResult {
+            skipped: None,
+            passed: outcome.verdict == Verdict::Pass,
+            violation_triggered: outcome.verdict == Verdict::Fail,
+            setup_failed: matches!(facts, StatefulFacts::Setup { .. }),
+            failure_reason,
+            outcome: Some(outcome),
+            steps: self.log,
+            reproduction_curl: self.curls.join("\n"),
+            final_status: self.last_status,
+            total_latency_ms: self.latency,
+            summary,
+        }
     }
 }
 
-/// Fire N concurrent requests in parallel using multithreading to check for TOCTOU / race conditions.
-pub fn execute_concurrency_burst(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    method: &str,
-    payload: Option<&str>,
-    bearer: Option<&str>,
-    burst_size: usize,
-) -> ConcurrencyBurstResult {
-    let count = burst_size.clamp(2, 20);
-    let barrier = Arc::new(std::sync::Barrier::new(count));
-    let method_upper = method.to_ascii_uppercase();
+fn skipped_result(reason: String) -> StatefulScenarioResult {
+    StatefulScenarioResult {
+        skipped: Some(reason.clone()),
+        outcome: None,
+        steps: vec![],
+        reproduction_curl: String::new(),
+        final_status: 0,
+        total_latency_ms: 0,
+        summary: format!("stateful check skipped: {reason}"),
+        passed: false,
+        violation_triggered: false,
+        setup_failed: false,
+        failure_reason: Some(reason),
+    }
+}
 
-    let mut results: Vec<Result<u16, String>> = Vec::with_capacity(count);
+fn status_matches(expected: u16, got: u16) -> bool {
+    if (200..=299).contains(&expected) {
+        (200..=299).contains(&got)
+    } else {
+        got == expected
+    }
+}
 
-    std::thread::scope(|s| {
-        let mut handles = Vec::with_capacity(count);
-        for _ in 0..count {
-            let b = barrier.clone();
-            let c = client;
-            let u = url;
-            let m = &method_upper;
-            let p = payload;
-            let auth = bearer;
+/// Execute a stateful scenario chain step by step.
+pub fn execute_stateful_scenario(
+    clients: &Clients,
+    target: &str,
+    steps: &[StatefulStep],
+    creds: &Credentials,
+    budget: &mut RunBudget,
+    host: &str,
+    case_id: &str,
+) -> StatefulScenarioResult {
+    if let Err(why) = preflight(steps, creds) {
+        return skipped_result(why);
+    }
+    let access_idx = access_index(steps);
+    let mut run = Runner {
+        clients,
+        case_id,
+        base: target.trim_end_matches('/').to_string(),
+        creds,
+        budget,
+        host,
+        log: Vec::with_capacity(steps.len() + 3),
+        curls: vec![],
+        latency: 0,
+        last_status: 0,
+    };
+    // real values for requests, redacted values for everything that is stored
+    let mut ctx: HashMap<String, String> = HashMap::new();
+    let mut disp: HashMap<String, String> = HashMap::new();
+    let creator_actor = actor_of(&steps[0].actor);
 
-            handles.push(s.spawn(move || {
-                b.wait(); // All threads release simultaneously at the barrier
-                let req_method = match reqwest::Method::from_bytes(m.as_bytes()) {
-                    Ok(meth) => meth,
-                    Err(_) => reqwest::Method::POST,
+    for (i, step) in steps.iter().enumerate() {
+        let actor = actor_of(&step.actor);
+        let method = normalize_method(&step.method).unwrap_or("GET"); // validated in preflight
+        let is_access = access_idx == Some(i);
+        let path = substitute_vars(&step.path, &ctx);
+        let payload = step.payload.as_deref().map(|p| substitute_vars(p, &ctx));
+        // a placeholder that is still there means an earlier step did not yield its value
+        let unresolved: Vec<String> = placeholder_names(&path)
+            .into_iter()
+            .chain(payload.iter().flat_map(|p| placeholder_names(p)))
+            .collect();
+        if let Some(name) = unresolved.first() {
+            let reason = format!(
+                "unresolved placeholder {{{{{name}}}}} in step {}: an earlier step did not return it, so the request was not sent",
+                step.step_number
+            );
+            return run.finish(
+                StatefulFacts::Setup {
+                    step: step.step_number,
+                    status: None,
+                    reason: reason.clone(),
+                },
+                reason,
+            );
+        }
+        let disp_path = substitute_vars(&step.path, &disp);
+        let disp_payload = step.payload.as_deref().map(|p| substitute_vars(p, &disp));
+
+        if !is_access {
+            // an ordinary step
+            let ex = Exchange {
+                step_number: step.step_number,
+                label: step.actor.clone(),
+                actor: &actor,
+                method,
+                path: path.clone(),
+                disp_path: disp_path.clone(),
+                payload: payload.clone(),
+                disp_payload: disp_payload.clone(),
+            };
+            let (seen, idx) = match run.exchange(&ex) {
+                Ok(x) => x,
+                Err(reason) => {
+                    return run.finish(
+                        StatefulFacts::Setup {
+                            step: step.step_number,
+                            status: None,
+                            reason: reason.clone(),
+                        },
+                        reason,
+                    );
+                }
+            };
+            // extract (primary object only), keep the real value for chaining, store it redacted
+            if let Ok(json) = serde_json::from_str::<Value>(&seen.body) {
+                let mut got = HashMap::new();
+                extract_json_values(&json, step.extract_vars.as_deref(), &mut got);
+                for (k, v) in got {
+                    run.log[idx]
+                        .extracted_values
+                        .insert(k.clone(), storable_value(&k, &v));
+                    disp.insert(k.clone(), storable_value(&k, &v));
+                    ctx.insert(k, v);
+                }
+            }
+            let ok = match step.expected_status {
+                Some(e) => status_matches(e, seen.status),
+                None => seen.status < 400,
+            };
+            if !ok {
+                let detail = match step.expected_status {
+                    Some(e) => format!(
+                        "step {} expected HTTP {e} but received {}",
+                        step.step_number, seen.status
+                    ),
+                    None => format!("step {} failed with HTTP {}", step.step_number, seen.status),
                 };
-                let mut req = c.request(req_method, u);
-                if let Some(tok) = auth {
-                    req = req.header("Authorization", tok);
-                }
-                if let Some(body) = p {
-                    let ct = if body.trim_start().starts_with('{') || body.trim_start().starts_with('[') {
-                        "application/json"
-                    } else {
-                        "application/x-www-form-urlencoded"
-                    };
-                    req = req.header("Content-Type", ct).body(body.to_string());
-                }
-                match req.send() {
-                    Ok(resp) => Ok(resp.status().as_u16()),
-                    Err(e) => Err(e.to_string()),
-                }
-            }));
+                run.log[idx].passed = false;
+                run.log[idx].error_detail = Some(detail.clone());
+                let facts = if access_idx.is_some_and(|a| i < a) {
+                    StatefulFacts::Setup {
+                        step: step.step_number,
+                        status: Some(seen.status),
+                        reason: format!(
+                            "{} {} answered unexpectedly",
+                            method, run.log[idx].resolved_path
+                        ),
+                    }
+                } else {
+                    StatefulFacts::Workflow {
+                        failed_step: Some((step.step_number, step.expected_status, seen.status)),
+                    }
+                };
+                return run.finish(facts, detail);
+            }
+            continue;
         }
 
+        // ---- the access step: another actor reads (or touches) the created resource
+        // owner control: the creator must be able to read the resource at this very path
+        let control_ex = Exchange {
+            step_number: step.step_number,
+            label: format!("{} (owner control)", steps[0].actor),
+            actor: &creator_actor,
+            method: "GET",
+            path: path.clone(),
+            disp_path: disp_path.clone(),
+            payload: None,
+            disp_payload: None,
+        };
+        let owner_control = match run.exchange(&control_ex) {
+            Ok((s, _)) => Some(s.status),
+            Err(reason) => {
+                return run.finish(
+                    StatefulFacts::Setup {
+                        step: step.step_number,
+                        status: None,
+                        reason: reason.clone(),
+                    },
+                    reason,
+                );
+            }
+        };
+        let ex = Exchange {
+            step_number: step.step_number,
+            label: step.actor.clone(),
+            actor: &actor,
+            method,
+            path: path.clone(),
+            disp_path: disp_path.clone(),
+            payload: payload.clone(),
+            disp_payload: disp_payload.clone(),
+        };
+        let (seen, idx) = match run.exchange(&ex) {
+            Ok(x) => x,
+            Err(reason) => {
+                return run.finish(
+                    StatefulFacts::Setup {
+                        step: step.step_number,
+                        status: None,
+                        reason: reason.clone(),
+                    },
+                    reason,
+                );
+            }
+        };
+        let second = seen.status;
+        let safe = is_safe_method(method);
+        let (mut anon_status, mut reproduced) = (None, None);
+        if (200..=299).contains(&second)
+            && safe
+            && owner_control.is_some_and(|c| (200..=299).contains(&c))
+        {
+            // a public resource answers without credentials too
+            if !actor.is_anon() {
+                let anon = Actor::Anon;
+                let anon_ex = Exchange {
+                    step_number: step.step_number,
+                    label: "anon (public-access check)".into(),
+                    actor: &anon,
+                    method,
+                    path: path.clone(),
+                    disp_path: disp_path.clone(),
+                    payload: None,
+                    disp_payload: None,
+                };
+                anon_status = run.exchange(&anon_ex).ok().map(|(s, _)| s.status);
+            } else {
+                anon_status = Some(second);
+            }
+            if !anon_status.is_some_and(|s| (200..=299).contains(&s)) {
+                // confirm with one safe re-run before recording a finding
+                let again = Exchange {
+                    step_number: step.step_number,
+                    label: format!("{} (re-run)", step.actor),
+                    actor: &actor,
+                    method,
+                    path: path.clone(),
+                    disp_path: disp_path.clone(),
+                    payload: None,
+                    disp_payload: None,
+                };
+                reproduced = run
+                    .exchange(&again)
+                    .ok()
+                    .map(|(s, _)| (200..=299).contains(&s.status));
+            }
+        }
+        let facts = StatefulFacts::CrossActor {
+            second_actor_anon: actor.is_anon(),
+            safe_method: safe,
+            owner_control,
+            second_status: second,
+            anon_status,
+            reproduced,
+        };
+        let verdict_is_fail = judge_stateful(&facts).verdict == super::oracle::Verdict::Fail;
+        run.log[idx].violation_triggered = verdict_is_fail
+            && step
+                .violation_condition
+                .as_deref()
+                .is_none_or(|c| evaluate_violation(c, second, &seen.body));
+        run.log[idx].passed = !verdict_is_fail;
+        let summary = format!(
+            "{} {} by '{}': HTTP {second} (owner control: {})",
+            method,
+            run.log[idx].resolved_path,
+            step.actor,
+            owner_control
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "-".into())
+        );
+        return run.finish(facts, summary);
+    }
+
+    let n = steps.len();
+    run.finish(
+        StatefulFacts::Workflow { failed_step: None },
+        format!("stateful chain of {n} step(s) answered as expected"),
+    )
+}
+
+// ---------------------------------------------------------------- concurrency burst
+
+/// What a burst saw. The verdict is `oracle::judge_burst`.
+#[derive(Debug, Clone)]
+pub struct BurstRun {
+    pub requested: usize,
+    pub responses: Vec<BurstResponse>,
+    pub status_codes: Vec<u16>,
+    /// Bodies of a safe GET of the same URL before / after the burst (state-changing bursts only).
+    pub pre_read: Option<String>,
+    pub post_read: Option<String>,
+    pub notes: Vec<String>,
+}
+
+/// Fire `burst_size` (2..=10) simultaneous copies of `spec`. Every request, including the two
+/// read-backs, is charged to the run budget and its per-host rate limit; if the budget cannot
+/// pay for at least two burst requests nothing is sent. Credentials follow the same rules as any
+/// other request ([`Clients::send`]).
+pub fn run_concurrency_burst(
+    clients: &Clients,
+    spec: &RequestSpec,
+    bearer: Option<&Bearer>,
+    burst_size: usize,
+    budget: &mut RunBudget,
+    host: &str,
+    case_id: &str,
+) -> Result<BurstRun, String> {
+    let count = burst_size.clamp(2, 10);
+    // the run's ledger is thread-local and does not reach the burst threads: hand them a clone, so
+    // every 2xx creation a burst request produces is recorded (and torn down) like any other
+    let ledger = current_ledger();
+    let role = role_of(&spec.auth);
+    let mut notes = vec![];
+    let read = |url: &str| {
+        clients
+            .send(&OutReq {
+                method: "GET",
+                url,
+                body: None,
+                headers: &[],
+                bearer,
+            })
+            .ok()
+            .filter(|s| (200..=299).contains(&s.status))
+            .map(|s| s.body)
+    };
+    // before: a safe read of the resource, to compare with after
+    let mutating = !is_safe_method(spec.method);
+    let pre_read = if mutating && budget.take_request(host).is_ok() {
+        read(&spec.url)
+    } else {
+        None
+    };
+    // the burst itself is paid for up front, one request at a time (this paces it too)
+    let mut granted = 0;
+    for _ in 0..count {
+        if budget.take_request(host).is_err() {
+            break;
+        }
+        granted += 1;
+    }
+    if granted < 2 {
+        return Err(format!(
+            "the run budget allows only {granted} more request(s); a burst needs at least 2"
+        ));
+    }
+    if granted < count {
+        notes.push(format!(
+            "burst reduced from {count} to {granted} by the run budget"
+        ));
+    }
+    let barrier = Arc::new(std::sync::Barrier::new(granted));
+    let mut results: Vec<Result<Seen, String>> = Vec::with_capacity(granted);
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..granted)
+            .map(|_| {
+                let b = barrier.clone();
+                let led = ledger.clone();
+                s.spawn(move || {
+                    b.wait(); // all threads release at once
+                    let r = clients.send(&OutReq {
+                        method: spec.method,
+                        url: &spec.url,
+                        body: spec.body.as_ref(),
+                        headers: &spec.extra_headers,
+                        bearer,
+                    });
+                    if let (Ok(seen), Some(l)) = (&r, led.as_ref()) {
+                        record_creation_response(
+                            Some(l),
+                            spec.method,
+                            &spec.url,
+                            seen.status,
+                            &seen.headers,
+                            &seen.body,
+                            role,
+                            Some(case_id),
+                        );
+                    }
+                    r
+                })
+            })
+            .collect();
         for h in handles {
             results.push(h.join().unwrap_or(Err("thread panicked".to_string())));
         }
     });
-
-    let mut status_codes: Vec<u16> = Vec::new();
-    for res in results {
-        if let Ok(st) = res {
-            status_codes.push(st);
-        }
-    }
-
-    let has_500 = status_codes.iter().any(|&s| s >= 500);
-    let success_count = status_codes.iter().filter(|&&s| s == 200 || s == 201).count();
-
-    if has_500 {
-        ConcurrencyBurstResult {
-            status_codes,
-            has_race_condition: true,
-            explanation: Some(
-                "Burst triggered HTTP 500 server crash, indicating unhandled deadlock or database race condition."
-                    .to_string(),
-            ),
-        }
-    } else if success_count == count && count > 1 && matches!(method_upper.as_str(), "POST" | "DELETE" | "PATCH") {
-        ConcurrencyBurstResult {
-            status_codes,
-            has_race_condition: true,
-            explanation: Some(format!(
-                "All {count} concurrent mutating requests succeeded (2xx) without mutual exclusion or concurrency collision handling."
+    let mut responses = vec![];
+    for r in results {
+        match r {
+            Ok(s) => responses.push(BurstResponse {
+                status: s.status,
+                body: s.body,
+            }),
+            Err(e) => notes.push(format!(
+                "a burst request failed: {}",
+                redact_then_truncate(&e, 160)
             )),
         }
-    } else {
-        ConcurrencyBurstResult {
-            status_codes,
-            has_race_condition: false,
-            explanation: None,
-        }
     }
+    let post_read = if pre_read.is_some() && budget.take_request(host).is_ok() {
+        read(&spec.url)
+    } else {
+        None
+    };
+    let status_codes = responses.iter().map(|r| r.status).collect();
+    Ok(BurstRun {
+        requested: granted,
+        responses,
+        status_codes,
+        pre_read,
+        post_read,
+        notes,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::net::TcpListener;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::Duration;
+
+    fn step(n: u32, actor: &str, method: &str, path: &str) -> StatefulStep {
+        StatefulStep {
+            step_number: n,
+            actor: actor.into(),
+            method: method.into(),
+            path: path.into(),
+            payload: None,
+            extract_vars: None,
+            expected_status: None,
+            violation_condition: None,
+        }
+    }
+
+    fn chain() -> Vec<StatefulStep> {
+        let mut create = step(1, "alice", "POST", "/api/items");
+        create.extract_vars = Some(vec!["id".into()]);
+        let mut read = step(2, "bob", "GET", "/api/items/{{id}}");
+        read.violation_condition = Some("status == 200".into());
+        vec![create, read]
+    }
+
+    fn creds() -> Credentials {
+        Credentials::none().with("alice", "a").with("bob", "b")
+    }
 
     #[test]
     fn test_variable_substitution() {
@@ -526,27 +983,93 @@ mod tests {
 
         let body = substitute_vars("{\"ref\": \"{{ item_id }}\"}", &ctx);
         assert_eq!(body, "{\"ref\": \"item_987\"}");
+        // unknown placeholders survive substitution so the caller can reject them
+        let left = substitute_vars("/x/{{ nope }}/{{tenant}}", &ctx);
+        assert_eq!(left, "/x/{{ nope }}/acme");
+        assert_eq!(placeholder_names(&left), ["nope"]);
+        assert!(
+            placeholder_names("{\"a\":{\"b\":1}}").is_empty(),
+            "JSON braces are not placeholders"
+        );
     }
 
     #[test]
-    fn test_json_value_extraction() {
-        let json_str = r#"{
-            "status": "success",
-            "data": {
-                "id": "ord_12345",
-                "token": "tok_xyz999",
-                "nested": {
-                    "uuid": "u-001"
-                }
-            }
-        }"#;
-        let v: Value = serde_json::from_str(json_str).unwrap();
-        let mut out = HashMap::new();
-        extract_json_values(&v, Some(&["token".into(), "id".into()]), &mut out);
+    fn ids_come_from_the_top_level_or_primary_object_only() {
+        let ex = |json: &str, wanted: Option<Vec<String>>| {
+            let v: Value = serde_json::from_str(json).unwrap();
+            let mut out = HashMap::new();
+            extract_json_values(&v, wanted.as_deref(), &mut out);
+            out
+        };
+        // a nested sub-resource's id never wins or leaks in
+        let o = ex(
+            r#"{"id": "ord_1", "owner": {"id": 77, "uuid": "u-9"}, "items": [{"id": 5}]}"#,
+            None,
+        );
+        assert_eq!(o.get("id").map(String::as_str), Some("ord_1"));
+        assert!(!o.contains_key("uuid"), "{o:?}");
+        // an envelope is looked through exactly once, into the primary object
+        let o = ex(
+            r#"{"status": "ok", "data": {"id": "ord_2", "nested": {"uuid": "u-1"}}}"#,
+            Some(vec!["token".into(), "id".into()]),
+        );
+        assert_eq!(o.get("id").map(String::as_str), Some("ord_2"));
+        assert!(
+            !o.contains_key("uuid"),
+            "nested uuid must not be extracted: {o:?}"
+        );
+        // a list response has no primary object
+        assert!(ex(r#"[{"id": 1}, {"id": 2}]"#, None).is_empty());
+        // numbers become strings; an explicit name is aliased to the primary id
+        let o = ex(r#"{"id": 4}"#, Some(vec!["item_id".into()]));
+        assert_eq!(
+            (
+                o.get("id").map(String::as_str),
+                o.get("item_id").map(String::as_str)
+            ),
+            (Some("4"), Some("4"))
+        );
+        // wanted secret names are extractable (chaining), but never by default
+        let o = ex(r#"{"id": 1, "token": "tok_x"}"#, None);
+        assert!(!o.contains_key("token"));
+        let o = ex(r#"{"id": 1, "token": "tok_x"}"#, Some(vec!["token".into()]));
+        assert_eq!(o.get("token").map(String::as_str), Some("tok_x"));
+    }
 
-        assert_eq!(out.get("id").map(|s| s.as_str()), Some("ord_12345"));
-        assert_eq!(out.get("token").map(|s| s.as_str()), Some("tok_xyz999"));
-        assert_eq!(out.get("uuid").map(|s| s.as_str()), Some("u-001"));
+    #[test]
+    fn secret_looking_keys_are_redacted_before_they_are_stored() {
+        for k in [
+            "token",
+            "access_token",
+            "api_key",
+            "apiKey",
+            "secret",
+            "client_secret",
+            "password",
+            "session",
+            "session_id",
+            "Authorization",
+            "auth",
+            "key",
+            "jwt",
+        ] {
+            assert!(is_secret_key(k), "{k}");
+            assert_eq!(storable_value(k, "value-1"), "[REDACTED]", "{k}");
+        }
+        for k in [
+            "id",
+            "uuid",
+            "item_id",
+            "order_id",
+            "author_id",
+            "title",
+            "name",
+        ] {
+            assert!(!is_secret_key(k), "{k}");
+        }
+        assert_eq!(storable_value("id", "item_9"), "item_9");
+        // even under an innocent key, secret-looking content is scrubbed
+        assert!(!storable_value("note", "password=hunter2hunter2").contains("hunter2"));
     }
 
     #[test]
@@ -554,129 +1077,118 @@ mod tests {
         assert!(evaluate_violation("status == 200", 200, ""));
         assert!(!evaluate_violation("status == 200", 403, ""));
 
-        assert!(evaluate_violation("status == 200 || status == 204", 204, ""));
-        assert!(evaluate_violation("status != 403 && status != 404", 200, ""));
-        assert!(!evaluate_violation("status != 403 && status != 404", 403, ""));
+        assert!(evaluate_violation(
+            "status == 200 || status == 204",
+            204,
+            ""
+        ));
+        assert!(evaluate_violation(
+            "status != 403 && status != 404",
+            200,
+            ""
+        ));
+        assert!(!evaluate_violation(
+            "status != 403 && status != 404",
+            403,
+            ""
+        ));
 
         assert!(evaluate_violation("bola", 200, ""));
         assert!(!evaluate_violation("bola", 403, ""));
     }
 
     #[test]
-    fn test_stateful_scenario_execution_mock() {
-        // Start a mock server
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let base_url = format!("http://127.0.0.1:{port}");
-
-        std::thread::spawn(move || {
-            // First request: POST /items by Alice -> return 201 with id
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 1024];
-                let _ = stream.read(&mut buf);
-                let body = "{\"id\": \"item_456\"}";
-                let resp = format!(
-                    "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(resp.as_bytes());
-            }
-
-            // Second request: GET /items/item_456 by Bob -> return 403 Forbidden (BOLA protected)
-            if let Ok((mut stream, _)) = listener.accept() {
-                let mut buf = [0u8; 1024];
-                let _ = stream.read(&mut buf);
-                let body = "{\"error\": \"Access denied\"}";
-                let resp = format!(
-                    "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
-                    body.len()
-                );
-                let _ = stream.write_all(resp.as_bytes());
-            }
-        });
-
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .unwrap();
-        let creds = Credentials::none()
-            .with("alice", "test-token-alice")
-            .with("bob", "test-token-bob");
-        let mut budget = RunBudget::new(10, 50, Duration::from_secs(10), 0.0);
-
-        let steps = vec![
-            StatefulStep {
-                step_number: 1,
-                actor: "alice".into(),
-                method: "POST".into(),
-                path: "/items".into(),
-                payload: Some("{\"title\": \"Secret\"}".into()),
-                extract_vars: Some(vec!["id".into()]),
-                expected_status: Some(201),
-                violation_condition: None,
-            },
-            StatefulStep {
-                step_number: 2,
-                actor: "bob".into(),
-                method: "GET".into(),
-                path: "/items/{{id}}".into(),
-                payload: None,
-                extract_vars: None,
-                expected_status: Some(403),
-                violation_condition: Some("status == 200 || status == 204".into()),
-            },
-        ];
-
-        let result = execute_stateful_scenario(
-            &client,
-            &base_url,
-            &steps,
-            &creds,
-            &mut budget,
-            &format!("127.0.0.1:{port}"),
+    fn preflight_decides_everything_that_needs_no_request() {
+        assert!(preflight(&chain(), &creds()).is_ok());
+        // credentials of every actor
+        let e = preflight(&chain(), &Credentials::none().with("alice", "a")).unwrap_err();
+        assert!(
+            e.contains("missing credential") && e.contains("'bob'") && e.contains("RH_BOB_TOKEN"),
+            "{e}"
         );
-
-        assert!(result.passed, "Scenario should pass: Bob got 403 on Alice's item: {:?}", result.failure_reason);
-        assert_eq!(result.steps.len(), 2);
-        assert_eq!(result.steps[0].status_code, 201);
-        assert_eq!(result.steps[0].extracted_values.get("id").map(|s| s.as_str()), Some("item_456"));
-        assert_eq!(result.steps[1].resolved_path, "/items/item_456");
-        assert_eq!(result.steps[1].status_code, 403);
+        assert!(
+            preflight(&chain(), &Credentials::none())
+                .unwrap_err()
+                .contains("'alice'")
+        );
+        // an anonymous second actor needs no token
+        let mut anon = chain();
+        anon[1].actor = "anon".into();
+        assert!(preflight(&anon, &Credentials::none().with("alice", "a")).is_ok());
+        // unknown verbs are rejected, never turned into GET
+        let mut bad = chain();
+        bad[1].method = "TRACE".into();
+        assert!(
+            preflight(&bad, &creds())
+                .unwrap_err()
+                .contains("not allowed")
+        );
+        // lower-case verbs are fine (normalised)
+        let mut low = chain();
+        low[0].method = "post".into();
+        assert!(preflight(&low, &creds()).is_ok());
+        // placeholders must be producible by an earlier step
+        let mut ph = chain();
+        ph[1].path = "/api/items/{{nope}}".into();
+        assert!(preflight(&ph, &creds()).unwrap_err().contains("{{nope}}"));
+        let mut first = chain();
+        first[0].path = "/api/items/{{id}}".into();
+        assert!(
+            preflight(&first, &creds())
+                .unwrap_err()
+                .contains("unresolved placeholder"),
+            "no step before the first can fill it"
+        );
+        // one resource: POST /api/items pairs with GET /api/items/{{id}} only
+        let mut other = chain();
+        other[1].path = "/api/orders/{{id}}".into();
+        assert!(
+            preflight(&other, &creds())
+                .unwrap_err()
+                .contains("not the same resource")
+        );
+        let mut nested = chain();
+        nested[1].path = "/api/items/{{id}}/history".into();
+        assert!(preflight(&nested, &creds()).is_err());
+        let mut slash = chain();
+        slash[0].path = "/api/items/".into();
+        assert!(
+            preflight(&slash, &creds()).is_ok(),
+            "a trailing slash is the same resource"
+        );
+        let mut noph = chain();
+        noph[1].path = "/api/items".into();
+        assert!(
+            preflight(&noph, &creds())
+                .unwrap_err()
+                .contains("does not address the created resource")
+        );
+        // same actor, anonymous creator, missing creating step
+        let mut same = chain();
+        same[1].actor = "Alice".into();
+        assert!(
+            preflight(&same, &creds())
+                .unwrap_err()
+                .contains("same actor")
+        );
+        let mut anon_creator = chain();
+        anon_creator[0].actor = "anon".into();
+        assert!(preflight(&anon_creator, &creds()).is_err());
+        assert!(preflight(&chain()[1..], &creds()).is_err());
+        assert!(preflight(&[], &creds()).is_err());
     }
 
     #[test]
-    fn test_concurrency_burst_execution() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let url = format!("http://127.0.0.1:{port}/race");
-        let counter = Arc::new(AtomicUsize::new(0));
-        let c_clone = counter.clone();
-
-        std::thread::spawn(move || {
-            for _ in 0..4 {
-                if let Ok((mut stream, _)) = listener.accept() {
-                    let mut buf = [0u8; 1024];
-                    let _ = stream.read(&mut buf);
-                    let count = c_clone.fetch_add(1, Ordering::SeqCst);
-                    let status_line = if count == 0 {
-                        "HTTP/1.1 200 OK\r\n"
-                    } else {
-                        "HTTP/1.1 409 Conflict\r\n"
-                    };
-                    let resp = format!("{status_line}Connection: close\r\nContent-Length: 2\r\n\r\nOK");
-                    let _ = stream.write_all(resp.as_bytes());
-                    let _ = stream.flush();
-                }
-            }
-        });
-
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .unwrap();
-
-        let burst = execute_concurrency_burst(&client, &url, "POST", Some("{\"claim\":1}"), None, 4);
-        assert_eq!(burst.status_codes.len(), 4);
-        assert!(!burst.has_race_condition, "409 correctly handled conflict");
+    fn actor_bearer_resolves_roles_and_never_invents_a_token() {
+        let c = creds();
+        assert_eq!(actor_bearer("alice", &c).as_deref(), Some("Bearer a"));
+        assert_eq!(actor_bearer("ALICE", &c).as_deref(), Some("Bearer a"));
+        assert_eq!(actor_bearer("anon", &c), None);
+        assert_eq!(actor_bearer("carol", &c), None);
+        assert!(
+            actor_bearer("forged", &c)
+                .unwrap()
+                .starts_with("Bearer forged.")
+        );
     }
 }

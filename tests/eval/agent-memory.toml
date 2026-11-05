@@ -1,0 +1,78 @@
+# Suite: the agent's memory of a target. The autonomous agent runs TWICE in the same data directory
+# against the same qa-api fixture (agent::run_agentic_loop_with, spec given, dry_run false, nonprod
+# scope, deterministic, no LLM). The last run is scored like the `agent-api` suite (the same 7 seeded
+# bugs); on top of that:
+#   * the first run remembers what it found (everything it reports is new);
+#   * the second run reports every seeded defect as "still open", none of them as new;
+#   * the second run's plan starts with the regression probes (the reproduction case of every known
+#     defect), and still plans every case the first run planned: memory only reorders.
+name = "agent-memory"
+kind = "agent"
+description = "The agent remembers the 7 seeded bugs between two runs in one data directory: still open, probes first"
+expect_verdict = "NO_GO"
+
+[target]
+server = "tests/fixtures/qa-api/server.py"
+spec = "tests/fixtures/qa-api/openapi.json"
+profile = "standard"
+max_steps = 50
+
+[target.tokens]
+alice = "alice-token"
+bob = "bob-token"
+admin = "admin-token"
+
+[memory]
+runs = 2
+
+[thresholds]
+min_recall = 0.85
+max_false_positives = 2
+pass_k = true
+stable_verdict = true
+# two runs of ~65 requests each (the second also re-tests the known defects first, but plans the
+# same cases); the limits are also handed to each agent run as its own budget.
+max_requests = 500
+max_seconds = 240
+
+[[expect]]
+id = "idor"
+rule = "authz"
+component = "/orders*"
+note = "bug 1: stateful BOLA chain (alice POSTs an order, bob GETs it) fails the authz check"
+
+[[expect]]
+id = "admin-no-auth"
+rule = "authz"
+component = "/admin/stats"
+note = "bug 2: unauthenticated GET /admin/stats answers 200"
+
+[[expect]]
+id = "note-500"
+rule = "server_error"
+component = "/orders"
+note = "bug 3: POST /orders with a note over 100 characters -> 500. Found by the boundary probe the planner generates from the spec's maxLength (the QA engine's case generator)"
+
+[[expect]]
+id = "traceback-leak"
+rule = "server_error"
+component = "/search"
+note = "bug 4: q=' -> 500 with a traceback (reported as one 'Internal error details disclosed' defect)"
+
+[[expect]]
+id = "contract-total"
+rule = "contract_fields"
+component = "/orders/*"
+note = "bug 5: GET /orders/2 omits the required field total. Found by reading the ids the collection lists and validating each body against the spec schema (the QA engine's validator)"
+
+[[expect]]
+id = "delete-noop"
+rule = "delete_not_effective"
+component = "/orders/*"
+note = "bug 6: DELETE answers 204 but the order stays (found by the cleanup read-back)"
+
+[[expect]]
+id = "slow-report"
+rule = "*"
+component = "/reports/slow"
+note = "bug 7: /reports/slow sleeps 1.5 s. Found by the latency oracle (the QA engine's 1000 ms p95 limit), confirmed by the verifier replay"
