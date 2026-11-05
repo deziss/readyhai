@@ -69,5 +69,7 @@ describe("no fabricated results", () => {
     expect(normalizeCaseStatus(undefined)).toBe("SKIPPED");
     expect(normalizeCaseStatus("weird")).toBe("SKIPPED");
     expect(normalizeCaseStatus(" pass ")).toBe("PASS");
+    expect(normalizeCaseStatus("INCONCLUSIVE")).toBe("INCONCLUSIVE");
+    expect(normalizeCaseStatus("inconclusive")).toBe("INCONCLUSIVE");
   });
 });

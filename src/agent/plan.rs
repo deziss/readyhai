@@ -333,10 +333,14 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
         c.concurrency_burst = Some(5);
         out.push(c);
     }
-    // Stateful BOLA tenant isolation check on discovered API resource routes (never root '/')
+    // Stateful BOLA tenant isolation check on discovered API resource routes (never root '/', and never sensitive probe files like .env or .git)
+    let is_sensitive_or_static_file = |path: &str| {
+        let p = path.to_ascii_lowercase();
+        p.starts_with("/.") || p.ends_with(".env") || p.ends_with(".config") || p.ends_with(".bak") || p.ends_with(".json") || p.ends_with(".yaml") || p.ends_with(".yml") || p.ends_with(".txt")
+    };
     if let Some(api_r) = routes.iter().find(|r| {
         let p = r.path.trim();
-        p != "/" && !p.is_empty() && (r.is_api || p.starts_with("/api/") || r.has_body)
+        p != "/" && !p.is_empty() && r.source != "probe" && !is_sensitive_or_static_file(p) && (r.is_api || p.starts_with("/api/") || r.has_body)
     }) {
         let step1 = super::types::StatefulStep {
             step_number: 1,
@@ -824,6 +828,17 @@ fn validate_raw(raw: &RawCase, known: &Known, creds: &Credentials) -> Result<Pla
             component.chars().take(60).collect::<String>()
         )
     })?;
+    // Sensitive file probes and static files should never be targeted with mutating verbs (POST/PUT/PATCH/DELETE)
+    if (route.source == "probe"
+        || component.starts_with("/.")
+        || component.ends_with(".env")
+        || component.ends_with(".config"))
+        && matches!(method, "POST" | "PUT" | "PATCH" | "DELETE")
+    {
+        return Err(format!(
+            "mutating method '{method}' is not valid on sensitive file probe '{component}'"
+        ));
+    }
     let title = clean(&raw.title, 120);
     if title.is_empty() {
         return Err("empty title".into());
@@ -895,7 +910,7 @@ fn llm_extras(
         "known_endpoints": endpoints, "operator_instructions": instructions.map(|i| clean(i, 500)).unwrap_or_default(),
     });
     let prompt = format!(
-        "Target under test:\n{}\nPropose up to {} additional adversarial test cases that complement the baseline (authz, boundary, injection, negative inputs, state transitions).",
+        "Target under test:\n{}\nPropose up to {} additional adversarial test cases that complement the baseline (authz, boundary, injection, negative inputs, state transitions).\nImportant rules:\n- Do not propose mutating HTTP methods (POST, PUT, PATCH, DELETE) on static files or sensitive file probes (e.g. /.env, /.git/config).\n- Only propose methods and paths that are valid for the target.",
         fence_capped(&facts, 200),
         MAX_LLM_CASES
     );
@@ -1081,6 +1096,69 @@ mod tests {
         // ids are unique and sequential
         let ids: Vec<&str> = out.cases.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len());
+    }
+
+    #[test]
+    fn sensitive_probes_are_never_targeted_for_bola_or_mutating_verbs() {
+        let mut d = Discovery::default();
+        d.routes = vec![
+            route("/", 401),
+            DiscoveredRoute {
+                path: "/.env".into(),
+                method: "GET".into(),
+                status_code: 401,
+                content_type: "application/json".into(),
+                is_spa_shell: false,
+                is_api: false,
+                title: Some("Sensitive file probe".into()),
+                has_form: false,
+                secured: None,
+                has_body: false,
+                source: "probe".into(),
+            },
+            DiscoveredRoute {
+                path: "/.git/config".into(),
+                method: "GET".into(),
+                status_code: 401,
+                content_type: "application/json".into(),
+                is_spa_shell: false,
+                is_api: false,
+                title: Some("Sensitive file probe".into()),
+                has_form: false,
+                secured: None,
+                has_body: false,
+                source: "probe".into(),
+            },
+        ];
+        let out = plan_cases(None, "http://readyhai:8080", "standard", &d, None, &Credentials::none());
+        // Must never target /.env or /.git/config for BOLA tenant isolation
+        for c in &out.cases {
+            if c.title.contains("BOLA") {
+                assert_ne!(c.component, "/.env");
+                assert_ne!(c.component, "/.git/config");
+            }
+            if c.component == "/.env" || c.component == "/.git/config" {
+                assert!(matches!(c.method.as_str(), "GET" | "HEAD"));
+            }
+        }
+
+        // Also test validate_raw rejects mutating verbs on sensitive probes
+        let known = Known::new(&d.routes);
+        let creds = Credentials::none();
+        let raw_patch = RawCase {
+            component: "/.git/config".into(),
+            method: Some("PATCH".into()),
+            technique: "state_transition".into(),
+            title: "Attempt state change on git config via PATCH".into(),
+            risk_level: Some("medium".into()),
+            expected_status: Some(400),
+            expected_behavior: None,
+            input_hint: None,
+            payload: None,
+        };
+        let res = validate_raw(&raw_patch, &known, &creds);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("mutating method 'PATCH' is not valid"));
     }
 
     #[test]

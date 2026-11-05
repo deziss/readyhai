@@ -581,7 +581,7 @@ pub fn discover(
                 status_code: f.status,
                 content_type: f.content_type,
                 is_spa_shell: false,
-                is_api: true,
+                is_api: false,
                 title: Some("Sensitive file probe".into()),
                 has_form: false,
                 secured: None,

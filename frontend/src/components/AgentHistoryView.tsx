@@ -239,6 +239,12 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
             WARN
           </span>
         );
+      case "INCONCLUSIVE":
+        return (
+          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-950/90 text-amber-300 border border-amber-600/70">
+            INCONCLUSIVE
+          </span>
+        );
       case "PLANNED":
         return (
           <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-cyan-950 text-cyan-400 border border-cyan-700/50">
@@ -733,7 +739,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                   {/* Scenario status filters */}
                   <div className="flex items-center gap-1 bg-[#0a101d] p-1.5 rounded-lg border border-[#162238] font-mono text-xs">
                     <span className="text-slate-500 px-2">Status:</span>
-                    {(['ALL', 'PASS', 'FAIL', 'WARN', 'BLOCKED', 'SKIPPED', 'PLANNED'] as const).map((s) => (
+                    {(['ALL', 'PASS', 'FAIL', 'WARN', 'INCONCLUSIVE', 'BLOCKED', 'SKIPPED', 'PLANNED'] as const).map((s) => (
                       <button
                         key={s}
                         onClick={() => setScenarioFilter(s)}

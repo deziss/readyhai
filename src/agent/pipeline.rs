@@ -362,7 +362,7 @@ pub(crate) fn run_in(
         "running",
         None,
     );
-    let plan = plan_cases(
+    let mut plan = plan_cases(
         llm_cfg.as_ref().map(|c| (c, &mut llm_budget)),
         &req.target,
         &req.profile,
@@ -370,6 +370,15 @@ pub(crate) fn run_in(
         req.custom_instructions.as_deref(),
         &credentials,
     );
+    // Never plan more cases than the execution step budget allows
+    if let Some(limit) = req.max_steps.filter(|&n| n > 0) {
+        if plan.cases.len() > limit {
+            plan.cases.truncate(limit);
+            for (i, c) in plan.cases.iter_mut().enumerate() {
+                c.id = format!("TC-{:03}", i + 1);
+            }
+        }
+    }
     log(
         &mut steps,
         "Planner",

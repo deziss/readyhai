@@ -103,7 +103,16 @@ export function buildLedger(run: AgentRunRecord): EvidenceLedger | null {
 // Cases / defects
 // ---------------------------------------------------------------------------
 
-const CASE_STATUSES = ["PASS", "FAIL", "WARN", "BLOCKED", "SKIPPED", "PLANNED", "PENDING"] as const;
+const CASE_STATUSES = [
+  "PASS",
+  "FAIL",
+  "WARN",
+  "BLOCKED",
+  "SKIPPED",
+  "PLANNED",
+  "PENDING",
+  "INCONCLUSIVE",
+] as const;
 
 export function normalizeCaseStatus(raw: unknown): TestCaseResult["status"] {
   const s = typeof raw === "string" ? raw.trim().toUpperCase() : "";
