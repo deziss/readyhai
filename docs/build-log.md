@@ -136,7 +136,7 @@ From scanning NuHire statically (path-only for secrets):
 - Tool images unpinned until `readyhai tools pull --lock` is run.
 - The fake `ghp_`-style token fixture may trip GitHub push protection.
 
-Further issues found while writing these docs (from reading the code) are in [roadmap.md](roadmap.md#open-known-issues).
+Further issues found while writing these docs (from reading the code) are in [roadmap.md](roadmap.md#open-known-issues). Most of the items above were closed on 2026-10-30 (ZAP, Schemathesis, the Playwright runner, resilience and MobSF were run live, and digests are pinned; see the commit `1245f09` and [status-and-competition.md](status-and-competition.md)); the Windows probe is the one still open.
 
 # Increment 2: senior-QA + offline (2026-10-25)
 
@@ -239,6 +239,8 @@ Every step passed. Steps 8 (LLM) and 9 (UI) passed without exercising their real
 
 ## Verification round 4: Agentic AI & Web Studio (2026-10-27)
 
+*Historical record. The in-binary SPA (`src/web_ui.rs`) described here was removed in round 3.1 in favour of the Next.js Studio; see round 6 for the current state.*
+
 Every step passed. Live verification performed with local vLLM serving `qwen3.8-flash-next` and automated browser testing.
 
 | # | Step | Result |
@@ -254,6 +256,8 @@ Every step passed. Live verification performed with local vLLM serving `qwen3.8-
 
 ## Verification round 5: Next.js 15 Agent Studio, Persistent Global History & Multi-Container Docker (2026-10-27)
 
+*Historical record. The studio is Next.js 16 today, and the hard-coded exclusion of `agent-prod.nuhire.in` mentioned in step 5 was removed later: the only host policy is `scope.toml`.*
+
 Every step passed. Live verification performed with local Next.js 15 studio, standalone Docker container, and automated browser testing.
 
 | # | Step | Result |
@@ -265,3 +269,40 @@ Every step passed. Live verification performed with local Next.js 15 studio, sta
 | 5 | Target Exclusion & Privacy Enforcement | **Live verified:** Purged 6 historical runs of `agent-prod.nuhire.in` from disk and cache. Added server-side and client-side filtering. Verified 0 occurrences across all history tabs, docs, and git diffs. Verified zero leaks of internal cluster IP addresses (`10.10.110.42`). |
 | 6 | Multi-Container Docker Build | **Live verified:** Built `readyhai-frontend:local` via `frontend/Dockerfile` (Node.js 20 Alpine standalone output, UID 10001). Verified container serves HTTP 200 on port 3005. Configured `docker-compose.yml` to orchestrate backend (`readyhai:local` on 8080) and frontend (`readyhai-frontend:local` on 3005). |
 | 7 | Full Browser End-to-End Test | **Live verified:** Autonomous browser subagent executed full navigation test on `http://127.0.0.1:3000/`. Verified clickable tabs (`#tab-scenarios`, `#tab-routes`, `#tab-ledger`, `#tab-triage`, `#tab-history`). Verified past runs render with `SCAN` and `TEST RUN` badges, and confirmed complete absence of excluded domains. Captured screenshots: `history_tab_view_1793107149703.png`, `routes_tab_view_1793107155386.png`, `ledger_tab_view_1793107161087.png`, `scenarios_tab_view_1793107166935.png`. |
+
+## Round 6: review fixes, verifier, eval harness, super agent, UI revamp, docs (2026-11-05)
+
+Release notes are in [../CHANGELOG.md](../CHANGELOG.md) (0.2.0 to 0.4.0). This entry records how the round went and what is and is not verified. The code changes are in the working tree after commit `ed4215b` (91 tracked files changed, about 27,700 lines added, plus new untracked files such as `src/eval.rs`, `src/agent/{change,lead,memory,verify}.rs` and `tests/eval/`); the version files still read 0.1.0.
+
+### What landed
+
+| Step | Result |
+|---|---|
+| Review of the agent and the QA engine | Fixes for security (tokens never stored in curls or reports; credentials bound to the target's scheme, host and port, over the certificate-validating client, no redirects), accuracy (one oracle path, one severity table, deterministic verdicts, an Inconclusive outcome, no fabricated results: no default scores, no invented patches) and reliability (fail-closed scope loading, capped reads, atomic writes, cooperative cancellation, a cleanup ledger with read-back, compose network isolation, CI gates) |
+| Verifier | `verify.rs`: every FAIL replayed `READYHAI_VERIFY_K` times through the same oracle (default 2, max 5, 0 off); pass^k on the ledger; teardown confirms every 2xx DELETE with a GET |
+| Eval harness | `readyhai eval`, `src/eval.rs`, `tests/eval/{qa-api,qa-repo,agent-api,agent-diff,agent-memory}.toml`, the `eval` CI job; the agent was brought to 7/7 seeded bugs by reusing the QA engine's generator, validator, leak catalog and latency limit |
+| Super agent, step 2 | `change.rs`: `--repo` / `--diff-base`, change impact, optional context retriever |
+| Super agent, step 3 | `lead.rs`: lead agent and the areas `auth`, `contract`, `state`, `ui`, `READYHAI_AGENT_WORKERS`, deterministic wave 2; one worker and four give the same plan, results, defects and ledger |
+| Super agent, step 4 | `memory.rs`: `agent-memory show|accept|forget`, REST, `READYHAI_AGENT_MEMORY`, "Since last run", expiring acceptance |
+| Exit codes | `qa` and `agent` exit 0 / 1 / 2 (the `qa` code is the worse of the recommendation and the gate verdict) |
+| MCP | `readyhai_agent_swarm` async with `readyhai_agent_status` / `readyhai_agent_cancel`, `dry_run` default true, `READYHAI_MCP_ALLOW_WRITES`, at most 2 swarms, runs cancelled on disconnect |
+| UI revamp | IBM Plex, `rh-*` tokens, command center with pinned header and Run button, release gate in the workspace, click-only six-stage stepper, Cancel in Runs history, sandboxed reports, token settings |
+
+### Documentation pass
+
+The docs were rewritten against the code, not against the previous docs. Claims that the code contradicted were corrected, the main ones:
+
+- Scope policy: a public host needs no entry and gets full testing; an internal host must be listed or matched by `*`; only a `prod` entry makes a host read-only; an unresolvable name is refused for intrusive actions; a configured but unusable scope file is an error. Earlier text in `api.md` and `qa.md` said public hosts were read-only, that unlisted public hosts were refused for intrusive actions, or that QA targets had to be listed.
+- Gate: `errored_fails` (default true) makes a required errored check FAIL (the docs said WARN); the default hard-fail list has two more QA prefixes.
+- Agent: pillar weights are 30 / 30 / 25 / 15 (not 25 each); `agent` exits 0 / 1 / 2 (not 0 / 1); `--spec` takes a URL; the CLI always runs the `standard` profile; the gate is deterministic (the README called it an LLM judge); remediation is generic example guidance (the frontend README promised `git apply` patches); sign-off records the authenticated principal, not a cryptographic signature.
+- Removed things: `src/web_ui.rs` and the 302 redirect from port 8080 to 3000 (now `GET /` is a JSON index behind the bearer token); the hard-coded `agent-prod.nuhire.in` exclusion (a test now asserts it is allowed: only `scope.toml` decides).
+- Status: UI QA, PDF, ZAP, Schemathesis, resilience and MobSF were run live on 2026-10-30 (the docs still called them unrun); 41 built-in checks (not 28); 16 of 17 tool digests pinned (not 12 of 13); one intrusive check exists (`qa.resilience`); the container image ships `ssh`; the ArgoCD Job mounts `/data`; the GitLab recipe uses the GHCR image; `baseline accept` promotes spec, visual and perf baselines.
+- Reference material added or rebuilt: the full environment-variable table (about 50 variables, grouped by area), the agent run budget, the module map of `src/agent/`, the oracle, verifier and cleanup sections, the CI workflow table, the design-system token table, `CHANGELOG.md`.
+
+### Verification status of this round
+
+- Not run in this round: `cargo test`, `cargo clippy`, the eval suites, the frontend tests and any live scan. Test counts in the docs (639 Rust `#[test]` functions of which 2 are `#[ignore]`d, 86 frontend cases, 15 Python tests) were counted from the source, not from a run, and the docs say so.
+- Checked against the running binary: the `--help` of every subcommand of `target/debug/readyhai` (built 2026-11-05 16:20) matches the flag tables in `usage.md`; `readyhai checks` lists 41 checks and every one is in `checks.md`.
+- Checked against the source: every `READYHAI_*` variable found by `grep` in `src/`, `runners/`, `frontend/src`, the compose file and the workflows has a row in `configuration.md` (except two test-only names and the curl timing marker); the REST route list in `api.md` matches `build_router`; the MCP tool schemas match `tool_defs`; the CI job list matches `ci.yml` and `image.yml`.
+- Still not verified live: the Windows probe, the context retriever against a real index in CI, the agent against a real (non-fixture) application, an MCP session in a live Claude Code.
+

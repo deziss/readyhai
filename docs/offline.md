@@ -74,7 +74,7 @@ Prints: version, mode, LLM probe result (2 s timeout on `<base>/models`), data d
 |---|---|
 | `READYHAI_VLLM_URL` | OpenAI-compatible base, e.g. `http://vllm.lan:8000/v1`; setting it alone selects the `vllm` provider |
 | `READYHAI_LLM_PROVIDER` | `vllm`, `ollama` (default `http://localhost:11434/v1`), or cloud providers `openai`, `anthropic`, `openrouter` |
-| `READYHAI_LLM_MODEL` | default `Qwen/Qwen3-8B` for vllm (`qwen2.5-coder` for ollama) |
+| `READYHAI_LLM_MODEL` | default `qwen3.8-flash-next` for vllm (`qwen2.5-coder` for ollama) |
 | `READYHAI_LLM_ALLOW_CLOUD` | `1`/`true` required for any cloud provider; otherwise the config is refused |
 
 At the end of a `qa` run the endpoint is probed (GET `<base>/models`, 2 s). Unreachable: the run proceeds deterministically and the report carries the note "LLM configured but unreachable (2s probe): report is deterministic-only".
@@ -89,7 +89,7 @@ At the end of a `qa` run the endpoint is probed (GET `<base>/models`, 2 s). Unre
 | Test ideas for up to 30 operations | report notes ("AI-proposed test") |
 
 **In `readyhai qa`:** The AI functions as an advisory enricher and does NOT change deterministic verdicts, suppress findings, or execute arbitrary tools.
-**In `readyhai agent` (Increment 3):** An autonomous multi-agent pipeline (`Planner`, `Explorer`, `Triager`, `ReadinessGate`) synthesizes, executes, and triages test cases, computing an objective 4-pillar Evidence Ledger.
+**In `readyhai agent`:** the pipeline is deterministic and works with no LLM at all. When a model is configured and reachable (a 2 s probe, once per run) it may add validated test cases, prose notes and an advisory opinion stored beside the verdict; it never changes a verdict, a severity or the gate. Calls are bounded by `READYHAI_AGENT_MAX_LLM_CALLS` (default 20) and a 300 s cap per stage.
 
 **Guardrails:** `redact_for_llm` on every input; target text is control-char-stripped, fence-neutralised and fenced as data; budget of 20 calls and 300 s per run; responses cached by sha256(model, system, prompt) under `<data>/llm-cache`, so reruns are reproducible and cache hits are free.
 

@@ -5,15 +5,15 @@
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted QA tester and production-readiness gate.
 
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.0-brightgreen.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.4.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/tests-347%2B%20passed-success.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-640%2B%20Rust-informational.svg)](#testing)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)
 
 Point ReadyHai at a codebase, a container image, an API/web app, an SSH host, or an Android APK.  
 It executes hardened, sandboxed checks and outputs a definitive verdict: **PASS**, **WARN**, or **FAIL**.
 
-[Quick Start](#quick-start) • [Features](#key-capabilities) • [CLI Commands](#command-reference) • [Version Management](#single-source-of-truth-versioning) • [Security & Secrets](#secrets-and-sensitive-data-policy) • [Documentation](docs/README.md)
+[Quick Start](#quick-start) • [Features](#key-capabilities) • [CLI Commands](#command-reference) • [Eval](#evaluation-harness) • [Version Management](#single-source-of-truth-versioning) • [Security & Secrets](#secrets-and-sensitive-data-policy) • [Documentation](docs/README.md) • [Changelog](CHANGELOG.md)
 
 ---
 
@@ -24,9 +24,11 @@ It executes hardened, sandboxed checks and outputs a definitive verdict: **PASS*
 Modern deployments often rely on dozens of disparate tools (`trivy`, `semgrep`, `gitleaks`, `hadolint`, `zap`, `playwright`, `k6`) glued together with shell scripts that mask errors or produce overwhelming, unprioritized alerts. 
 
 **ReadyHai** unifies static analysis, dynamic security, end-to-end QA, and host hardening into a single high-performance binary:
-- **One Clear Verdict:** Returns exit codes designed for CI pipelines (`0` PASS, `1` WARN, `2` FAIL, `3` Error).
+- **One Clear Verdict:** Returns exit codes designed for CI pipelines: `readyhai scan` exits `0` PASS, `1` WARN, `2` FAIL; `readyhai qa` and `readyhai agent` exit `0` Go, `1` Conditional Go, `2` No-Go or not evaluated; `3` is always an error (bad input, unreadable scope file, I/O).
 - **Zero-Noise Baselines:** Accept existing technical debt once (`.readyhai/baseline.json`). The gate strictly evaluates **new** defects introduced in PRs.
 - **Throwaway Container Sandboxes:** Scanners run non-root, read-only, network-isolated, and capability-dropped (`--cap-drop ALL`).
+- **Deterministic and honest:** verdicts come from code, never from an LLM. Anything that could not be measured is "not evaluated" or `null`, never a default score. A failure must reproduce under the verifier before it counts as a defect.
+- **Measured against seeded bugs:** `readyhai eval` scores the QA engine and the agent on fixtures with known defects (recall, false positives, pass^k) and gates CI on it.
 - **AI Agent Native:** Built-in Model Context Protocol (MCP) server over stdio for Claude Code and autonomous agents.
 
 ---
@@ -40,21 +42,25 @@ Modern deployments often rely on dozens of disparate tools (`trivy`, `semgrep`, 
 | **Web & APIs (`web`)** | Smoke status, TLS/security headers, CSP, cookie security, CORS policy, Schemathesis fuzzing, OWASP ZAP baseline, Playwright crawler. |
 | **Host over SSH (`ssh://`)** | OS hardening, Lynis audit, kernel patches, listening ports, failed systemd units, journal errors, package CVEs (Linux, macOS, Windows). |
 | **Android APK (`android:`)** | MobSF static analysis, dangerous permissions, hardcoded secrets, crash and ANR extraction from connected ADB devices/emulators. |
-| **QA Test Suite (`qa`)** | Synthetic OpenAPI test generation, RBAC authorization matrix, k6 load testing, resilience & chaos testing, axe-core a11y, visual diffs. |
-| **Super Agent Swarm (`agent`)** | Multi-agent autonomous security orchestration with Extended Thinking (CoT), adaptive schema mutation, stateful BOLA tenant chains, TOCTOU bursts, and auto-remediation patches. |
+| **QA Test Suite (`qa`)** | Synthetic OpenAPI test generation, RBAC authorization matrix, k6 load testing, resilience & chaos testing, axe-core a11y, visual diffs, suite and release quality, a computed Go / Conditional Go / No-Go / Inconclusive recommendation. |
+| **Super Agent (`agent`)** | Autonomous adversarial QA of an HTTP target: shared QA API checks, code-aware planning from a git diff, a lead agent with four area sub-agents, an independent verifier, per-target memory, stateful BOLA chains, TOCTOU bursts, and a deterministic four-pillar Evidence Ledger with a GO / CONDITIONAL_GO / NO_GO gate. |
+| **Eval (`eval`)** | Scores the QA engine and the agent against fixtures with seeded defects: recall, false positives, pass^k, verdict stability, request and time budgets. |
 
 ---
 
-## Super Agent Suite 🚀
+## Super Agent Suite
 
-ReadyHai includes an advanced autonomous agent suite powered by Anthropic / OpenAI / Ollama models with deep reasoning capabilities:
+The agent (`readyhai agent`, `POST /api/agent/run`, MCP `readyhai_agent_swarm`) is an orchestrator-worker structure around a deterministic core. The LLM is optional: when one is configured and reachable it can add validated test cases, prose notes and an advisory opinion, and it never changes a verdict.
 
-- 🧠 **Extended Thinking (Chain-of-Thought)**: Configurable token budgets (1k to 32k tokens) across model tiers (`Low`, `Medium`, `High`, `Max`, `Max Pro`) enabling multi-pass architectural reflection before test generation.
-- ⚡ **Adaptive Schema Mutation Fuzzing**: Real-time error feedback engine that parses validation errors from FastAPI (Pydantic), Django REST Framework, and Express (Zod), automatically generating boundary mutations to break input validators.
-- 🔗 **Stateful Multi-Actor Scenario Chains**: Models multi-step workflows (e.g. Alice creates resource → extract `{{id}}` → Bob attempts access) to rigorously audit Broken Object Level Authorization (BOLA/IDOR) with zero false-positives for prerequisite setup failures.
-- ⏱️ **TOCTOU Concurrency Bursts**: Thread-synchronized barrier testing (`std::sync::Barrier`) sending concurrent requests within microsecond windows to expose race conditions in stateful business logic.
-- 🛠️ **Automated Remediation & Git Patches**: Generates production-ready unified diff patches (`git apply`) and prescriptive fix guidance directly from defect findings.
-- 🔌 **Model Context Protocol (MCP) Server**: Native MCP tools (`readyhai_agent_swarm`, `readyhai_agent_discover`) allowing external agent workflows (Claude Code, Cursor) to leverage ReadyHai's engine directly.
+- **Shared QA checks.** With an OpenAPI spec the agent reuses the QA engine's case generator, response validator, error-leak catalog and latency limit (`src/qa/api`), reads the ids of existing records from collection endpoints and validates each one against the spec. On the eval fixture it finds 7 of 7 seeded bugs.
+- **Code-aware planning.** `--repo DIR --diff-base REF` maps `git diff REF...HEAD` to OpenAPI operations; changed operations get the full case set, are planned first and cut last, and the report has a Change impact section. An optional context retriever adds advisory notes.
+- **Lead agent and area sub-agents.** The plan is split into `auth`, `contract`, `state` and `ui` areas; each area runs on its own worker (`READYHAI_AGENT_WORKERS`, default 4) with a slice of the run budget, then one deterministic wave 2 follows up. Results merge by case id, so one worker and eight give the same plan, defects and ledger. One per-host rate limit and one cancel flag are shared.
+- **Independent verifier.** Every FAIL is replayed `READYHAI_VERIFY_K` times (default 2, max 5, `0` off) through the same oracle before it becomes a defect: reproduced = confirmed, partly = flaky, never = INCONCLUSIVE. The ledger reports pass^k.
+- **Memory across runs.** The agent remembers each target (known defects by fingerprint, flaky cases, coverage) in `<data>/memory/`, tests the reproduction of known defects first, and reports "Since last run": new, still open, fixed, regressed, not re-tested, known flaky, accepted. Deterministic, never written from LLM text, and it only reorders the plan. `readyhai agent-memory accept ... --expires` lets a known defect through the gate until a date, listed in every report.
+- **Extended Thinking.** A reasoning budget (1k to 32k tokens, clamped) and model tiers (`Low`, `Medium`, `High`, `Max`, `Max Pro`) when an LLM is configured. What is actually sent depends on the provider (OpenAI-compatible servers get `reasoning_effort` and a `max_tokens` cap; structured planning and verdict calls stay at a low temperature) and the run log says which.
+- **Adaptive schema mutation, stateful chains, TOCTOU bursts.** Validation errors from FastAPI (Pydantic), Django REST Framework and Express (Zod) steer boundary mutations; multi-actor chains (Alice creates, Bob reads) audit BOLA/IDOR without counting prerequisite setup failures as breaches; barrier-synchronised bursts probe race conditions on spec-declared create operations.
+- **Cleanup and example remediation.** Everything the run creates is recorded, deleted at the end on a confirmed nonprod target and read back; leftovers are listed. Remediation output is generic guidance labelled "example - adapt to your code", not a verified fix.
+- **Model Context Protocol (MCP) Server.** `readyhai_agent_swarm` returns a run id at once; `readyhai_agent_status` and `readyhai_agent_cancel` poll and stop it; `readyhai_agent_discover` maps a target. Swarms are dry runs unless the caller asks and the operator sets `READYHAI_MCP_ALLOW_WRITES=1` (and the target is nonprod).
 
 ---
 
@@ -125,6 +131,36 @@ readyhai baseline accept <run-id> --out .readyhai/baseline.json
 readyhai scan . --baseline .readyhai/baseline.json
 ```
 
+### 5. Run the Server and the Studio with Docker
+
+```bash
+cp .env.example .env                # set READYHAI_TOKEN (16+ characters); never commit .env
+cp scope.example.toml scope.toml    # rules of engagement; compose bind-mounts it, so it must exist BEFORE `up`
+docker compose pull                 # ghcr.io/deziss/readyhai, readyhai-frontend (or: docker compose build)
+docker compose up -d
+curl http://127.0.0.1:8080/health   # {"status":"ok","version":"..."}
+# Studio: http://127.0.0.1:3000 (compose attaches the token server-side; the backend API stays on 127.0.0.1:8080)
+```
+
+If `scope.toml` does not exist when you run `docker compose up`, Docker creates an empty directory of that name and `readyhai serve` refuses to start with a message that says how to fix it. Scan targets are mounted read-only from `./targets` (override with `TARGETS_DIR`) at `/targets`. See [docs/deployment.md](docs/deployment.md).
+
+### 6. Test a Running App with the Agent
+
+```bash
+# Public hosts need no scope entry; internal hosts (localhost, RFC1918, host.docker.internal) must be listed in scope.toml
+readyhai agent https://staging.example.com --spec https://staging.example.com/openapi.json --dry-run   # plan only, nothing is sent
+export RH_ALICE_TOKEN=... RH_BOB_TOKEN=...      # test credentials, read only from the environment
+readyhai agent https://staging.example.com --spec https://staging.example.com/openapi.json --max-steps 25
+```
+
+`--spec` takes an http(s) URL. Reports and the run's evidence are written under `<data>/agent-runs/<run id>/` (default data directory `~/.local/share/readyhai`).
+
+### 7. Score ReadyHai Itself
+
+```bash
+cargo run -- eval                  # needs python3 and git; no docker, network or LLM
+```
+
 ---
 
 ## Command Reference
@@ -150,7 +186,7 @@ readyhai scan android:./app-release.apk --device emulator-5554
 
 ### Senior QA Engine
 
-Run automated contract testing, RBAC verification, load testing, and visual QA:
+Run automated contract testing, RBAC verification, load testing, and visual QA. The output is a QA test summary with a computed recommendation (Go, Conditional Go, No-Go or Inconclusive) next to the gate verdict:
 
 ```bash
 readyhai qa https://api.staging.example \
@@ -170,61 +206,78 @@ Run ReadyHai as an MCP server over stdio for Claude Code or other autonomous age
 readyhai mcp
 ```
 
-### Autonomous Agentic AI QA & Production Gate (2026)
+Tools: `readyhai_scan`, `readyhai_checks`, `readyhai_run`, `readyhai_findings`, and the agent tools `readyhai_agent_swarm`, `readyhai_agent_status`, `readyhai_agent_cancel`, `readyhai_agent_discover`. There is deliberately no baseline, suppression or config tool. See [docs/api.md](docs/api.md#mcp-server).
 
-ReadyHai includes a state-of-the-art multi-agent testing engine powered by local reasoning models (vLLM / Ollama):
+### Autonomous Agentic AI QA & Production Gate
 
-- **Planner Agent:** Synthesizes boundary tests, negative inputs, RBAC abuse vectors, and OWASP Top 10 exploits.
-- **Explorer Agent:** Dispatches tests, measures latency, captures live reproduction curl commands and raw evidence.
-- **Triager Agent:** Clusters failures, dedupes defect instances, and evaluates OWASP blast radius.
-- **Production Gate (LLM-as-a-Judge):** Computes a 4-pillar **Evidence Ledger** (*Value*, *Authority*, *Safety*, *Evidence*) and delivers an automated **GO / NO_GO** deployment verdict.
+The agent runs a fixed pipeline: **Discovery -> Planner -> Explorer -> Verifier -> Cleanup -> Triager -> Readiness gate**. The Explorer stage is a lead agent that runs four area workers (`auth`, `contract`, `state`, `ui`). Verdicts are computed by deterministic code; an optional local reasoning model (vLLM / Ollama) only adds validated test cases and prose.
+
+- **Planner:** boundary, negative, authorization, injection and state cases from the crawl and the OpenAPI spec; changed operations first when `--repo` / `--diff-base` are given; known defects first when memory exists.
+- **Explorer:** sends the cases (one per-host rate limit, writes take turns), judges each response with the oracle, captures the reproduction curl (credentials as `${RH_<ROLE>_TOKEN}` placeholders) and a stored request/response evidence file.
+- **Verifier:** replays every failure `READYHAI_VERIFY_K` times; only reproduced failures stay defects.
+- **Triager:** clusters failures into defects with OWASP labels and severities from one table.
+- **Readiness gate:** a four-pillar **Evidence Ledger** (*Value* 30, *Authority* 30, *Safety* 25, *Evidence* 15) and a deterministic **GO / CONDITIONAL_GO / NO_GO** verdict, or `NOT_EVALUATED` when nothing conclusive ran.
 
 ```bash
-# Run multi-agent QA via CLI
-readyhai agent https://api.example.com --max-steps 6
+# Plan only: validate the scope and print what would run, send nothing
+readyhai agent https://api.example.com --spec https://api.example.com/openapi.json --dry-run
 
-# 1. Start the ReadyHai backend engine (port 8080)
+# Run multi-agent QA via CLI (exit 0 GO, 1 CONDITIONAL_GO, 2 NO_GO or not evaluated)
+readyhai agent https://api.example.com --spec https://api.example.com/openapi.json --max-steps 25
+
+# Test what a PR changed
+readyhai agent https://staging.example.com --spec https://staging.example.com/openapi.json \
+  --repo . --diff-base origin/main
+
+# What the agent remembers about a target; let a known defect through until a date
+readyhai agent-memory show https://api.example.com
+readyhai agent-memory accept https://api.example.com <fingerprint> --reason "tracked in OPS-1" --expires 2026-12-31
+
+# 1. Start the ReadyHai backend engine (port 8080). READYHAI_TOKEN is required (16+ characters);
+#    there is no fallback token, and every route except /health needs it.
+export READYHAI_TOKEN=$(openssl rand -hex 24)
 readyhai serve --bind 127.0.0.1:8080
 
-# 2. Start the dedicated Next.js 16 SaaS frontend (port 3000)
+# 2. Start the dedicated Next.js 16 frontend (port 3000; node 24, see frontend/README.md)
 cd frontend && npm run dev -- -p 3000
-# Open http://127.0.0.1:3000 in your browser to access the SaaS UI suite
+# Open http://127.0.0.1:3000, click the key icon and paste the same token
 
-# Or launch both together via Docker Compose:
+# Or launch both together via Docker Compose (one-time setup: .env AND scope.toml must exist
+# before the first `docker compose up`):
+cp .env.example .env && cp scope.example.toml scope.toml
 docker compose up -d
 ```
 
-### Hierarchical SaaS Web Interface (Port 3000)
+The agent sends write requests and attack payloads. A host listed `env = "prod"` in `scope.toml` is refused; public hosts and listed nonprod hosts are tested in full. See [Scope](#scopetoml-network--host-boundaries).
 
-The enterprise Next.js SaaS interface features top-level hierarchical navigation separating operational modes and history sessions:
+### Evaluation Harness
 
-1. **Agent Studio**:
-   - Interactive 4-agent QA composer (Supervisor, Discovery, Planner, Critic).
-   - Real-time pipeline stage monitor and live adversarial case retesting.
-2. **Agent QA Swarms History**:
-   - Master-detail session archive of all autonomous agent runs.
-   - Discovered attack surfaces and route classification (API contracts vs SPA shell).
-   - Adversarial test scenarios with exact reproduction cURLs, payload assertions, and observed HTTP response snippets.
-   - 4-Pillar Evidence Ledger (*Contract Fidelity*, *AuthZ Boundary*, *Failure Resilience*, *Observability*) and gate sign-off certificate.
-   - "Load Session into Studio" for instant interactive continuation.
-3. **Codebase & Security Scans History**:
-   - Master-detail session archive of all static scans (git repos, local codebases, container images).
-   - Instant filtering by verdict (`PASS`, `WARN`, `FAIL`), target kind (`repo`, `image`, `host`), and finding severity.
-   - Security Checks Execution Grid (Dockerfile, Dependencies, Compose, K8s, CI, Repo, Gitleaks, Grype, Semgrep, Hadolint, Checkov).
-   - **Direct Report Artifact Downloads & Modal Preview**:
-     - Embedded Interactive HTML Report (`readyhai-report.html`)
-     - GitHub Security & VS Code SARIF 2.1.0 (`readyhai-report.sarif`)
-     - Structured JSON (`readyhai-report.json`)
-     - CI/CD Gate JUnit XML (`readyhai-report.junit.xml`)
-4. **Regressive Network Lab (Flakiness & Intermittent Failure Diagnostics)**:
-   - **Continuous Regressive Testing**: Multi-iteration stress runner ($N$ repetitions) configured with *Separate Private Sessions* (`pool_max_idle_per_host(0)`, zero connection pooling) to catch flapping endpoints, socket leaks, and proxy connection drops.
-   - **Network Throttling Simulation**: Presets for Unthrottled, Fast 3G (+75ms RTT), Slow 3G (+250ms RTT), Flaky Jitter/Packet Drop simulation, and custom latency injection.
-   - **Explainable AI Root-Cause Diagnostic**:
-     - "How the Agent Found the Issue" automated diagnostic engine tracing DNS resolution $\to$ TCP 3-way handshake $\to$ TLS negotiation $\to$ TTFB $\to$ Gateway status.
-     - Root-cause classification for Timeout/SYN drop, 502/504 upstream gateway flapping, Connection Resets (`ECONNRESET`), and Extreme Jitter.
-     - Prescriptive remediation checklists with copyable reproduction cURLs.
-   - **Integrated cURL Runner**: Sub-millisecond stage timing breakdowns (`time_namelookup`, `time_connect`, `time_appconnect`, `time_starttransfer`, `time_total`) with instantaneous terminal output.
+`readyhai eval` scores the QA engine and the agent against fixtures with **known, seeded defects**: recall, false positives, pass^k, verdict stability, and request and time budgets. It needs only `python3` (the fixture servers are stdlib scripts) and `git`; no network, no docker, no LLM. CI runs it as the `eval` job.
 
+```bash
+readyhai eval                      # all suites in tests/eval, k = 2, report in ./eval-report/
+readyhai eval --suite qa-api --k 3 # one suite, three runs
+echo $?                            # 0 every threshold met, 1 a threshold missed, 3 harness error
+```
+
+Suites: `qa-api`, `qa-repo`, `agent-api`, `agent-diff`, `agent-memory`. Details and the suite file format: [docs/eval.md](docs/eval.md).
+
+### Web Interface (Port 3000)
+
+The Next.js interface (IBM Plex, dark theme, `rh-*` design tokens) has three top-level views:
+
+1. **Agent studio**
+   - *Command center* (left): mode switch and header pinned at the top, **Run agent** pinned at the bottom, controls (target, OpenAPI spec, directives, profile, steps, model tier, reasoning budget, discovery and crawl) scroll in between. The token key button sits in the header.
+   - *Six-stage pipeline stepper* (Recon, Discovery, Plan, Execute, Verify, Gate): click or keyboard a stage for its details; the layout never shifts. The Gate stage shows the backend's verdict.
+   - *Workspace* (right): tabs for Scenarios and inspector (cURL, response, in-place retest), Discovered routes, Evidence ledger, Threat triage and Runs history, with the **Release gate** sign-off card (approve or block, recorded as the authenticated principal).
+   - *Runs history*: every past agent run with its lifecycle chip (running, cancelled, failed), a **Cancel** button for running runs, report downloads (HTML in a sandboxed iframe, Markdown, SARIF, JSON, JUnit), and "load into studio".
+2. **Scans**: master-detail archive of static scans (repositories, images, hosts) with verdict, kind and severity filters, a check execution grid, and report downloads (HTML, SARIF 2.1.0, JSON, JUnit).
+3. **Network lab** (flakiness and intermittent-failure diagnostics):
+   - **Regressive testing**: N iterations with separate private sessions (no connection pooling) to catch flapping endpoints, socket leaks and proxy drops, with throttling presets (Unthrottled, Fast 3G, Slow 3G, flaky jitter, custom latency).
+   - **Root-cause diagnosis**: DNS, TCP, TLS, TTFB and gateway status stages; classification into `STABLE`, `TIMEOUT`, `5XX_FLAPPING`, `CONNECTION_RESET`, `HTTP_ERRORS`, `HIGH_JITTER`; copyable reproduction cURLs. Anything that cannot be measured is shown as not measured.
+   - **Deep audit** (six pillars: dual-stack, sub-resources, protocol matrix, TLS, CORS preflight, MTU) and a **cURL runner** with stage timings.
+
+The UI shows only what the backend reported; a missing verdict, score or measurement is "not evaluated", never a default.
 
 ### REST API & Web Dashboard
 
@@ -233,6 +286,7 @@ Launch the persistent ReadyHai daemon:
 ```bash
 cp .env.example .env
 # Edit READYHAI_TOKEN in .env (minimum 16 characters)
+cp scope.example.toml scope.toml   # rules of engagement; compose bind-mounts it, so it must exist first
 docker compose up -d
 
 # Trigger scans via REST API
@@ -262,7 +316,7 @@ readyhai bundle import readyhai-bundle.tar
 |---|---|---|
 | `quick` | Native readiness rules, Gitleaks, Syft + Grype, Semgrep, Hadolint, Checkov, Dockle, HTTP smoke. | PR checks, local pre-commit |
 | `standard` | Everything in `quick` + target project test suite (`readyhai.toml`), Schemathesis API tests, OWASP ZAP baseline. | Staging CI/CD pipelines |
-| `deep` | Everything in `standard` + intrusive chaos tests, aggressive fuzzing, and stress runs (only targets tagged `nonprod` in `scope.toml`). | Nightly / Pre-release soak |
+| `deep` | Everything in `standard` + intrusive checks: dependency fault injection (`qa.resilience`, `readyhai qa` only, compose services you allow-list), the Android monkey run, and plugins with `profile = "deep"`. Intrusive checks run only on hosts that `scope.toml` does not mark `prod` (a public host by default, or an entry with `env = "nonprod"`). | Nightly / Pre-release soak |
 
 ---
 
@@ -292,18 +346,34 @@ command = "pytest -q --junitxml=/out/junit.xml"
 
 ### `scope.toml` (Network & Host Boundaries)
 
-Safeguards against scanning unauthorized endpoints:
+Rules of engagement for network targets. Copy `scope.example.toml` to `scope.toml` and edit it:
 
 ```toml
 [[hosts]]
-host = "staging.internal.net"   # internal hosts MUST be listed
-env  = "nonprod"                # "nonprod" allows intrusive actions; "prod" stays read-only
+host = "staging.internal.net"   # exact host or "*.suffix"; "*" matches every host
+env  = "nonprod"                # "nonprod" = full testing; "prod" = read-only
+
+[[hosts]]
+host = "app.example.com"
+env  = "prod"                   # writes, attack payloads, load and fault injection are refused
+
+[[hosts]]
+host = "*"                      # the shipped default: everything not listed above is fully testable
+env  = "nonprod"
 
 [git]
-hosts = ["git.internal.net"]    # extra git hosts allowed for clones (github/gitlab/etc. are built in)
+hosts = ["*"]                   # git hosts allowed for clones (github/gitlab/etc. are built in)
 ```
 
-Public hosts are allowed without an entry but are **read-only**: intrusive actions (writes, attack payloads, load, fault injection, agent swarm) need the host listed with `env = "nonprod"`. Internal hosts (loopback, RFC1918, link-local/metadata, CGNAT) are refused unless listed. See [docs/configuration.md](docs/configuration.md#scopetoml).
+How a target is decided:
+
+- A **public** host needs no entry and gets **full testing** (it counts as `nonprod`): non-intrusive probes *and* intrusive actions (writes, attack payloads, load, fault injection, the agent swarm). Mark a host `env = "prod"` to keep it read-only.
+- An **internal** host (loopback, RFC1918, link-local/metadata, CGNAT, unique-local v6, and the names `localhost`, `*.localhost`, `host.docker.internal`, `gateway.docker.internal`, `metadata.google.internal`, whatever DNS says) is **refused unless it is listed**, or matched by a `*` entry, which is you vouching that it is yours. A public name that resolves to any internal address counts as internal.
+- An exact entry beats a wildcard, and `prod` beats `nonprod`, so a `prod` entry keeps its host read-only even next to `host = "*"`.
+- Intrusive actions on an unlisted name that does not resolve are refused (it cannot be told apart from an internal host).
+- A scope file that is configured (`--scope` / `READYHAI_SCOPE`) but missing, a directory or invalid is an **error**: the CLI and the server refuse to run rather than carry on without it. `readyhai serve` checks it at startup.
+
+See [docs/configuration.md](docs/configuration.md#scopetoml).
 
 ---
 
@@ -314,7 +384,7 @@ ReadyHai was designed from the ground up to **never leak credentials**:
 1. **Filtered Snapshots:** Scanner containers never inspect raw repos directly. Sensitive files (`.env*` except `.example`, `*secret*.yaml`, `*.pem`, `*.key`, `id_rsa`, certificates) are stripped or replaced with 0-byte placeholders before tool execution.
 2. **Path-Only Reporting:** If a secret file is tracked in git, ReadyHai reports the path and remediation instructions, but **never reads or displays its contents**.
 3. **Redacted Findings:** Gitleaks runs with mandatory `--redact`. Snippet fields are scrubbed from raw SARIF and tool output JSONs.
-4. **Placeholder Tokens:** QA and curl steps output mock placeholders (e.g., `$RH_ADMIN_TOKEN`), never real authorization headers.
+4. **Placeholder Tokens:** QA and agent reproduction commands carry placeholders (`$RH_<ROLE>_TOKEN`, `${RH_<ROLE>_TOKEN}`), never real authorization headers. Test credentials are read only from `RH_<ROLE>_TOKEN` environment variables and are attached only to requests for the run's own target (same scheme, host and port), over a certificate-validating client, without following redirects.
 5. **No Network Passthrough:** Static scan containers run without network connectivity, preventing exfiltration.
 6. **Strict `.gitignore`:** The repository maintains comprehensive ignore rules preventing `.env*`, keys, certificates, build caches, and test artifacts from ever being committed or pushed.
 
@@ -345,6 +415,8 @@ make bump-major     # 0.1.0 -> 1.0.0
 make tag
 # or: ./scripts/version.sh tag
 ```
+
+Release notes are in [CHANGELOG.md](CHANGELOG.md). Images are published only for the tag `v<VERSION>`.
 
 The `./scripts/version.sh` utility guarantees atomic version propagation across:
 - `VERSION` (single source of truth)
@@ -407,28 +479,33 @@ jobs:
 
 ## Testing
 
-ReadyHai features a comprehensive automated test suite (315+ tests covering golden fixtures, snapshotting, policy evaluation, redaction, contract testing, and tool integrations):
+ReadyHai has a large automated test suite: 639 Rust `#[test]` functions in `src/` (2 are `#[ignore]`d: the NuHire printing test and the live eval), 86 frontend test cases (vitest), and 15 Python tests for the context retriever. The counts come from the source, not from a run. They cover golden fixtures, snapshotting, policy evaluation, redaction, the scope guard, the oracle, verifier, lead and memory, contract testing, and tool parsers. On top of unit tests, `readyhai eval` scores detection against seeded defects.
 
 ```bash
-# Run unit & integration tests
-cargo test
+export PATH=$PATH:$HOME/.cargo/bin
+cargo test -j 2                    # unit and integration tests; no Docker needed
+cargo run -- eval                  # detection quality vs seeded bugs (python3 + git)
 
-# Run tests with output
-cargo test -- --nocapture
+# frontend (node 24 is needed by vitest 5 and eslint 9; see frontend/README.md)
+cd frontend && npm ci && npm run lint && npx tsc --noEmit && npm test
+
+# context retriever
+python3 -m unittest discover -s runners/context_retriever/tests -t . -v
 ```
+
+CI (`.github/workflows/ci.yml`) runs version sync, `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`, a release build, the `eval` job, the frontend job, the Python job and, on pull requests, no-push builds of the three images. See [docs/ci.md](docs/ci.md).
 
 ---
 
 ## Roadmap & Enterprise Evolution
 
-To elevate ReadyHai from an elite developer tool to a global enterprise standard, the following capabilities are integrated into the architecture:
+The full status is in [docs/roadmap.md](docs/roadmap.md). In short:
 
-1. **GitHub App / PR Status Check Integration** (planned, not implemented):
-   - Today `POST /api/github/pr-comment` only renders PR-comment markdown from data you supply; ReadyHai does not post to GitHub. Upload SARIF with the `upload-sarif` action instead.
-2. **Distributed Node Mesh for Multi-Region Network Probing** (planned, not implemented):
-   - Today `/api/network/multi-region` measures a single vantage point ("This host") and says so; there are no remote probe nodes.
-3. **HAR (HTTP Archive v1.2) Export**:
-   - Export full multi-session network traces and sub-resource waterfalls in standard `.har` format for instant one-click drag-and-drop import into Google Chrome DevTools Network panel or Cloudflare/AWS support escalations.
+- **Done:** scan engine, senior-QA engine, offline bundle, agent with verifier, lead and sub-agents, code-aware planning, per-target memory, eval harness and CI gate, Agent Studio and Network Lab, MCP swarm tools, signed multi-arch images.
+- **Next:** a browser-UI agent area driven by Playwright; LLM-guided exploration that runs under the verifier and the same deterministic oracle; multi-target dashboards (trends and comparisons across targets).
+- **Not implemented, and documented as such:**
+  - A GitHub App / PR status check: `POST /api/github/pr-comment` only renders PR-comment markdown from data you supply; ReadyHai does not post to GitHub. Upload SARIF with the `upload-sarif` action instead.
+  - Remote probe nodes for multi-region probing: `/api/network/multi-region` measures a single vantage point ("This host") and says so.
 
 ---
 
