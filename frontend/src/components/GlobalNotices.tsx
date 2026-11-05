@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, KeyRound, X } from "lucide-react";
+import { AlertTriangle, Info, KeyRound, X } from "lucide-react";
 import {
   AUTH_REQUIRED_EVENT,
   NOTICE_EVENT,
@@ -55,21 +55,21 @@ export function GlobalNotices() {
   if (!showAuth && notices.length === 0) return null;
 
   return (
-    <div className="shrink-0 flex flex-col gap-1 px-4 pt-2" role="alert">
+    <div className="flex shrink-0 flex-col gap-2 px-4 pt-3" role="alert">
       {showAuth && (
-        <div className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-amber-950/50 border border-amber-700/60 text-xs text-amber-200">
-          <div className="flex items-center gap-2 min-w-0">
-            <KeyRound className="w-4 h-4 text-amber-400 shrink-0" />
+        <div className="flex items-center justify-between gap-3 rounded-sm border border-rh-cond/40 bg-rh-cond/10 px-3 py-2 text-ui text-rh-text">
+          <div className="flex min-w-0 items-center gap-2">
+            <KeyRound className="h-4 w-4 shrink-0 text-rh-cond" aria-hidden="true" />
             <span>
               {token
-                ? "The backend rejected the saved API token (401). Set a valid API token to continue."
-                : "No API token set. Set your API token to use the ReadyHai backend."}
+                ? "The backend rejected your saved API token (401). Set a valid token to continue."
+                : "No API token is set. Add your API token to use the ReadyHai backend."}
             </span>
           </div>
           <button
             type="button"
             onClick={openSettings}
-            className="px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-slate-950 font-mono font-bold text-[11px] shrink-0 cursor-pointer"
+            className="shrink-0 cursor-pointer rounded-sm bg-rh-primary px-3 py-1 text-ui font-semibold text-rh-bg hover:bg-rh-primary-hover"
           >
             Set API token
           </button>
@@ -78,23 +78,26 @@ export function GlobalNotices() {
       {notices.map((n) => (
         <div
           key={n.id}
-          className={`flex items-start justify-between gap-3 px-3 py-2 rounded-lg border text-xs ${
-            n.kind === "error"
-              ? "bg-rose-950/40 border-rose-700/60 text-rose-200"
-              : "bg-cyan-950/40 border-cyan-700/60 text-cyan-200"
+          className={`flex items-start justify-between gap-3 rounded-sm border px-3 py-2 text-ui text-rh-text ${
+            n.kind === "error" ? "border-rh-nogo/40 bg-rh-nogo/10" : "border-rh-info/40 bg-rh-info/10"
           }`}
         >
-          <div className="flex items-start gap-2 min-w-0">
-            <AlertTriangle className={`w-4 h-4 shrink-0 mt-px ${n.kind === "error" ? "text-rose-400" : "text-cyan-400"}`} />
-            <span className="break-words min-w-0">{n.message}</span>
+          <div className="flex min-w-0 items-start gap-2">
+            {n.kind === "error" ? (
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rh-nogo" aria-hidden="true" />
+            ) : (
+              <Info className="mt-0.5 h-4 w-4 shrink-0 text-rh-info" aria-hidden="true" />
+            )}
+            <span className="min-w-0 break-words">{n.message}</span>
           </div>
           <button
             type="button"
             onClick={() => setNotices((prev) => prev.filter((x) => x.id !== n.id))}
-            className="text-slate-400 hover:text-white shrink-0 cursor-pointer"
+            className="shrink-0 cursor-pointer rounded-sm p-0.5 text-rh-muted hover:text-rh-text"
+            aria-label="Dismiss notice"
             title="Dismiss"
           >
-            <X className="w-3.5 h-3.5" />
+            <X className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
         </div>
       ))}

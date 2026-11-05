@@ -219,18 +219,62 @@ export async function apiRequest<T = unknown>(
 }
 
 // ---------------------------------------------------------------------------
+// Agent runs
+// ---------------------------------------------------------------------------
+
+/**
+ * Ask a running agent run to stop at its next step (`POST /api/agent/runs/{id}/cancel`).
+ * The backend answers 202 when the request was accepted, 404 for an unknown run and 409 when the
+ * run is not running (it may have just finished).
+ */
+export function cancelAgentRun(id: string): Promise<ApiResult<{ id?: string; status?: string }>> {
+  return apiRequest<{ id?: string; status?: string }>(`/api/agent/runs/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    label: "Cancel run",
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Authenticated file access (reports). Plain <a href> / <iframe src> cannot
 // send an Authorization header, so reports are fetched and shown as blobs.
 // ---------------------------------------------------------------------------
 
-/** Same policy the backend sets on its HTML reports; re-applied because blob URLs lose headers. */
-const REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; script-src 'unsafe-inline'";
+/**
+ * Policy for HTML reports, re-applied because blob URLs lose the backend's headers.
+ * Reports are static documents: no script of any kind (neither inline nor external), no network
+ * access, no forms, no <base>. Only inline styles and data: images are allowed.
+ */
+export const REPORT_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'";
 
-function withReportCsp(html: string): string {
+export function withReportCsp(html: string): string {
   const meta = `<meta http-equiv="Content-Security-Policy" content="${REPORT_CSP}">`;
-  if (/<head[^>]*>/i.test(html)) return html.replace(/<head[^>]*>/i, (m) => `${m}${meta}`);
+  // `<head>` / `<head lang=..>` only: a bare `<head[^>]*>` would also match `<header>`.
+  if (/<head(\s[^>]*)?>/i.test(html)) return html.replace(/<head(\s[^>]*)?>/i, (m) => `${m}${meta}`);
   if (/<html[^>]*>/i.test(html)) return html.replace(/<html[^>]*>/i, (m) => `${m}<head>${meta}</head>`);
   return `${meta}${html}`;
+}
+
+function escapeHtmlAttr(v: string): string {
+  return v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/**
+ * A script-free wrapper page that shows a report blob inside a fully sandboxed iframe.
+ *
+ * A blob: URL opened as a top-level tab runs with THIS app's origin. Wrapping the report in an
+ * iframe whose `sandbox` has neither allow-scripts nor allow-same-origin gives it an opaque origin
+ * and no script execution, so nothing in a report can touch the app's storage or API token. The
+ * wrapper has its own CSP (no script at all, only blob: frames), so it cannot run code either.
+ */
+export function buildReportViewerHtml(reportUrl: string, title: string): string {
+  const t = escapeHtmlAttr(title);
+  return (
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">" +
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; frame-src blob:\">" +
+    `<title>${t}</title>` +
+    "<style>html,body{margin:0;height:100%;background:#fff}iframe{display:block;border:0;width:100%;height:100%}</style>" +
+    `</head><body><iframe sandbox src=\"${escapeHtmlAttr(reportUrl)}\" title=\"${t}\"></iframe></body></html>`
+  );
 }
 
 export type BlobResult = { ok: true; blob: Blob } | { ok: false; error: string };
@@ -259,7 +303,25 @@ export async function fetchReportBlob(path: string, label = "Report"): Promise<B
   }
 }
 
-/** Open an authenticated report in a new tab. Resolves to an error message, or null on success. */
+/** Save a blob through a temporary link click. */
+function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/**
+ * Open an authenticated report in a new tab. Resolves to an error message, or null on success.
+ *
+ * HTML reports are shown inside a sandboxed iframe (see buildReportViewerHtml), never as a
+ * top-level blob document, so they cannot run script with the app's origin. Anything that is not
+ * HTML is downloaded instead of being navigated to.
+ */
 export async function openAuthedInTab(path: string, label = "Report"): Promise<string | null> {
   // Open synchronously (inside the click gesture) so popup blockers allow it.
   const win = window.open("", "_blank");
@@ -274,9 +336,20 @@ export async function openAuthedInTab(path: string, label = "Report"): Promise<s
     win.close();
     return r.error;
   }
-  const url = URL.createObjectURL(r.blob);
-  win.location.href = url;
-  window.setTimeout(() => URL.revokeObjectURL(url), 5 * 60 * 1000);
+  if (!r.blob.type.toLowerCase().startsWith("text/html")) {
+    win.close();
+    saveBlob(r.blob, path.split("?")[0].split("/").filter(Boolean).pop() || "report");
+    return null;
+  }
+  const reportUrl = URL.createObjectURL(r.blob);
+  const viewerUrl = URL.createObjectURL(
+    new Blob([buildReportViewerHtml(reportUrl, label)], { type: "text/html;charset=utf-8" })
+  );
+  win.location.href = viewerUrl;
+  window.setTimeout(() => {
+    URL.revokeObjectURL(viewerUrl);
+    URL.revokeObjectURL(reportUrl);
+  }, 5 * 60 * 1000);
   return null;
 }
 
@@ -284,13 +357,6 @@ export async function openAuthedInTab(path: string, label = "Report"): Promise<s
 export async function downloadAuthed(path: string, filename: string, label = "Download"): Promise<string | null> {
   const r = await fetchReportBlob(path, label);
   if (!r.ok) return r.error;
-  const url = URL.createObjectURL(r.blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  saveBlob(r.blob, filename);
   return null;
 }

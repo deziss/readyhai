@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 import type { ScanSummary, ScanDetail } from "@/types/scans";
 import { apiRequest, notify, useApiTokenVersion } from "@/lib/api";
+import { copyTextSafely } from "@/lib/clipboard";
 import { ReportButton, ReportFrame } from "./ReportButton";
 
 interface ScansHistoryViewProps {
@@ -103,7 +104,7 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
     if (e) e.preventDefault();
     const trimmed = newScanTarget.trim();
     if (!trimmed) {
-      setScanSubmitError("Please enter a repository URL or path (e.g. https://github.com/org/repo)");
+      setScanSubmitError("Enter a repository URL or path, for example https://github.com/org/repo, then start the scan again.");
       return;
     }
     setIsSubmittingScan(true);
@@ -177,8 +178,8 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
     }
   };
 
-  const handleCopy = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
+  const handleCopy = async (text: string, id: string) => {
+    if (!(await copyTextSafely(text))) return;
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };
@@ -228,29 +229,30 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
   }, [selectedScanDetail]);
 
   const getVerdictBadge = (verdict: string) => {
+    const chip = "inline-flex items-center gap-1 px-2 py-0.5 rounded-[6px] text-xs font-semibold whitespace-nowrap";
     switch (verdict) {
       case "PASS":
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-500/40">
-            <CheckCircle2 className="w-3 h-3" /> PASS
+          <span className={`${chip} bg-rh-go/15 text-rh-go`}>
+            <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" /> Pass
           </span>
         );
       case "WARN":
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-950/80 text-amber-400 border border-amber-500/40">
-            <AlertTriangle className="w-3 h-3" /> WARN
+          <span className={`${chip} bg-rh-cond/15 text-rh-cond`}>
+            <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" /> Warn
           </span>
         );
       case "FAIL":
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-950/80 text-red-400 border border-red-500/40">
-            <XCircle className="w-3 h-3" /> FAIL
+          <span className={`${chip} bg-rh-nogo/15 text-rh-nogo`}>
+            <XCircle className="w-3.5 h-3.5" aria-hidden="true" /> Fail
           </span>
         );
       default:
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-900 text-slate-400 border border-slate-700">
-            {verdict || "UNKNOWN"}
+          <span className={`${chip} bg-rh-raised text-rh-muted`}>
+            {verdict ? verdict.charAt(0).toUpperCase() + verdict.slice(1).toLowerCase() : "Unknown"}
           </span>
         );
     }
@@ -258,147 +260,156 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
 
   const getSeverityBadge = (severity?: string) => {
     const s = (severity || "low").toLowerCase();
+    const chip = "px-2 py-0.5 rounded-[6px] text-xs font-semibold";
     switch (s) {
       case "critical":
-        return (
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-red-950/90 text-red-400 border border-red-600/60">
-            Critical
-          </span>
-        );
+        return <span className={`${chip} bg-rh-nogo/15 text-rh-nogo`}>Critical</span>;
       case "high":
-        return (
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-orange-950/90 text-orange-400 border border-orange-500/50">
-            High
-          </span>
-        );
+        return <span className={`${chip} bg-rh-cond/15 text-rh-cond`}>High</span>;
       case "medium":
-        return (
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-amber-950/90 text-amber-400 border border-amber-500/50">
-            Medium
-          </span>
-        );
+        return <span className={`${chip} bg-rh-cond/15 text-rh-cond`}>Medium</span>;
+      case "low":
+        return <span className={`${chip} bg-rh-info/15 text-rh-info`}>Low</span>;
       default:
-        return (
-          <span className="px-2 py-0.5 rounded text-[10px] font-bold uppercase bg-slate-900 text-slate-400 border border-slate-700">
-            {severity || "Low"}
-          </span>
-        );
+        return <span className={`${chip} bg-rh-raised text-rh-muted`}>{severity}</span>;
     }
   };
 
+  const sentence = (v: string) => (v ? v.charAt(0).toUpperCase() + v.slice(1) : v);
+  const focusRing = "focus-visible:outline-2 focus-visible:outline-rh-primary";
+  const inputRing =
+    "focus:outline-none focus-visible:border-rh-primary focus-visible:ring-1 focus-visible:ring-rh-primary";
+  const criticalCount = selectedScanDetail?.findings?.filter((f) => f.severity === "critical").length || 0;
+
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-[#06080e] overflow-hidden">
-      {/* Top Breadcrumb & Status Subbar */}
-      <div className="h-11 px-6 border-b border-[#161f30] bg-[#0a0f1b] flex items-center justify-between text-xs text-slate-400 shrink-0">
-        <div className="flex items-center gap-2 font-mono">
-          <ShieldCheck className="w-4 h-4 text-cyan-400" />
-          <span className="text-slate-200 font-semibold">Security & Codebase Audits</span>
-          <span className="text-slate-600">/</span>
-          <span>Static Scans & SAST Sessions</span>
-          <span className="ml-2 px-2 py-0.5 rounded-full bg-cyan-950/60 text-cyan-300 border border-cyan-800/40 text-[11px]">
-            {scans.length} Sessions Recorded
+    <div className="flex-1 flex flex-col min-h-0 bg-rh-bg overflow-hidden">
+      {/* Breadcrumb and actions */}
+      <div className="min-h-12 px-6 py-2 border-b border-rh-line bg-rh-surface flex flex-wrap items-center justify-between gap-2 text-xs text-rh-muted shrink-0">
+        <div className="flex items-center gap-2 flex-wrap">
+          <ShieldCheck className="w-4 h-4 text-rh-muted" aria-hidden="true" />
+          <h2 className="text-rh-text font-semibold text-sm">Security and codebase audits</h2>
+          <span aria-hidden="true">/</span>
+          <span>Static scans and SAST sessions</span>
+          <span className="ml-2 px-2 py-0.5 rounded-[6px] bg-rh-raised text-rh-muted text-xs tabular-nums">
+            {scans.length} {scans.length === 1 ? "session" : "sessions"} recorded
           </span>
         </div>
         <div className="flex items-center gap-2">
           <button
+            type="button"
             id="btn-open-scan-modal"
             onClick={() => setShowScanModal(true)}
-            className="flex items-center gap-2 px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-mono text-xs font-bold shadow-[0_0_12px_rgba(6,182,212,0.3)] transition-all cursor-pointer"
+            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-[6px] bg-rh-primary hover:bg-rh-primary-hover text-rh-bg text-xs font-semibold transition-colors cursor-pointer ${focusRing}`}
           >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            <span>Scan Repository</span>
+            <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" />
+            <span>Scan repository</span>
           </button>
           <button
+            type="button"
             onClick={fetchScans}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#10192a] hover:bg-[#16233b] border border-[#1e2d48] text-slate-300 transition-colors cursor-pointer text-xs font-mono"
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-[6px] bg-rh-raised hover:bg-rh-line text-rh-text transition-colors cursor-pointer text-xs ${focusRing}`}
             title="Refresh scans"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingList ? "animate-spin text-cyan-400" : ""}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${isLoadingList ? "animate-spin" : ""}`} aria-hidden="true" />
             <span>Refresh</span>
           </button>
         </div>
       </div>
 
-      {/* Master-Detail Split Container */}
+      {/* Master-detail split */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        {/* LEFT MASTER PANE: Sessions List */}
-        <div className="w-80 lg:w-96 border-r border-[#161f30] bg-[#080d17] flex flex-col shrink-0 min-h-0">
-          {/* Filters & Search Header */}
-          <div className="p-3 border-b border-[#161f30] space-y-2.5 shrink-0 bg-[#080d17]">
-            {/* Quick Launch Button */}
+        {/* Sessions list */}
+        <div className="w-80 lg:w-96 border-r border-rh-line bg-rh-surface flex flex-col shrink-0 min-h-0">
+          <div className="p-3 border-b border-rh-line space-y-2.5 shrink-0">
             <button
+              type="button"
               id="btn-quick-new-scan"
               onClick={() => setShowScanModal(true)}
-              className="w-full py-1.5 px-3 rounded-lg bg-[#0e182a] hover:bg-[#13223c] border border-cyan-800/40 hover:border-cyan-500/60 text-cyan-300 font-mono text-xs font-semibold flex items-center justify-center gap-2 transition-all cursor-pointer shadow-sm"
+              className={`w-full py-1.5 px-3 rounded-[6px] bg-rh-raised hover:bg-rh-line text-rh-text text-xs font-semibold flex items-center justify-center gap-2 transition-colors cursor-pointer ${focusRing}`}
             >
-              <Plus className="w-3.5 h-3.5 text-cyan-400" />
-              <span>New Repository Scan</span>
+              <Plus className="w-3.5 h-3.5" aria-hidden="true" />
+              <span>New repository scan</span>
             </button>
 
-            {/* Search */}
             <div className="relative">
-              <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-500" />
+              <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-rh-muted" aria-hidden="true" />
               <input
                 type="text"
-                placeholder="Filter by repo or run ID..."
+                placeholder="Filter by repository or run ID"
+                aria-label="Filter scans by repository or run ID"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-1.5 bg-[#0e1626] border border-[#1c283f] rounded-md text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500/60 font-mono"
+                className={`w-full pl-9 pr-3 py-1.5 bg-rh-bg border border-rh-line rounded-[6px] text-xs text-rh-text placeholder:text-rh-muted ${inputRing}`}
               />
             </div>
 
-            {/* Verdict Filter Buttons */}
-            <div className="flex items-center gap-1 bg-[#0c1322] p-1 rounded-md border border-[#19243a]">
-              {(['ALL', 'PASS', 'WARN', 'FAIL'] as const).map((v) => (
+            <div
+              role="group"
+              aria-label="Filter by verdict"
+              className="flex items-center gap-1 bg-rh-bg p-1 rounded-[6px] border border-rh-line"
+            >
+              {(["ALL", "PASS", "WARN", "FAIL"] as const).map((v) => (
                 <button
+                  type="button"
                   key={v}
                   onClick={() => setVerdictFilter(v)}
-                  className={`flex-1 py-1 text-[11px] font-mono rounded transition-colors text-center cursor-pointer ${
+                  aria-pressed={verdictFilter === v}
+                  className={`flex-1 py-1 text-xs rounded-[6px] transition-colors text-center cursor-pointer ${focusRing} ${
                     verdictFilter === v
-                      ? "bg-cyan-950/80 text-cyan-300 font-semibold border border-cyan-800/60 shadow-sm"
-                      : "text-slate-400 hover:text-slate-200 hover:bg-[#141e33]"
+                      ? "bg-rh-raised text-rh-text font-semibold"
+                      : "text-rh-muted hover:text-rh-text hover:bg-rh-raised"
                   }`}
                 >
-                  {v}
+                  {v === "ALL" ? "All" : sentence(v.toLowerCase())}
                 </button>
               ))}
             </div>
 
-            {/* Kind Filter */}
-            <div className="flex items-center gap-1 text-[11px] font-mono text-slate-400 overflow-x-auto pb-0.5">
-              <span className="text-slate-500 pl-0.5">Type:</span>
-              {(['ALL', 'repo', 'image', 'host'] as const).map((k) => (
+            <div role="group" aria-label="Filter by scan type" className="flex items-center gap-1 text-xs text-rh-muted overflow-x-auto pb-0.5">
+              <span className="pl-0.5">Type:</span>
+              {(["ALL", "repo", "image", "host"] as const).map((k) => (
                 <button
+                  type="button"
                   key={k}
                   onClick={() => setKindFilter(k)}
-                  className={`px-2 py-0.5 rounded text-[10px] uppercase cursor-pointer ${
+                  aria-pressed={kindFilter === k}
+                  className={`px-2 py-1 rounded-[6px] text-xs cursor-pointer transition-colors ${focusRing} ${
                     kindFilter === k
-                      ? "bg-[#18263e] text-cyan-300 border border-cyan-700/50"
-                      : "hover:bg-[#111a2d] text-slate-400"
+                      ? "bg-rh-raised text-rh-text font-semibold"
+                      : "hover:bg-rh-raised text-rh-muted"
                   }`}
                 >
-                  {k}
+                  {k === "ALL" ? "All" : sentence(k)}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Sessions List Scroll Area */}
-          <div className="flex-1 overflow-y-auto divide-y divide-[#131b2c] min-h-0">
+          <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-rh-line">
             {isLoadingList && scans.length === 0 ? (
-              <div className="p-6 text-center text-xs text-slate-500 space-y-2">
-                <RefreshCw className="w-5 h-5 animate-spin mx-auto text-cyan-400" />
+              <div className="p-6 text-center text-xs text-rh-muted space-y-2">
+                <RefreshCw className="w-5 h-5 animate-spin mx-auto text-rh-muted" aria-hidden="true" />
                 <p>Loading scan sessions...</p>
               </div>
             ) : listError ? (
-              <div className="p-6 text-center text-xs text-rose-300 font-mono space-y-1" role="alert">
-                <p className="font-medium">Could not load scans</p>
-                <p className="text-[11px] break-words">{listError}</p>
+              <div className="p-6 text-center text-xs space-y-1" role="alert">
+                <p className="font-semibold text-rh-nogo">Could not load scans</p>
+                <p className="text-rh-muted break-words">{listError}</p>
+                <p className="text-rh-muted">Select Refresh to try again.</p>
               </div>
             ) : filteredScans.length === 0 ? (
-              <div className="p-6 text-center text-xs text-slate-500">
-                <p className="font-medium text-slate-400">No scan sessions found</p>
-                <p className="mt-1 text-[11px]">Try adjusting your search query or filters</p>
+              <div className="p-6 text-center text-xs text-rh-muted">
+                {scans.length === 0 ? (
+                  <>
+                    <p className="font-semibold text-rh-text">No scan sessions yet</p>
+                    <p className="mt-1">Select Scan repository to run your first static analysis.</p>
+                  </>
+                ) : (
+                  <>
+                    <p className="font-semibold text-rh-text">No scans match these filters</p>
+                    <p className="mt-1">Clear the search text or set the verdict and type filters back to All.</p>
+                  </>
+                )}
               </div>
             ) : (
               filteredScans.map((scan) => {
@@ -410,66 +421,70 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
                 return (
                   <div
                     key={scan.id}
+                    role="button"
+                    tabIndex={0}
+                    aria-current={isSelected ? "true" : undefined}
                     onClick={() => setSelectedScanId(scan.id)}
-                    className={`p-3.5 cursor-pointer transition-all border-l-2 ${
-                      isSelected
-                        ? "bg-[#101b2f] border-l-cyan-400 shadow-[inset_0_0_12px_rgba(6,182,212,0.1)]"
-                        : "border-l-transparent hover:bg-[#0c1424]"
+                    onKeyDown={(e) => {
+                      if (e.target !== e.currentTarget) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedScanId(scan.id);
+                      }
+                    }}
+                    className={`px-3.5 py-3 cursor-pointer transition-colors border-l-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-rh-primary ${
+                      isSelected ? "bg-rh-raised border-l-rh-primary" : "border-l-transparent hover:bg-rh-raised"
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           {isGit ? (
-                            <GitBranch className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                            <GitBranch className="w-3.5 h-3.5 text-rh-muted shrink-0" aria-hidden="true" />
                           ) : (
-                            <Box className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                            <Box className="w-3.5 h-3.5 text-rh-muted shrink-0" aria-hidden="true" />
                           )}
-                          <h4 className="text-xs font-semibold text-slate-200 truncate font-mono" title={scan.target}>
+                          <h3 className="text-sm font-semibold text-rh-text truncate" title={scan.target}>
                             {displayName}
-                          </h4>
+                          </h3>
                         </div>
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <span className="text-[10px] font-mono text-slate-500">#{scan.id.slice(-8)}</span>
-                          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#131e33] text-slate-400 border border-[#1e2e4c]">
-                            {scan.kind}
-                          </span>
-                          <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-[#131e33] text-slate-400 border border-[#1e2e4c]">
-                            {scan.profile}
-                          </span>
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                          <span className="text-xs text-rh-muted font-mono">#{scan.id.slice(-8)}</span>
+                          <span className="text-xs px-1.5 py-0.5 rounded-[6px] bg-rh-bg text-rh-muted">{scan.kind}</span>
+                          <span className="text-xs px-1.5 py-0.5 rounded-[6px] bg-rh-bg text-rh-muted">{scan.profile}</span>
                         </div>
                       </div>
                       <div className="shrink-0 flex flex-col items-end gap-1">
                         {scan.state === "queued" || scan.state === "running" ? (
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-cyan-950 text-cyan-300 border border-cyan-700/60 animate-pulse">
-                          <RefreshCw className="w-2.5 h-2.5 animate-spin" /> {scan.state.toUpperCase()}
-                        </span>
-                      ) : (
-                        getVerdictBadge(scan.verdict)
-                      )}
-                        <span className="text-[10px] font-mono text-slate-400 mt-0.5">
-                          {scan.findings_count} findings
-                        </span>
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-[6px] text-xs font-semibold bg-rh-info/15 text-rh-info">
+                            <RefreshCw className="w-3 h-3 animate-spin" aria-hidden="true" /> {sentence(scan.state)}
+                          </span>
+                        ) : (
+                          getVerdictBadge(scan.verdict)
+                        )}
+                        <span className="text-xs text-rh-muted tabular-nums">{scan.findings_count} findings</span>
                       </div>
                     </div>
 
-                    <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-[#162238] text-[10px] text-slate-500 font-mono">
+                    <div className="flex items-center justify-between mt-2.5 pt-2 border-t border-rh-line text-xs text-rh-muted">
                       <div className="flex items-center gap-1">
-                        <Clock className="w-3 h-3 text-slate-600" />
-                        <span>{dateStr}</span>
+                        <Clock className="w-3.5 h-3.5" aria-hidden="true" />
+                        <span className="tabular-nums">{dateStr}</span>
                       </div>
                       <div className="flex items-center gap-1.5">
                         {scan.hard_fail_count > 0 && (
-                          <span className="px-1.5 py-0.2 rounded bg-red-950/70 text-red-400 border border-red-800/40 text-[9px] font-semibold">
-                            {scan.hard_fail_count} CRITICAL
+                          <span className="px-1.5 py-0.5 rounded-[6px] bg-rh-nogo/15 text-rh-nogo text-xs font-semibold tabular-nums">
+                            {scan.hard_fail_count} critical
                           </span>
                         )}
                         <button
+                          type="button"
                           onClick={(e) => handleDelete(scan.id, e)}
-                          className="text-slate-600 hover:text-red-400 transition-colors p-1 cursor-pointer"
+                          className={`text-rh-muted hover:text-rh-nogo transition-colors p-1.5 rounded-[6px] cursor-pointer ${focusRing}`}
                           title="Delete scan"
+                          aria-label={`Delete scan ${scan.id}`}
                         >
-                          <Trash2 className="w-3 h-3" />
+                          <Trash2 className="w-3.5 h-3.5" aria-hidden="true" />
                         </button>
                       </div>
                     </div>
@@ -480,61 +495,93 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
           </div>
         </div>
 
-        {/* RIGHT DETAIL PANE: Scan Inspector & Generated Reports */}
-        <div className="flex-1 flex flex-col bg-[#070b14] min-h-0 overflow-y-auto">
+        {/* Scan inspector */}
+        <div className="flex-1 flex flex-col bg-rh-bg min-h-0 overflow-y-auto">
           {!selectedScanId ? (
-            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-500">
-              <ShieldCheck className="w-12 h-12 text-slate-700 mb-3 stroke-[1.5]" />
-              <h3 className="text-base font-semibold text-slate-300">Select a Scan Session</h3>
-              <p className="text-xs text-slate-500 max-w-sm mt-1">
-                Choose a session from the list on the left to inspect SAST findings, dependency audits, security checks, and download generated SARIF/HTML reports.
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
+              <ShieldCheck className="w-10 h-10 text-rh-muted mb-3" aria-hidden="true" />
+              <h3 className="text-base font-semibold text-rh-text">Select a scan session</h3>
+              <p className="text-sm text-rh-muted max-w-sm mt-1">
+                Pick a session from the list to inspect its findings, security checks and generated SARIF or HTML
+                reports. No sessions yet? Start with a repository scan.
               </p>
+              <button
+                type="button"
+                onClick={() => setShowScanModal(true)}
+                className={`mt-4 flex items-center gap-2 px-3.5 py-1.5 rounded-[6px] bg-rh-primary hover:bg-rh-primary-hover text-rh-bg text-xs font-semibold transition-colors cursor-pointer ${focusRing}`}
+              >
+                <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" />
+                <span>Scan repository</span>
+              </button>
             </div>
           ) : isLoadingDetail && !selectedScanDetail ? (
-            <div className="flex-1 flex items-center justify-center p-8">
-              <RefreshCw className="w-6 h-6 animate-spin text-cyan-400" />
+            <div className="flex-1 flex items-center justify-center p-8" role="status" aria-label="Loading scan detail">
+              <RefreshCw className="w-6 h-6 animate-spin text-rh-muted" aria-hidden="true" />
             </div>
           ) : detailError && !selectedScanDetail ? (
-            <div className="flex-1 flex items-center justify-center p-8 text-center text-xs font-mono text-rose-300" role="alert">
-              <p className="max-w-md break-words">{detailError}</p>
+            <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-xs gap-1" role="alert">
+              <p className="font-semibold text-rh-nogo text-sm">Could not load this scan</p>
+              <p className="max-w-md break-words text-rh-muted">{detailError}</p>
+              <p className="text-rh-muted">Pick the session again or select Refresh to retry.</p>
             </div>
           ) : selectedScanDetail ? (
             <div className="p-6 space-y-5 max-w-6xl w-full mx-auto">
-              {/* Top Hero Banner */}
-              <div className="p-5 rounded-xl bg-gradient-to-br from-[#0c1527] to-[#080d19] border border-[#1b2a45] shadow-lg relative overflow-hidden">
+              {/* Summary panel */}
+              <div className="p-5 rounded-[10px] bg-rh-surface border border-rh-line">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div className="space-y-1.5 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs font-mono px-2 py-0.5 rounded bg-cyan-950/70 border border-cyan-700/50 text-cyan-300 font-semibold uppercase tracking-wider">
-                        {selectedScanDetail.target.kind || "repo"} audit
+                      <span className="text-xs px-2 py-0.5 rounded-[6px] bg-rh-raised text-rh-text font-semibold">
+                        {sentence(selectedScanDetail.target.kind || "repo")} audit
                       </span>
-                      <span className="text-xs font-mono px-2 py-0.5 rounded bg-[#142036] border border-[#213454] text-slate-300 font-medium">
-                        profile: {selectedScanDetail.profile}
+                      <span className="text-xs px-2 py-0.5 rounded-[6px] bg-rh-raised text-rh-muted font-medium">
+                        Profile: {selectedScanDetail.profile}
                       </span>
-                      <span className="text-xs font-mono text-slate-500">
-                        ID: {selectedScanDetail.id}
+                      <span className="text-xs text-rh-muted">
+                        ID: <span className="font-mono">{selectedScanDetail.id}</span>
                       </span>
                       <button
+                        type="button"
                         onClick={() => handleCopy(selectedScanDetail.id, "id")}
-                        className="text-slate-500 hover:text-cyan-300 cursor-pointer p-0.5"
-                        title="Copy Session ID"
+                        className={`text-rh-muted hover:text-rh-text cursor-pointer p-1 rounded-[6px] ${focusRing}`}
+                        title="Copy session ID"
+                        aria-label="Copy session ID"
                       >
-                        {copiedId === "id" ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                        {copiedId === "id" ? (
+                          <Check className="w-3.5 h-3.5 text-rh-go" aria-hidden="true" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                        )}
                       </button>
                     </div>
 
-                    <h2 className="text-lg font-bold text-white font-mono break-all flex items-center gap-2">
-                      {selectedScanDetail.target.raw}
+                    <h2 className="text-lg font-semibold text-rh-text break-all flex items-center gap-2">
+                      <span className="font-mono text-base">{selectedScanDetail.target.raw}</span>
                       <button
+                        type="button"
                         onClick={() => handleCopy(selectedScanDetail.target.raw, "target")}
-                        className="text-slate-500 hover:text-cyan-300 cursor-pointer"
+                        className={`text-rh-muted hover:text-rh-text cursor-pointer p-1 rounded-[6px] shrink-0 ${focusRing}`}
                         title="Copy target URL"
+                        aria-label="Copy target URL"
                       >
-                        {copiedId === "target" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                        {copiedId === "target" ? (
+                          <Check className="w-4 h-4 text-rh-go" aria-hidden="true" />
+                        ) : (
+                          <Copy className="w-4 h-4" aria-hidden="true" />
+                        )}
                       </button>
+                      {onSelectTarget && /^https?:\/\//.test(selectedScanDetail.target.raw) && (
+                        <button
+                          type="button"
+                          onClick={() => onSelectTarget(selectedScanDetail.target.raw)}
+                          className={`ml-1 px-2 py-1 text-xs font-sans font-medium text-rh-text border border-rh-line hover:bg-rh-raised rounded-[6px] cursor-pointer shrink-0 ${focusRing}`}
+                        >
+                          Test in studio
+                        </button>
+                      )}
                     </h2>
 
-                    <div className="flex items-center gap-4 text-xs font-mono text-slate-400 pt-1 flex-wrap">
+                    <div className="flex items-center gap-4 text-xs text-rh-muted pt-1 flex-wrap tabular-nums">
                       <span>Started: {selectedScanDetail.started ? new Date(selectedScanDetail.started).toLocaleString() : "-"}</span>
                       {selectedScanDetail.finished && (
                         <span>Finished: {new Date(selectedScanDetail.finished).toLocaleTimeString()}</span>
@@ -544,203 +591,196 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
 
                   <div className="shrink-0 flex flex-col items-start md:items-end gap-2">
                     <div className="flex items-center gap-2">
-                      <span className="text-xs font-mono text-slate-400">Verdict:</span>
+                      <span className="text-xs text-rh-muted">Verdict:</span>
                       {getVerdictBadge(selectedScanDetail.verdict)}
                     </div>
                     {selectedScanDetail.reasons && selectedScanDetail.reasons.length > 0 && (
-                      <div className="text-[11px] font-mono text-amber-300/90 bg-amber-950/40 border border-amber-800/40 px-2.5 py-1 rounded-md max-w-xs text-right">
+                      <div className="text-xs text-rh-cond bg-rh-cond/15 px-2.5 py-1 rounded-[6px] max-w-xs md:text-right">
                         {selectedScanDetail.reasons.join(", ")}
                       </div>
                     )}
                   </div>
                 </div>
 
-                {/* GENERATED REPORTS ACTION BAR (PRIMARY FEATURE) */}
-                <div className="mt-5 pt-4 border-t border-[#182640] flex flex-wrap items-center justify-between gap-3 bg-[#0a1222]/80 -mx-5 -mb-5 px-5 py-3">
+                {/* Generated reports */}
+                <div className="mt-5 pt-4 border-t border-rh-line flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
-                    <FileText className="w-4 h-4 text-cyan-400" />
-                    <span className="text-xs font-bold text-slate-200 tracking-wide uppercase font-mono">
-                      Generated Reports & Artifacts:
-                    </span>
+                    <FileText className="w-4 h-4 text-rh-muted" aria-hidden="true" />
+                    <span className="text-xs font-semibold text-rh-text">Generated reports</span>
                   </div>
 
                   <div className="flex items-center gap-2 flex-wrap">
-                    {/* View HTML Report */}
                     <button
+                      type="button"
                       onClick={() => setShowHtmlModal(true)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-xs font-semibold shadow-md shadow-cyan-950/40 transition-all cursor-pointer"
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[6px] bg-rh-primary hover:bg-rh-primary-hover text-rh-bg text-xs font-semibold transition-colors cursor-pointer ${focusRing}`}
                     >
-                      <Maximize2 className="w-3.5 h-3.5" />
-                      View HTML Report
+                      <Maximize2 className="w-3.5 h-3.5" aria-hidden="true" />
+                      View HTML report
                     </button>
 
-                    {/* Download SARIF 2.1.0 */}
                     <ReportButton
                       path={`/api/scans/${selectedScanDetail.id}/report/sarif`}
                       mode="download"
                       filename={`readyhai-${selectedScanDetail.id}.sarif`}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14223b] hover:bg-[#1a2d4f] border border-[#233a63] text-cyan-300 text-xs font-mono font-medium transition-colors cursor-pointer"
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[6px] bg-rh-raised hover:bg-rh-line text-rh-text text-xs font-medium transition-colors cursor-pointer ${focusRing}`}
                     >
-                      <Download className="w-3.5 h-3.5 text-cyan-400" />
+                      <Download className="w-3.5 h-3.5 text-rh-muted" aria-hidden="true" />
                       SARIF 2.1.0
                     </ReportButton>
 
-                    {/* Download JSON */}
                     <ReportButton
                       path={`/api/scans/${selectedScanDetail.id}/report/json`}
                       mode="download"
                       filename={`readyhai-${selectedScanDetail.id}.json`}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14223b] hover:bg-[#1a2d4f] border border-[#233a63] text-slate-200 text-xs font-mono font-medium transition-colors cursor-pointer"
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[6px] bg-rh-raised hover:bg-rh-line text-rh-text text-xs font-medium transition-colors cursor-pointer ${focusRing}`}
                     >
-                      <Download className="w-3.5 h-3.5 text-slate-400" />
+                      <Download className="w-3.5 h-3.5 text-rh-muted" aria-hidden="true" />
                       JSON
                     </ReportButton>
 
-                    {/* Download JUnit XML */}
                     <ReportButton
                       path={`/api/scans/${selectedScanDetail.id}/report/junit`}
                       mode="download"
                       filename={`readyhai-${selectedScanDetail.id}.junit.xml`}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14223b] hover:bg-[#1a2d4f] border border-[#233a63] text-slate-200 text-xs font-mono font-medium transition-colors cursor-pointer"
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[6px] bg-rh-raised hover:bg-rh-line text-rh-text text-xs font-medium transition-colors cursor-pointer ${focusRing}`}
                     >
-                      <Download className="w-3.5 h-3.5 text-slate-400" />
+                      <Download className="w-3.5 h-3.5 text-rh-muted" aria-hidden="true" />
                       JUnit XML
                     </ReportButton>
 
-                    {/* Direct Tab Link */}
                     <ReportButton
                       path={`/api/scans/${selectedScanDetail.id}/report/html`}
                       mode="tab"
-                      className="p-1.5 rounded-lg bg-[#14223b] hover:bg-[#1a2d4f] border border-[#233a63] text-slate-400 hover:text-white transition-colors cursor-pointer"
-                      title="Open HTML Report in new tab"
+                      className={`p-1.5 rounded-[6px] bg-rh-raised hover:bg-rh-line text-rh-muted hover:text-rh-text transition-colors cursor-pointer ${focusRing}`}
+                      title="Open HTML report in a new tab"
                     >
-                      <ExternalLink className="w-3.5 h-3.5" />
+                      <ExternalLink className="w-3.5 h-3.5" aria-label="Open HTML report in a new tab" />
                     </ReportButton>
                   </div>
                 </div>
               </div>
 
-              {/* KPI Cards Row */}
+              {/* KPI cards */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5">
-                <div className="p-3.5 rounded-xl bg-[#0c1424] border border-[#1b2a45] shadow-sm">
-                  <div className="text-[11px] font-mono text-slate-400 uppercase">Total Findings</div>
-                  <div className="text-2xl font-bold font-mono text-white mt-1">
+                <div className="p-3.5 rounded-[10px] bg-rh-surface border border-rh-line">
+                  <div className="text-xs text-rh-muted">Total findings</div>
+                  <div className="text-2xl font-semibold text-rh-text mt-1 tabular-nums">
                     {selectedScanDetail.findings?.length || 0}
                   </div>
-                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">Identified defects</div>
+                  <div className="text-xs text-rh-muted mt-0.5">Identified defects</div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-[#0c1424] border border-[#1b2a45] shadow-sm">
-                  <div className="text-[11px] font-mono text-slate-400 uppercase">Critical / Hard Fails</div>
-                  <div className={`text-2xl font-bold font-mono mt-1 ${
-                    (selectedScanDetail.findings?.filter(f => f.severity === 'critical').length || 0) > 0 ? 'text-red-400' : 'text-emerald-400'
-                  }`}>
-                    {selectedScanDetail.findings?.filter(f => f.severity === 'critical').length || 0}
+                <div className="p-3.5 rounded-[10px] bg-rh-surface border border-rh-line">
+                  <div className="text-xs text-rh-muted">Critical / hard fails</div>
+                  <div className={`text-2xl font-semibold mt-1 tabular-nums ${criticalCount > 0 ? "text-rh-nogo" : "text-rh-go"}`}>
+                    {criticalCount}
                   </div>
-                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">Gate blockers</div>
+                  <div className="text-xs text-rh-muted mt-0.5">Gate blockers</div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-[#0c1424] border border-[#1b2a45] shadow-sm">
-                  <div className="text-[11px] font-mono text-slate-400 uppercase">Security Checks</div>
-                  <div className="text-2xl font-bold font-mono text-cyan-300 mt-1">
+                <div className="p-3.5 rounded-[10px] bg-rh-surface border border-rh-line">
+                  <div className="text-xs text-rh-muted">Security checks</div>
+                  <div className="text-2xl font-semibold text-rh-text mt-1 tabular-nums">
                     {selectedScanDetail.checks?.length || 0}
                   </div>
-                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                    {selectedScanDetail.checks?.filter(c => c.status.state === 'passed').length || 0} passed
+                  <div className="text-xs text-rh-muted mt-0.5 tabular-nums">
+                    {selectedScanDetail.checks?.filter((c) => c.status.state === "passed").length || 0} passed
                   </div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-[#0c1424] border border-[#1b2a45] shadow-sm">
-                  <div className="text-[11px] font-mono text-slate-400 uppercase">Categories Scanned</div>
-                  <div className="text-2xl font-bold font-mono text-purple-300 mt-1">
+                <div className="p-3.5 rounded-[10px] bg-rh-surface border border-rh-line">
+                  <div className="text-xs text-rh-muted">Categories scanned</div>
+                  <div className="text-2xl font-semibold text-rh-text mt-1 tabular-nums">
                     {selectedScanDetail.categories?.length || availableCategories.length || 0}
                   </div>
-                  <div className="text-[10px] text-slate-500 font-mono mt-0.5">SAST, Secrets, Deps...</div>
+                  <div className="text-xs text-rh-muted mt-0.5">SAST, secrets, dependencies</div>
                 </div>
               </div>
 
-              {/* Detail Navigation Tabs */}
-              <div className="border-b border-[#18263e] flex items-center gap-2">
-                <button
-                  onClick={() => setActiveTab("findings")}
-                  className={`pb-2.5 px-3 text-xs font-mono font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
-                    activeTab === "findings"
-                      ? "border-cyan-400 text-cyan-300 font-semibold"
-                      : "border-transparent text-slate-400 hover:text-slate-200"
-                  }`}
-                >
-                  <AlertTriangle className="w-3.5 h-3.5" />
-                  Findings & Vulnerabilities ({selectedScanDetail.findings?.length || 0})
-                </button>
-                <button
-                  onClick={() => setActiveTab("checks")}
-                  className={`pb-2.5 px-3 text-xs font-mono font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
-                    activeTab === "checks"
-                      ? "border-cyan-400 text-cyan-300 font-semibold"
-                      : "border-transparent text-slate-400 hover:text-slate-200"
-                  }`}
-                >
-                  <Layers className="w-3.5 h-3.5" />
-                  Check Execution Grid ({selectedScanDetail.checks?.length || 0})
-                </button>
-                <button
-                  onClick={() => setActiveTab("raw")}
-                  className={`pb-2.5 px-3 text-xs font-mono font-medium flex items-center gap-2 border-b-2 transition-colors cursor-pointer ${
-                    activeTab === "raw"
-                      ? "border-cyan-400 text-cyan-300 font-semibold"
-                      : "border-transparent text-slate-400 hover:text-slate-200"
-                  }`}
-                >
-                  <Terminal className="w-3.5 h-3.5" />
-                  Raw JSON Payload
-                </button>
+              {/* Tabs */}
+              <div role="tablist" aria-label="Scan detail sections" className="border-b border-rh-line flex items-center gap-1 overflow-x-auto">
+                {(
+                  [
+                    { id: "findings", icon: AlertTriangle, label: `Findings and vulnerabilities (${selectedScanDetail.findings?.length || 0})` },
+                    { id: "checks", icon: Layers, label: `Check execution (${selectedScanDetail.checks?.length || 0})` },
+                    { id: "raw", icon: Terminal, label: "Raw JSON" },
+                  ] as const
+                ).map((t) => {
+                  const Icon = t.icon;
+                  const active = activeTab === t.id;
+                  return (
+                    <button
+                      type="button"
+                      key={t.id}
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setActiveTab(t.id)}
+                      className={`pb-2.5 pt-1 px-3 text-xs font-medium flex items-center gap-2 border-b-2 whitespace-nowrap transition-colors cursor-pointer ${focusRing} ${
+                        active
+                          ? "border-rh-primary text-rh-text font-semibold"
+                          : "border-transparent text-rh-muted hover:text-rh-text"
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5" aria-hidden="true" />
+                      {t.label}
+                    </button>
+                  );
+                })}
               </div>
 
-              {/* TAB 1: FINDINGS EXPLORER */}
+              {/* Findings */}
               {activeTab === "findings" && (
-                <div className="space-y-4">
-                  {/* Filters Bar */}
-                  <div className="p-3 rounded-lg bg-[#0a101d] border border-[#162238] flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="space-y-4" role="tabpanel">
+                  <div className="p-3 rounded-[10px] bg-rh-surface border border-rh-line flex flex-wrap items-center justify-between gap-3 text-xs">
                     <div className="flex items-center gap-2 flex-1 min-w-[200px]">
-                      <Search className="w-3.5 h-3.5 text-slate-500" />
+                      <Search className="w-3.5 h-3.5 text-rh-muted shrink-0" aria-hidden="true" />
                       <input
                         type="text"
-                        placeholder="Search findings by rule, title, or file location..."
+                        placeholder="Search findings by rule, title or file location"
+                        aria-label="Search findings"
                         value={findingSearch}
                         onChange={(e) => setFindingSearch(e.target.value)}
-                        className="w-full bg-transparent border-0 text-slate-200 placeholder-slate-500 focus:outline-none font-mono text-xs"
+                        className={`w-full bg-transparent border border-transparent rounded-[6px] px-1.5 py-1 text-rh-text placeholder:text-rh-muted text-xs ${inputRing}`}
                       />
                     </div>
 
-                    <div className="flex items-center gap-2 flex-wrap font-mono text-[11px]">
-                      {/* Severity pills */}
-                      <span className="text-slate-500">Severity:</span>
-                      {(['ALL', 'critical', 'high', 'medium', 'low'] as const).map((sev) => (
-                        <button
-                          key={sev}
-                          onClick={() => setSeverityFilter(sev)}
-                          className={`px-2 py-0.5 rounded uppercase cursor-pointer ${
-                            severityFilter === sev
-                              ? "bg-cyan-950 text-cyan-300 border border-cyan-700/60 font-semibold"
-                              : "bg-[#111a2c] text-slate-400 hover:bg-[#16243d]"
-                          }`}
-                        >
-                          {sev}
-                        </button>
-                      ))}
+                    <div className="flex items-center gap-2 flex-wrap text-xs">
+                      <span className="text-rh-muted">Severity:</span>
+                      <div role="group" aria-label="Filter by severity" className="flex items-center gap-1 flex-wrap">
+                        {(["ALL", "critical", "high", "medium", "low"] as const).map((sev) => (
+                          <button
+                            type="button"
+                            key={sev}
+                            onClick={() => setSeverityFilter(sev)}
+                            aria-pressed={severityFilter === sev}
+                            className={`px-2 py-1 rounded-[6px] cursor-pointer transition-colors ${focusRing} ${
+                              severityFilter === sev
+                                ? "bg-rh-raised text-rh-text font-semibold"
+                                : "text-rh-muted hover:bg-rh-raised hover:text-rh-text"
+                            }`}
+                          >
+                            {sev === "ALL" ? "All" : sentence(sev)}
+                          </button>
+                        ))}
+                      </div>
 
-                      {/* Category filter */}
                       {availableCategories.length > 0 && (
-                        <div className="flex items-center gap-1.5 pl-2 border-l border-[#1a2842]">
-                          <span className="text-slate-500">Category:</span>
+                        <div className="flex items-center gap-1.5 pl-2 border-l border-rh-line">
+                          <label htmlFor="finding-category-filter" className="text-rh-muted">
+                            Category:
+                          </label>
                           <select
+                            id="finding-category-filter"
                             value={categoryFilter}
                             onChange={(e) => setCategoryFilter(e.target.value)}
-                            className="bg-[#111a2c] border border-[#1f3050] text-slate-300 rounded px-2 py-0.5 text-[11px] focus:outline-none cursor-pointer"
+                            className={`bg-rh-bg border border-rh-line text-rh-text rounded-[6px] px-2 py-1 text-xs cursor-pointer ${inputRing}`}
                           >
-                            <option value="ALL">ALL CATEGORIES</option>
+                            <option value="ALL">All categories</option>
                             {availableCategories.map((c) => (
-                              <option key={c} value={c}>{c.toUpperCase()}</option>
+                              <option key={c} value={c}>
+                                {sentence(c)}
+                              </option>
                             ))}
                           </select>
                         </div>
@@ -748,57 +788,57 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
                     </div>
                   </div>
 
-                  {/* Findings Cards List */}
                   {filteredFindings.length === 0 ? (
-                    <div className="p-8 text-center text-xs text-slate-500 bg-[#0a101d] rounded-lg border border-[#162238]">
-                      No findings match current filters.
+                    <div className="p-8 text-center text-xs text-rh-muted bg-rh-surface rounded-[10px] border border-rh-line">
+                      <p className="font-semibold text-rh-text text-sm">
+                        {(selectedScanDetail.findings?.length || 0) === 0
+                          ? "This scan reported no findings"
+                          : "No findings match the current filters"}
+                      </p>
+                      <p className="mt-1">
+                        {(selectedScanDetail.findings?.length || 0) === 0
+                          ? "Check the Check execution tab to confirm which checks ran."
+                          : "Clear the search text, or set severity and category back to All."}
+                      </p>
                     </div>
                   ) : (
                     <div className="space-y-3">
                       {filteredFindings.map((f, idx) => (
                         <div
                           key={f.fingerprint || f.rule + idx}
-                          className="p-4 rounded-xl bg-[#0c1424] border border-[#1b2b46] hover:border-[#273d63] transition-colors space-y-2.5 shadow-sm"
+                          className="p-4 rounded-[10px] bg-rh-surface border border-rh-line space-y-2.5"
                         >
                           <div className="flex items-start justify-between gap-3">
                             <div className="space-y-1 min-w-0">
                               <div className="flex items-center gap-2 flex-wrap">
                                 {getSeverityBadge(f.severity)}
-                                <span className="font-mono text-xs text-cyan-400 font-semibold">
-                                  {f.rule}
-                                </span>
-                                <span className="font-mono text-[10px] px-1.5 py-0.2 rounded bg-[#131f36] text-slate-400 border border-[#1e3052]">
+                                <span className="text-xs text-rh-muted font-mono">{f.rule}</span>
+                                <span className="text-xs px-1.5 py-0.5 rounded-[6px] bg-rh-raised text-rh-muted">
                                   {f.category}
                                 </span>
-                                {f.check && (
-                                  <span className="font-mono text-[10px] text-slate-500">
-                                    via {f.check}
-                                  </span>
-                                )}
+                                {f.check && <span className="text-xs text-rh-muted">via {f.check}</span>}
                               </div>
-                              <h4 className="text-sm font-semibold text-slate-100 font-mono mt-1">
-                                {f.title}
-                              </h4>
+                              <h4 className="text-sm font-semibold text-rh-text mt-1">{f.title}</h4>
                             </div>
 
                             {f.location && (
-                              <div className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#101c30] border border-[#1d3154] text-xs font-mono text-cyan-300 max-w-xs truncate">
-                                <FileCode2 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                                <span className="truncate" title={f.location}>{f.location}</span>
+                              <div className="shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-[6px] bg-rh-bg border border-rh-line text-xs text-rh-text max-w-xs">
+                                <FileCode2 className="w-3.5 h-3.5 text-rh-muted shrink-0" aria-hidden="true" />
+                                <span className="truncate font-mono" title={f.location}>{f.location}</span>
                               </div>
                             )}
                           </div>
 
                           {f.detail && (
-                            <div className="p-2.5 rounded bg-[#090e1a] border border-[#152136] text-xs font-mono text-slate-300 whitespace-pre-wrap">
+                            <div className="p-2.5 rounded-[6px] bg-rh-bg border border-rh-line text-xs text-rh-text whitespace-pre-wrap">
                               {f.detail}
                             </div>
                           )}
 
                           {f.remediation && (
-                            <div className="p-2.5 rounded bg-emerald-950/20 border border-emerald-900/40 text-xs font-mono text-emerald-300 flex items-start gap-2">
-                              <span className="text-emerald-500 font-bold shrink-0">Remediation:</span>
-                              <span className="text-slate-300">{f.remediation}</span>
+                            <div className="p-2.5 rounded-[6px] bg-rh-go/10 text-xs flex items-start gap-2">
+                              <span className="text-rh-go font-semibold shrink-0">Remediation:</span>
+                              <span className="text-rh-text">{f.remediation}</span>
                             </div>
                           )}
                         </div>
@@ -808,73 +848,102 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
                 </div>
               )}
 
-              {/* TAB 2: CHECKS EXECUTION GRID */}
+              {/* Checks */}
               {activeTab === "checks" && (
-                <div className="rounded-xl bg-[#0c1424] border border-[#1b2b46] overflow-hidden shadow-sm">
-                  <div className="px-4 py-3 bg-[#0f192d] border-b border-[#1b2b46] flex items-center justify-between text-xs font-mono text-slate-300 font-semibold">
-                    <span>Security Check Name</span>
-                    <div className="flex items-center gap-6">
-                      <span>Duration</span>
-                      <span>Findings</span>
-                      <span>Execution State</span>
+                <div role="tabpanel" className="rounded-[10px] bg-rh-surface border border-rh-line overflow-hidden">
+                  {!selectedScanDetail.checks || selectedScanDetail.checks.length === 0 ? (
+                    <div className="p-8 text-center text-xs text-rh-muted">
+                      <p className="font-semibold text-rh-text text-sm">No check results were reported</p>
+                      <p className="mt-1">Start a new scan to see which security checks ran.</p>
                     </div>
-                  </div>
-                  <div className="divide-y divide-[#152238]">
-                    {selectedScanDetail.checks?.map((chk) => {
-                      const state = chk.status?.state || "unknown";
-                      const isPassed = state === "passed";
-                      const isFailed = state === "failed";
-                      return (
-                        <div key={chk.id} className="p-3.5 flex items-center justify-between gap-4 text-xs font-mono hover:bg-[#0e172a] transition-colors">
-                          <div className="space-y-0.5 min-w-0">
-                            <div className="font-semibold text-slate-200 flex items-center gap-2">
-                              <span>{chk.title}</span>
-                              <span className="text-[10px] text-slate-500">({chk.id})</span>
-                            </div>
-                            {chk.status?.reason && (
-                              <div className="text-[11px] text-slate-500">Reason: {chk.status.reason}</div>
-                            )}
-                          </div>
-
-                          <div className="flex items-center gap-6 shrink-0">
-                            <span className="text-slate-400 w-16 text-right">{chk.duration_ms} ms</span>
-                            <span className={`w-12 text-right font-bold ${chk.findings > 0 ? "text-amber-400" : "text-slate-500"}`}>
-                              {chk.findings}
-                            </span>
-                            <div className="w-28 flex justify-end">
-                              {isPassed ? (
-                                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-emerald-950 text-emerald-400 border border-emerald-700/50 uppercase">
-                                  Passed
-                                </span>
-                              ) : isFailed ? (
-                                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-red-950 text-red-400 border border-red-700/50 uppercase">
-                                  Failed
-                                </span>
-                              ) : (
-                                <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-900 text-slate-400 border border-slate-700 uppercase">
-                                  {state}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  ) : (
+                    <div className="min-h-0 max-h-[70vh] overflow-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-left text-rh-muted">
+                            <th scope="col" className="sticky top-0 z-10 bg-rh-raised px-4 py-2.5 font-semibold">
+                              Security check
+                            </th>
+                            <th scope="col" className="sticky top-0 z-10 bg-rh-raised px-4 py-2.5 font-semibold text-right">
+                              Duration
+                            </th>
+                            <th scope="col" className="sticky top-0 z-10 bg-rh-raised px-4 py-2.5 font-semibold text-right">
+                              Findings
+                            </th>
+                            <th scope="col" className="sticky top-0 z-10 bg-rh-raised px-4 py-2.5 font-semibold text-right">
+                              State
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-rh-line">
+                          {selectedScanDetail.checks.map((chk) => {
+                            const state = chk.status?.state || "unknown";
+                            const isPassed = state === "passed";
+                            const isFailed = state === "failed";
+                            return (
+                              <tr key={chk.id} className="hover:bg-rh-raised transition-colors">
+                                <td className="px-4 py-3 align-top">
+                                  <div className="font-semibold text-rh-text flex items-center gap-2 flex-wrap">
+                                    <span>{chk.title}</span>
+                                    <span className="text-xs text-rh-muted font-mono font-normal">{chk.id}</span>
+                                  </div>
+                                  {chk.status?.reason && (
+                                    <div className="text-xs text-rh-muted mt-0.5">Reason: {chk.status.reason}</div>
+                                  )}
+                                </td>
+                                <td className="px-4 py-3 text-right text-rh-muted tabular-nums whitespace-nowrap align-top">
+                                  {chk.duration_ms} ms
+                                </td>
+                                <td
+                                  className={`px-4 py-3 text-right font-semibold tabular-nums align-top ${
+                                    chk.findings > 0 ? "text-rh-cond" : "text-rh-muted"
+                                  }`}
+                                >
+                                  {chk.findings}
+                                </td>
+                                <td className="px-4 py-3 text-right align-top">
+                                  {isPassed ? (
+                                    <span className="px-2 py-0.5 rounded-[6px] text-xs font-semibold bg-rh-go/15 text-rh-go">
+                                      Passed
+                                    </span>
+                                  ) : isFailed ? (
+                                    <span className="px-2 py-0.5 rounded-[6px] text-xs font-semibold bg-rh-nogo/15 text-rh-nogo">
+                                      Failed
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded-[6px] text-xs font-semibold bg-rh-raised text-rh-muted">
+                                      {sentence(state)}
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {/* TAB 3: RAW JSON */}
+              {/* Raw JSON */}
               {activeTab === "raw" && (
-                <div className="rounded-xl bg-[#080d17] border border-[#162238] p-4 relative">
-                  <button
-                    onClick={() => handleCopy(JSON.stringify(selectedScanDetail, null, 2), "raw")}
-                    className="absolute right-4 top-4 px-2.5 py-1 rounded bg-[#131f36] hover:bg-[#1a2a47] border border-[#203254] text-xs font-mono text-slate-300 flex items-center gap-1.5 cursor-pointer"
-                  >
-                    {copiedId === "raw" ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    Copy JSON
-                  </button>
-                  <pre className="text-xs font-mono text-cyan-300/90 overflow-x-auto p-2 max-h-[600px]">
+                <div role="tabpanel" className="rounded-[10px] bg-rh-surface border border-rh-line p-4 flex flex-col gap-3 min-h-0">
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => handleCopy(JSON.stringify(selectedScanDetail, null, 2), "raw")}
+                      className={`px-2.5 py-1.5 rounded-[6px] bg-rh-raised hover:bg-rh-line text-xs text-rh-text flex items-center gap-1.5 cursor-pointer transition-colors ${focusRing}`}
+                    >
+                      {copiedId === "raw" ? (
+                        <Check className="w-3.5 h-3.5 text-rh-go" aria-hidden="true" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" aria-hidden="true" />
+                      )}
+                      Copy JSON
+                    </button>
+                  </div>
+                  <pre className="font-mono text-xs text-rh-text bg-rh-bg border border-rh-line rounded-[6px] overflow-auto p-3 max-h-[60vh]">
                     {JSON.stringify(selectedScanDetail, null, 2)}
                   </pre>
                 </div>
@@ -884,39 +953,43 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
         </div>
       </div>
 
-      {/* EMBEDDED HTML REPORT FULLSCREEN MODAL */}
+      {/* Fullscreen HTML report */}
       {showHtmlModal && selectedScanDetail && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex flex-col p-4 md:p-8 animate-in fade-in duration-200">
-          <div className="flex-1 flex flex-col bg-[#090d16] border border-[#1e2e4a] rounded-xl overflow-hidden shadow-2xl">
-            {/* Modal Header */}
-            <div className="h-13 px-5 border-b border-[#1b2b46] bg-[#0c1424] flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2.5 font-mono">
-                <FileText className="w-4 h-4 text-cyan-400" />
-                <span className="text-sm font-bold text-white">ReadyHai Security Audit Report (HTML)</span>
-                <span className="text-xs text-slate-500">·</span>
-                <span className="text-xs text-cyan-300 font-semibold">#{selectedScanDetail.id}</span>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="HTML audit report"
+          className="fixed inset-0 z-50 bg-rh-bg/80 flex flex-col p-4 md:p-8"
+        >
+          <div className="flex-1 min-h-0 flex flex-col bg-rh-surface border border-rh-line rounded-[10px] overflow-hidden shadow-lg">
+            <div className="min-h-12 px-5 py-2 border-b border-rh-line bg-rh-surface flex items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <FileText className="w-4 h-4 text-rh-muted shrink-0" aria-hidden="true" />
+                <h3 className="text-sm font-semibold text-rh-text truncate">ReadyHai security audit report (HTML)</h3>
+                <span className="text-xs text-rh-muted font-mono truncate">#{selectedScanDetail.id}</span>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 shrink-0">
                 <ReportButton
                   path={`/api/scans/${selectedScanDetail.id}/report/html`}
                   mode="tab"
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#14223b] hover:bg-[#1a2d4f] border border-[#233a63] text-xs font-mono text-cyan-300 transition-colors cursor-pointer"
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[6px] bg-rh-raised hover:bg-rh-line text-xs text-rh-text transition-colors cursor-pointer ${focusRing}`}
                 >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  Open in New Tab
+                  <ExternalLink className="w-3.5 h-3.5" aria-hidden="true" />
+                  Open in new tab
                 </ReportButton>
                 <button
+                  type="button"
                   onClick={() => setShowHtmlModal(false)}
-                  className="p-1.5 rounded-lg bg-[#14223b] hover:bg-red-950 hover:text-red-400 text-slate-400 border border-[#233a63] transition-colors cursor-pointer"
+                  className={`p-1.5 rounded-[6px] bg-rh-raised hover:bg-rh-nogo/15 hover:text-rh-nogo text-rh-muted transition-colors cursor-pointer ${focusRing}`}
                   title="Close report"
+                  aria-label="Close report"
                 >
-                  <X className="w-4 h-4" />
+                  <X className="w-4 h-4" aria-hidden="true" />
                 </button>
               </div>
             </div>
 
-            {/* IFrame Container */}
-            <div className="flex-1 bg-white relative">
+            <div className="flex-1 min-h-0 bg-white relative">
               <ReportFrame
                 path={`/api/scans/${selectedScanDetail.id}/report/html`}
                 title="ReadyHai HTML Report"
@@ -927,36 +1000,43 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
         </div>
       )}
 
-      {/* Launch New Scan Modal */}
+      {/* New scan dialog */}
       {showScanModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-[#090e1a] border border-[#1b2b48] rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            <div className="p-5 border-b border-[#182338] flex items-center justify-between">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Scan a repository"
+          className="fixed inset-0 z-50 bg-rh-bg/80 flex items-center justify-center p-4"
+        >
+          <div className="w-full max-w-lg max-h-full overflow-y-auto bg-rh-surface border border-rh-line rounded-[10px] shadow-lg">
+            <div className="p-5 border-b border-rh-line flex items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-cyan-950/80 border border-cyan-700/60 flex items-center justify-center">
-                  <GitBranch className="w-4 h-4 text-cyan-400" />
+                <div className="w-8 h-8 rounded-[6px] bg-rh-raised flex items-center justify-center shrink-0">
+                  <GitBranch className="w-4 h-4 text-rh-muted" aria-hidden="true" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-white font-mono">Scan Codebase / Repository</h3>
-                  <p className="text-[11px] text-slate-400 font-mono">SAST, Secret Leakage, CI Checks &amp; Vulnerability Audit</p>
+                  <h3 className="text-sm font-semibold text-rh-text">Scan a repository</h3>
+                  <p className="text-xs text-rh-muted">Static analysis, secret leakage, CI checks and vulnerability audit</p>
                 </div>
               </div>
               <button
+                type="button"
                 onClick={() => setShowScanModal(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800/50 cursor-pointer"
+                className={`text-rh-muted hover:text-rh-text p-1.5 rounded-[6px] hover:bg-rh-raised cursor-pointer ${focusRing}`}
+                title="Close"
+                aria-label="Close dialog"
               >
-                <X className="w-4 h-4" />
+                <X className="w-4 h-4" aria-hidden="true" />
               </button>
             </div>
 
-            <form onSubmit={handleLaunchScan} className="p-5 space-y-4 font-mono text-xs">
+            <form onSubmit={handleLaunchScan} className="p-5 space-y-4 text-xs">
               <div className="space-y-1.5">
-                <label className="text-slate-300 font-semibold flex items-center gap-1.5">
-                  <span>Target Git Repository URL or Path</span>
-                  <span className="text-cyan-400">*</span>
+                <label htmlFor="input-scan-target" className="text-rh-text font-semibold">
+                  Git repository URL or path
                 </label>
                 <div className="relative">
-                  <Globe className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
+                  <Globe className="w-4 h-4 text-rh-muted absolute left-3 top-2.5" aria-hidden="true" />
                   <input
                     id="input-scan-target"
                     type="text"
@@ -965,75 +1045,69 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
                       setNewScanTarget(e.target.value);
                       setScanSubmitError(null);
                     }}
-                    placeholder="https://github.com/deziss/prism or https://github.com/org/repo"
-                    className="w-full pl-9 pr-3 py-2 bg-[#050811] border border-[#1b2b48] rounded-lg text-cyan-300 focus:outline-none focus:border-cyan-500 text-xs font-mono"
+                    placeholder="https://github.com/org/repo"
+                    className={`w-full pl-9 pr-3 py-2 bg-rh-bg border border-rh-line rounded-[6px] text-rh-text placeholder:text-rh-muted font-mono text-xs ${inputRing}`}
                     autoFocus
                   />
                 </div>
-                <div className="flex items-center gap-2 pt-1 text-[11px] text-slate-400 flex-wrap">
-                  <span>Quick suggestions:</span>
-                  <button
-                    type="button"
-                    onClick={() => setNewScanTarget("https://github.com/deziss/prism")}
-                    className="text-cyan-400 hover:underline cursor-pointer"
-                  >
-                    deziss/prism
-                  </button>
-                  <span>•</span>
-                  <button
-                    type="button"
-                    onClick={() => setNewScanTarget("https://github.com/deziss/readyhai")}
-                    className="text-cyan-400 hover:underline cursor-pointer"
-                  >
-                    deziss/readyhai
-                  </button>
-                  <span>•</span>
-                  <button
-                    type="button"
-                    onClick={() => setNewScanTarget("https://github.com/expressjs/express")}
-                    className="text-cyan-400 hover:underline cursor-pointer"
-                  >
-                    expressjs/express
-                  </button>
+                <div className="flex items-center gap-x-3 gap-y-1 pt-1 text-xs text-rh-muted flex-wrap">
+                  <span>Examples:</span>
+                  {[
+                    { label: "deziss/prism", url: "https://github.com/deziss/prism" },
+                    { label: "deziss/readyhai", url: "https://github.com/deziss/readyhai" },
+                    { label: "expressjs/express", url: "https://github.com/expressjs/express" },
+                  ].map((s) => (
+                    <button
+                      key={s.url}
+                      type="button"
+                      onClick={() => setNewScanTarget(s.url)}
+                      className={`text-rh-primary hover:text-rh-primary-hover hover:underline rounded-[6px] cursor-pointer font-mono ${focusRing}`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <label className="text-slate-300 font-semibold">Scan Profile</label>
+              <div className="space-y-1.5" role="group" aria-labelledby="scan-profile-label">
+                <div id="scan-profile-label" className="text-rh-text font-semibold">
+                  Scan profile
+                </div>
                 <div className="grid grid-cols-3 gap-2">
                   {[
-                    { id: "quick", label: "Quick", desc: "SAST & CI checks (~2s)" },
-                    { id: "standard", label: "Standard", desc: "Full rules + deps" },
+                    { id: "quick", label: "Quick", desc: "SAST and CI checks (about 2s)" },
+                    { id: "standard", label: "Standard", desc: "Full rules and dependencies" },
                     { id: "deep", label: "Deep", desc: "Exhaustive matrix" },
                   ].map((p) => (
                     <button
                       key={p.id}
                       type="button"
                       onClick={() => setNewScanProfile(p.id as "quick" | "standard" | "deep")}
-                      className={`p-2.5 rounded-lg border text-left cursor-pointer transition-all ${
+                      aria-pressed={newScanProfile === p.id}
+                      className={`p-2.5 rounded-[6px] border text-left cursor-pointer transition-colors ${focusRing} ${
                         newScanProfile === p.id
-                          ? "bg-cyan-950/60 border-cyan-500/80 text-cyan-300"
-                          : "bg-[#0b111e] border-[#182338] text-slate-400 hover:border-slate-700"
+                          ? "bg-rh-primary/15 border-rh-primary text-rh-text"
+                          : "bg-rh-bg border-rh-line text-rh-muted hover:bg-rh-raised"
                       }`}
                     >
-                      <div className="font-bold text-xs capitalize">{p.label}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">{p.desc}</div>
+                      <div className="font-semibold text-xs text-rh-text">{p.label}</div>
+                      <div className="text-xs text-rh-muted mt-0.5">{p.desc}</div>
                     </button>
                   ))}
                 </div>
               </div>
 
               {scanSubmitError && (
-                <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-800/60 text-rose-300 text-[11px]">
+                <div role="alert" className="p-3 rounded-[6px] bg-rh-nogo/15 text-rh-nogo text-xs">
                   {scanSubmitError}
                 </div>
               )}
 
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#182338]">
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-rh-line">
                 <button
                   type="button"
                   onClick={() => setShowScanModal(false)}
-                  className="px-4 py-2 rounded-lg bg-[#0e1626] hover:bg-[#142036] text-slate-300 border border-[#1b2b48] cursor-pointer"
+                  className={`px-4 py-2 rounded-[6px] bg-rh-raised hover:bg-rh-line text-rh-text cursor-pointer transition-colors ${focusRing}`}
                 >
                   Cancel
                 </button>
@@ -1041,17 +1115,17 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
                   id="btn-submit-scan"
                   type="submit"
                   disabled={isSubmittingScan}
-                  className="flex items-center gap-2 px-5 py-2 rounded-lg bg-gradient-to-r from-cyan-600 to-cyan-500 hover:from-cyan-500 hover:to-cyan-400 text-slate-950 font-bold transition-all cursor-pointer shadow-[0_0_14px_rgba(6,182,212,0.3)] disabled:opacity-50"
+                  className={`flex items-center gap-2 px-5 py-2 rounded-[6px] bg-rh-primary hover:bg-rh-primary-hover text-rh-bg font-semibold transition-colors cursor-pointer disabled:opacity-50 ${focusRing}`}
                 >
                   {isSubmittingScan ? (
                     <>
-                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      <span>Cloning &amp; Scanning...</span>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" aria-hidden="true" />
+                      <span>Cloning and scanning...</span>
                     </>
                   ) : (
                     <>
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>Start Codebase Scan</span>
+                      <Play className="w-3.5 h-3.5 fill-current" aria-hidden="true" />
+                      <span>Start scan</span>
                     </>
                   )}
                 </button>
@@ -1063,4 +1137,3 @@ export function ScansHistoryView({ onSelectTarget }: ScansHistoryViewProps) {
     </div>
   );
 }
-

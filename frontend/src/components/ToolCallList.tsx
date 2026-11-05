@@ -1,254 +1,245 @@
 "use client";
 
-import { useState } from "react";
-import {
-  Check,
-  Loader2,
-  Workflow,
-  Compass,
-  BrainCircuit,
-  Terminal,
-  Flame,
-  ShieldCheck,
-  X,
-  ChevronDown,
-  ChevronUp,
-} from "lucide-react";
+import { useId, useState } from "react";
+import { AlertTriangle, Check, HelpCircle, Loader2, X } from "lucide-react";
+import { VerdictBadge } from "./VerdictBadge";
 
-export type PipelineStage = "discovery" | "planner" | "explorer" | "triager" | "gate";
+export type PipelineStage = "recon" | "discovery" | "plan" | "execute" | "verify" | "gate";
+export type StageStatus = "standby" | "running" | "succeeded" | "failed";
 
 export interface StageState {
   id: PipelineStage;
   label: string;
   subtext: string;
-  status: "standby" | "running" | "succeeded" | "failed";
+  status: StageStatus;
+}
+
+/** The six pipeline stages in run order, ending with the gate verdict. */
+export const PIPELINE_STAGES: ReadonlyArray<Pick<StageState, "id" | "label" | "subtext">> = [
+  {
+    id: "recon",
+    label: "Recon",
+    subtext: "Checks the model connection and the target's health before anything else runs.",
+  },
+  {
+    id: "discovery",
+    label: "Discovery",
+    subtext: "Probes the target root and maps the endpoints and routes the agent can test.",
+  },
+  {
+    id: "plan",
+    label: "Plan",
+    subtext: "Writes negative, boundary and authorization test cases for what it found.",
+  },
+  {
+    id: "execute",
+    label: "Execute",
+    subtext: "Runs the planned cases against the target and records every request and response.",
+  },
+  {
+    id: "verify",
+    label: "Verify",
+    subtext: "Triages failures into defects, maps them to OWASP categories and builds the evidence ledger.",
+  },
+  {
+    id: "gate",
+    label: "Gate",
+    subtext: "Scores the evidence and issues the release verdict: go, conditional go or no go.",
+  },
+];
+
+/** Builds the full stage list; `statusAt` decides each stage's status by index (default: all on standby). */
+export function buildStages(statusAt: (index: number) => StageStatus = () => "standby"): StageState[] {
+  return PIPELINE_STAGES.map((s, i) => ({ ...s, status: statusAt(i) }));
 }
 
 interface ToolCallListProps {
   stages: StageState[];
-  currentRunningIndex: number;
+  /** Gate verdict exactly as the backend reported it; null/undefined when there is none. */
+  verdict?: string | null;
 }
 
-const STAGE_ICONS: Record<PipelineStage, React.ReactNode> = {
-  discovery: <Compass className="w-3.5 h-3.5" />,
-  planner: <BrainCircuit className="w-3.5 h-3.5" />,
-  explorer: <Terminal className="w-3.5 h-3.5" />,
-  triager: <Flame className="w-3.5 h-3.5" />,
-  gate: <ShieldCheck className="w-3.5 h-3.5" />,
+const STATUS_LABEL: Record<StageStatus, string> = {
+  standby: "Waiting",
+  running: "Running",
+  succeeded: "Done",
+  failed: "Failed",
 };
 
-const STAGE_SHORT_LABELS: Record<PipelineStage, string> = {
-  discovery: "Recon",
-  planner: "Discovery",
-  explorer: "Planner",
-  triager: "Triage",
-  gate: "Gate",
+const VERDICT_LABEL: Record<string, string> = {
+  GO: "Go",
+  CONDITIONAL_GO: "Conditional go",
+  NO_GO: "No go",
 };
 
-export function ToolCallList({ stages }: ToolCallListProps) {
-  const [hoveredStageId, setHoveredStageId] = useState<PipelineStage | null>(null);
-  const [pinnedStageId, setPinnedStageId] = useState<PipelineStage | null>(null);
-  const [isExpanded, setIsExpanded] = useState(false);
+type Tone = "neutral" | "active" | "go" | "cond" | "nogo";
 
-  // Active tooltip target: pinned has priority, then hovered
-  const activeTooltipId = pinnedStageId || hoveredStageId;
-  const activeTooltipStage = stages.find((s) => s.id === activeTooltipId);
+const TONE_RING: Record<Tone, string> = {
+  neutral: "border-rh-line text-rh-muted",
+  active: "border-rh-primary bg-rh-primary/10 text-rh-primary",
+  go: "border-rh-go bg-rh-go/10 text-rh-go",
+  cond: "border-rh-cond bg-rh-cond/10 text-rh-cond",
+  nogo: "border-rh-nogo bg-rh-nogo/10 text-rh-nogo",
+};
 
-  // Compute overall status summary
+const TONE_CHIP: Record<Tone, string> = {
+  neutral: "bg-rh-raised text-rh-muted",
+  active: "bg-rh-primary/15 text-rh-primary",
+  go: "bg-rh-go/15 text-rh-go",
+  cond: "bg-rh-cond/15 text-rh-cond",
+  nogo: "bg-rh-nogo/10 text-rh-nogo",
+};
+
+/** Tone and label for one stage. The gate stage reports the backend verdict once it has finished. */
+function stageView(stage: StageState, verdict: string | null | undefined) {
+  if (stage.id === "gate" && stage.status === "succeeded") {
+    if (verdict === "GO") return { tone: "go" as Tone, text: "Verdict: go" };
+    if (verdict === "CONDITIONAL_GO") return { tone: "cond" as Tone, text: "Verdict: conditional go" };
+    if (verdict === "NO_GO") return { tone: "nogo" as Tone, text: "Verdict: no go" };
+    return { tone: "neutral" as Tone, text: "No verdict reported" };
+  }
+  const tone: Tone =
+    stage.status === "running" ? "active" : stage.status === "succeeded" ? "go" : stage.status === "failed" ? "nogo" : "neutral";
+  return { tone, text: STATUS_LABEL[stage.status] };
+}
+
+function StageMarker({ stage, index, verdict }: { stage: StageState; index: number; verdict?: string | null }) {
+  if (stage.status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />;
+  if (stage.status === "failed") return <X className="h-3.5 w-3.5" aria-hidden="true" />;
+  if (stage.status === "succeeded") {
+    if (stage.id === "gate") {
+      if (verdict === "NO_GO") return <X className="h-3.5 w-3.5" aria-hidden="true" />;
+      if (verdict === "CONDITIONAL_GO") return <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />;
+      if (verdict !== "GO") return <HelpCircle className="h-3.5 w-3.5" aria-hidden="true" />;
+    }
+    return <Check className="h-3.5 w-3.5" aria-hidden="true" />;
+  }
+  return <span className="text-xs font-medium tabular-nums">{index + 1}</span>;
+}
+
+/**
+ * Stable pipeline stepper: Recon, Discovery, Plan, Execute, Verify, Gate.
+ *
+ * Nothing here reacts to hover except colour. Every stage button and marker has a fixed size and
+ * border in every state, and stage details open on click or keyboard into a fixed-height area, so
+ * the layout never shifts.
+ */
+export function ToolCallList({ stages, verdict = null }: ToolCallListProps) {
+  const [selectedId, setSelectedId] = useState<PipelineStage | null>(null);
+  const detailId = useId();
+  const titleId = useId();
+
   const runningStage = stages.find((s) => s.status === "running");
   const failedStage = stages.find((s) => s.status === "failed");
-  const allSucceeded = stages.every((s) => s.status === "succeeded");
+  const allSucceeded = stages.length > 0 && stages.every((s) => s.status === "succeeded");
+  const selectedStage = stages.find((s) => s.id === selectedId) ?? null;
+
+  const headline = runningStage
+    ? `Running ${runningStage.label}`
+    : failedStage
+    ? `${failedStage.label} failed`
+    : allSucceeded
+    ? "All stages complete"
+    : "Idle";
+  const headlineTone = runningStage
+    ? "text-rh-primary"
+    : failedStage
+    ? "text-rh-nogo"
+    : allSucceeded
+    ? "text-rh-go"
+    : "text-rh-muted";
+
+  // What the fixed-height detail area shows when no stage is selected.
+  const summary = runningStage
+    ? `${runningStage.label} is running. ${runningStage.subtext}`
+    : failedStage
+    ? `The run stopped at ${failedStage.label}. The error is shown in the notice at the top of the page.`
+    : allSucceeded
+    ? verdict && VERDICT_LABEL[verdict]
+      ? `The run finished with a ${VERDICT_LABEL[verdict].toLowerCase()} verdict. Select a stage to see what it did.`
+      : "The run finished without a gate verdict. Select a stage to see what it did."
+    : "Run the agent from the command center to start the pipeline. Select a stage to see what it does.";
+
+  const selectedView = selectedStage ? stageView(selectedStage, verdict) : null;
 
   return (
-    <div className="bg-[#0b101a] border border-[#1a2436] rounded-xl p-3 shadow-xl flex flex-col gap-2 relative">
-      {/* Header Bar */}
-      <div className="flex items-center justify-between pb-1.5 border-b border-[#141f33]/80">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="w-5 h-5 rounded bg-cyan-950/60 border border-cyan-500/40 flex items-center justify-center text-cyan-400 shrink-0">
-            <Workflow className="w-3 h-3" />
-          </div>
-          <span className="text-xs font-bold tracking-wider uppercase text-slate-200 truncate">
-            Agent Pipeline
-          </span>
-          <span className="text-[10px] font-mono text-slate-500">
-            {runningStage ? (
-              <span className="text-cyan-300 font-semibold flex items-center gap-1">
-                <Loader2 className="w-2.5 h-2.5 animate-spin" />
-                {runningStage.label}...
-              </span>
-            ) : failedStage ? (
-              <span className="text-rose-400 font-semibold">{failedStage.label} Failed</span>
-            ) : allSucceeded ? (
-              <span className="text-emerald-400 font-semibold">4/4 Complete</span>
-            ) : (
-              <span>Standby</span>
-            )}
-          </span>
+    <section aria-labelledby={titleId} className="flex flex-col gap-3 rounded-md border border-rh-line bg-rh-surface p-4">
+      <div className="flex min-h-6 items-center justify-between gap-3">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <h2 id={titleId} className="shrink-0 text-sm font-semibold text-rh-text">
+            Agent pipeline
+          </h2>
+          <span className={`truncate text-ui font-medium ${headlineTone}`}>{headline}</span>
         </div>
-
-        <button
-          type="button"
-          onClick={() => setIsExpanded(!isExpanded)}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono text-slate-400 hover:text-slate-200 hover:bg-[#121c2d] transition-colors cursor-pointer"
-          title={isExpanded ? "Collapse to compact view" : "Expand all stage details"}
-        >
-          <span>{isExpanded ? "Compact" : "Details"}</span>
-          {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-        </button>
+        <div className="shrink-0">
+          {verdict ? <VerdictBadge verdict={verdict} /> : <span className="text-xs text-rh-muted">No verdict yet</span>}
+        </div>
       </div>
 
-      {/* Compact Horizontal Stepper Track */}
-      <div className="grid grid-cols-4 gap-1.5 pt-0.5">
-        {stages.map((stage) => {
-          const isRunning = stage.status === "running";
-          const isSucceeded = stage.status === "succeeded";
-          const isFailed = stage.status === "failed";
-          const isPinned = pinnedStageId === stage.id;
-
+      <ol className="flex items-start">
+        {stages.map((stage, i) => {
+          const view = stageView(stage, verdict);
+          const selected = selectedId === stage.id;
+          const doneBefore = i > 0 && stages[i - 1].status === "succeeded";
           return (
-            <button
-              key={stage.id}
-              type="button"
-              onMouseEnter={() => setHoveredStageId(stage.id)}
-              onMouseLeave={() => setHoveredStageId(null)}
-              onClick={() => setPinnedStageId(isPinned ? null : stage.id)}
-              className={`group relative flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg border text-xs font-mono transition-all cursor-pointer ${
-                isRunning
-                  ? "bg-cyan-950/70 border-cyan-400 text-cyan-200 shadow-[0_0_10px_rgba(6,182,212,0.3)] animate-pulse"
-                  : isSucceeded
-                  ? "bg-emerald-950/40 border-emerald-500/50 text-emerald-300 hover:border-emerald-400"
-                  : isFailed
-                  ? "bg-rose-950/50 border-rose-500/70 text-rose-300 hover:border-rose-400"
-                  : "bg-[#07090e]/60 border-[#162238] text-slate-400 hover:text-slate-200 hover:border-slate-700"
-              } ${isPinned ? "ring-1 ring-cyan-400" : ""}`}
-            >
-              <span className="shrink-0">
-                {isRunning ? (
-                  <Loader2 className="w-3 h-3 animate-spin text-cyan-300" />
-                ) : isSucceeded ? (
-                  <Check className="w-3 h-3 text-emerald-400" />
-                ) : (
-                  STAGE_ICONS[stage.id]
-                )}
-              </span>
-              <span className="font-semibold truncate text-[11px]">
-                {STAGE_SHORT_LABELS[stage.id] || stage.label}
-              </span>
-            </button>
+            <li key={stage.id} className={`flex items-start ${i === 0 ? "flex-none" : "min-w-0 flex-1"}`}>
+              {i > 0 && (
+                <span
+                  aria-hidden="true"
+                  className={`mt-[18px] h-0.5 min-w-1 flex-1 ${doneBefore ? "bg-rh-go/60" : "bg-rh-line"}`}
+                />
+              )}
+              <button
+                type="button"
+                aria-expanded={selected}
+                aria-controls={detailId}
+                onClick={() => setSelectedId(selected ? null : stage.id)}
+                className={`group flex shrink-0 cursor-pointer flex-col items-center gap-1 rounded-sm border px-1 py-1.5 sm:px-2 ${
+                  selected ? "border-rh-primary bg-rh-raised" : "border-transparent"
+                }`}
+              >
+                <span
+                  className={`flex h-6 w-6 items-center justify-center rounded-full border ${TONE_RING[view.tone]} ${
+                    stage.status === "standby" ? "group-hover:border-rh-muted group-hover:text-rh-text" : ""
+                  }`}
+                >
+                  <StageMarker stage={stage} index={i} verdict={verdict} />
+                </span>
+                <span
+                  className={`text-xs font-medium ${
+                    selected ? "text-rh-text" : "text-rh-muted group-hover:text-rh-text"
+                  }`}
+                >
+                  {stage.label}
+                </span>
+                <span className="sr-only">{view.text}</span>
+              </button>
+            </li>
           );
         })}
+      </ol>
+
+      <div
+        id={detailId}
+        role="region"
+        aria-label="Stage details"
+        aria-live="polite"
+        className="h-20 overflow-y-auto rounded-sm border sm:h-16 border-rh-line bg-rh-bg px-3 py-2"
+      >
+        {selectedStage && selectedView ? (
+          <>
+            <div className="flex items-center gap-2">
+              <span className="text-ui font-medium text-rh-text">{selectedStage.label}</span>
+              <span className={`rounded-sm px-1.5 text-xs font-medium ${TONE_CHIP[selectedView.tone]}`}>
+                {selectedView.text}
+              </span>
+            </div>
+            <p className="text-ui text-rh-muted">{selectedStage.subtext}</p>
+          </>
+        ) : (
+          <p className="text-ui text-rh-muted">{summary}</p>
+        )}
       </div>
-
-      {/* Floating Interactive Tooltip / Status Popover (shown on Hover or Click) */}
-      {activeTooltipStage && !isExpanded && (
-        <div className="mt-1 p-2.5 rounded-lg bg-[#070b14] border border-cyan-500/40 shadow-[0_4px_20px_rgba(0,0,0,0.5)] flex flex-col gap-1 text-xs animate-in fade-in zoom-in-95 duration-100">
-          <div className="flex items-center justify-between pb-1 border-b border-[#141f33]">
-            <div className="flex items-center gap-2">
-              <span className="text-cyan-400">{STAGE_ICONS[activeTooltipStage.id]}</span>
-              <span className="font-bold text-slate-200 font-mono">
-                {activeTooltipStage.label}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <span
-                className={`text-[9px] font-mono px-1.5 py-0.2 rounded font-bold uppercase ${
-                  activeTooltipStage.status === "running"
-                    ? "bg-cyan-900/60 text-cyan-300 border border-cyan-500/50 animate-pulse"
-                    : activeTooltipStage.status === "succeeded"
-                    ? "bg-emerald-900/60 text-emerald-300 border border-emerald-500/50"
-                    : activeTooltipStage.status === "failed"
-                    ? "bg-rose-900/60 text-rose-300 border border-rose-500/50"
-                    : "bg-slate-800 text-slate-400 border border-slate-700"
-                }`}
-              >
-                {activeTooltipStage.status}
-              </span>
-              {pinnedStageId && (
-                <button
-                  type="button"
-                  onClick={() => setPinnedStageId(null)}
-                  className="text-slate-500 hover:text-slate-300 p-0.5 cursor-pointer"
-                  title="Close pinned view"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              )}
-            </div>
-          </div>
-          <p className="text-[11px] text-slate-300 font-sans leading-relaxed">
-            {activeTooltipStage.subtext}
-          </p>
-          <div className="flex items-center justify-between text-[9px] font-mono text-slate-500 pt-0.5">
-            <span>Observable Trace Stage</span>
-            <span>{pinnedStageId ? "Click again or X to unpin" : "Click to pin tooltip"}</span>
-          </div>
-        </div>
-      )}
-
-      {/* Expanded View (optional when user toggles Details) */}
-      {isExpanded && (
-        <div className="flex flex-col gap-1.5 pt-1">
-          {stages.map((stage) => {
-            const isRunning = stage.status === "running";
-            const isSucceeded = stage.status === "succeeded";
-            const isFailed = stage.status === "failed";
-
-            return (
-              <div
-                key={stage.id}
-                className={`flex items-center justify-between p-2 rounded-lg border text-xs transition-all ${
-                  isRunning
-                    ? "bg-cyan-950/30 border-cyan-500/50 shadow-[0_0_12px_rgba(6,182,212,0.15)]"
-                    : isSucceeded
-                    ? "bg-[#07090e]/80 border-[#162033]"
-                    : isFailed
-                    ? "bg-rose-950/30 border-rose-500/50"
-                    : "bg-[#07090e]/40 border-[#121927] opacity-60"
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-6 h-6 rounded flex items-center justify-center text-xs ${
-                      isRunning
-                        ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/50"
-                        : isSucceeded
-                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/50"
-                        : isFailed
-                        ? "bg-rose-500/20 text-rose-300 border border-rose-500/50"
-                        : "bg-[#111827] text-slate-500 border border-[#1a2436]"
-                    }`}
-                  >
-                    {STAGE_ICONS[stage.id]}
-                  </div>
-                  <div className="flex flex-col">
-                    <span className={`font-semibold tracking-tight text-[11px] ${isRunning ? "text-cyan-300" : isSucceeded ? "text-slate-200" : "text-slate-400"}`}>
-                      {stage.label}
-                    </span>
-                    <span className="text-[10px] text-slate-500 font-mono">{stage.subtext}</span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-1.5 font-mono text-[10px]">
-                  {isRunning && (
-                    <span className="flex items-center gap-1 text-cyan-400 font-semibold">
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                      Executing
-                    </span>
-                  )}
-                  {isSucceeded && (
-                    <span className="flex items-center gap-1 text-emerald-400 font-semibold">
-                      <Check className="w-3 h-3" />
-                      Complete
-                    </span>
-                  )}
-                  {isFailed && <span className="text-rose-400 font-semibold">Failed</span>}
-                  {stage.status === "standby" && <span className="text-slate-600">Standby</span>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
+    </section>
   );
 }

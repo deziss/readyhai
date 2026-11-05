@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { KeyRound, X, Eye, EyeOff } from "lucide-react";
+import { useEffect, useId, useState } from "react";
+import { Eye, EyeOff, KeyRound, X } from "lucide-react";
 import {
   OPEN_SETTINGS_EVENT,
   clearApiToken,
@@ -20,6 +20,7 @@ export function ApiTokenSettings() {
   const [draft, setDraft] = useState("");
   const [reveal, setReveal] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inputId = useId();
 
   useEffect(() => {
     const onOpen = () => {
@@ -30,6 +31,16 @@ export function ApiTokenSettings() {
     window.addEventListener(OPEN_SETTINGS_EVENT, onOpen);
     return () => window.removeEventListener(OPEN_SETTINGS_EVENT, onOpen);
   }, []);
+
+  // Escape closes the dialog while it is open.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
 
   function openDialog() {
     setDraft("");
@@ -66,93 +77,107 @@ export function ApiTokenSettings() {
         type="button"
         id="btn-api-token-settings"
         onClick={openDialog}
-        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md border text-[11px] font-mono font-medium transition-colors cursor-pointer ${
+        className={`inline-flex cursor-pointer items-center gap-1.5 rounded-sm border px-2.5 py-1 text-xs font-medium ${
           hasToken
-            ? "bg-[#0e1524] border-[#1e2a40] text-slate-300 hover:text-white"
-            : "bg-amber-950/40 border-amber-700/60 text-amber-300 hover:bg-amber-950/70"
+            ? "border-rh-line text-rh-text hover:bg-rh-raised"
+            : "border-rh-cond/50 bg-rh-cond/10 text-rh-cond hover:bg-rh-cond/15"
         }`}
-        title={hasToken ? "API token is set. Click to change it." : "No API token set. Click to enter it."}
+        title={hasToken ? "An API token is saved. Select to change it." : "No API token is saved. Select to add one."}
       >
-        <KeyRound className={`w-3.5 h-3.5 ${hasToken ? "text-cyan-400" : "text-amber-400"}`} />
+        <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
         <span className="hidden sm:inline">{hasToken ? "API token" : "Set API token"}</span>
+        <span className="sr-only sm:hidden">{hasToken ? "API token" : "Set API token"}</span>
       </button>
 
       {open && (
         <div
-          className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4"
           role="dialog"
           aria-modal="true"
           aria-label="API token settings"
         >
-          <div className="w-full max-w-md bg-[#090e1a] border border-[#1b2b48] rounded-2xl shadow-2xl">
-            <div className="p-4 border-b border-[#182338] flex items-center justify-between">
+          <div className="w-full max-w-md rounded-md border border-rh-line bg-rh-surface shadow-popover">
+            <div className="flex items-center justify-between border-b border-rh-line p-4">
               <div className="flex items-center gap-2.5">
-                <KeyRound className="w-4 h-4 text-cyan-400" />
-                <h3 className="text-sm font-bold text-white">Settings: API token</h3>
+                <KeyRound className="h-4 w-4 text-rh-primary" aria-hidden="true" />
+                <h2 className="text-base font-semibold text-rh-text">API token</h2>
               </div>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="p-1 rounded text-slate-400 hover:text-white hover:bg-[#16233a] cursor-pointer"
+                className="cursor-pointer rounded-sm p-1 text-rh-muted hover:bg-rh-raised hover:text-rh-text"
+                aria-label="Close"
                 title="Close"
               >
-                <X className="w-4 h-4" />
+                <X className="h-4 w-4" aria-hidden="true" />
               </button>
             </div>
 
             <form
-              className="p-4 space-y-3"
+              className="space-y-3 p-4"
               onSubmit={(e) => {
                 e.preventDefault();
                 save();
               }}
             >
-              <p className="text-xs text-slate-400 leading-relaxed">
-                The ReadyHai backend requires a bearer token on every API request. The token is stored in this
-                browser (localStorage) and sent as <code className="text-cyan-300">Authorization: Bearer ...</code>.
+              <p className="text-ui leading-relaxed text-rh-muted">
+                The ReadyHai backend needs a bearer token on every API request. The token is saved in this browser
+                (localStorage) and sent as <code className="text-rh-text">Authorization: Bearer ...</code>.
               </p>
 
-              <div className="text-[11px] font-mono">
-                Status:{" "}
+              <p className="text-ui">
+                <span className="text-rh-muted">Status: </span>
                 {hasToken ? (
-                  <span className="text-emerald-400">a token is saved in this browser</span>
+                  <span className="text-rh-go">a token is saved in this browser</span>
                 ) : (
-                  <span className="text-amber-400">no token saved</span>
+                  <span className="text-rh-cond">no token saved</span>
                 )}
+              </p>
+
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor={inputId} className="text-ui font-medium text-rh-text">
+                  {hasToken ? "New token" : "Token"}
+                </label>
+                <div className="relative">
+                  <input
+                    id={inputId}
+                    type={reveal ? "text" : "password"}
+                    value={draft}
+                    onChange={(e) => {
+                      setDraft(e.target.value);
+                      setError(null);
+                    }}
+                    placeholder={hasToken ? "Enter a new token to replace the saved one" : "Paste your API token"}
+                    autoComplete="off"
+                    spellCheck={false}
+                    autoFocus
+                    className="w-full rounded-sm border border-rh-line bg-rh-bg py-2 pl-3 pr-10 font-mono text-ui text-rh-text placeholder:font-sans placeholder:text-rh-muted"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setReveal((r) => !r)}
+                    className="absolute right-1.5 top-1/2 -translate-y-1/2 cursor-pointer rounded-sm p-1 text-rh-muted hover:text-rh-text"
+                    aria-label={reveal ? "Hide token" : "Show token"}
+                    aria-pressed={reveal}
+                    title={reveal ? "Hide token" : "Show token"}
+                  >
+                    {reveal ? <EyeOff className="h-3.5 w-3.5" aria-hidden="true" /> : <Eye className="h-3.5 w-3.5" aria-hidden="true" />}
+                  </button>
+                </div>
               </div>
 
-              <div className="relative">
-                <input
-                  type={reveal ? "text" : "password"}
-                  value={draft}
-                  onChange={(e) => {
-                    setDraft(e.target.value);
-                    setError(null);
-                  }}
-                  placeholder={hasToken ? "Enter a new token to replace the saved one" : "Paste API token"}
-                  autoComplete="off"
-                  spellCheck={false}
-                  autoFocus
-                  className="w-full bg-[#07090e] border border-[#1e2a40] rounded px-3 py-2 pr-9 text-xs text-slate-200 font-mono focus:outline-none focus:border-cyan-500"
-                />
-                <button
-                  type="button"
-                  onClick={() => setReveal((r) => !r)}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 cursor-pointer"
-                  title={reveal ? "Hide token" : "Show token"}
-                >
-                  {reveal ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                </button>
-              </div>
-
-              {error && <p className="text-xs text-rose-300 font-mono">{error}</p>}
+              {error && (
+                <p className="text-ui text-rh-nogo" role="alert">
+                  {error}
+                </p>
+              )}
 
               <div className="flex items-center justify-between pt-1">
                 <button
                   type="button"
                   onClick={clear}
                   disabled={!hasToken}
-                  className="px-3 py-1.5 rounded-lg text-xs font-mono text-rose-300 border border-rose-800/60 hover:bg-rose-950/50 disabled:opacity-40 cursor-pointer"
+                  className="cursor-pointer rounded-sm border border-rh-nogo/60 px-3 py-1.5 text-ui font-medium text-rh-nogo hover:bg-rh-nogo/10 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   Clear token
                 </button>
@@ -160,13 +185,13 @@ export function ApiTokenSettings() {
                   <button
                     type="button"
                     onClick={() => setOpen(false)}
-                    className="px-3 py-1.5 rounded-lg text-xs font-mono text-slate-300 border border-[#1e2a40] hover:bg-[#111b2e] cursor-pointer"
+                    className="cursor-pointer rounded-sm border border-rh-line px-3 py-1.5 text-ui font-medium text-rh-text hover:bg-rh-raised"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="px-4 py-1.5 rounded-lg text-xs font-mono font-bold bg-cyan-600 hover:bg-cyan-500 text-slate-950 cursor-pointer"
+                    className="cursor-pointer rounded-sm bg-rh-primary px-4 py-1.5 text-ui font-semibold text-rh-bg hover:bg-rh-primary-hover"
                   >
                     Save token
                   </button>

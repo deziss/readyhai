@@ -21,6 +21,77 @@ export function isGateVerdict(v: string | null | undefined): v is GateVerdict {
   return !!v && (GATE_VERDICTS as readonly string[]).includes(v);
 }
 
+/** Only a GO or CONDITIONAL_GO gate verdict may be approved for deployment; NO_GO can only be blocked. */
+export function canApproveVerdict(v: string | null | undefined): boolean {
+  return v === "GO" || v === "CONDITIONAL_GO";
+}
+
+export type SignOffStatus = "approved" | "rejected";
+
+/**
+ * The sign-off state the backend confirmed in its approve/reject response, or null when it echoed
+ * nothing usable. Callers must not substitute the action the operator clicked.
+ */
+export function confirmedSignOffStatus(v: unknown): SignOffStatus | null {
+  if (typeof v !== "string") return null;
+  const t = v.trim().toLowerCase();
+  return t === "approved" || t === "rejected" ? t : null;
+}
+
+// ---------------------------------------------------------------------------
+// Run lifecycle (running -> completed | failed | cancelled)
+// ---------------------------------------------------------------------------
+
+export type RunLifecycle = "running" | "completed" | "failed" | "cancelled";
+
+/**
+ * The lifecycle state the backend reported, or null when it reported none (a legacy report) or
+ * something unknown. Callers must not turn "unknown" into "completed" on their own.
+ */
+export function normalizeRunStatus(raw: unknown): RunLifecycle | null {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim().toLowerCase();
+  if (s === "running" || s === "queued") return "running";
+  if (s === "completed" || s === "done") return "completed";
+  if (s === "failed" || s === "error") return "failed";
+  if (s === "cancelled" || s === "canceled") return "cancelled";
+  return null;
+}
+
+export function runLifecycle(run: Pick<AgentRunRecord, "status">): RunLifecycle | null {
+  return normalizeRunStatus(run.status);
+}
+
+/** True while the backend is still executing the run: it can be cancelled, not signed off. */
+export function isRunActive(run: Pick<AgentRunRecord, "status">): boolean {
+  return runLifecycle(run) === "running";
+}
+
+/**
+ * A finished run that ended early (cancelled or failed) carries partial results at best: its
+ * verdict must not be presented as a normal gate decision.
+ */
+export function runEndedEarly(run: Pick<AgentRunRecord, "status">): boolean {
+  const l = runLifecycle(run);
+  return l === "cancelled" || l === "failed";
+}
+
+export const RUN_STATUS_LABEL: Record<RunLifecycle, string> = {
+  running: "Running",
+  completed: "Completed",
+  failed: "Failed",
+  cancelled: "Cancelled",
+};
+
+/** Why a run cannot be signed off right now, or null when it can (the backend enforces it too). */
+export function signOffBlockedReason(run: Pick<AgentRunRecord, "status">, action: "approve" | "reject"): string | null {
+  const l = runLifecycle(run);
+  if (l === "running") return "The run is still running. Sign-off is possible once it finishes (or is cancelled, which allows rejecting it).";
+  if (action === "approve" && l === "cancelled") return "A cancelled run only has partial results and cannot be approved for deployment. It can be rejected.";
+  if (action === "approve" && l === "failed") return "A failed run cannot be approved for deployment. It can be rejected.";
+  return null;
+}
+
 export function normalizeVerdict(v: unknown): string | null {
   if (typeof v !== "string") return null;
   const t = v.trim().toUpperCase();
@@ -138,8 +209,8 @@ export function normalizeExecutedCase(c: RawCaseResult): TestCaseResult {
     response_body: c.response_body_snippet ?? c.response_body ?? c.evidence ?? null,
     assertion_details: detail,
     adaptive_mutation: c.adaptive_mutation ?? c.evidence_detail?.adaptive_mutation ?? null,
-    stateful_steps: c.stateful_steps ?? c.evidence_detail?.stateful_steps ?? null,
-    stateful_chain: c.stateful_chain ?? c.evidence_detail?.stateful_chain ?? null,
+    stateful_steps: c.stateful_steps ?? c.evidence_detail?.stateful_steps,
+    stateful_chain: c.stateful_chain ?? c.evidence_detail?.stateful_chain,
     concurrency_burst: c.concurrency_burst ?? c.evidence_detail?.concurrency_burst,
     concurrency_burst_results: c.concurrency_burst_results ?? c.evidence_detail?.concurrency_burst_results,
     remediation_patch: c.remediation_patch ?? c.evidence_detail?.remediation_patch,
