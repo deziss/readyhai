@@ -75,6 +75,11 @@ services:
     tmpfs:
       - /run
       - /tmp
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2375/_ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
     mem_limit: 64m
     restart: unless-stopped
 

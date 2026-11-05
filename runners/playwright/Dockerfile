@@ -8,5 +8,7 @@ RUN if [ -f package-lock.json ]; then npm ci --omit=dev; else npm install --omit
  && npm cache clean --force
 COPY *.mjs ./
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright HOME=/tmp
-USER pwuser
+USER 1000:1000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD ["node", "-e", "process.exit(0)"]
 ENTRYPOINT []

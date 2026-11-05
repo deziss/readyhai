@@ -1,0 +1,75 @@
+version = 1
+revision = 1
+requires-python = ">=3.10"
+
+[[package]]
+name = "context-retriever"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "faiss-cpu" },
+    { name = "langchain" },
+    { name = "langchain-community" },
+    { name = "langchain-core" },
+    { name = "langchain-huggingface" },
+    { name = "langchain-ollama" },
+    { name = "langchain-openai" },
+    { name = "langchain-text-splitters" },
+    { name = "langgraph" },
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "rich" },
+    { name = "sentence-transformers" },
+]
+
+[[package]]
+name = "langgraph"
+version = "0.2.20"
+
+[[package]]
+name = "langchain"
+version = "0.3.0"
+
+[[package]]
+name = "langchain-core"
+version = "0.3.0"
+
+[[package]]
+name = "langchain-community"
+version = "0.3.0"
+
+[[package]]
+name = "langchain-text-splitters"
+version = "0.3.0"
+
+[[package]]
+name = "langchain-openai"
+version = "0.2.0"
+
+[[package]]
+name = "langchain-ollama"
+version = "0.2.0"
+
+[[package]]
+name = "langchain-huggingface"
+version = "0.1.0"
+
+[[package]]
+name = "sentence-transformers"
+version = "3.0.0"
+
+[[package]]
+name = "faiss-cpu"
+version = "1.8.0"
+
+[[package]]
+name = "numpy"
+version = "1.26.4"
+
+[[package]]
+name = "pydantic"
+version = "2.7.0"
+
+[[package]]
+name = "rich"
+version = "13.0.0"

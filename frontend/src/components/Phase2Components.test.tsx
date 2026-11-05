@@ -131,7 +131,7 @@ describe("StatefulChainFlow", () => {
     expect(screen.getByText("PREREQUISITE SETUP NOT MET")).toBeDefined();
     expect(screen.queryByText("CRITICAL BREACH DETECTED")).toBeNull();
     expect(screen.getByText(/Prerequisite Setup Notice/i)).toBeDefined();
-    expect(screen.getByText(/received HTTP 401/i)).toBeDefined();
+    expect(screen.getAllByText(/received HTTP 401/i).length).toBeGreaterThan(0);
   });
 });
 

@@ -24,7 +24,7 @@ COPY --from=builder --chown=readyhai:readyhai /app/.next/standalone ./
 COPY --from=builder --chown=readyhai:readyhai /app/.next/static ./.next/static
 COPY --from=builder --chown=readyhai:readyhai /app/public ./public
 
-USER readyhai
+USER 10001:10001
 
 EXPOSE 3000
 

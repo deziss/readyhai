@@ -136,8 +136,9 @@ echo "Executing reproduction curl (expecting 401/403, observed bypass):"
             format!(
                 r#"#!/usr/bin/env bash
 set -euo pipefail
+TOKEN="${{RH_AUTH_TOKEN:-forged-signature-token}}"
 curl -sS -i -X {method_upper} 'http://localhost:8000{norm_comp}' \
-  -H 'Authorization: Bearer forged.signature.token123'
+  -H "Authorization: Bearer $TOKEN"
 "#
             )
         };

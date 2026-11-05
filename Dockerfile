@@ -14,6 +14,7 @@ COPY probe ./probe
 RUN touch src/main.rs && cargo build --release --locked
 
 FROM debian:bookworm-slim
+# hadolint ignore=DL3008
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates git openssh-client curl \
  && rm -rf /var/lib/apt/lists/*
@@ -23,7 +24,7 @@ RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin readyhai \
  && mkdir /data && chown readyhai:readyhai /data
 ENV READYHAI_DATA=/data
 VOLUME /data
-USER readyhai
+USER 10001:10001
 EXPOSE 8080
 HEALTHCHECK CMD ["readyhai", "ping"]
 ENTRYPOINT ["readyhai"]
