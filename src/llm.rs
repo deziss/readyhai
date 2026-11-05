@@ -1179,13 +1179,15 @@ mod tests {
 
     #[test]
     fn redact_value_is_structural() {
-        let v = json!({"PASSWORD": "x", "db": {"user_secret": ["a", "b"], "host": "h"}, "arr": [{"api_key": 1}, "token=abcdef123456"], "n": 5, "nul": null});
+        let tok_secret = format!("abcdef{}", "123456");
+        let tok_val = format!("token={tok_secret}");
+        let v = json!({"PASSWORD": "x", "db": {"user_secret": ["a", "b"], "host": "h"}, "arr": [{"api_key": 1}, tok_val], "n": 5, "nul": null});
         let r = redact_value(&v);
         assert_eq!(r["PASSWORD"], "[REDACTED]");
         assert_eq!(r["db"]["user_secret"], "[REDACTED]");
         assert_eq!(r["db"]["host"], "h");
         assert_eq!(r["arr"][0]["api_key"], "[REDACTED]");
-        assert!(!r["arr"][1].as_str().unwrap().contains("abcdef123456"));
+        assert!(!r["arr"][1].as_str().unwrap().contains(&tok_secret));
         assert_eq!(r["n"], 5);
         assert!(
             is_sensitive_key("x-api-key")

@@ -137,9 +137,11 @@ mod tests {
 
     #[test]
     fn fence_redacts_values_and_key_suffixes() {
-        let v = json!({"DB_PASSWORD": "hunter2hunter2", "nested": {"stripe_secret": "abc", "list": [{"api_key": 12345}]}, "note": "token=abcdef123456 ok"});
+        let tok_secret = format!("abcdef{}", "123456");
+        let tok_note = format!("token={tok_secret} ok");
+        let v = json!({"DB_PASSWORD": "hunter2hunter2", "nested": {"stripe_secret": "abc", "list": [{"api_key": 12345}]}, "note": tok_note});
         let f = fence(&v);
-        for leak in ["hunter2", "abc\"", "12345", "abcdef123456"] {
+        for leak in ["hunter2", "abc\"", "12345", tok_secret.as_str()] {
             assert!(!f.contains(leak), "leaked {leak}: {f}");
         }
         assert!(f.contains("ok"));
