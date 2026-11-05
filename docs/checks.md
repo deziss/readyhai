@@ -1,6 +1,6 @@
 # Check catalog
 
-List the live registry with `readyhai checks` (columns: id, kinds, min profile, tool or `native`, title, `[intrusive]`). 28 built-in checks; plugins add more. Columns below: **Tool** is the container image key in `tools.lock.toml`, or `native`.
+List the live registry with `readyhai checks` (columns: id, kinds, min profile, tool or `native`, title, `[intrusive]`). 41 built-in checks; plugins add more. Columns below: **Tool** is the container image key in `tools.lock.toml`, or `native`.
 
 ## Check index
 
@@ -63,7 +63,7 @@ Note: `host.probe` and `host.lynis` have no `tool` set, so `--no-tools` does not
 
 Partial causes: `tool.sbom_cve` when any dependency is unpinned (`N of M deps unpinned; CVE coverage incomplete`) or when the grype DB is older than 7 days; `host.probe` when the probe reports reduced coverage (not root, TCC-blocked reads, PowerShell not in FullLanguage mode, not elevated); `host.lynis` when it ran unprivileged; plugins whose image is not digest-pinned.
 
-Nothing is silently green: partial, errored and skipped are visible in the summary and HTML report. Partial and errored raise the verdict to at least WARN; skipped and not_applicable do not.
+Nothing is silently green: partial, errored and skipped are visible in the summary and HTML report. Partial raises the verdict to at least WARN, and so does errored (FAIL for a required check, see below); skipped and not_applicable do not (except "docker not available", which adds a WARN reason).
 
 ## Verdict rules
 
@@ -72,12 +72,13 @@ Implemented in `policy::verdict` using the policy (default in [configuration.md]
 1. FAIL if any considered finding is at or above `fail_severity` (default `critical`).
 2. FAIL if any considered finding's `rule` starts with a `hard_fail` prefix.
 3. FAIL if `kev_fails` and any considered finding has `kev = true`. This is any KEV match in anything grype scanned (no runtime-vs-dev split; the plan wanted runtime-only).
-4. WARN if any considered finding is at or above `warn_severity` (default `medium`), or any check is `errored` or `partial`.
-5. Otherwise PASS.
+4. FAIL if a required check is `errored` and `errored_fails` is true (default).
+5. WARN if any considered finding is at or above `warn_severity` (default `medium`), or any other check is `errored` or `partial`, or scanner checks were skipped because docker is not available.
+6. Otherwise PASS.
 
-Deviation: the plan made "a required check errored" a hard fail. In code an errored check is WARN only.
+A required check that ends `errored` fails the gate while the policy key `errored_fails` is true (the default); a check is *required* when it is native or its tool image is present, so an error about a missing image is only a WARN. With `errored_fails = false`, or for a non-required check, an errored check is WARN. A check that was skipped because docker is not available also adds a WARN reason.
 
-Default hard-fail prefixes: `secrets.`, `readiness.repo.tracked_secret_file`, `readiness.compose.privileged`, `readiness.k8s.privileged`, `tests.failed`, `web.5xx`, `api.server_error`.
+Default hard-fail prefixes: `secrets.`, `readiness.repo.tracked_secret_file`, `readiness.compose.privileged`, `readiness.k8s.privileged`, `tests.failed`, `web.5xx`, `api.server_error`, `qa.api.server_error`, `qa.api.crash_on_input`.
 
 ## Rules by check
 
