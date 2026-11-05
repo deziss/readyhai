@@ -41,74 +41,260 @@ pub enum Transport {
 #[derive(Debug, Clone, Copy)]
 pub struct ProviderDescriptor {
     pub id: &'static str,
+    /// Extra ids that select this same descriptor (`READYHAI_LLM_PROVIDER=custom`).
+    pub aliases: &'static [&'static str],
     pub transport: Transport,
     pub base_url: &'static str,
-    /// For vllm: base_url is empty on purpose (no baked-in LAN address); READYHAI_VLLM_URL must supply it.
-    pub base_url_env: Option<&'static str>,
+    /// Deprecated provider-specific URL variable, read only when `READYHAI_LLM_URL` is unset. The generic
+    /// provider keeps `READYHAI_VLLM_URL` here; its `base_url` is empty on purpose (no baked-in LAN address).
+    pub legacy_url_env: Option<&'static str>,
     pub api_key_env: Option<&'static str>,
     pub default_model: &'static str,
     pub local: bool,
 }
 
+/// Generic base-URL override, valid for every provider (OpenAI-compatible or Anthropic transport).
+pub const ENV_URL: &str = "READYHAI_LLM_URL";
+/// Generic API key, valid for every provider; wins over the provider's own key variable.
+pub const ENV_API_KEY: &str = "READYHAI_LLM_API_KEY";
+/// Model, or a comma-separated list: the first is primary, the rest are tried in order on failure.
+pub const ENV_MODEL: &str = "READYHAI_LLM_MODEL";
+/// Alias of [`ENV_MODEL`], read only when that one is unset.
+pub const ENV_MODELS: &str = "READYHAI_LLM_MODELS";
+pub const ENV_PROVIDER: &str = "READYHAI_LLM_PROVIDER";
+pub const ENV_ALLOW_CLOUD: &str = "READYHAI_LLM_ALLOW_CLOUD";
+
 pub const CATALOG: &[ProviderDescriptor] = &[
     ProviderDescriptor {
         id: "ollama",
+        aliases: &[],
         transport: Transport::OpenAiChat,
         base_url: "http://localhost:11434/v1",
-        base_url_env: None,
+        legacy_url_env: None,
         api_key_env: None,
         default_model: "qwen2.5-coder",
         local: true,
     },
+    // The generic OpenAI-compatible provider (vLLM, LiteLLM, llama.cpp, TGI, a gateway ...). The id
+    // stays "vllm" for reports and saved runs; it needs READYHAI_LLM_URL because it has no address.
     ProviderDescriptor {
         id: "vllm",
+        aliases: &["openai-compatible", "custom"],
         transport: Transport::OpenAiChat,
         base_url: "",
-        base_url_env: Some("READYHAI_VLLM_URL"),
+        legacy_url_env: Some("READYHAI_VLLM_URL"),
         api_key_env: None,
         default_model: "qwen3.8-flash-next",
         local: true,
     },
     ProviderDescriptor {
         id: "openai",
+        aliases: &[],
         transport: Transport::OpenAiChat,
         base_url: "https://api.openai.com/v1",
-        base_url_env: None,
+        legacy_url_env: None,
         api_key_env: Some("OPENAI_API_KEY"),
         default_model: "gpt-4.1",
         local: false,
     },
     ProviderDescriptor {
         id: "anthropic",
+        aliases: &[],
         transport: Transport::AnthropicMessages,
         base_url: "https://api.anthropic.com",
-        base_url_env: None,
+        legacy_url_env: None,
         api_key_env: Some("ANTHROPIC_API_KEY"),
         default_model: "claude-sonnet-5-5",
         local: false,
     },
     ProviderDescriptor {
         id: "openrouter",
+        aliases: &[],
         transport: Transport::OpenAiChat,
         base_url: "https://openrouter.ai/api/v1",
-        base_url_env: None,
+        legacy_url_env: None,
         api_key_env: Some("OPENROUTER_API_KEY"),
         default_model: "anthropic/claude-sonnet-5-5",
         local: false,
     },
 ];
 
+/// The provider with this id or alias (case-insensitive).
 pub fn provider(id: &str) -> Option<&'static ProviderDescriptor> {
-    CATALOG.iter().find(|p| p.id == id)
+    let id = id.trim().to_ascii_lowercase();
+    CATALOG
+        .iter()
+        .find(|p| p.id == id || p.aliases.contains(&id.as_str()))
+}
+
+/// Every accepted provider id, aliases included, for error messages.
+fn provider_ids() -> String {
+    CATALOG
+        .iter()
+        .flat_map(|p| std::iter::once(p.id).chain(p.aliases.iter().copied()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// A credential. `Debug` never shows the value, so a config can be logged or put in an error.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ApiKey(String);
+
+impl ApiKey {
+    pub fn new(k: impl Into<String>) -> Self {
+        ApiKey(k.into())
+    }
+    /// The raw value. Only the code that builds a request header should call this.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ApiKey(<redacted>)")
+    }
+}
+
+/// Split a model setting on commas: trimmed, empties dropped, duplicates removed, order kept.
+pub fn parse_model_list(s: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for m in s.split(',').map(str::trim).filter(|m| !m.is_empty()) {
+        if !out.iter().any(|x| x == m) {
+            out.push(m.to_string());
+        }
+    }
+    out
+}
+
+/// Parse a configured base URL: http(s), with a host, and nothing secret in it (credentials belong in
+/// `READYHAI_LLM_API_KEY`; a query string would also break the paths appended to it). The message never
+/// echoes the value, so a mistyped secret does not reach a log. Returns the trimmed original text.
+pub fn validate_base_url(raw: &str) -> Result<String> {
+    let t = raw.trim();
+    let Ok(u) = reqwest::Url::parse(t) else {
+        bail!("LLM base URL is not a valid URL (expected e.g. http://localhost:8000/v1)")
+    };
+    if !matches!(u.scheme(), "http" | "https") {
+        bail!("LLM base URL must start with http:// or https://");
+    }
+    if u.host_str().is_none_or(str::is_empty) {
+        bail!("LLM base URL has no host");
+    }
+    if !u.username().is_empty() || u.password().is_some() {
+        bail!("LLM base URL must not embed credentials; put the key in {ENV_API_KEY}");
+    }
+    if u.query().is_some() || u.fragment().is_some() {
+        bail!(
+            "LLM base URL must be a plain base (scheme://host[:port]/path) without a query string or fragment"
+        );
+    }
+    Ok(t.to_string())
+}
+
+/// Inside the ReadyHai image (`READYHAI_IN_CONTAINER=1`) "localhost" is the container itself, so
+/// the `.env` URL a developer uses on the host (`http://localhost:8000/v1`) would never connect.
+/// Rewrite a loopback host to `host.docker.internal` (mapped to the host gateway by compose).
+pub fn container_loopback_to_host(raw: &str) -> String {
+    let Ok(mut u) = reqwest::Url::parse(raw.trim()) else {
+        return raw.to_string();
+    };
+    let loopback = u.host_str().is_some_and(|h| {
+        h.eq_ignore_ascii_case("localhost")
+            || h.trim_matches(|c| c == '[' || c == ']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    });
+    if loopback && u.set_host(Some("host.docker.internal")).is_ok() {
+        let out = u.to_string();
+        // Url adds a trailing "/" to a bare origin; keep the user's form otherwise.
+        if !raw.trim().ends_with('/') && out.ends_with('/') && u.path() == "/" {
+            return out.trim_end_matches('/').to_string();
+        }
+        return out;
+    }
+    raw.to_string()
+}
+
+fn is_non_public_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v) => {
+            let o = v.octets();
+            v.is_loopback()
+                || v.is_private()
+                || v.is_link_local()
+                || v.is_unspecified()
+                // 100.64.0.0/10: carrier-grade NAT, the range Tailscale-style overlays use
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v) => match v.to_ipv4_mapped() {
+            Some(m) => is_non_public_ip(IpAddr::V4(m)),
+            None => {
+                v.is_loopback()
+                    || v.is_unspecified()
+                    || v.is_unique_local()
+                    || v.is_unicast_link_local()
+            }
+        },
+    }
+}
+
+/// True when `host` is a name or address on the public internet. Not public: loopback, RFC 1918,
+/// link-local, unique-local and CGNAT addresses; `.local` / `.lan` / `.internal` (which covers
+/// `host.docker.internal`) / `.localhost` / `.home.arpa` names; and single-label names (`localhost`,
+/// `gpu-box`, a compose service name). A name is judged by its spelling, never resolved.
+pub fn is_public_host(host: &str) -> bool {
+    let h = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    if h.is_empty() {
+        return true;
+    }
+    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+        return !is_non_public_ip(ip);
+    }
+    if !h.contains('.') {
+        return false;
+    }
+    const PRIVATE_SUFFIXES: [&str; 5] = [".local", ".lan", ".internal", ".localhost", ".home.arpa"];
+    !PRIVATE_SUFFIXES.iter().any(|s| h.ends_with(s))
+}
+
+/// The host of `url` when it is public. An unparseable URL counts as public (fail closed).
+pub fn public_host_of(url: &str) -> Option<String> {
+    let host = reqwest::Url::parse(url.trim())
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string));
+    match host {
+        Some(h) => is_public_host(&h).then_some(h),
+        None => Some("<unparseable>".into()),
+    }
+}
+
+/// True when any variable that asks for an LLM is set (used to say why a requested LLM was not used).
+pub fn env_requested() -> bool {
+    [ENV_PROVIDER, ENV_URL, "READYHAI_VLLM_URL"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))
 }
 
 #[derive(Debug, Clone)]
 pub struct LlmConfig {
     pub provider: &'static ProviderDescriptor,
+    /// The primary model: what `describe()` and run reports show, and what is tried first.
     pub model: String,
+    /// Every configured model, primary first. Calls that fail on one move on to the next
+    /// (see [`LlmConfig::model_chain`]).
+    pub models: Vec<String>,
     pub allow_cloud: bool,
-    /// Overrides the provider base URL (tests).
+    /// Base URL override: `READYHAI_LLM_URL` (or the deprecated `READYHAI_VLLM_URL`), or a test mock.
     pub base_override: Option<String>,
+    /// `READYHAI_LLM_API_KEY`. Wins over the provider's own key variable. Debug-safe.
+    pub api_key: Option<ApiKey>,
     /// Overrides <data_dir>/llm-cache (tests).
     pub cache_dir: Option<std::path::PathBuf>,
     /// Total attempts per call for 429 / 5xx / timeouts (1 = no retry).
@@ -125,16 +311,39 @@ pub struct LlmConfig {
 
 impl LlmConfig {
     pub fn from_env() -> Result<Self> {
-        let explicit = std::env::var("READYHAI_LLM_PROVIDER").ok();
-        let provider_id = explicit.unwrap_or_else(|| "vllm".to_string());
-        Self::resolve(
-            Some(&provider_id),
-            std::env::var("READYHAI_LLM_MODEL").ok().as_deref(),
-            matches!(
-                std::env::var("READYHAI_LLM_ALLOW_CLOUD").as_deref(),
-                Ok("1") | Ok("true")
-            ),
-        )
+        Self::from_vars(|k| std::env::var(k).ok())
+    }
+
+    /// As [`LlmConfig::from_env`] over any variable lookup, so the rules can be tested without touching
+    /// the process environment. Empty values count as unset (an `.env` file lists every name).
+    ///
+    /// * provider: `READYHAI_LLM_PROVIDER`, default the generic OpenAI-compatible one (`vllm`).
+    /// * URL: `READYHAI_LLM_URL` for any provider, else the provider's deprecated URL variable.
+    /// * key: `READYHAI_LLM_API_KEY` (a provider's own key variable is read at call time).
+    /// * models: `READYHAI_LLM_MODEL`, else `READYHAI_LLM_MODELS`; comma-separated, first is primary.
+    pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> Result<Self> {
+        let val = |k: &str| {
+            get(k)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        let provider_id = val(ENV_PROVIDER).unwrap_or_else(|| "vllm".to_string());
+        let models = val(ENV_MODEL).or_else(|| val(ENV_MODELS));
+        let allow_cloud = matches!(get(ENV_ALLOW_CLOUD).as_deref(), Some("1") | Some("true"));
+        let mut cfg = Self::resolve(Some(&provider_id), models.as_deref(), allow_cloud)?;
+        let url = val(ENV_URL).or_else(|| cfg.provider.legacy_url_env.and_then(&val));
+        if let Some(u) = url {
+            let u = if matches!(get("READYHAI_IN_CONTAINER").as_deref(), Some("1")) {
+                container_loopback_to_host(&u)
+            } else {
+                u
+            };
+            cfg = cfg.with_base_url(&u)?;
+        }
+        if let Some(k) = val(ENV_API_KEY) {
+            cfg.api_key = Some(ApiKey::new(k));
+        }
+        Ok(cfg)
     }
 
     pub fn resolve(
@@ -143,21 +352,27 @@ impl LlmConfig {
         allow_cloud: bool,
     ) -> Result<Self> {
         let Some(id) = provider_id else {
-            bail!("READYHAI_LLM_PROVIDER not set")
+            bail!("{ENV_PROVIDER} not set")
         };
         let Some(p) = provider(id) else {
-            bail!("unknown LLM provider '{id}'")
+            bail!("unknown LLM provider '{id}' (known: {})", provider_ids())
         };
         if !p.local && !allow_cloud {
             bail!(
                 "provider '{id}' is a cloud provider; set READYHAI_LLM_ALLOW_CLOUD=1 to allow sending (redacted) findings off-box"
             );
         }
+        let mut models = model.map(parse_model_list).unwrap_or_default();
+        if models.is_empty() {
+            models.push(p.default_model.to_string());
+        }
         Ok(LlmConfig {
             provider: p,
-            model: model.unwrap_or(p.default_model).to_string(),
+            model: models[0].clone(),
+            models,
             allow_cloud,
             base_override: None,
+            api_key: None,
             cache_dir: None,
             max_attempts: 3,
             retry_base_ms: 500,
@@ -167,11 +382,52 @@ impl LlmConfig {
         })
     }
 
+    /// Point this config at `url` (any provider). Refused when the URL is malformed, carries
+    /// credentials, or is a public host while the provider is a local one and cloud is not allowed.
+    pub fn with_base_url(mut self, url: &str) -> Result<Self> {
+        self.base_override = Some(validate_base_url(url)?);
+        self.guard()?;
+        Ok(self)
+    }
+
+    /// The off-box guard, checked when the config is built and again before anything is sent:
+    /// a cloud provider, or a local provider pointed at a public host, needs
+    /// `READYHAI_LLM_ALLOW_CLOUD=1`.
+    pub fn guard(&self) -> Result<()> {
+        if self.allow_cloud {
+            return Ok(());
+        }
+        if !self.provider.local {
+            bail!(
+                "cloud provider '{}' refused (READYHAI_LLM_ALLOW_CLOUD not set)",
+                self.provider.id
+            );
+        }
+        if let Some(host) = self.base_override.as_deref().and_then(public_host_of) {
+            bail!(
+                "LLM URL host '{host}' is a public address, but provider '{}' is a local one: sending findings off-box is refused. Set READYHAI_LLM_ALLOW_CLOUD=1 to allow it, or use a loopback, private (RFC 1918), .local/.lan/.internal or single-label host",
+                self.provider.id
+            );
+        }
+        Ok(())
+    }
+
     pub fn with_thinking(mut self, thinking: bool, tier: &str, budget: u32) -> Self {
         self.thinking = thinking;
         self.model_tier = tier.to_string();
         self.thinking_budget_tokens = clamp_thinking_budget(budget);
         self
+    }
+
+    /// Models to try, in order: the primary `model`, then the rest of `models` (no duplicates).
+    pub fn model_chain(&self) -> Vec<&str> {
+        let mut v = vec![self.model.as_str()];
+        for m in &self.models {
+            if !v.contains(&m.as_str()) {
+                v.push(m);
+            }
+        }
+        v
     }
 
     /// What reasoning settings a structured call really carries, for the run log. The request's
@@ -207,24 +463,21 @@ impl LlmConfig {
         if let Some(b) = &self.base_override {
             return Ok(b.clone());
         }
-        if let Some(e) = self.provider.base_url_env
-            && let Ok(v) = std::env::var(e)
-            && !v.trim().is_empty()
-        {
-            return Ok(v);
-        }
         if !self.provider.base_url.is_empty() {
             return Ok(self.provider.base_url.to_string());
         }
-        match self.provider.base_url_env {
-            Some(e) => bail!("{} base URL not set (export {e})", self.provider.id),
-            None => bail!("{} base URL not set", self.provider.id),
-        }
+        bail!("{} base URL not set (export {ENV_URL})", self.provider.id)
     }
 
-    /// "provider/model" for logs and reports (the real values, never a literal).
+    /// "provider/model" for logs and reports (the real values, never a literal), plus how many
+    /// fallback models are configured. Never includes the API key.
     pub fn describe(&self) -> String {
-        format!("{}/{}", self.provider.id, self.model)
+        let extra = self.model_chain().len() - 1;
+        match extra {
+            0 => format!("{}/{}", self.provider.id, self.model),
+            1 => format!("{}/{} (+1 fallback)", self.provider.id, self.model),
+            n => format!("{}/{} (+{n} fallbacks)", self.provider.id, self.model),
+        }
     }
 
     /// Resolve the configured provider and probe it once. Err carries the human reason the
@@ -286,46 +539,127 @@ pub fn client(cfg: LlmConfig) -> Box<dyn ChatClient> {
     }
 }
 
+fn openai_body(model: &str, system: &str, messages: &[Msg], tools: &[ToolDef]) -> Value {
+    let mut msgs = vec![json!({"role": "system", "content": system})];
+    msgs.extend(
+        messages
+            .iter()
+            .map(|m| json!({"role": m.role, "content": m.content})),
+    );
+    let mut b = json!({"model": model, "messages": msgs});
+    if !tools.is_empty() {
+        b["tools"] = tools
+            .iter()
+            .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.schema}}))
+            .collect();
+    }
+    b
+}
+
+fn anthropic_body(model: &str, system: &str, messages: &[Msg], tools: &[ToolDef]) -> Value {
+    let mut b = json!({
+        "model": model,
+        "max_tokens": 4096,
+        "system": system,
+        "messages": messages.iter().map(|m| json!({"role": m.role, "content": m.content})).collect::<Vec<_>>(),
+    });
+    if !tools.is_empty() {
+        b["tools"] = tools
+            .iter()
+            .map(
+                |t| json!({"name": t.name, "description": t.description, "input_schema": t.schema}),
+            )
+            .collect();
+    }
+    b
+}
+
 impl OpenAiClient {
+    /// Request body for the primary model.
     pub fn body(&self, system: &str, messages: &[Msg], tools: &[ToolDef]) -> Value {
-        let mut msgs = vec![json!({"role": "system", "content": system})];
-        msgs.extend(
-            messages
-                .iter()
-                .map(|m| json!({"role": m.role, "content": m.content})),
-        );
-        let mut b = json!({"model": self.cfg.model, "messages": msgs});
-        if !tools.is_empty() {
-            b["tools"] = tools
-                .iter()
-                .map(|t| json!({"type": "function", "function": {"name": t.name, "description": t.description, "parameters": t.schema}}))
-                .collect();
-        }
-        b
+        self.body_for(&self.cfg.model, system, messages, tools)
+    }
+
+    pub fn body_for(
+        &self,
+        model: &str,
+        system: &str,
+        messages: &[Msg],
+        tools: &[ToolDef],
+    ) -> Value {
+        openai_body(model, system, messages, tools)
     }
 }
 
 impl AnthropicClient {
+    /// Request body for the primary model.
     pub fn body(&self, system: &str, messages: &[Msg], tools: &[ToolDef]) -> Value {
-        let mut b = json!({
-            "model": self.cfg.model,
-            "max_tokens": 4096,
-            "system": system,
-            "messages": messages.iter().map(|m| json!({"role": m.role, "content": m.content})).collect::<Vec<_>>(),
-        });
-        if !tools.is_empty() {
-            b["tools"] = tools.iter().map(|t| json!({"name": t.name, "description": t.description, "input_schema": t.schema})).collect();
-        }
-        b
+        self.body_for(&self.cfg.model, system, messages, tools)
+    }
+
+    pub fn body_for(
+        &self,
+        model: &str,
+        system: &str,
+        messages: &[Msg],
+        tools: &[ToolDef],
+    ) -> Value {
+        anthropic_body(model, system, messages, tools)
     }
 }
 
+/// The key to send: `READYHAI_LLM_API_KEY` (held in the config) for any provider, else the provider's
+/// own variable (`OPENAI_API_KEY` ...). Local providers need none. Errors name the variable, never a value.
 fn key(cfg: &LlmConfig) -> Result<Option<String>> {
-    match cfg.provider.api_key_env {
-        Some(e) => Ok(Some(
-            std::env::var(e).map_err(|_| anyhow::anyhow!("{e} not set"))?,
-        )),
-        None => Ok(None),
+    key_with(cfg, |k| std::env::var(k).ok())
+}
+
+fn key_with(cfg: &LlmConfig, get: impl Fn(&str) -> Option<String>) -> Result<Option<String>> {
+    let found = match (&cfg.api_key, cfg.provider.api_key_env) {
+        (Some(k), _) => Some(k.expose().to_string()),
+        (None, Some(e)) => match get(e).map(|v| v.trim().to_string()) {
+            Some(v) if !v.is_empty() => Some(v),
+            _ => bail!("{e} not set (or set {ENV_API_KEY})"),
+        },
+        (None, None) => None,
+    };
+    if let Some(k) = &found
+        && k.bytes().any(|b| b.is_ascii_control())
+    {
+        bail!("the LLM API key contains a control character (a stray newline?) and cannot be sent");
+    }
+    Ok(found)
+}
+
+/// Whether a key would be sent with calls to this config (generic or provider-specific). A fact for
+/// status screens; the value itself never leaves this module.
+pub fn key_configured(cfg: &LlmConfig) -> bool {
+    matches!(key(cfg), Ok(Some(_)))
+}
+
+/// Attach the credentials and transport headers: `Authorization: Bearer` for OpenAI-compatible
+/// servers, `x-api-key` plus `anthropic-version` for the Anthropic Messages API. The key header is
+/// marked sensitive so it never shows up in a debug dump of the request.
+fn authorize(
+    cfg: &LlmConfig,
+    rq: reqwest::blocking::RequestBuilder,
+    key: &Option<String>,
+) -> reqwest::blocking::RequestBuilder {
+    match cfg.provider.transport {
+        Transport::OpenAiChat => match key {
+            Some(k) => rq.bearer_auth(k),
+            None => rq,
+        },
+        Transport::AnthropicMessages => {
+            let rq = rq.header("anthropic-version", "2023-06-01");
+            match key.as_deref().map(reqwest::header::HeaderValue::from_str) {
+                Some(Ok(mut v)) => {
+                    v.set_sensitive(true);
+                    rq.header("x-api-key", v)
+                }
+                _ => rq,
+            }
+        }
     }
 }
 
@@ -333,6 +667,33 @@ fn http(timeout: Duration) -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .timeout(timeout)
         .build()?)
+}
+
+/// Run `call` for the primary model and, when it fails (an error after its retries, a non-success
+/// status, an unusable answer), for each following model in `cfg.model_chain()` until one succeeds.
+/// A single configured model returns its own error unchanged; several return one error naming every
+/// model that failed. Nothing in an error is a credential.
+fn try_models<T>(cfg: &LlmConfig, mut call: impl FnMut(&str) -> Result<T>) -> Result<T> {
+    let chain = cfg.model_chain();
+    let mut failed: Vec<String> = Vec::new();
+    for (i, model) in chain.iter().enumerate() {
+        match call(model) {
+            Ok(v) => return Ok(v),
+            Err(e) if chain.len() == 1 => return Err(e),
+            Err(e) => {
+                let why: String = format!("{e:#}").chars().take(300).collect();
+                if let Some(next) = chain.get(i + 1) {
+                    eprintln!("llm: model '{model}' failed ({why}); falling back to '{next}'");
+                }
+                failed.push(format!("'{model}': {why}"));
+            }
+        }
+    }
+    bail!(
+        "all {} configured models failed: {}",
+        chain.len(),
+        failed.join("; ")
+    )
 }
 
 // ---------------------------------------------------------------- retry with backoff
@@ -398,68 +759,65 @@ fn send_retrying(
 
 impl ChatClient for OpenAiClient {
     fn chat(&self, system: &str, messages: &[Msg], tools: &[ToolDef]) -> Result<Reply> {
+        self.cfg.guard()?;
         let url = format!(
             "{}/chat/completions",
             self.cfg.base_url()?.trim_end_matches('/')
         );
-        let body = self.body(system, messages, tools);
         let key = key(&self.cfg)?;
         let c = http(Duration::from_secs(120))?;
-        let r = send_retrying(&self.cfg, || {
-            let rq = c.post(&url).json(&body);
-            match &key {
-                Some(k) => rq.bearer_auth(k),
-                None => rq,
-            }
-        })?;
-        let v: Value = r.error_for_status()?.json()?;
-        let m = &v["choices"][0]["message"];
-        let mut r = Reply {
-            text: m["content"].as_str().unwrap_or("").to_string(),
-            tool_calls: vec![],
-        };
-        for tc in m["tool_calls"].as_array().into_iter().flatten() {
-            r.tool_calls.push(ToolCall {
-                id: tc["id"].as_str().unwrap_or("").into(),
-                name: tc["function"]["name"].as_str().unwrap_or("").into(),
-                args: serde_json::from_str(tc["function"]["arguments"].as_str().unwrap_or("{}"))
+        try_models(&self.cfg, |model| {
+            let body = self.body_for(model, system, messages, tools);
+            let r = send_retrying(&self.cfg, || {
+                authorize(&self.cfg, c.post(&url).json(&body), &key)
+            })?;
+            let v: Value = r.error_for_status()?.json()?;
+            let m = &v["choices"][0]["message"];
+            let mut r = Reply {
+                text: m["content"].as_str().unwrap_or("").to_string(),
+                tool_calls: vec![],
+            };
+            for tc in m["tool_calls"].as_array().into_iter().flatten() {
+                r.tool_calls.push(ToolCall {
+                    id: tc["id"].as_str().unwrap_or("").into(),
+                    name: tc["function"]["name"].as_str().unwrap_or("").into(),
+                    args: serde_json::from_str(
+                        tc["function"]["arguments"].as_str().unwrap_or("{}"),
+                    )
                     .unwrap_or(json!({})),
-            });
-        }
-        Ok(r)
+                });
+            }
+            Ok(r)
+        })
     }
 }
 
 impl ChatClient for AnthropicClient {
     fn chat(&self, system: &str, messages: &[Msg], tools: &[ToolDef]) -> Result<Reply> {
+        self.cfg.guard()?;
         let url = format!("{}/v1/messages", self.cfg.base_url()?.trim_end_matches('/'));
-        let body = self.body(system, messages, tools);
         let key = key(&self.cfg)?;
         let c = http(Duration::from_secs(120))?;
-        let r = send_retrying(&self.cfg, || {
-            let rq = c
-                .post(&url)
-                .header("anthropic-version", "2023-06-01")
-                .json(&body);
-            match &key {
-                Some(k) => rq.header("x-api-key", k),
-                None => rq,
+        try_models(&self.cfg, |model| {
+            let body = self.body_for(model, system, messages, tools);
+            let r = send_retrying(&self.cfg, || {
+                authorize(&self.cfg, c.post(&url).json(&body), &key)
+            })?;
+            let v: Value = r.error_for_status()?.json()?;
+            let mut r = Reply::default();
+            for c in v["content"].as_array().into_iter().flatten() {
+                match c["type"].as_str() {
+                    Some("text") => r.text += c["text"].as_str().unwrap_or(""),
+                    Some("tool_use") => r.tool_calls.push(ToolCall {
+                        id: c["id"].as_str().unwrap_or("").into(),
+                        name: c["name"].as_str().unwrap_or("").into(),
+                        args: c["input"].clone(),
+                    }),
+                    _ => {}
+                }
             }
-        })?;
-        let v: Value = r.error_for_status()?.json()?;
-        let mut r = Reply::default();
-        for c in v["content"].as_array().into_iter().flatten() {
-            match c["type"].as_str() {
-                Some("text") => r.text += c["text"].as_str().unwrap_or(""),
-                Some("tool_use") => r.tool_calls.push(ToolCall {
-                    id: c["id"].as_str().unwrap_or("").into(),
-                    name: c["name"].as_str().unwrap_or("").into(),
-                    args: c["input"].clone(),
-                }),
-                _ => {}
-            }
-        }
-        Ok(r)
+            Ok(r)
+        })
     }
 }
 
@@ -596,30 +954,36 @@ pub fn redact_value_capped(v: &Value, max_leaf: usize) -> Value {
 
 // ---------------------------------------------------------------- single-shot strict-JSON layer
 
-/// Reachability probe: GET {base}/models with a 2s timeout. True on any HTTP answer < 500.
+/// GET {base}/models with a 2s timeout: the HTTP status, or None when it is refused (off-box guard),
+/// unconfigured or unreachable. The key is sent exactly as on a real call.
+pub fn probe_status(cfg: &LlmConfig) -> Option<u16> {
+    cfg.guard().ok()?;
+    let base = cfg.base_url().ok()?;
+    let c = http(Duration::from_secs(2)).ok()?;
+    let key = key(cfg).ok().flatten();
+    let rq = c.get(format!("{}/models", base.trim_end_matches('/')));
+    authorize(cfg, rq, &key)
+        .send()
+        .ok()
+        .map(|r| r.status().as_u16())
+}
+
+/// Reachability probe: True on any HTTP answer < 500.
 pub fn probe(cfg: &LlmConfig) -> bool {
-    let Ok(base) = cfg.base_url() else {
-        return false;
-    };
-    let Ok(c) = http(Duration::from_secs(2)) else {
-        return false;
-    };
-    let mut rq = c.get(format!("{}/models", base.trim_end_matches('/')));
-    if let Ok(Some(k)) = key(cfg) {
-        rq = rq.bearer_auth(k);
-    }
-    matches!(rq.send(), Ok(r) if r.status().as_u16() < 500)
+    matches!(probe_status(cfg), Some(code) if code < 500)
 }
 
 /// Fetch list of models from provider /models endpoint.
 pub fn query_models(cfg: &LlmConfig) -> Result<Value> {
+    cfg.guard()?;
     let base = cfg.base_url()?;
     let c = http(Duration::from_secs(3))?;
-    let mut rq = c.get(format!("{}/models", base.trim_end_matches('/')));
-    if let Ok(Some(k)) = key(cfg) {
-        rq = rq.bearer_auth(k);
-    }
-    let r = rq.send()?.error_for_status()?.json()?;
+    let key = key(cfg).ok().flatten();
+    let rq = c.get(format!("{}/models", base.trim_end_matches('/')));
+    let r = authorize(cfg, rq, &key)
+        .send()?
+        .error_for_status()?
+        .json()?;
     Ok(r)
 }
 
@@ -833,11 +1197,11 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
     let c = http(Duration::from_secs(60))?;
     let key = key(cfg)?;
     let p = call_params(cfg);
-    match cfg.provider.transport {
+    try_models(cfg, |model| match cfg.provider.transport {
         Transport::OpenAiChat => {
             let url = format!("{}/chat/completions", base.trim_end_matches('/'));
             let mut body = json!({
-                "model": cfg.model,
+                "model": model,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
                 "max_tokens": p.max_tokens,
                 "response_format": {"type": "json_object"},
@@ -851,13 +1215,7 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
             // Servers that reject an optional field answer 400: drop the optional fields (first the
             // response format and reasoning effort, then the temperature) and ask again.
             for attempt in 0..3 {
-                let r = send_retrying(cfg, || {
-                    let rq = c.post(&url).json(&body);
-                    match &key {
-                        Some(k) => rq.bearer_auth(k),
-                        None => rq,
-                    }
-                })?;
+                let r = send_retrying(cfg, || authorize(cfg, c.post(&url).json(&body), &key))?;
                 if r.status().as_u16() == 400 && attempt < 2 {
                     if let Some(o) = body.as_object_mut() {
                         if attempt == 0 {
@@ -875,8 +1233,8 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
             bail!("LLM rejected the request")
         }
         Transport::AnthropicMessages => {
-            let a = AnthropicClient { cfg: cfg.clone() };
-            let mut b = a.body(
+            let mut b = anthropic_body(
+                model,
                 system,
                 &[Msg {
                     role: "user".into(),
@@ -892,16 +1250,7 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
                 b["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
             }
             let url = format!("{}/v1/messages", base.trim_end_matches('/'));
-            let r = send_retrying(cfg, || {
-                let rq = c
-                    .post(&url)
-                    .header("anthropic-version", "2023-06-01")
-                    .json(&b);
-                match &key {
-                    Some(k) => rq.header("x-api-key", k),
-                    None => rq,
-                }
-            })?;
+            let r = send_retrying(cfg, || authorize(cfg, c.post(&url).json(&b), &key))?;
             let v: Value = r.error_for_status()?.json()?;
             let text = v["content"]
                 .as_array()
@@ -914,7 +1263,7 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
             }
             Ok(text)
         }
-    }
+    })
 }
 
 /// One single-shot call that must return a JSON object. Cached on disk by
@@ -933,12 +1282,7 @@ pub fn ask_json_with(
     prompt: &str,
     validate: impl Fn(&Value) -> Result<()>,
 ) -> Result<Value> {
-    if !cfg.provider.local && !cfg.allow_cloud {
-        bail!(
-            "cloud provider '{}' refused (READYHAI_LLM_ALLOW_CLOUD not set)",
-            cfg.provider.id
-        );
-    }
+    cfg.guard()?;
     let path = cache_path(cfg, system, prompt);
     if let Ok(s) = std::fs::read_to_string(&path) {
         if let Ok(v) = parse_json_object(&s)
@@ -982,6 +1326,33 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     #[test]
+    fn container_rewrites_loopback_llm_url() {
+        assert_eq!(
+            container_loopback_to_host("http://localhost:6130/v1"),
+            "http://host.docker.internal:6130/v1"
+        );
+        assert_eq!(
+            container_loopback_to_host("http://127.0.0.1:8000"),
+            "http://host.docker.internal:8000"
+        );
+        assert_eq!(
+            container_loopback_to_host("http://vllm.lan:8000/v1"),
+            "http://vllm.lan:8000/v1"
+        );
+        let get = |inside: bool| {
+            move |k: &str| match k {
+                "READYHAI_LLM_URL" => Some("http://localhost:6130/v1".to_string()),
+                "READYHAI_IN_CONTAINER" if inside => Some("1".to_string()),
+                _ => None,
+            }
+        };
+        let c = LlmConfig::from_vars(get(true)).unwrap();
+        assert_eq!(c.base_url().unwrap(), "http://host.docker.internal:6130/v1");
+        let h = LlmConfig::from_vars(get(false)).unwrap();
+        assert_eq!(h.base_url().unwrap(), "http://localhost:6130/v1");
+    }
+
+    #[test]
     fn cloud_guard() {
         assert!(LlmConfig::resolve(Some("anthropic"), None, false).is_err());
         let c = LlmConfig::resolve(Some("anthropic"), None, true).unwrap();
@@ -1000,12 +1371,586 @@ mod tests {
                 "{} bakes in a LAN address",
                 p.id
             );
+            // a built-in base is loopback or a public name, never a private LAN address
+            if let Some(h) = reqwest::Url::parse(p.base_url)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+            {
+                assert!(
+                    !h.starts_with("192.168.") && !h.starts_with("10.") && !h.starts_with("172."),
+                    "{} bakes in a private address {h}",
+                    p.id
+                );
+            }
         }
-        assert_eq!(provider("vllm").unwrap().base_url, "");
-        assert_eq!(
-            provider("vllm").unwrap().base_url_env,
-            Some("READYHAI_VLLM_URL")
+        let g = provider("vllm").unwrap();
+        assert_eq!(g.base_url, "");
+        assert_eq!(g.legacy_url_env, Some("READYHAI_VLLM_URL"));
+        // the generic provider is the only one without an address; only it has a legacy URL variable
+        assert!(
+            CATALOG
+                .iter()
+                .all(|p| (p.base_url.is_empty() && p.legacy_url_env.is_some()) == (p.id == "vllm"))
         );
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let m: std::collections::HashMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |k| m.get(k).cloned()
+    }
+
+    fn model_of(body: &str) -> String {
+        serde_json::from_str::<Value>(body).unwrap()["model"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn models_seen(m: &mock::Mock) -> Vec<String> {
+        m.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| model_of(r.split("\r\n\r\n").nth(1).unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn provider_aliases_select_the_generic_descriptor() {
+        let g = provider("vllm").unwrap();
+        for a in [
+            "openai-compatible",
+            "custom",
+            "CUSTOM",
+            " Openai-Compatible ",
+        ] {
+            assert!(std::ptr::eq(provider(a).unwrap(), g), "{a}");
+        }
+        let c = LlmConfig::resolve(Some("custom"), None, false).unwrap();
+        assert_eq!(c.provider.id, "vllm");
+        assert_eq!(c.describe(), "vllm/qwen3.8-flash-next");
+        let mut seen = std::collections::HashSet::new();
+        for p in CATALOG {
+            for id in std::iter::once(p.id).chain(p.aliases.iter().copied()) {
+                assert!(seen.insert(id), "duplicate provider id/alias {id}");
+            }
+        }
+        assert!(provider("nope").is_none());
+        let e = LlmConfig::resolve(Some("nope"), None, true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("custom") && e.contains("openai-compatible"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn llm_url_overrides_the_base_of_every_provider() {
+        let c = LlmConfig::from_vars(vars(&[
+            ("READYHAI_LLM_PROVIDER", "ollama"),
+            ("READYHAI_LLM_URL", "http://gpu-box:8080/v1"),
+        ]))
+        .unwrap();
+        assert_eq!(c.provider.id, "ollama");
+        assert_eq!(c.base_url().unwrap(), "http://gpu-box:8080/v1");
+        for id in ["openai", "anthropic", "openrouter"] {
+            let with = LlmConfig::from_vars(vars(&[
+                ("READYHAI_LLM_PROVIDER", id),
+                ("READYHAI_LLM_ALLOW_CLOUD", "1"),
+                ("READYHAI_LLM_URL", "https://llm-proxy.example.com/gw"),
+            ]))
+            .unwrap();
+            assert_eq!(with.base_url().unwrap(), "https://llm-proxy.example.com/gw");
+            let without = LlmConfig::from_vars(vars(&[
+                ("READYHAI_LLM_PROVIDER", id),
+                ("READYHAI_LLM_ALLOW_CLOUD", "1"),
+            ]))
+            .unwrap();
+            assert_eq!(without.base_url().unwrap(), without.provider.base_url);
+        }
+    }
+
+    #[test]
+    fn llm_url_is_what_the_call_really_hits() {
+        let m = mock::start(|_| "{\"ok\": true}".into());
+        let mut c = LlmConfig::from_vars(vars(&[
+            ("READYHAI_LLM_PROVIDER", "ollama"),
+            ("READYHAI_LLM_URL", m.base.as_str()),
+        ]))
+        .unwrap();
+        c.cache_dir = Some(tmpdir("url-wire"));
+        assert_eq!(
+            ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap()["ok"],
+            true
+        );
+        assert_eq!(m.chat_hits.load(Ordering::SeqCst), 1);
+        assert!(probe(&c));
+    }
+
+    #[test]
+    fn llm_url_alone_selects_the_generic_provider() {
+        let c = LlmConfig::from_vars(vars(&[("READYHAI_LLM_URL", "http://localhost:8000/v1")]))
+            .unwrap();
+        assert_eq!(c.provider.id, "vllm");
+        assert_eq!(c.model, "qwen3.8-flash-next");
+        assert_eq!(c.base_url().unwrap(), "http://localhost:8000/v1");
+        // no URL at all: configured, but with nowhere to send, and the error says what to export
+        let c = LlmConfig::from_vars(vars(&[])).unwrap();
+        assert_eq!(c.provider.id, "vllm");
+        let e = c.base_url().unwrap_err().to_string();
+        assert!(e.contains("READYHAI_LLM_URL"), "{e}");
+        // the alias ids select the same generic provider
+        for id in ["openai-compatible", "custom"] {
+            let c = LlmConfig::from_vars(vars(&[
+                ("READYHAI_LLM_PROVIDER", id),
+                ("READYHAI_LLM_URL", "http://localhost:8000/v1"),
+            ]))
+            .unwrap();
+            assert_eq!(c.provider.id, "vllm");
+        }
+    }
+
+    #[test]
+    fn vllm_url_is_a_deprecated_fallback_alias() {
+        let old = "http://old-box:8000/v1";
+        let c = LlmConfig::from_vars(vars(&[("READYHAI_VLLM_URL", old)])).unwrap();
+        assert_eq!((c.provider.id, c.base_url().unwrap()), ("vllm", old.into()));
+        // READYHAI_LLM_URL wins when both are set
+        let c = LlmConfig::from_vars(vars(&[
+            ("READYHAI_VLLM_URL", old),
+            ("READYHAI_LLM_URL", "http://new-box:8000/v1"),
+        ]))
+        .unwrap();
+        assert_eq!(c.base_url().unwrap(), "http://new-box:8000/v1");
+        // the alias belongs to the generic provider only: it never redirects another one
+        let c = LlmConfig::from_vars(vars(&[
+            ("READYHAI_LLM_PROVIDER", "ollama"),
+            ("READYHAI_VLLM_URL", old),
+        ]))
+        .unwrap();
+        assert_eq!(c.base_url().unwrap(), "http://localhost:11434/v1");
+    }
+
+    #[test]
+    fn empty_variables_count_as_unset() {
+        let c = LlmConfig::from_vars(vars(&[
+            ("READYHAI_LLM_PROVIDER", ""),
+            ("READYHAI_LLM_URL", "  "),
+            ("READYHAI_VLLM_URL", ""),
+            ("READYHAI_LLM_API_KEY", ""),
+            ("READYHAI_LLM_MODEL", ""),
+            ("READYHAI_LLM_MODELS", " "),
+        ]))
+        .unwrap();
+        assert_eq!(c.provider.id, "vllm");
+        assert!(c.base_override.is_none() && c.api_key.is_none());
+        assert_eq!(c.models, [c.provider.default_model]);
+    }
+
+    #[test]
+    fn base_url_validation_rejects_secrets_and_never_echoes_them() {
+        for bad in [
+            "not a url",
+            "ftp://host/v1",
+            "file:///etc/passwd",
+            "http://",
+            "http://svc:s3cretpw@host:8000/v1",
+            "http://host:8000/v1?api_key=tok-9f8e7d",
+            "http://host:8000/v1#tok-9f8e7d",
+        ] {
+            let e = validate_base_url(bad).unwrap_err().to_string();
+            assert!(
+                !e.contains("s3cretpw") && !e.contains("tok-9f8e7d"),
+                "{bad}: {e}"
+            );
+            assert!(
+                LlmConfig::from_vars(vars(&[("READYHAI_LLM_URL", bad)])).is_err(),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            validate_base_url("  http://host:8000/v1/ ").unwrap(),
+            "http://host:8000/v1/"
+        );
+    }
+
+    #[test]
+    fn public_host_classification() {
+        for h in [
+            "localhost",
+            "127.0.0.1",
+            "127.5.5.5",
+            "[::1]",
+            "::1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.5",
+            "169.254.1.1",
+            "100.64.0.1",
+            "100.127.255.255",
+            "0.0.0.0",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:192.168.1.1",
+            "gpu-box",
+            "ollama",
+            "vllm.lan",
+            "gpu.local",
+            "host.docker.internal",
+            "svc.ns.svc.cluster.local",
+            "box.corp.internal",
+            "GPU.LAN.",
+            "app.localhost",
+            "nas.home.arpa",
+        ] {
+            assert!(!is_public_host(h), "{h} must not count as public");
+        }
+        for h in [
+            "api.openai.com",
+            "llm.example.com",
+            "8.8.8.8",
+            "1.1.1.1",
+            "172.32.0.1",
+            "172.15.255.255",
+            "100.128.0.1",
+            "100.63.255.255",
+            "2606:4700::1111",
+            "::ffff:8.8.8.8",
+            "example.lan.com",
+            "internal.example.com",
+        ] {
+            assert!(is_public_host(h), "{h} must count as public");
+        }
+        assert_eq!(
+            public_host_of("https://llm.example.com/v1").as_deref(),
+            Some("llm.example.com")
+        );
+        assert_eq!(public_host_of("http://10.0.0.5:8000/v1"), None);
+        assert!(public_host_of("garbage").is_some(), "fails closed");
+    }
+
+    #[test]
+    fn public_url_with_a_local_provider_needs_allow_cloud() {
+        let public = "https://llm.example.com/v1";
+        let e = LlmConfig::from_vars(vars(&[("READYHAI_LLM_URL", public)]))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("READYHAI_LLM_ALLOW_CLOUD")
+                && e.contains("llm.example.com")
+                && e.contains("refused"),
+            "{e}"
+        );
+        // the deprecated variable and other local providers are guarded the same way
+        assert!(LlmConfig::from_vars(vars(&[("READYHAI_VLLM_URL", public)])).is_err());
+        assert!(
+            LlmConfig::from_vars(vars(&[
+                ("READYHAI_LLM_PROVIDER", "ollama"),
+                ("READYHAI_LLM_URL", public)
+            ]))
+            .is_err()
+        );
+        for flag in ["1", "true"] {
+            assert!(
+                LlmConfig::from_vars(vars(&[
+                    ("READYHAI_LLM_URL", public),
+                    ("READYHAI_LLM_ALLOW_CLOUD", flag)
+                ]))
+                .is_ok(),
+                "{flag}"
+            );
+        }
+        for private in [
+            "http://127.0.0.1:8000/v1",
+            "http://10.0.0.5:8000/v1",
+            "http://gpu-box:8000/v1",
+            "http://vllm.lan/v1",
+            "http://host.docker.internal:11434/v1",
+            "http://[::1]:8000/v1",
+        ] {
+            assert!(
+                LlmConfig::from_vars(vars(&[("READYHAI_LLM_URL", private)])).is_ok(),
+                "{private}"
+            );
+        }
+        // a cloud provider stays refused without the flag, whatever the URL
+        assert!(
+            LlmConfig::from_vars(vars(&[
+                ("READYHAI_LLM_PROVIDER", "openai"),
+                ("READYHAI_LLM_URL", "http://10.0.0.5/v1")
+            ]))
+            .is_err()
+        );
+        // a config assembled by hand cannot get around it: nothing is sent, nothing is probed
+        let mut c = LlmConfig::resolve(Some("vllm"), None, false).unwrap();
+        c.base_override = Some(public.into());
+        assert!(c.guard().is_err());
+        assert!(
+            ask_json(&c, &mut Budget::per_run(), "s", "p")
+                .unwrap_err()
+                .to_string()
+                .contains("refused")
+        );
+        assert!(!probe(&c) && probe_status(&c).is_none());
+        assert!(query_models(&c).is_err());
+        assert!(client(c).chat("s", &[], &[]).is_err());
+    }
+
+    #[test]
+    fn generic_api_key_wins_over_the_provider_key() {
+        let provider_env = |k: &str| (k == "OPENAI_API_KEY").then(|| "provider-key".to_string());
+        let own = LlmConfig::resolve(Some("openai"), None, true).unwrap();
+        assert_eq!(
+            key_with(&own, provider_env).unwrap().as_deref(),
+            Some("provider-key")
+        );
+        let generic = LlmConfig::from_vars(vars(&[
+            ("READYHAI_LLM_PROVIDER", "openai"),
+            ("READYHAI_LLM_ALLOW_CLOUD", "1"),
+            ("READYHAI_LLM_API_KEY", " generic-key\n"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            key_with(&generic, provider_env).unwrap().as_deref(),
+            Some("generic-key")
+        );
+        assert_eq!(
+            key_with(&generic, |_| None).unwrap().as_deref(),
+            Some("generic-key"),
+            "the provider variable is not needed"
+        );
+        // neither set: the error names the variables, never a value
+        let e = key_with(&own, |_| None).unwrap_err().to_string();
+        assert!(
+            e.contains("OPENAI_API_KEY") && e.contains("READYHAI_LLM_API_KEY"),
+            "{e}"
+        );
+        assert!(key_with(&own, |_| Some("  ".into())).is_err());
+        // local providers need no key, but accept the generic one
+        let local = LlmConfig::resolve(Some("ollama"), None, false).unwrap();
+        assert_eq!(key_with(&local, |_| Some("x".into())).unwrap(), None);
+        let local_keyed = LlmConfig::from_vars(vars(&[
+            ("READYHAI_LLM_PROVIDER", "ollama"),
+            ("READYHAI_LLM_API_KEY", "local-key"),
+        ]))
+        .unwrap();
+        assert_eq!(
+            key_with(&local_keyed, |_| None).unwrap().as_deref(),
+            Some("local-key")
+        );
+        // a key that cannot be a header value is an error, not a silently dropped header
+        let bad = LlmConfig::from_vars(vars(&[("READYHAI_LLM_API_KEY", "a\nb")])).unwrap();
+        let e = key_with(&bad, |_| None).unwrap_err().to_string();
+        assert!(
+            e.contains("control character") && !e.contains("a\nb"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn key_goes_out_as_bearer_or_x_api_key_and_is_never_shown() {
+        const K: &str = "generic-test-key-0123456789abcdef";
+        let wire = |m: &mock::Mock| m.requests.lock().unwrap()[0].to_ascii_lowercase();
+        let secret = K.to_ascii_lowercase();
+
+        // OpenAI-compatible: bearer
+        let m = mock::start(|_| "{\"ok\": true}".into());
+        let mut c = mock::cfg(&m.base, &tmpdir("key-openai"));
+        c.api_key = Some(ApiKey::new(K));
+        ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap();
+        let raw = wire(&m);
+        assert!(
+            raw.contains(&format!("authorization: bearer {secret}")),
+            "{raw}"
+        );
+        assert!(!raw.contains("x-api-key"));
+
+        // Anthropic transport: x-api-key plus the version header, no bearer
+        let m = mock::start_status(|_, _| {
+            (
+                200,
+                json!({"content": [{"type": "text", "text": "{\"ok\": true}"}]}).to_string(),
+            )
+        });
+        let mut a = LlmConfig::resolve(Some("anthropic"), None, true).unwrap();
+        a.base_override = Some(m.base.clone());
+        a.cache_dir = Some(tmpdir("key-anthropic"));
+        a.retry_base_ms = 1;
+        a.api_key = Some(ApiKey::new(K));
+        ask_json(&a, &mut Budget::per_run(), "s", "p").unwrap();
+        let raw = wire(&m);
+        assert!(raw.contains(&format!("x-api-key: {secret}")), "{raw}");
+        assert!(raw.contains("anthropic-version: 2023-06-01"));
+        assert!(!raw.contains("authorization"));
+        // the status probe authenticates the same way
+        assert_eq!(probe_status(&a), Some(200));
+
+        // nothing a human or a log can see carries it
+        for s in [
+            format!("{a:?}"),
+            a.describe(),
+            a.thinking_summary(),
+            format!("{:?}", ApiKey::new(K)),
+        ] {
+            assert!(!s.contains(K), "{s}");
+        }
+        assert!(format!("{a:?}").contains("<redacted>"));
+        let bad = mock::start_status(|_, _| (401, "{}".into()));
+        let mut c = mock::cfg(&bad.base, &tmpdir("key-err"));
+        c.api_key = Some(ApiKey::new(K));
+        let e = format!(
+            "{:#}",
+            ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap_err()
+        );
+        assert!(e.contains("401") && !e.contains(K), "{e}");
+    }
+
+    #[test]
+    fn model_list_parsing() {
+        assert_eq!(parse_model_list("a, b ,,a,c"), ["a", "b", "c"]);
+        assert!(parse_model_list(" , ").is_empty());
+        let c = LlmConfig::from_vars(vars(&[("READYHAI_LLM_MODEL", "m1, m2,m3")])).unwrap();
+        assert_eq!(c.model, "m1");
+        assert_eq!(c.models, ["m1", "m2", "m3"]);
+        assert_eq!(c.describe(), "vllm/m1 (+2 fallbacks)");
+        // READYHAI_LLM_MODELS is an alias, used only when READYHAI_LLM_MODEL is unset
+        let c = LlmConfig::from_vars(vars(&[("READYHAI_LLM_MODELS", "x,y")])).unwrap();
+        assert_eq!(
+            (c.model.as_str(), c.describe()),
+            ("x", "vllm/x (+1 fallback)".into())
+        );
+        let c = LlmConfig::from_vars(vars(&[
+            ("READYHAI_LLM_MODEL", "only"),
+            ("READYHAI_LLM_MODELS", "x,y"),
+        ]))
+        .unwrap();
+        assert_eq!(c.models, ["only"]);
+        assert_eq!(c.describe(), "vllm/only");
+        // nothing (or only separators): the provider default
+        for v in [vars(&[]), vars(&[("READYHAI_LLM_MODEL", ",")])] {
+            let c = LlmConfig::from_vars(v).unwrap();
+            assert_eq!(c.models, ["qwen3.8-flash-next"]);
+        }
+        let o = LlmConfig::resolve(Some("ollama"), Some("p,q"), false).unwrap();
+        assert_eq!((o.model.as_str(), o.models.len()), ("p", 2));
+        // `model` stays the source of truth for the primary even when a caller reassigns it
+        let mut c = LlmConfig::resolve(Some("ollama"), Some("m1,m2,m3"), false).unwrap();
+        c.model = "other".into();
+        assert_eq!(c.model_chain(), ["other", "m1", "m2", "m3"]);
+        c.model = "m2".into();
+        assert_eq!(c.model_chain(), ["m2", "m1", "m3"]);
+    }
+
+    fn fallback_cfg(m: &mock::Mock, name: &str, models: &str) -> LlmConfig {
+        let mut c = mock::cfg(&m.base, &tmpdir(name));
+        c.models = parse_model_list(models);
+        c.model = c.models[0].clone();
+        c
+    }
+
+    #[test]
+    fn failed_calls_fall_back_to_the_next_model_in_order() {
+        // m1: 500 (retried until attempts run out), m2: 404 (not retried), m3: answers
+        let m = mock::start_status(|_, body| match model_of(body).as_str() {
+            "m1" => (500, "{}".into()),
+            "m2" => (404, "{}".into()),
+            _ => (200, ok_body("{\"ok\": true}")),
+        });
+        let c = fallback_cfg(&m, "fallback", "m1,m2,m3");
+        let mut b = Budget::per_run();
+        assert_eq!(ask_json(&c, &mut b, "s", "p").unwrap()["ok"], true);
+        assert_eq!(models_seen(&m), ["m1", "m1", "m1", "m2", "m3"]);
+        assert_eq!(b.calls, 1, "fallbacks are part of one logical call");
+
+        // an unusable answer (reasoning only / empty) is a failure too
+        let m = mock::start_status(|_, body| {
+            if model_of(body) == "m1" {
+                (200, ok_body(""))
+            } else {
+                (200, ok_body("{\"ok\": true}"))
+            }
+        });
+        let c = fallback_cfg(&m, "fallback-empty", "m1,m2");
+        assert_eq!(
+            ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap()["ok"],
+            true
+        );
+        assert_eq!(models_seen(&m), ["m1", "m2"]);
+
+        // a healthy primary never touches the fallbacks
+        let m = mock::start(|_| "{\"ok\": true}".into());
+        let c = fallback_cfg(&m, "fallback-unused", "m1,m2");
+        ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap();
+        assert_eq!(models_seen(&m), ["m1"]);
+    }
+
+    #[test]
+    fn when_every_model_fails_the_error_names_them_all() {
+        let m = mock::start_status(|_, _| (401, "{}".into()));
+        let c = fallback_cfg(&m, "fallback-all", "m1,m2");
+        let e = ask_json(&c, &mut Budget::per_run(), "s", "p")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("all 2 configured models failed")
+                && e.contains("'m1'")
+                && e.contains("'m2'"),
+            "{e}"
+        );
+        assert_eq!(models_seen(&m), ["m1", "m2"], "401 is not retried");
+        // one model: its own error, unchanged
+        let m = mock::start_status(|_, _| (401, "{}".into()));
+        let c = fallback_cfg(&m, "fallback-one", "m1");
+        let e = ask_json(&c, &mut Budget::per_run(), "s", "p")
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("configured models") && e.contains("401"), "{e}");
+    }
+
+    #[test]
+    fn chat_clients_fall_back_too() {
+        let msgs = [Msg {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+        // OpenAI-compatible
+        let m = mock::start_status(|_, body| match model_of(body).as_str() {
+            "m1" => (400, "{}".into()),
+            _ => (200, ok_body("hello")),
+        });
+        let c = fallback_cfg(&m, "chat-openai", "m1,m2");
+        assert_eq!(client(c).chat("sys", &msgs, &[]).unwrap().text, "hello");
+        assert_eq!(models_seen(&m), ["m1", "m2"]);
+
+        // Anthropic Messages, through both chat() and the single-shot path
+        let answer = |body: &str| match model_of(body).as_str() {
+            "m1" => (400, "{}".to_string()),
+            _ => (
+                200,
+                json!({"content": [{"type": "text", "text": "{\"ok\": true}"}]}).to_string(),
+            ),
+        };
+        let m = mock::start_status(move |_, body| answer(body));
+        let mut a = LlmConfig::resolve(Some("anthropic"), Some("m1,m2"), true).unwrap();
+        a.base_override = Some(m.base.clone());
+        a.cache_dir = Some(tmpdir("chat-anthropic"));
+        a.retry_base_ms = 1;
+        a.api_key = Some(ApiKey::new("k"));
+        assert_eq!(
+            client(a.clone()).chat("sys", &msgs, &[]).unwrap().text,
+            "{\"ok\": true}"
+        );
+        assert_eq!(models_seen(&m), ["m1", "m2"]);
+        assert_eq!(
+            ask_json(&a, &mut Budget::per_run(), "s", "p").unwrap()["ok"],
+            true
+        );
+        assert_eq!(models_seen(&m), ["m1", "m2", "m1", "m2"]);
     }
 
     fn tool() -> ToolDef {

@@ -35,7 +35,8 @@ pub fn checks() -> Vec<Check> {
     ]
 }
 
-const METHODS: [&str; 7] = ["get", "put", "post", "delete", "options", "head", "patch"];
+// Same order as `api::spec` (its operation cap and this plan keep the same first N operations).
+const METHODS: [&str; 7] = ["get", "put", "post", "delete", "patch", "head", "options"];
 const KEYWORDS: [&str; 14] = [
     "auth", "login", "password", "admin", "payment", "pay", "order", "invoice", "user", "account",
     "token", "upload", "delete", "billing",
@@ -277,19 +278,33 @@ pub(crate) fn run_in(ctx: &Ctx, data: &std::path::Path) -> Result<CheckOutput> {
         );
     }
 
-    let risks_n: Vec<(Op, u8, Vec<String>)> = ops
+    // Only the first `cap` operations are planned (the API checks test the same ones); the rest
+    // are listed as untested by the API loader. The baseline list above stays complete.
+    let (cap, _) = super::api::spec::max_ops_setting();
+    let over_cap = ops.len().saturating_sub(cap);
+    let ops_n = &ops[..ops.len().min(cap)];
+    // Hash lookups: a spec has 1000+ operations, a test corpus up to 32 MB, and many operations
+    // share a path prefix, so neither list is scanned once per operation.
+    let baseline_set: Option<std::collections::HashSet<&str>> = baseline
+        .as_ref()
+        .map(|b| b.iter().map(String::as_str).collect());
+    let mut prefix_seen: std::collections::HashMap<String, bool> = Default::default();
+    let risks_n: Vec<(&Op, u8, Vec<String>)> = ops_n
         .iter()
         .map(|o| {
             let has_tests = corpus.as_ref().map(|c| {
                 let p = static_prefix(&o.path);
-                p.is_empty() || c.contains(&p.to_ascii_lowercase())
+                p.is_empty()
+                    || *prefix_seen
+                        .entry(p)
+                        .or_insert_with_key(|p| c.contains(&p.to_ascii_lowercase()))
             });
-            let is_new = baseline
+            let is_new = baseline_set
                 .as_ref()
-                .map(|b| !b.contains(&o.component()))
+                .map(|b| !b.contains(o.component().as_str()))
                 .unwrap_or(false);
             let (r, why) = score(o, has_tests, is_new);
-            (o.clone(), r, why)
+            (o, r, why)
         })
         .collect();
     let total = qa.max_requests.min(TOTAL_BUDGET);
@@ -312,7 +327,10 @@ pub(crate) fn run_in(ctx: &Ctx, data: &std::path::Path) -> Result<CheckOutput> {
             });
             col.untested.push("API functional testing (no OpenAPI operations available)".into());
         } else {
-            col.notes.push(format!("{} API operations planned from the spec.", ops.len()));
+            col.notes.push(format!("{} API operations planned from the spec.", ops_n.len()));
+            if over_cap > 0 {
+                col.notes.push(format!("{over_cap} more operation(s) are over the {cap}-operation cap and are not planned (reported as untested; READYHAI_MAX_OPS raises the cap, ceiling {}).", super::api::spec::HARD_MAX_OPS));
+            }
         }
         if roles.len() < 2 {
             col.risks.push(Risk {

@@ -211,11 +211,16 @@ Plugins cannot be marked intrusive.
 
 | Variable | Used by | Meaning |
 |---|---|---|
-| `READYHAI_LLM_PROVIDER` | `qa`, `agent` | `vllm` (default), `ollama`, or cloud `openai`, `anthropic`, `openrouter`. |
-| `READYHAI_LLM_MODEL` | `qa`, `agent` | Model override; defaults per provider: `qwen3.8-flash-next` (vllm), `qwen2.5-coder` (ollama), `gpt-4.1`, `claude-sonnet-5-5`, `anthropic/claude-sonnet-5-5`. |
-| `READYHAI_VLLM_URL` | `qa`, `agent` | OpenAI-compatible base URL of the `vllm` provider (no built-in address). |
-| `READYHAI_LLM_ALLOW_CLOUD` | `qa`, `agent` | `1` / `true` required for cloud providers; otherwise the config is refused. |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` | `qa`, `agent` | Provider keys, read only when that provider is selected. |
+| `READYHAI_LLM_URL` | `qa`, `agent` | Base URL of the endpoint, for **any** provider: an OpenAI-compatible server (vLLM, Ollama, LiteLLM, llama.cpp, a gateway; `.../v1`) or, with `READYHAI_LLM_PROVIDER=anthropic`, an Anthropic-compatible one. It replaces the provider's built-in base. Plain `scheme://host[:port]/path`: credentials in the URL, a query string or a fragment are refused (use the key variable). With no provider set, the URL alone selects the generic OpenAI-compatible provider (`vllm`). No built-in address. |
+| `READYHAI_VLLM_URL` | `qa`, `agent` | **Deprecated** alias of `READYHAI_LLM_URL`, read only when that is unset and only for the generic provider. |
+| `READYHAI_MAX_OPS` | `qa`, `agent` | Most OpenAPI operations planned per run (default `2000`, ceiling `10000`). Operations past it are reported as untested in coverage, never passed. |
+| `READYHAI_LLM_PROVIDER` | `qa`, `agent` | `vllm` (default; also spelled `openai-compatible` or `custom`), `ollama`, or cloud `openai`, `anthropic`, `openrouter`. |
+| `READYHAI_LLM_API_KEY` | `qa`, `agent` | Key for any provider; wins over the provider's own variable below, and is optional for local servers. Sent as `Authorization: Bearer` (OpenAI-compatible) or `x-api-key` (Anthropic). Never logged, printed, put in a report or an error. |
+| `READYHAI_LLM_MODEL` | `qa`, `agent` | Model, or a comma-separated list (`READYHAI_LLM_MODELS` is an alias, read when this is unset). The first is primary; when a call to it fails (an error after its retries, a non-success status, an empty answer) the next one is tried, in order, within the same call. If every model fails the error names them all. Defaults per provider: `qwen3.8-flash-next` (vllm), `qwen2.5-coder` (ollama), `gpt-4.1`, `claude-sonnet-5-5`, `anthropic/claude-sonnet-5-5`. |
+| `READYHAI_LLM_ALLOW_CLOUD` | `qa`, `agent` | `1` / `true` required to send findings off-box: for cloud providers, **and** when `READYHAI_LLM_URL` points a local provider at a public host. Otherwise the config is refused with a message saying so. Not public: loopback, private (RFC 1918), link-local, unique-local and `100.64.0.0/10` addresses; `.local`, `.lan`, `.internal` (so `host.docker.internal`), `.localhost` and `.home.arpa` names; single-label names (`localhost`, `gpu-box`). Names are judged by spelling, never resolved. |
+| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` | `qa`, `agent` | Provider keys, read only when that provider is selected and `READYHAI_LLM_API_KEY` is unset. |
+
+Empty values count as unset, so an `.env` file can list every name. `GET /api/agent/status` shows the primary `model`, the full `configured_models` list and whether a key is set (`api_key_configured`), never the key.
 
 See [offline.md](offline.md#lan-llm-mode).
 
@@ -254,7 +259,7 @@ See [offline.md](offline.md#lan-llm-mode).
 
 Tool containers receive **no** environment from the host. The runner passes only `HOME=/tmp` plus tool-specific variables it sets itself (for example `GRYPE_DB_AUTO_UPDATE=false`, `GRYPE_DB_CACHE_DIR=/cache/grype`, `SYFT_CHECK_FOR_APP_UPDATE=false`, `CKV_IGNORE_HIDDEN_DIRECTORIES=true`, `PLAYWRIGHT_BROWSERS_PATH`); a secret such as the GitHub token is passed by name so its value never appears in `ps`.
 
-The context-retriever runner (`runners/context_retriever`, Python) has its own variables: `READYHAI_EMBEDDING_BACKEND` (`ollama` default, `vllm`, `huggingface`), `READYHAI_EMBEDDING_MODEL`, `READYHAI_EMBEDDING_API_KEY`, `READYHAI_LLM_API_KEY`, `READYHAI_DEVICE` (`cpu` default), plus `READYHAI_VLLM_URL` and `READYHAI_LLM_MODEL` for synthesis. See its README.
+The context-retriever runner (`runners/context_retriever`, Python) has its own variables: `READYHAI_EMBEDDING_BACKEND` (`ollama` default, `vllm`, `huggingface`), `READYHAI_EMBEDDING_MODEL`, `READYHAI_EMBEDDING_API_KEY`, `READYHAI_DEVICE` (`cpu` default), plus `READYHAI_LLM_URL` (the deprecated `READYHAI_VLLM_URL` still works), `READYHAI_LLM_API_KEY` and `READYHAI_LLM_MODEL` (a comma list: the first is used, the rest are fallbacks) for synthesis and the `vllm` embedding backend. See its README.
 
 ### Agent run budget
 

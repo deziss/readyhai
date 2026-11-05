@@ -228,6 +228,34 @@ describe("Scenarios component", () => {
     expect(screen.getByText("TOCTOU burst")).toBeDefined();
     expect(screen.getByText("Example remediation \u2014 adapt to your code")).toBeDefined();
   });
+
+  it("gives the sticky toolbar an opaque surface so scrolled rows never bleed through", () => {
+    const testCases: TestCaseResult[] = [
+      {
+        id: "TC-001",
+        title: "Row under the toolbar",
+        component: "/api/docs",
+        technique: "authz",
+        method: "GET",
+        status: "PASS",
+        latency_ms: 10,
+        curl: "curl https://target/api/docs",
+      },
+    ];
+    render(<Scenarios testCases={testCases} />);
+
+    const toolbar = screen.getByText("Adversarial scenarios").closest("div.sticky") as HTMLElement | null;
+    expect(toolbar).not.toBeNull();
+    const cls = toolbar!.className.split(/\s+/);
+    expect(cls).toContain("sticky");
+    expect(cls).toContain("top-0");
+    expect(cls).toContain("bg-rh-surface");
+    expect(cls).toContain("border-b");
+    expect(cls).toContain("border-rh-line");
+    expect(cls).toContain("z-20");
+    // Rows live in their own stacking context so inner z-index (chain nodes) cannot paint over the toolbar.
+    expect(screen.getByText("TC-001").closest("div.isolate")).not.toBeNull();
+  });
 });
 
 describe("ThreatTriage component", () => {

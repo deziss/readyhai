@@ -1,12 +1,16 @@
+# Copy to .github/workflows/readyhai.yml in the repo you want to gate.
+# Runs the ReadyHai gate on every PR and keeps ONE summary comment up to date on it.
 name: readyhai
 
 on:
   push:
+    branches: [main]
   pull_request:
 
 permissions:
   contents: read
-  security-events: write
+  pull-requests: write # PR summary comment
+  security-events: write # SARIF upload
 
 jobs:
   readyhai:
@@ -14,18 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install readyhai
-        run: curl -sSfL https://github.com/deziss/readyhai/releases/latest/download/readyhai-linux-x86_64.tar.gz | sudo tar xz -C /usr/local/bin
-
-      - name: Update tool definitions
-        run: readyhai tools update
-
-      - name: Scan
-        id: scan
-        run: |
-          set +e
-          readyhai scan . --profile quick --format sarif,html,junit --out readyhai-report
-          echo "code=$?" >> "$GITHUB_OUTPUT"
+      - name: ReadyHai gate
+        id: readyhai
+        uses: deziss/readyhai@v0.5.0 # pin a release tag
+        with:
+          target: .
+          profile: quick
+          fail-on: fail # fail | warn | never
+          # no-tools: "true" # native checks only, no tool containers
 
       - name: Upload SARIF
         if: always()
@@ -33,19 +33,9 @@ jobs:
         with:
           sarif_file: readyhai-report/readyhai-report.sarif
 
-      - name: Upload HTML report
+      - name: Upload report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: readyhai-report
           path: readyhai-report/
-
-      - name: Gate
-        if: always()
-        run: |
-          code="${{ steps.scan.outputs.code }}"
-          # 0 PASS, 1 WARN (non-blocking), 2 FAIL, 3 error; empty means the scan never ran.
-          if [ -z "$code" ] || [ "$code" -ge 2 ]; then
-            echo "readyhai exit: ${code:-none}"
-            exit 1
-          fi

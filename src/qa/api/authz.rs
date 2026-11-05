@@ -92,7 +92,7 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     let reserve = qa.max_requests * 4 / 10;
     let mut stopped: Option<String> = None;
     for pl in plan_order(qa, &spec) {
-        let op = &pl.op;
+        let op = pl.op;
         if matches!(op.method.as_str(), "HEAD" | "OPTIONS") {
             continue;
         }

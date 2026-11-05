@@ -587,25 +587,14 @@ fn probe_llm() -> (String, bool) {
         Ok(b) => b,
         Err(e) => return (format!("{} ({e})", cfg.provider.id), false),
     };
-    let url = format!("{}/models", base.trim_end_matches('/'));
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => return (format!("{e}"), false),
-    };
-    match client.get(&url).send() {
-        Ok(r) => (
-            format!(
-                "{} @ {base} answered HTTP {}",
-                cfg.provider.id,
-                r.status().as_u16()
-            ),
+    // Same request, key and guard as a real call; the note names the provider and models, never a key.
+    match crate::llm::probe_status(&cfg) {
+        Some(code) => (
+            format!("{} @ {base} answered HTTP {code}", cfg.describe()),
             true,
         ),
-        Err(_) => (
-            format!("{} @ {base} unreachable (2s)", cfg.provider.id),
+        None => (
+            format!("{} @ {base} unreachable (2s)", cfg.describe()),
             false,
         ),
     }

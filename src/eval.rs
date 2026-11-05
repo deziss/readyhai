@@ -1567,6 +1567,9 @@ fn run_once(
     for k in [
         "READYHAI_LLM_PROVIDER",
         "READYHAI_LLM_MODEL",
+        "READYHAI_LLM_MODELS",
+        "READYHAI_LLM_URL",
+        "READYHAI_LLM_API_KEY",
         "READYHAI_LLM_ALLOW_CLOUD",
         "READYHAI_VLLM_URL",
         "READYHAI_PLUGINS",

@@ -1,0 +1,127 @@
+name: ReadyHai readiness gate
+description: Run the ReadyHai production-readiness gate and post (or update) a summary comment on the pull request.
+author: deziss
+branding:
+  icon: check-circle
+  color: blue
+
+inputs:
+  target:
+    description: Path, image or URL to scan.
+    default: "."
+  profile:
+    description: quick | standard | deep
+    default: quick
+  version:
+    description: Release tag to install (e.g. v0.5.0) or "latest".
+    default: latest
+  no-tools:
+    description: "true = native checks only (no tool containers, no Docker needed)."
+    default: "false"
+  comment:
+    description: Post / update a PR comment with the summary.
+    default: "true"
+  fail-on:
+    description: "fail = fail the job on FAIL only, warn = on WARN or FAIL, never = report only."
+    default: fail
+  out:
+    description: Report directory.
+    default: readyhai-report
+  github-token:
+    description: Token used to write the PR comment (needs pull-requests:write).
+    default: ${{ github.token }}
+
+outputs:
+  verdict:
+    description: PASS | WARN | FAIL | ERROR
+    value: ${{ steps.scan.outputs.verdict }}
+  exit-code:
+    description: readyhai exit code (0 PASS, 1 WARN, 2 FAIL, 3 error)
+    value: ${{ steps.scan.outputs.code }}
+  report-dir:
+    description: Directory with HTML / JSON / SARIF / JUnit / PR-comment reports.
+    value: ${{ inputs.out }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install readyhai
+      shell: bash
+      env:
+        RH_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        if [ "$RH_VERSION" = "latest" ]; then
+          base="https://github.com/deziss/readyhai/releases/latest/download"
+        else
+          base="https://github.com/deziss/readyhai/releases/download/${RH_VERSION}"
+        fi
+        tmp="$(mktemp -d)"
+        curl -sSfL "$base/readyhai-linux-x86_64.tar.gz" -o "$tmp/rh.tgz"
+        curl -sSfL "$base/readyhai-linux-x86_64.tar.gz.sha256" -o "$tmp/rh.sha256"
+        (cd "$tmp" && sed "s#readyhai-linux-x86_64.tar.gz#rh.tgz#" rh.sha256 | sha256sum -c -)
+        sudo tar xzf "$tmp/rh.tgz" -C /usr/local/bin readyhai
+        readyhai --version
+
+    - name: Update tool definitions
+      if: inputs.no-tools != 'true'
+      shell: bash
+      run: readyhai tools update
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        RH_TARGET: ${{ inputs.target }}
+        RH_PROFILE: ${{ inputs.profile }}
+        RH_OUT: ${{ inputs.out }}
+        RH_NO_TOOLS: ${{ inputs.no-tools }}
+      run: |
+        set +e
+        extra=()
+        [ "$RH_NO_TOOLS" = "true" ] && extra+=(--no-tools)
+        readyhai scan "$RH_TARGET" --profile "$RH_PROFILE" --format sarif,html,json,junit,pr --out "$RH_OUT" "${extra[@]}"
+        code=$?
+        echo "code=$code" >> "$GITHUB_OUTPUT"
+        case "$code" in 0) v=PASS;; 1) v=WARN;; 2) v=FAIL;; *) v=ERROR;; esac
+        echo "verdict=$v" >> "$GITHUB_OUTPUT"
+        if [ -f "$RH_OUT/readyhai-pr-comment.md" ]; then
+          cat "$RH_OUT/readyhai-pr-comment.md" >> "$GITHUB_STEP_SUMMARY"
+        fi
+
+    - name: Comment on pull request
+      if: always() && inputs.comment == 'true' && github.event.pull_request.number
+      continue-on-error: true # fork PRs get a read-only token
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+        RH_OUT: ${{ inputs.out }}
+        CODE: ${{ steps.scan.outputs.code }}
+      run: |
+        set -euo pipefail
+        body="$RH_OUT/readyhai-pr-comment.md"
+        if [ ! -f "$body" ]; then
+          printf '<!-- readyhai-pr-comment -->\n## ReadyHai: ERROR\n\nThe scan did not produce a report (exit %s). See the job log.\n' "${CODE:-none}" > "$body"
+        fi
+        marker='<!-- readyhai-pr-comment -->'
+        id="$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+          --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n1)"
+        if [ -n "$id" ]; then
+          gh api -X PATCH "repos/$REPO/issues/comments/$id" -F "body=@$body" > /dev/null
+        else
+          gh api "repos/$REPO/issues/$PR/comments" -F "body=@$body" > /dev/null
+        fi
+
+    - name: Gate
+      if: always()
+      shell: bash
+      env:
+        CODE: ${{ steps.scan.outputs.code }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        echo "readyhai exit: ${CODE:-none}"
+        [ "$FAIL_ON" = "never" ] && exit 0
+        if [ -z "$CODE" ] || [ "$CODE" -ge 2 ]; then exit 1; fi
+        if [ "$FAIL_ON" = "warn" ] && [ "$CODE" -ge 1 ]; then exit 1; fi

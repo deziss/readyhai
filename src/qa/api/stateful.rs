@@ -7,6 +7,7 @@ use crate::model::{Category, CheckOutput, CheckStatus, Severity};
 use crate::qa::model::*;
 use crate::qa::roles::Role;
 use serde_json::Value;
+use std::collections::HashMap;
 
 struct Step<'a> {
     op: &'a Op,
@@ -151,20 +152,25 @@ pub fn run(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     let mut resources = 0;
     // Highest plan risk first (the request budget is shared and may run out).
     let order = plan_order(qa, &spec);
+    // Item operations (`/x/{id}`, one path param) by (method, collection prefix `/x/{`), first
+    // in spec order: one hash lookup per POST instead of a scan of every operation.
+    let mut items: HashMap<(&str, &str), &Op> = HashMap::new();
+    for o in spec.ops.iter().filter(|o| o.path_params().count() == 1) {
+        if let Some(i) = o.path.rfind('/')
+            && o.path[i + 1..].starts_with('{')
+        {
+            items
+                .entry((o.method.as_str(), &o.path[..i + 2]))
+                .or_insert(o);
+        }
+    }
     for post in order
         .iter()
-        .map(|p| &p.op)
+        .map(|p| p.op)
         .filter(|o| o.method == "POST" && o.path_params().count() == 0)
     {
         let prefix = format!("{}/{{", post.path.trim_end_matches('/'));
-        let find = |m: &str| {
-            spec.ops.iter().find(|o| {
-                o.method == m
-                    && o.path.starts_with(&prefix)
-                    && o.path[prefix.len()..].find('/').is_none()
-                    && o.path_params().count() == 1
-            })
-        };
+        let find = |m: &str| items.get(&(m, prefix.as_str())).copied();
         let Some(get) = find("GET") else { continue };
         let put = find("PUT").or_else(|| find("PATCH"));
         let del = find("DELETE");

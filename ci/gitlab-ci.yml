@@ -1,3 +1,6 @@
+# Include in .gitlab-ci.yml. On merge requests it posts / updates ONE summary note on the MR.
+# Needs a masked CI/CD variable READYHAI_GITLAB_TOKEN (project access token, scope `api`,
+# role Reporter+) to write the note; without it the job still gates and keeps the reports.
 readyhai:
   stage: test
   image:
@@ -6,7 +9,21 @@ readyhai:
     # Image ENTRYPOINT is readyhai; clear it so the script runs in a shell.
     entrypoint: [""]
   script:
-    - readyhai scan . --profile quick --format sarif,html,junit --out readyhai-report
+    - set +e
+    - readyhai scan . --profile quick --format sarif,html,json,junit,pr --out readyhai-report; code=$?
+    - |
+      if [ -n "$CI_MERGE_REQUEST_IID" ] && [ -n "$READYHAI_GITLAB_TOKEN" ] && [ -f readyhai-report/readyhai-pr-comment.md ]; then
+        api="$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes"
+        id=$(curl -sSf -H "PRIVATE-TOKEN: $READYHAI_GITLAB_TOKEN" "$api?per_page=100" \
+          | jq -r '[.[] | select(.body | startswith("<!-- readyhai-pr-comment -->"))][0].id // empty')
+        body=$(jq -Rs '{body: .}' < readyhai-report/readyhai-pr-comment.md)
+        if [ -n "$id" ]; then
+          curl -sSf -X PUT -H "PRIVATE-TOKEN: $READYHAI_GITLAB_TOKEN" -H 'Content-Type: application/json' -d "$body" "$api/$id" > /dev/null || echo "MR note update failed"
+        else
+          curl -sSf -X POST -H "PRIVATE-TOKEN: $READYHAI_GITLAB_TOKEN" -H 'Content-Type: application/json' -d "$body" "$api" > /dev/null || echo "MR note create failed"
+        fi
+      fi
+    - exit $code
   artifacts:
     when: always
     reports:

@@ -55,10 +55,11 @@ export READYHAI_EMBEDDING_MODEL="bge-m3:latest"
 
 # Option B: any OpenAI-compatible endpoint (vLLM / TEI). There is no built-in address:
 export READYHAI_EMBEDDING_BACKEND="vllm"
-export READYHAI_VLLM_URL="http://<your-host>:8000/v1"
+export READYHAI_LLM_URL="http://<your-host>:8000/v1"   # READYHAI_VLLM_URL still works (deprecated)
 export READYHAI_EMBEDDING_MODEL="BAAI/bge-m3"
 # OPENAI_API_KEY is sent ONLY to api.openai.com. A LAN/other endpoint gets a key only if you set one
-# explicitly: READYHAI_EMBEDDING_API_KEY (embeddings) / READYHAI_LLM_API_KEY (chat synthesis).
+# explicitly: READYHAI_EMBEDDING_API_KEY (embeddings) / READYHAI_LLM_API_KEY (chat synthesis, and
+# embeddings when no embedding key is set and the endpoint is the one READYHAI_LLM_URL names).
 
 # Option C: Hugging Face (local CPU/GPU)
 export READYHAI_EMBEDDING_BACKEND="huggingface"
@@ -90,8 +91,10 @@ At query time the FAISS index is rebuilt from `vectors.npy` + `chunks.jsonl` (do
 re-embedded). Retrieved chunks are untrusted: each one is redacted and wrapped in `<data>...</data>`
 inside the user message (never the system prompt), and the system prompt tells the model to treat
 them as inert data. LLM synthesis is advisory; if the LLM call fails the retrieved evidence is still
-shown together with the error. Chat synthesis needs `READYHAI_VLLM_URL` (and optionally
-`READYHAI_LLM_MODEL`); without it only retrieval runs.
+shown together with the error. Chat synthesis needs `READYHAI_LLM_URL` (the deprecated
+`READYHAI_VLLM_URL` also works) and optionally `READYHAI_LLM_API_KEY` and `READYHAI_LLM_MODEL`; without a URL
+only retrieval runs. `READYHAI_LLM_MODEL` may be a comma-separated list (`a,b`): `a` is used, and `b` is tried
+when a call to `a` fails. The key is never printed.
 
 ### 5. Machine-readable output (`--json`)
 ```bash

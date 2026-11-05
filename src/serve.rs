@@ -684,28 +684,39 @@ async fn api_index() -> impl IntoResponse {
     )
 }
 
+/// The LLM status body: reachability, latency, and what is configured. Carries whether a key is set,
+/// never the key.
+fn llm_status_json(cfg: &crate::llm::LlmConfig) -> serde_json::Value {
+    let t0 = std::time::Instant::now();
+    let is_ok = crate::llm::probe(cfg);
+    let latency = t0.elapsed().as_millis();
+    let models_val = crate::llm::query_models(cfg).unwrap_or(json!({}));
+    json!({
+        "status": if is_ok { "online" } else { "offline" },
+        "model": cfg.model,
+        // every configured model, primary first; the rest are tried in order when a call fails
+        "configured_models": cfg.model_chain(),
+        "provider": cfg.provider.id,
+        "base_url": cfg.base_url().unwrap_or_default(),
+        "api_key_configured": crate::llm::key_configured(cfg),
+        "latency_ms": latency,
+        "models_list": models_val,
+        "capabilities": ["multi_agent", "planner", "explorer", "triager", "readiness_gate", "owasp_agentic"]
+    })
+}
+
 async fn agent_status() -> Response {
     let res = tokio::task::spawn_blocking(move || {
         let cfg = match crate::llm::LlmConfig::from_env() {
             Ok(c) => c,
-            Err(e) => return (StatusCode::OK, Json(json!({"status": "offline", "error": e.to_string()}))),
+            Err(e) => {
+                return (
+                    StatusCode::OK,
+                    Json(json!({"status": "offline", "error": e.to_string()})),
+                );
+            }
         };
-        let t0 = std::time::Instant::now();
-        let is_ok = crate::llm::probe(&cfg);
-        let latency = t0.elapsed().as_millis();
-        let models_val = crate::llm::query_models(&cfg).unwrap_or(json!({}));
-        (
-            StatusCode::OK,
-            Json(json!({
-                "status": if is_ok { "online" } else { "offline" },
-                "model": cfg.model,
-                "provider": cfg.provider.id,
-                "base_url": cfg.base_url().unwrap_or_default(),
-                "latency_ms": latency,
-                "models_list": models_val,
-                "capabilities": ["multi_agent", "planner", "explorer", "triager", "readiness_gate", "owasp_agentic"]
-            })),
-        )
+        (StatusCode::OK, Json(llm_status_json(&cfg)))
     })
     .await;
 
@@ -2244,6 +2255,26 @@ mod tests {
             .block_on(axum::body::to_bytes(resp.into_body(), usize::MAX))
             .unwrap();
         String::from_utf8_lossy(&b).into_owned()
+    }
+
+    #[test]
+    fn llm_status_lists_the_configured_models_and_never_the_key() {
+        let m = crate::llm::mock::start(|_| "{}".into());
+        let mut cfg = crate::llm::mock::cfg(&m.base, &std::env::temp_dir());
+        cfg.models = crate::llm::parse_model_list("primary, backup-1,backup-2");
+        cfg.model = cfg.models[0].clone();
+        let v = llm_status_json(&cfg);
+        assert_eq!(v["status"], "online");
+        assert_eq!(v["model"], "primary");
+        assert_eq!(
+            v["configured_models"],
+            json!(["primary", "backup-1", "backup-2"])
+        );
+        assert_eq!(v["api_key_configured"], false);
+        cfg.api_key = Some(crate::llm::ApiKey::new("status-test-key-0123456789"));
+        let v = llm_status_json(&cfg);
+        assert_eq!(v["api_key_configured"], true);
+        assert!(!v.to_string().contains("status-test-key"), "{v}");
     }
 
     #[test]

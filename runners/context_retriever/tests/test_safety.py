@@ -60,6 +60,36 @@ class Config(unittest.TestCase):
         with mock.patch.dict(os.environ, {**env, "READYHAI_LLM_API_KEY": "lan-key"}, clear=True):
             self.assertEqual(config.api_key_for("http://192.168.1.5:8000/v1", "READYHAI_LLM_API_KEY"), "lan-key")
 
+    def test_llm_url_wins_and_vllm_url_is_a_deprecated_alias(self):
+        with mock.patch.dict(os.environ, {"READYHAI_VLLM_URL": "http://old:8000/v1"}, clear=True):
+            self.assertEqual(config.openai_compatible_base_url(required=True), "http://old:8000/v1")
+        env = {"READYHAI_VLLM_URL": "http://old:8000/v1", "READYHAI_LLM_URL": " http://new:8000/v1 "}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(config.openai_compatible_base_url(required=True), "http://new:8000/v1")
+        with mock.patch.dict(os.environ, {"READYHAI_LLM_URL": ""}, clear=True):
+            self.assertIsNone(config.openai_compatible_base_url(required=False))
+
+    def test_generic_key_goes_only_to_the_configured_llm_host(self):
+        env = {"READYHAI_LLM_URL": "http://llm.lan:8000/v1", "READYHAI_LLM_API_KEY": "generic-key"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            # embeddings on the same host fall back to the generic key; a dedicated key still wins
+            self.assertEqual(config.api_key_for("http://llm.lan:8000/v1", "READYHAI_EMBEDDING_API_KEY"), "generic-key")
+            self.assertEqual(config.api_key_for("http://other.lan:8000/v1", "READYHAI_EMBEDDING_API_KEY"), "EMPTY")
+        with mock.patch.dict(os.environ, {**env, "READYHAI_EMBEDDING_API_KEY": "emb-key"}, clear=True):
+            self.assertEqual(config.api_key_for("http://llm.lan:8000/v1", "READYHAI_EMBEDDING_API_KEY"), "emb-key")
+        # the generic key also beats OPENAI_API_KEY on the official host when that is the configured URL
+        env2 = {"READYHAI_LLM_URL": "https://api.openai.com/v1", "READYHAI_LLM_API_KEY": "g", "OPENAI_API_KEY": "o"}
+        with mock.patch.dict(os.environ, env2, clear=True):
+            self.assertEqual(config.api_key_for("https://api.openai.com/v1", "READYHAI_EMBEDDING_API_KEY"), "g")
+
+    def test_model_list(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(config.llm_models(), [config.DEFAULT_LLM_MODEL])
+        with mock.patch.dict(os.environ, {"READYHAI_LLM_MODEL": " a, b ,,a,c "}, clear=True):
+            self.assertEqual(config.llm_models(), ["a", "b", "c"])
+        with mock.patch.dict(os.environ, {"READYHAI_LLM_MODELS": "x,y"}, clear=True):
+            self.assertEqual(config.llm_models(), ["x", "y"])
+
     def test_no_baked_in_lan_address(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             with self.assertRaises(config.ConfigError):

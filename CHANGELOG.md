@@ -2,6 +2,29 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] - 2026-11-05
+
+LLM provider freedom, enterprise-scale specs, RBAC bootstrap and a PR bot.
+
+### Added
+
+- **Pull-request bot.** `--format pr` writes `readyhai-pr-comment.md` (verdict, reasons, category counts, top 15 open findings, escaped). The repo root is now a composite GitHub Action (`uses: deziss/readyhai@v0.5.0`) that installs the checksummed release binary, scans, keeps one PR comment up to date and gates (`fail-on: fail|warn|never`, `no-tools`). `ci/gitlab-ci.yml` posts/updates one MR note with `READYHAI_GITLAB_TOKEN`. The image now ships `jq`.
+- **Enterprise-size specs.** The operation cap is `READYHAI_MAX_OPS` (default 2000, ceiling 10000, was a fixed 500). Operations past it show as untested in coverage with a roll-up note. `$ref` expansion and spec size are bounded, and the quadratic hot spots in planning, coverage, evidence and role matching are gone (1500 operations parse, plan and generate in about 1 s in a debug build).
+- **`readyhai roles init --spec <openapi>`** derives a `roles.toml` skeleton from `securitySchemes`, per-operation `security`, OAuth2 scopes and `x-roles`. It uses `RH_<ROLE>_TOKEN` placeholders and never values, writes mode 0600 into the secrets directory, and will not overwrite without `--force`.
+- **Generic LLM endpoint and key.** `READYHAI_LLM_URL` sets the base URL for any provider (OpenAI-compatible or Anthropic transport) and `READYHAI_LLM_API_KEY` the key for any provider (bearer or `x-api-key`; wins over `OPENAI_API_KEY` and friends; never logged). The provider ids `openai-compatible` and `custom` select the generic `vllm` provider.
+- **Fallback models.** `READYHAI_LLM_MODEL` (or `READYHAI_LLM_MODELS`) takes a comma-separated list; a failed call moves on to the next model in order. `GET /api/agent/status` lists `configured_models` and `api_key_configured`.
+- **Off-box guard for URLs.** A local provider pointed at a public host (not loopback, private, `.local`/`.lan`/`.internal`, single-label) now needs `READYHAI_LLM_ALLOW_CLOUD=1`, with an error that says so. A refused LLM config is noted in the QA report instead of silently running deterministic.
+
+### Changed
+
+- UI: **Run regressive test** moved from the header into the Environment and target panel; the sticky Adversarial scenarios toolbar is now opaque and stacks above the rows, so scenarios no longer show through it.
+
+- Inside the Docker image (`READYHAI_IN_CONTAINER=1`) a `localhost` / loopback `READYHAI_LLM_URL` is rewritten to `host.docker.internal`, so the same `.env` works on the host and in compose.
+
+### Deprecated
+
+- `READYHAI_VLLM_URL`: still read when `READYHAI_LLM_URL` is unset. Empty values of every `READYHAI_LLM_*` variable now count as unset.
+
 ## [0.4.0] - 2026-11-05
 
 Documentation refresh.
