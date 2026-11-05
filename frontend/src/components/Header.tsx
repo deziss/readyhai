@@ -148,12 +148,6 @@ export function Header({
 
         {/* API token settings */}
         <ApiTokenSettings />
-
-        {/* Section label */}
-        <div className="hidden lg:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0a1120] border border-cyan-900/40 text-[11px] font-mono text-cyan-300/80 font-semibold tracking-wider shadow-sm">
-          <Activity className="w-3.5 h-3.5 text-cyan-400" />
-          PRODUCTION GATE
-        </div>
       </div>
     </header>
   );
