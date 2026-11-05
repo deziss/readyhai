@@ -278,7 +278,17 @@ export interface RawCaseResult {
   evidence?: string | null;
   assertion_details?: string | null;
   failure_reason?: string | null;
-  evidence_detail?: any;
+  /** Older backends nest the extra evidence fields under this object. */
+  evidence_detail?: {
+    adaptive_mutation?: RawCaseResult["adaptive_mutation"];
+    stateful_steps?: StatefulStep[];
+    stateful_chain?: StatefulStepExecution[];
+    concurrency_burst?: number;
+    concurrency_burst_results?: number[];
+    remediation_patch?: string;
+    remediation_explanation?: string;
+    reproduction_script?: string;
+  } | null;
   stateful_steps?: StatefulStep[];
   stateful_chain?: StatefulStepExecution[];
   concurrency_burst?: number;

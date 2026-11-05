@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, ShieldAlert, Search, Filter } from "lucide-react";
+import { AlertTriangle, Search } from "lucide-react";
 import type { ThreatFinding, TriagedDefect, RawDefect, EvidenceLedger } from "@/types/agent";
 import { AutoRemediationCard } from "./AutoRemediationCard";
 
@@ -27,11 +27,16 @@ interface NormalizedFinding {
 
 function getSeverityBadge(severity: string) {
   const s = (severity || "UNKNOWN").toUpperCase();
-  if (s === "CRITICAL") return "bg-rose-950 text-rose-300 border-rose-700 font-bold shadow-[0_0_8px_rgba(244,63,94,0.3)]";
-  if (s === "HIGH") return "bg-amber-950 text-amber-300 border-amber-700 font-bold";
-  if (s === "MEDIUM") return "bg-yellow-950 text-yellow-300 border-yellow-700 font-semibold";
-  if (s === "LOW") return "bg-blue-950 text-blue-300 border-blue-700";
-  return "bg-slate-900 text-slate-300 border-slate-700";
+  if (s === "CRITICAL") return "bg-rh-nogo/15 text-rh-nogo";
+  if (s === "HIGH") return "bg-rh-cond/15 text-rh-cond";
+  if (s === "MEDIUM") return "bg-rh-cond/15 text-rh-cond";
+  if (s === "LOW") return "bg-rh-info/15 text-rh-info";
+  return "bg-rh-raised text-rh-muted";
+}
+
+function sentenceCase(v: string) {
+  const t = (v || "Unknown").trim();
+  return t ? t.charAt(0).toUpperCase() + t.slice(1).toLowerCase() : "Unknown";
 }
 
 export function ThreatTriage({
@@ -92,36 +97,35 @@ export function ThreatTriage({
   });
 
   return (
-    <div className={`p-4 overflow-y-auto flex-1 flex flex-col gap-3 ${className}`}>
-      {/* Header & Filters */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#162033]">
+    <div className={`p-4 min-h-0 overflow-y-auto flex-1 flex flex-col gap-3 ${className}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-rh-line">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-bold tracking-wider text-slate-300 uppercase">
-            OWASP API Threat Triage & Blast Radius
-          </span>
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-rose-950/80 text-rose-300 border border-rose-800 font-bold">
+          <h3 className="text-sm font-semibold text-rh-text">Threat triage and blast radius</h3>
+          <span className="text-xs px-2 py-0.5 rounded-[6px] bg-rh-nogo/15 text-rh-nogo font-semibold tabular-nums">
             {findings.length} findings triaged
           </span>
         </div>
 
         <div className="flex items-center gap-2">
           <div className="relative">
-            <Search className="w-3 h-3 text-slate-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <Search className="w-3.5 h-3.5 text-rh-muted absolute left-2.5 top-1/2 -translate-y-1/2" aria-hidden="true" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search findings..."
-              className="pl-7 pr-2 py-1 text-xs font-mono bg-[#07090e] border border-[#1a2436] rounded text-slate-200 placeholder-slate-600 focus:outline-none focus:border-cyan-500/60 w-36 sm:w-44"
+              placeholder="Search findings"
+              aria-label="Search findings"
+              className="pl-8 pr-2 py-1.5 text-xs bg-rh-bg border border-rh-line rounded-[6px] text-rh-text placeholder:text-rh-muted focus:outline-none focus-visible:border-rh-primary focus-visible:ring-1 focus-visible:ring-rh-primary w-36 sm:w-44"
             />
           </div>
 
           <select
             value={severityFilter}
             onChange={(e) => setSeverityFilter(e.target.value)}
-            className="bg-[#07090e] border border-[#1a2436] rounded px-2 py-1 text-xs font-mono text-slate-300 focus:outline-none focus:border-cyan-500/60"
+            aria-label="Filter by severity"
+            className="bg-rh-bg border border-rh-line rounded-[6px] px-2 py-1.5 text-xs text-rh-text focus:outline-none focus-visible:border-rh-primary focus-visible:ring-1 focus-visible:ring-rh-primary"
           >
-            <option value="ALL">All Severities</option>
+            <option value="ALL">All severities</option>
             <option value="CRITICAL">Critical</option>
             <option value="HIGH">High</option>
             <option value="MEDIUM">Medium</option>
@@ -130,62 +134,51 @@ export function ThreatTriage({
         </div>
       </div>
 
-      {/* Findings List */}
       {filteredFindings.length === 0 ? (
-        <div className="p-8 text-center text-slate-500 text-xs font-mono border border-dashed border-[#1a2436] rounded-lg">
+        <div className="p-8 text-center text-rh-muted text-sm border border-dashed border-rh-line rounded-[10px]">
           {findings.length === 0
             ? evidenceLedger
               ? "The backend triaged no defects for this run."
-              : "No evaluated run is loaded, so there are no findings to show."
-            : "No findings match the selected filter."}
+              : "No evaluated run is loaded, so there are no findings to show. Run an audit or open a past run to see them here."
+            : "No findings match the current filters. Clear the search or choose All severities."}
         </div>
       ) : (
         <div className="flex flex-col gap-3">
           {filteredFindings.map((finding, idx) => (
             <div
               key={finding.id || idx}
-              className="bg-[#07090e] border border-[#1a2436] rounded-lg p-3.5 flex flex-col gap-3 shadow-md hover:border-[#283854] transition-colors"
+              className="bg-rh-surface border border-rh-line rounded-[10px] p-4 flex flex-col gap-3"
             >
-              {/* Finding Title & Severity */}
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-bold text-rose-300 flex items-center gap-1.5">
-                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                <span className="text-sm font-semibold text-rh-text flex items-center gap-2 min-w-0">
+                  <AlertTriangle className="w-4 h-4 text-rh-nogo shrink-0" aria-hidden="true" />
                   {finding.title}
                 </span>
 
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-800 font-bold">
+                  <span className="text-xs px-2 py-0.5 rounded-[6px] bg-rh-raised text-rh-muted font-medium">
                     {finding.owasp_category}
                   </span>
-                  <span
-                    className={`text-[10px] font-mono px-2 py-0.5 rounded border ${getSeverityBadge(
-                      finding.severity
-                    )}`}
-                  >
-                    {finding.severity}
+                  <span className={`text-xs px-2 py-0.5 rounded-[6px] font-semibold ${getSeverityBadge(finding.severity)}`}>
+                    {sentenceCase(finding.severity)}
                   </span>
                 </div>
               </div>
 
-              {/* Affected Endpoints */}
-              <div className="text-[11px] font-mono text-slate-400">
-                <span className="text-slate-500">Affected Endpoints: </span>
-                {finding.affected_routes.length > 0
-                  ? finding.affected_routes.join(", ")
-                  : "not reported"}
+              <div className="text-xs text-rh-muted">
+                <span>Affected endpoints: </span>
+                <span className="text-rh-text font-mono break-all">
+                  {finding.affected_routes.length > 0 ? finding.affected_routes.join(", ") : "not reported"}
+                </span>
               </div>
 
-              {/* Evidence Snippet */}
               {finding.evidence_snippet && (
-                <div className="p-2.5 rounded bg-[#04060a] border border-[#162033] text-[11px] font-mono text-slate-300 whitespace-pre-wrap max-h-32 overflow-y-auto">
-                  <strong className="text-slate-400 block mb-1 uppercase text-[10px]">
-                    Observed Evidence Snippet:
-                  </strong>
+                <div className="p-3 rounded-[6px] bg-rh-bg border border-rh-line text-xs text-rh-text whitespace-pre-wrap max-h-32 overflow-y-auto">
+                  <strong className="text-rh-muted block mb-1 text-xs font-semibold">Observed evidence</strong>
                   {finding.evidence_snippet}
                 </div>
               )}
 
-              {/* Auto-Remediation Git Patch Card (Requirement 3) */}
               {(finding.remediation_patch || finding.remediation_explanation || finding.reproduction_script) ? (
                 <AutoRemediationCard
                   patch={finding.remediation_patch}
@@ -193,8 +186,8 @@ export function ThreatTriage({
                   reproScript={finding.reproduction_script}
                 />
               ) : finding.remediation ? (
-                <div className="p-2.5 rounded bg-[#04060a] border border-[#162033] text-[11px] text-slate-300 leading-relaxed font-mono">
-                  <strong className="text-cyan-400 block mb-1">Recommended Remediation:</strong>
+                <div className="p-3 rounded-[6px] bg-rh-bg border border-rh-line text-xs text-rh-text leading-relaxed">
+                  <strong className="text-rh-text block mb-1 font-semibold">Recommended remediation</strong>
                   {finding.remediation}
                 </div>
               ) : null}

@@ -11,7 +11,6 @@ import {
   KeyRound,
   AlertTriangle,
   AlertCircle,
-  Code,
   CheckCircle2,
   XCircle,
 } from "lucide-react";
@@ -48,64 +47,34 @@ interface MergedStep {
 function getActorBadge(actorName: string) {
   const norm = actorName.trim().toLowerCase();
   if (norm.includes("alice")) {
-    return {
-      name: "Alice",
-      role: "Owner / Tenant A",
-      badgeClass: "bg-emerald-950/80 text-emerald-300 border-emerald-600/70",
-      dotClass: "bg-emerald-400",
-      icon: User,
-    };
+    return { name: "Alice", role: "Owner / Tenant A", badgeClass: "bg-rh-go/15 text-rh-go", icon: User };
   }
   if (norm.includes("bob")) {
-    return {
-      name: "Bob",
-      role: "Attacker / Tenant B",
-      badgeClass: "bg-amber-950/80 text-amber-300 border-amber-600/70",
-      dotClass: "bg-amber-400",
-      icon: ShieldAlert,
-    };
+    return { name: "Bob", role: "Attacker / Tenant B", badgeClass: "bg-rh-cond/15 text-rh-cond", icon: ShieldAlert };
   }
   if (norm.includes("admin")) {
-    return {
-      name: "Admin",
-      role: "Privileged Root",
-      badgeClass: "bg-purple-950/80 text-purple-300 border-purple-600/70",
-      dotClass: "bg-purple-400",
-      icon: KeyRound,
-    };
+    return { name: "Admin", role: "Privileged root", badgeClass: "bg-rh-info/15 text-rh-info", icon: KeyRound };
   }
   if (norm.includes("anon")) {
-    return {
-      name: "Anon",
-      role: "Unauthenticated",
-      badgeClass: "bg-slate-900 text-slate-300 border-slate-700",
-      dotClass: "bg-slate-400",
-      icon: User,
-    };
+    return { name: "Anon", role: "Unauthenticated", badgeClass: "bg-rh-raised text-rh-muted", icon: User };
   }
-  return {
-    name: actorName,
-    role: "Actor",
-    badgeClass: "bg-cyan-950/80 text-cyan-300 border-cyan-600/70",
-    dotClass: "bg-cyan-400",
-    icon: User,
-  };
+  return { name: actorName, role: "Actor", badgeClass: "bg-rh-raised text-rh-text", icon: User };
 }
 
 function getMethodBadge(method: string) {
   const m = (method || "GET").toUpperCase();
-  if (m === "POST") return "bg-indigo-950 text-indigo-300 border-indigo-700/60";
-  if (m === "PUT" || m === "PATCH") return "bg-amber-950 text-amber-300 border-amber-700/60";
-  if (m === "DELETE") return "bg-rose-950 text-rose-300 border-rose-700/60";
-  return "bg-sky-950 text-sky-300 border-sky-700/60";
+  if (m === "POST") return "bg-rh-info/15 text-rh-info";
+  if (m === "PUT" || m === "PATCH") return "bg-rh-cond/15 text-rh-cond";
+  if (m === "DELETE") return "bg-rh-nogo/15 text-rh-nogo";
+  return "bg-rh-raised text-rh-text";
 }
 
 function getStatusCodeBadge(code?: number) {
-  if (code == null) return "bg-slate-900 text-slate-500 border-slate-800";
-  if (code >= 200 && code < 300) return "bg-emerald-950/80 text-emerald-300 border-emerald-700/60";
-  if (code >= 300 && code < 400) return "bg-sky-950/80 text-sky-300 border-sky-700/60";
-  if (code >= 400 && code < 500) return "bg-amber-950/80 text-amber-300 border-amber-700/60";
-  return "bg-rose-950/80 text-rose-300 border-rose-700/60";
+  if (code == null) return "bg-rh-raised text-rh-muted";
+  if (code >= 200 && code < 300) return "bg-rh-go/15 text-rh-go";
+  if (code >= 300 && code < 400) return "bg-rh-info/15 text-rh-info";
+  if (code >= 400 && code < 500) return "bg-rh-cond/15 text-rh-cond";
+  return "bg-rh-nogo/15 text-rh-nogo";
 }
 
 export function StatefulChainFlow({
@@ -211,72 +180,59 @@ export function StatefulChainFlow({
       : null);
 
   return (
-    <div className={`p-4 rounded-xl border border-cyan-800/40 bg-[#070d18] flex flex-col gap-3.5 shadow-xl ${className}`}>
-      {/* Chain Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#16233a]">
-        <div className="flex items-center gap-2">
-          <div className="p-1 rounded bg-cyan-950 border border-cyan-700/60 text-cyan-300">
-            <Link2 className="w-3.5 h-3.5" />
+    <div className={`p-4 rounded-[10px] border border-rh-line bg-rh-bg flex flex-col gap-3.5 ${className}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-rh-line">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 rounded-[6px] bg-rh-primary/15 text-rh-primary" aria-hidden="true">
+            <Link2 className="w-4 h-4" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-cyan-200 tracking-wider uppercase font-mono">
-                Stateful Scenario Chain Flow
-              </span>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-950/80 text-cyan-300 border border-cyan-800 font-semibold">
-                {mergedSteps.length} Step Multi-Actor Sequence
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-rh-text">Stateful scenario chain</span>
+              <span className="text-xs px-2 py-0.5 rounded-[6px] bg-rh-raised text-rh-muted font-medium tabular-nums">
+                {mergedSteps.length}-step multi-actor sequence
               </span>
             </div>
-            <span className="text-[10px] font-mono text-slate-400">
-              Cross-step variable extraction & cross-tenant authorization audit
+            <span className="text-xs text-rh-muted">
+              Variables extracted between steps, used to audit cross-tenant authorization
             </span>
           </div>
         </div>
 
         {breach ? (
-          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-rose-950/80 text-rose-300 border border-rose-600 font-mono text-xs font-bold shadow-[0_0_12px_rgba(244,63,94,0.3)]">
-            <AlertTriangle className="w-3.5 h-3.5 text-rose-400 animate-pulse" />
-            <span>CRITICAL BREACH DETECTED</span>
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-[6px] bg-rh-nogo/15 text-rh-nogo text-xs font-semibold">
+            <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Critical breach detected</span>
           </span>
         ) : setupFailedStep ? (
-          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-amber-950/80 text-amber-300 border border-amber-600 font-mono text-xs font-bold shadow-sm">
-            <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
-            <span>PREREQUISITE SETUP NOT MET</span>
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-[6px] bg-rh-cond/15 text-rh-cond text-xs font-semibold">
+            <AlertCircle className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Prerequisite setup not met</span>
           </span>
         ) : (
-          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-600 font-mono text-xs font-bold">
-            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            <span>ISOLATION MAINTAINED</span>
+          <span className="flex items-center gap-1.5 px-2.5 py-1 rounded-[6px] bg-rh-go/15 text-rh-go text-xs font-semibold">
+            <ShieldCheck className="w-3.5 h-3.5" aria-hidden="true" />
+            <span>Isolation maintained</span>
           </span>
         )}
       </div>
 
-      {/* Breach Alert Banner */}
       {breach && breachMessage && (
-        <div className="p-3 rounded-lg bg-rose-950/70 border border-rose-500/80 text-rose-200 text-xs font-mono shadow-[0_0_15px_rgba(244,63,94,0.25)] flex items-start gap-2.5">
-          <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5 animate-pulse" />
+        <div role="alert" className="p-3 rounded-[6px] bg-rh-nogo/15 text-xs flex items-start gap-2.5">
+          <AlertTriangle className="w-4 h-4 text-rh-nogo shrink-0 mt-0.5" aria-hidden="true" />
           <div className="flex flex-col gap-0.5">
-            <span className="font-bold text-rose-300 uppercase tracking-wide">
-              Security Violation Alert:
-            </span>
-            <span className="text-rose-100 font-sans text-xs">
-              {breachMessage}
-            </span>
+            <span className="font-semibold text-rh-nogo">Security violation</span>
+            <span className="text-rh-text text-xs">{breachMessage}</span>
           </div>
         </div>
       )}
 
-      {/* Setup Prerequisite Notice Banner */}
       {!breach && setupFailedStep && setupMessage && (
-        <div className="p-3 rounded-lg bg-amber-950/60 border border-amber-600/70 text-amber-200 text-xs font-mono shadow-sm flex items-start gap-2.5">
-          <AlertCircle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+        <div className="p-3 rounded-[6px] bg-rh-cond/15 text-xs flex items-start gap-2.5">
+          <AlertCircle className="w-4 h-4 text-rh-cond shrink-0 mt-0.5" aria-hidden="true" />
           <div className="flex flex-col gap-0.5">
-            <span className="font-bold text-amber-300 uppercase tracking-wide">
-              Prerequisite Setup Notice:
-            </span>
-            <span className="text-amber-100/90 font-sans text-xs">
-              {setupMessage}
-            </span>
+            <span className="font-semibold text-rh-cond">Prerequisite setup notice</span>
+            <span className="text-rh-text text-xs">{setupMessage}</span>
           </div>
         </div>
       )}
@@ -290,44 +246,44 @@ export function StatefulChainFlow({
           const displayPath = step.resolved_path || step.path;
 
           return (
-            <div key={step.step_number} className="relative flex items-start gap-3 group">
+            <div key={step.step_number} className="relative flex items-start gap-3">
               {/* Vertical connector line */}
               {!isLast && (
-                <div className="absolute left-4 top-8 bottom-[-16px] w-0.5 bg-gradient-to-b from-cyan-600/60 to-slate-700/40 group-hover:from-cyan-400 transition-colors" />
+                <div className="absolute left-4 top-8 bottom-[-16px] w-0.5 bg-rh-line" aria-hidden="true" />
               )}
 
               {/* Step Number Circle */}
               <div
-                className={`relative z-10 w-8 h-8 rounded-full flex items-center justify-center font-mono text-xs font-bold shrink-0 border shadow-md ${
+                className={`relative z-10 w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold shrink-0 tabular-nums ${
                   step.executed
                     ? step.passed === false
                       ? step.violation_triggered
-                        ? "bg-rose-950 text-rose-300 border-rose-600 shadow-[0_0_8px_rgba(244,63,94,0.4)]"
-                        : "bg-amber-950 text-amber-300 border-amber-600 shadow-[0_0_8px_rgba(245,158,11,0.25)]"
-                      : "bg-emerald-950 text-emerald-300 border-emerald-600"
-                    : "bg-[#0b1323] text-cyan-300 border-cyan-700/60"
+                        ? "bg-rh-nogo/15 text-rh-nogo"
+                        : "bg-rh-cond/15 text-rh-cond"
+                      : "bg-rh-go/15 text-rh-go"
+                    : "bg-rh-raised text-rh-muted"
                 }`}
               >
                 {step.step_number}
               </div>
 
               {/* Step Card */}
-              <div className="flex-1 rounded-lg border border-[#1b2b46] bg-[#091120] p-3 flex flex-col gap-2 hover:border-cyan-700/60 transition-colors">
+              <div className="flex-1 min-w-0 rounded-[10px] border border-rh-line bg-rh-surface p-3 flex flex-col gap-2">
                 {/* Header Row */}
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 flex-wrap">
                     {/* Actor Badge */}
                     <span
-                      className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-mono font-bold border ${actor.badgeClass}`}
+                      className={`flex items-center gap-1.5 px-2 py-0.5 rounded-[6px] text-xs font-semibold ${actor.badgeClass}`}
                     >
-                      <ActorIcon className="w-3 h-3" />
+                      <ActorIcon className="w-3.5 h-3.5" aria-hidden="true" />
                       <span>{actor.name}</span>
-                      <span className="text-[9px] font-normal opacity-75">({actor.role})</span>
+                      <span className="text-xs font-normal">({actor.role})</span>
                     </span>
 
                     {/* Method Badge */}
                     <span
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold border ${getMethodBadge(
+                      className={`px-1.5 py-0.5 rounded-[6px] text-xs font-mono font-semibold ${getMethodBadge(
                         step.method
                       )}`}
                     >
@@ -335,42 +291,42 @@ export function StatefulChainFlow({
                     </span>
 
                     {/* Resolved Path */}
-                    <span className="text-xs font-mono font-semibold text-slate-100 break-all">
+                    <span className="text-xs font-medium font-mono text-rh-text break-all">
                       {displayPath}
                     </span>
                   </div>
 
                   {/* Status & Latency Badges */}
-                  <div className="flex items-center gap-2 font-mono text-xs">
+                  <div className="flex items-center gap-2 text-xs">
                     {step.latency_ms != null && (
-                      <span className="flex items-center gap-1 text-[10px] text-slate-400">
-                        <Clock className="w-3 h-3 text-cyan-400" />
+                      <span className="flex items-center gap-1 text-xs text-rh-muted tabular-nums">
+                        <Clock className="w-3.5 h-3.5" aria-hidden="true" />
                         {step.latency_ms}ms
                       </span>
                     )}
 
                     {step.status_code != null ? (
                       <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold border ${getStatusCodeBadge(
+                        className={`px-2 py-0.5 rounded-[6px] text-xs font-semibold tabular-nums ${getStatusCodeBadge(
                           step.status_code
                         )}`}
                       >
                         HTTP {step.status_code}
                       </span>
                     ) : step.expected_status != null ? (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#111c30] text-slate-400 border border-slate-700">
+                      <span className="px-1.5 py-0.5 rounded-[6px] text-xs font-semibold bg-rh-raised text-rh-muted tabular-nums">
                         Expected: {step.expected_status}
                       </span>
                     ) : null}
 
                     {step.executed && (
-                      <span title={step.passed ? "Step Passed" : step.violation_triggered ? "Security Violation" : "Prerequisite Setup Failed"}>
+                      <span title={step.passed ? "Step passed" : step.violation_triggered ? "Security violation" : "Prerequisite setup failed"}>
                         {step.passed ? (
-                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          <CheckCircle2 className="w-4 h-4 text-rh-go" aria-label="Step passed" />
                         ) : step.violation_triggered ? (
-                          <XCircle className="w-4 h-4 text-rose-400" />
+                          <XCircle className="w-4 h-4 text-rh-nogo" aria-label="Security violation" />
                         ) : (
-                          <AlertCircle className="w-4 h-4 text-amber-400" />
+                          <AlertCircle className="w-4 h-4 text-rh-cond" aria-label="Prerequisite setup failed" />
                         )}
                       </span>
                     )}
@@ -380,10 +336,10 @@ export function StatefulChainFlow({
                 {/* Step Failure / Notice Detail */}
                 {step.error_detail && !step.passed && (
                   <div
-                    className={`p-2 rounded border text-[11px] font-mono ${
+                    className={`p-2 rounded-[6px] text-xs ${
                       step.violation_triggered
-                        ? "bg-rose-950/40 border-rose-800/60 text-rose-300"
-                        : "bg-amber-950/40 border-amber-800/60 text-amber-300"
+                        ? "bg-rh-nogo/15 text-rh-nogo"
+                        : "bg-rh-cond/15 text-rh-cond"
                     }`}
                   >
                     {step.error_detail}
@@ -393,17 +349,17 @@ export function StatefulChainFlow({
                 {/* Extracted Variables Pills */}
                 {step.extracted_values && Object.keys(step.extracted_values).length > 0 && (
                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                    <span className="text-[10px] font-mono text-cyan-400 font-semibold uppercase">
-                      Extracted:
+                    <span className="text-xs text-rh-muted font-semibold">
+                      Extracted
                     </span>
                     {Object.entries(step.extracted_values).map(([k, v]) => (
                       <span
                         key={k}
-                        className="px-2 py-0.5 rounded bg-cyan-950/80 text-cyan-200 border border-cyan-600/60 font-mono text-[10px] flex items-center gap-1 shadow-sm"
+                        className="px-2 py-0.5 rounded-[6px] bg-rh-raised text-xs flex items-center gap-1 font-mono"
                       >
-                        <span className="text-cyan-400 font-bold">{`{{${k}}}`}</span>
-                        <ArrowRight className="w-2.5 h-2.5 text-cyan-500" />
-                        <span className="text-emerald-300 font-semibold">&quot;{v}&quot;</span>
+                        <span className="text-rh-text font-semibold">{`{{${k}}}`}</span>
+                        <ArrowRight className="w-3 h-3 text-rh-muted" aria-hidden="true" />
+                        <span className="text-rh-go font-semibold">&quot;{v}&quot;</span>
                       </span>
                     ))}
                   </div>
@@ -412,13 +368,13 @@ export function StatefulChainFlow({
                 {/* Planned extraction variable hints if not yet executed */}
                 {!step.extracted_values && step.extract_vars && step.extract_vars.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                    <span className="text-[10px] font-mono text-slate-400 font-semibold uppercase">
-                      Extracts Variables:
+                    <span className="text-xs text-rh-muted font-semibold">
+                      Extracts variables:
                     </span>
                     {step.extract_vars.map((v) => (
                       <span
                         key={v}
-                        className="px-2 py-0.5 rounded bg-[#101c30] text-cyan-300 border border-cyan-800 font-mono text-[10px]"
+                        className="px-2 py-0.5 rounded-[6px] bg-rh-raised text-rh-text text-xs font-mono"
                       >
                         {`{{${v}}}`}
                       </span>
@@ -429,15 +385,15 @@ export function StatefulChainFlow({
                 {/* Violation Condition Warning */}
                 {step.violation_condition && (
                   <div
-                    className={`mt-1 p-2 rounded text-[11px] font-mono flex items-center gap-2 border ${
+                    className={`mt-1 p-2 rounded-[6px] text-xs flex items-center gap-2 ${
                       step.executed && step.passed === false
-                        ? "bg-rose-950/50 border-rose-600/70 text-rose-300"
-                        : "bg-[#0b1626] border-slate-700/70 text-slate-300"
+                        ? "bg-rh-nogo/15 text-rh-nogo"
+                        : "bg-rh-raised text-rh-text"
                     }`}
                   >
-                    <AlertTriangle className={`w-3.5 h-3.5 shrink-0 ${step.executed && step.passed === false ? "text-rose-400" : "text-amber-400"}`} />
+                    <AlertTriangle className={`w-3.5 h-3.5 shrink-0 ${step.executed && step.passed === false ? "text-rh-nogo" : "text-rh-cond"}`} aria-hidden="true" />
                     <span>
-                      <strong className="text-slate-400">Violation Check: </strong>
+                      <strong className="text-rh-muted">Violation check: </strong>
                       {step.violation_condition}
                     </span>
                   </div>
@@ -446,8 +402,8 @@ export function StatefulChainFlow({
                 {/* Payload snippet if available */}
                 {step.payload && (
                   <div className="mt-1">
-                    <span className="text-[10px] font-mono text-slate-500 block mb-0.5">Payload:</span>
-                    <pre className="p-1.5 rounded bg-black/60 border border-[#16233a] font-mono text-[10px] text-slate-300 overflow-x-auto max-h-16">
+                    <span className="text-xs text-rh-muted block mb-1">Payload</span>
+                    <pre className="p-2 rounded-[6px] bg-rh-bg border border-rh-line font-mono text-xs text-rh-text overflow-auto max-h-24">
                       {step.payload}
                     </pre>
                   </div>

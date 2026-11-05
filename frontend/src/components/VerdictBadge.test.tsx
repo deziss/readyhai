@@ -5,27 +5,27 @@ import { VerdictBadge } from "./VerdictBadge";
 describe("VerdictBadge", () => {
   it.each([
     ["GO", "GO"],
-    ["CONDITIONAL_GO", "CONDITIONAL GO"],
-    ["NO_GO", "NO GO"],
-    ["SCANNED", "SCANNED"],
+    ["CONDITIONAL_GO", "Conditional go"],
+    ["NO_GO", "No go"],
+    ["SCANNED", "Scanned"],
   ])("renders %s", (verdict, text) => {
     render(<VerdictBadge verdict={verdict} />);
     expect(screen.getByText(text)).toBeTruthy();
   });
 
-  it.each([[null], [undefined], [""]])("renders NOT EVALUATED for %s", (v) => {
+  it.each([[null], [undefined], [""]])("renders Not evaluated for %s", (v) => {
     render(<VerdictBadge verdict={v} />);
-    expect(screen.getByText("NOT EVALUATED")).toBeTruthy();
+    expect(screen.getByText("Not evaluated")).toBeTruthy();
   });
 
   it("never renders an unknown verdict as green", () => {
     const { container } = render(<VerdictBadge verdict="PASS" />);
-    expect(container.innerHTML).not.toContain("emerald");
+    expect(container.innerHTML).not.toContain("rh-go");
     expect(screen.getByText("PASS")).toBeTruthy();
   });
 
   it("only GO is green", () => {
     const { container } = render(<VerdictBadge verdict="GO" />);
-    expect(container.innerHTML).toContain("emerald");
+    expect(container.innerHTML).toContain("rh-go");
   });
 });

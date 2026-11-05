@@ -1,24 +1,23 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
-  ArrowRight,
   Bot,
-  Zap,
-  ShieldAlert,
-  FileCode,
-  Search,
-  Loader2,
-  Sparkles,
-  Play,
-  Globe,
   BrainCircuit,
-  Sliders,
-  Copy,
   Check,
+  Copy,
+  FileCode,
+  Globe,
+  Loader2,
+  Play,
+  Plus,
+  Search,
+  ShieldAlert,
+  Zap,
 } from "lucide-react";
 import type { DiscoveredTarget, ModelTier } from "@/types/agent";
 import { apiRequest, useApiTokenVersion } from "@/lib/api";
+import { copyTextSafely } from "@/lib/clipboard";
 
 interface ComposerProps {
   target: string;
@@ -47,6 +46,41 @@ interface ComposerProps {
   onOpenAgentHistory?: () => void;
 }
 
+type Mode = "autonomous" | "adversarial" | "contract";
+
+const MODES: { id: Mode; label: string; icon: typeof Zap }[] = [
+  { id: "autonomous", label: "Autonomous QA", icon: Zap },
+  { id: "adversarial", label: "Adversarial & auth", icon: ShieldAlert },
+  { id: "contract", label: "Contract & spec", icon: FileCode },
+];
+
+const STEP_PRESETS = [5, 10, 15, 25, 50];
+
+const TIERS: { id: ModelTier; label: string; tokens: string; tokensNum: number; desc: string }[] = [
+  { id: "low", label: "Low", tokens: "1k", tokensNum: 1024, desc: "Fast probe and reconnaissance" },
+  { id: "medium", label: "Med", tokens: "4k", tokensNum: 4096, desc: "Standard QA and contracts" },
+  { id: "high", label: "High", tokens: "8k", tokensNum: 8192, desc: "Deep OWASP and boundary analysis (recommended)" },
+  { id: "max", label: "Max", tokens: "16k", tokensNum: 16384, desc: "Exhaustive mutation and state invariants" },
+  { id: "max_pro", label: "Max Pro", tokens: "32k", tokensNum: 32768, desc: "Frontier swarm and adversarial canaries" },
+];
+
+const DIRECTIVE_HINTS: { label: string; text: string }[] = [
+  { label: "Auth session check", text: "Check unauthenticated access to /api/auth/session" },
+  { label: "100 KB boundary", text: "Probe 100KB boundary size on chat input" },
+  { label: "Prompt injection", text: "Inject prompt override canary on chat" },
+];
+
+const QUICK_TARGETS = ["https://myvapi.com", "https://api.example.com", "http://localhost:3000", "http://127.0.0.1:8080"];
+
+const FIELD = "rounded-sm border border-rh-line bg-rh-bg px-3 py-2 text-ui text-rh-text placeholder:text-rh-muted";
+const LABEL = "text-ui font-medium text-rh-text";
+const SECONDARY_BTN =
+  "inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-sm border border-rh-line px-3 py-2 text-ui font-medium text-rh-text hover:bg-rh-raised disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent";
+
+/**
+ * The agent command center. The header and mode switch are pinned at the top, the Launch button is
+ * pinned at the bottom, and only the controls in between scroll, so nothing can be pushed out of reach.
+ */
 export function Composer({
   target,
   setTarget,
@@ -73,40 +107,38 @@ export function Composer({
   setThinkingBudget,
   onOpenAgentHistory,
 }: ComposerProps) {
-  const [activeMode, setActiveMode] = useState<"autonomous" | "adversarial" | "contract">("autonomous");
+  const [activeMode, setActiveMode] = useState<Mode>("autonomous");
   const [requesterIpInfo, setRequesterIpInfo] = useState<{
     egress_public_ip: string;
     ip_type: string;
     allowlist_guidance: string;
   } | null>(null);
   const [copiedIp, setCopiedIp] = useState(false);
+  const modeRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  const STEP_PRESETS = [5, 10, 15, 25, 50];
   const [isCustomSteps, setIsCustomSteps] = useState(!STEP_PRESETS.includes(maxSteps));
   const [customInputValue, setCustomInputValue] = useState(String(maxSteps));
 
-  const TIERS: { id: ModelTier; label: string; tokens: string; tokensNum: number; desc: string }[] = [
-    { id: "low", label: "Low", tokens: "1k", tokensNum: 1024, desc: "Fast probe & reconnaissance" },
-    { id: "medium", label: "Med", tokens: "4k", tokensNum: 4096, desc: "Standard QA & contracts" },
-    { id: "high", label: "High", tokens: "8k", tokensNum: 8192, desc: "Deep OWASP & boundary analysis (Recommended)" },
-    { id: "max", label: "Max", tokens: "16k", tokensNum: 16384, desc: "Exhaustive mutation & state invariants" },
-    { id: "max_pro", label: "Max Pro", tokens: "32k", tokensNum: 32768, desc: "Frontier swarm & adversarial canaries" },
-  ];
+  const tierDisplayName =
+    {
+      low: "Low",
+      medium: "Medium",
+      high: "High",
+      max: "Max",
+      max_pro: "Max Pro",
+    }[modelTier] || "High";
+  const tierDesc = TIERS.find((t) => t.id === modelTier)?.desc;
 
-  const tierDisplayName = {
-    low: "Low",
-    medium: "Medium",
-    high: "High",
-    max: "Max",
-    max_pro: "Max Pro",
-  }[modelTier] || "High";
-
-  useEffect(() => {
+  // Keep the custom field in sync when maxSteps changes from outside (adjusting state during render,
+  // not in an effect, so there is no extra cascading render).
+  const [syncedMaxSteps, setSyncedMaxSteps] = useState(maxSteps);
+  if (syncedMaxSteps !== maxSteps) {
+    setSyncedMaxSteps(maxSteps);
     setCustomInputValue(String(maxSteps));
     if (!STEP_PRESETS.includes(maxSteps)) {
       setIsCustomSteps(true);
     }
-  }, [maxSteps]);
+  }
 
   const tokenVersion = useApiTokenVersion();
 
@@ -125,7 +157,7 @@ export function Composer({
     };
   }, [tokenVersion]);
 
-  function handleModeChange(mode: "autonomous" | "adversarial" | "contract") {
+  function handleModeChange(mode: Mode) {
     setActiveMode(mode);
     if (mode === "adversarial") {
       setDirectives("Focus heavily on authorization bypass, BOLA, IDOR, token forgery, and prompt injection canaries.");
@@ -136,6 +168,17 @@ export function Composer({
     }
   }
 
+  // Arrow keys move between modes (roving tabindex), as expected for a radio group.
+  function handleModeKeyDown(e: React.KeyboardEvent, index: number) {
+    let next: number;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = (index + 1) % MODES.length;
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = (index - 1 + MODES.length) % MODES.length;
+    else return;
+    e.preventDefault();
+    handleModeChange(MODES[next].id);
+    modeRefs.current[next]?.focus();
+  }
+
   function appendDirective(hint: string) {
     if (!directives.includes(hint)) {
       setDirectives(directives ? `${directives}; ${hint}` : hint);
@@ -143,491 +186,431 @@ export function Composer({
   }
 
   return (
-    <div className="bg-[#080d19]/90 backdrop-blur-xl border border-[#172740] rounded-xl p-4 shadow-[0_8px_32px_rgba(0,0,0,0.55)] flex flex-col gap-3.5 relative overflow-hidden">
-      {/* Ambient Top Glow Line */}
-      <div className="absolute top-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-cyan-500/40 to-transparent pointer-events-none" />
-
-      {/* Top Command Bar & QA Reports Shortcut */}
-      <div className="flex items-center justify-between pb-2 border-b border-[#141f33]/80">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse shadow-[0_0_8px_#22d3ee]" />
-          <span className="text-xs font-mono font-bold text-slate-100 uppercase tracking-wider">
-            Agent Command Center
-          </span>
-        </div>
-        {onOpenAgentHistory && (
-          <button
-            id="btn-goto-qa-reports-top"
-            type="button"
-            onClick={onOpenAgentHistory}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#0c1626] hover:bg-[#112036] border border-cyan-800/60 hover:border-cyan-500/80 text-cyan-300 text-[11px] font-mono font-semibold transition-all cursor-pointer shadow-sm group shrink-0"
-            title="Open QA Agent Reports & Swarm History"
-          >
-            <Bot className="w-3.5 h-3.5 text-cyan-400 group-hover:scale-110 transition-transform" />
-            <span>QA Agent Reports</span>
-            <ArrowRight className="w-3 h-3 text-cyan-400 group-hover:translate-x-0.5 transition-transform" />
-          </button>
-        )}
-      </div>
-
-      {/* Mode Switch Radio Group */}
-      <div
-        role="radiogroup"
-        aria-label="Testing Mode Switch"
-        className="flex items-center p-1 bg-[#050811] rounded-lg border border-[#142033]"
-      >
-        {([
-          { id: "autonomous", label: "Autonomous QA", icon: Zap, activeColor: "text-cyan-200 border-cyan-500/60 bg-gradient-to-r from-cyan-950/80 to-[#0e1d33] shadow-[0_0_12px_rgba(6,182,212,0.25)]" },
-          { id: "adversarial", label: "Adversarial & Auth", icon: ShieldAlert, activeColor: "text-rose-200 border-rose-500/60 bg-gradient-to-r from-rose-950/80 to-[#2d111d] shadow-[0_0_12px_rgba(244,63,94,0.25)]" },
-          { id: "contract", label: "Contract & Spec", icon: FileCode, activeColor: "text-emerald-200 border-emerald-500/60 bg-gradient-to-r from-emerald-950/80 to-[#0c221a] shadow-[0_0_12px_rgba(16,185,129,0.25)]" },
-        ] as const).map((mode) => {
-          const isSelected = activeMode === mode.id;
-          const Icon = mode.icon;
-          return (
+    <section
+      aria-label="Agent command center"
+      className="flex flex-col overflow-hidden rounded-md border border-rh-line bg-rh-surface lg:h-full lg:min-h-0"
+    >
+      {/* Pinned top: title and mode switch */}
+      <div className="flex shrink-0 flex-col gap-3 border-b border-rh-line p-4">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-base font-semibold text-rh-text">Agent command center</h2>
+          {onOpenAgentHistory && (
             <button
-              key={mode.id}
+              id="btn-goto-qa-reports-top"
               type="button"
-              role="radio"
-              aria-checked={isSelected}
-              onClick={() => handleModeChange(mode.id)}
-              className={`flex-1 py-1.5 px-2 rounded-md text-xs font-medium transition-all duration-200 flex items-center justify-center gap-1.5 cursor-pointer border ${
-                isSelected
-                  ? `${mode.activeColor} font-semibold`
-                  : "text-slate-400 hover:text-slate-200 border-transparent hover:bg-[#090f1d]"
-              }`}
+              onClick={onOpenAgentHistory}
+              className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-sm border border-rh-line px-2.5 py-1 text-xs font-medium text-rh-text hover:bg-rh-raised"
+              title="Open QA agent reports and run history"
             >
-              <Icon className={`w-3.5 h-3.5 ${isSelected ? "animate-pulse" : "opacity-70"}`} />
-              <span className="truncate">{mode.label}</span>
+              <Bot className="h-3.5 w-3.5 text-rh-primary" aria-hidden="true" />
+              QA agent reports
             </button>
-          );
-        })}
-      </div>
-
-      {/* Requester Public IP & Private Network Whitelist Banner */}
-      <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-[#060b16] border border-[#15233a] text-[11px] font-mono text-slate-300">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="flex items-center gap-1.5 text-cyan-400 font-bold shrink-0">
-            <Globe className="w-3.5 h-3.5 text-cyan-400" />
-            Requester Public IP:
-          </span>
-          <span className="text-cyan-200 font-bold bg-[#0b1527] px-2 py-0.5 rounded border border-cyan-800/60 font-mono shadow-inner">
-            {requesterIpInfo?.egress_public_ip || "unknown"}
-          </span>
-          <span className="text-[10px] text-slate-400 hidden sm:inline truncate">
-            {requesterIpInfo ? `(${requesterIpInfo.ip_type || "type unknown"}) · ` : "(lookup unavailable) · "}
-            Whitelist for Private Networks / AWS VPC
-          </span>
-        </div>
-        <button
-          type="button"
-          disabled={!requesterIpInfo?.egress_public_ip}
-          onClick={() => {
-            const ip = requesterIpInfo?.egress_public_ip;
-            if (!ip) return;
-            navigator.clipboard.writeText(ip);
-            setCopiedIp(true);
-            setTimeout(() => setCopiedIp(false), 2000);
-          }}
-          className="px-2 py-0.5 rounded text-[10px] bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-800 transition-colors flex items-center gap-1 shrink-0 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-          title={requesterIpInfo?.allowlist_guidance || "Copy public IP for firewall allowlist"}
-        >
-          {copiedIp ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
-          {copiedIp ? "Copied" : "Copy IP"}
-        </button>
-      </div>
-
-      {/* Target URL with Architecture Badge */}
-      <div className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between">
-          <label className="text-[11px] font-mono uppercase font-bold text-slate-400">
-            Target Host or URL
-          </label>
-          {discoveredData && (
-            <span
-              className={`text-[10px] font-mono px-2 py-0.5 rounded font-bold tracking-tight ${
-                discoveredData.app_architecture?.includes("PHP")
-                  ? "bg-indigo-950/90 text-indigo-300 border border-indigo-600/80 shadow-[0_0_10px_rgba(99,102,241,0.2)]"
-                  : discoveredData.is_spa
-                  ? "bg-purple-950/80 text-purple-300 border border-purple-700/60"
-                  : "bg-emerald-950/80 text-emerald-300 border border-emerald-700/60"
-              }`}
-            >
-              {discoveredData.app_architecture || (discoveredData.is_spa ? "SPA shell detected" : "architecture not reported")} ({discoveredData.count} routes)
-            </span>
           )}
         </div>
-        <div className="flex gap-2">
+
+        <div
+          role="radiogroup"
+          aria-label="Testing mode"
+          className="@container flex items-center gap-1 rounded-sm border border-rh-line bg-rh-bg p-1"
+        >
+          {MODES.map((mode, i) => {
+            const isSelected = activeMode === mode.id;
+            const Icon = mode.icon;
+            return (
+              <button
+                key={mode.id}
+                ref={(el) => {
+                  modeRefs.current[i] = el;
+                }}
+                type="button"
+                role="radio"
+                aria-checked={isSelected}
+                tabIndex={isSelected ? 0 : -1}
+                onClick={() => handleModeChange(mode.id)}
+                onKeyDown={(e) => handleModeKeyDown(e, i)}
+                title={mode.label}
+                className={`flex min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-sm border px-2 py-1.5 text-ui font-medium ${
+                  isSelected
+                    ? "border-rh-primary bg-rh-raised text-rh-text"
+                    : "border-transparent text-rh-muted hover:text-rh-text"
+                }`}
+              >
+                <Icon className={`hidden h-3.5 w-3.5 shrink-0 @md:block ${isSelected ? "text-rh-primary" : ""}`} aria-hidden="true" />
+                <span className="truncate">{mode.label}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Scrolling controls. From 1024px up this is the only part of the panel that scrolls; when the columns stack, the page scrolls instead. */}
+      {/* `relative` keeps the visually hidden radio inputs inside this scroller instead of growing the page. */}
+      <div className="relative flex flex-col gap-5 p-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
+        {/* Target */}
+        <div className="flex flex-col gap-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <label htmlFor="composer-target-url" className={LABEL}>
+              Target URL
+            </label>
+            {discoveredData && (
+              <span className="truncate rounded-sm bg-rh-info/10 px-2 py-0.5 text-xs font-medium text-rh-info">
+                {discoveredData.app_architecture || (discoveredData.is_spa ? "SPA shell detected" : "Architecture not reported")} ·{" "}
+                {discoveredData.count} routes
+              </span>
+            )}
+          </div>
           <input
             id="composer-target-url"
             type="text"
             value={target}
             onChange={(e) => setTarget(e.target.value)}
             placeholder="https://api.example.com or http://localhost:3000"
-            className="flex-1 bg-[#07090e] border border-[#1e2a40] rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-colors"
+            spellCheck={false}
+            className={`${FIELD} w-full font-mono placeholder:font-sans`}
           />
-          <button
-            id="composer-btn-discover"
-            type="button"
-            onClick={onDiscover}
-            disabled={isDiscovering || isCrawling || isRunning}
-            title="Fast inspection & architecture discovery"
-            className="px-3 py-2 bg-[#111827] hover:bg-[#162033] border border-[#1e2a40] text-slate-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer"
-          >
-            {isDiscovering ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-                Probing...
-              </>
-            ) : (
-              <>
-                <Search className="w-3.5 h-3.5 text-cyan-400" />
-                Discover
-              </>
-            )}
-          </button>
-          <button
-            id="composer-btn-crawl"
-            type="button"
-            onClick={onCrawl}
-            disabled={isCrawling || isDiscovering || isRunning}
-            title="Deep crawl target website to map all real internal links and forms"
-            className="px-3 py-2 bg-[#19152e] hover:bg-[#251f45] border border-purple-700/60 text-purple-200 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors disabled:opacity-50 cursor-pointer shadow-[0_0_12px_rgba(168,85,247,0.15)]"
-          >
-            {isCrawling ? (
-              <>
-                <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
-                Crawling...
-              </>
-            ) : (
-              <>
-                <Globe className="w-3.5 h-3.5 text-purple-400" />
-                Crawl Site
-              </>
-            )}
-          </button>
-        </div>
-
-        {/* Quick Domain Triggers */}
-        <div className="flex flex-wrap gap-1.5">
-          {["https://myvapi.com", "https://api.example.com", "http://localhost:3000", "http://127.0.0.1:8080"].map((url) => (
+          <div className="flex flex-wrap gap-2">
             <button
-              key={url}
+              id="composer-btn-discover"
               type="button"
-              onClick={() => setTarget(url)}
-              className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#07090e] hover:bg-[#111827] border border-[#1a2436] text-slate-400 hover:text-cyan-300 transition-colors cursor-pointer"
+              onClick={onDiscover}
+              disabled={isDiscovering || isCrawling || isRunning}
+              title="Quick inspection of the target and its architecture"
+              className={SECONDARY_BTN}
             >
-              {url}
+              {isDiscovering ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-rh-primary" aria-hidden="true" />
+                  Probing...
+                </>
+              ) : (
+                <>
+                  <Search className="h-3.5 w-3.5 text-rh-primary" aria-hidden="true" />
+                  Discover
+                </>
+              )}
             </button>
-          ))}
-        </div>
-      </div>
-
-      {/* OpenAPI Spec URL */}
-      <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] font-mono uppercase font-bold text-slate-400">
-          OpenAPI Specification URL <span className="text-slate-500 font-normal lowercase">(optional)</span>
-        </label>
-        <input
-          type="text"
-          value={specUrl}
-          onChange={(e) => setSpecUrl(e.target.value)}
-          placeholder="/openapi.json or leave blank for auto-discovery"
-          className="bg-[#07090e] border border-[#1e2a40] rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors"
-        />
-      </div>
-
-      {/* Directives & Suggestion Chips */}
-      <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] font-mono uppercase font-bold text-slate-400">
-          Agent Directives & Focus
-        </label>
-        <textarea
-          rows={2}
-          value={directives}
-          onChange={(e) => setDirectives(e.target.value)}
-          placeholder="e.g. Focus on unauthenticated session access, IDOR tenant boundaries, and prompt injection canaries"
-          className="bg-[#07090e] border border-[#1e2a40] rounded-lg p-2.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 transition-colors resize-none leading-relaxed"
-        />
-        <div className="flex flex-wrap gap-1.5">
-          <button
-            type="button"
-            onClick={() => appendDirective("Check unauthenticated access to /api/auth/session")}
-            className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-800/50 text-cyan-300 transition-colors cursor-pointer"
-          >
-            + Auth Session Check
-          </button>
-          <button
-            type="button"
-            onClick={() => appendDirective("Probe 100KB boundary size on chat input")}
-            className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-800/50 text-cyan-300 transition-colors cursor-pointer"
-          >
-            + 100KB Boundary
-          </button>
-          <button
-            type="button"
-            onClick={() => appendDirective("Inject prompt override canary on chat")}
-            className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/40 hover:bg-cyan-900/60 border border-cyan-800/50 text-cyan-300 transition-colors cursor-pointer"
-          >
-            + Prompt Injection
-          </button>
-        </div>
-      </div>
-
-      {/* Compact Agent Thinking & Intelligence Tier Section */}
-      <div className="p-2.5 bg-[#080d19] rounded-xl border border-[#18263d] space-y-2 shadow-inner">
-        {/* Thinking Toggle */}
-        <div className="flex items-center justify-between pb-1.5 border-b border-[#141f33]/80">
-          <div className="flex items-center gap-2">
-            <div
-              className={`p-1 rounded-md border transition-colors ${
-                thinking
-                  ? "bg-cyan-950/80 border-cyan-500/50 text-cyan-400 shadow-[0_0_6px_rgba(6,182,212,0.3)]"
-                  : "bg-slate-900 border-slate-700 text-slate-500"
-              }`}
+            <button
+              id="composer-btn-crawl"
+              type="button"
+              onClick={onCrawl}
+              disabled={isCrawling || isDiscovering || isRunning}
+              title="Crawl the site to map real internal links and forms"
+              className={SECONDARY_BTN}
             >
-              <BrainCircuit className="w-3.5 h-3.5" />
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-white tracking-wide">Extended Thinking (CoT)</span>
-              <span
-                className={`text-[9px] font-mono px-1.5 py-0.2 rounded font-bold uppercase ${
-                  thinking
-                    ? "bg-cyan-900/60 text-cyan-300 border border-cyan-600/50"
-                    : "bg-slate-800 text-slate-400"
-                }`}
-              >
-                {thinking ? "ACTIVE" : "OFF"}
-              </span>
-            </div>
+              {isCrawling ? (
+                <>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin text-rh-primary" aria-hidden="true" />
+                  Crawling...
+                </>
+              ) : (
+                <>
+                  <Globe className="h-3.5 w-3.5 text-rh-primary" aria-hidden="true" />
+                  Crawl site
+                </>
+              )}
+            </button>
           </div>
 
-          <label className="relative inline-flex items-center cursor-pointer" title="Toggle autonomous multi-pass chain-of-thought reasoning">
-            <input
-              id="toggle-thinking"
-              type="checkbox"
-              checked={thinking}
-              onChange={(e) => setThinking(e.target.checked)}
-              className="sr-only peer"
-            />
-            <div className="w-8 h-4.5 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-3.5 peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-cyan-600"></div>
-          </label>
+          <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="Example targets">
+            <span className="text-xs text-rh-muted">Try</span>
+            {QUICK_TARGETS.map((url) => (
+              <button
+                key={url}
+                type="button"
+                onClick={() => setTarget(url)}
+                className="cursor-pointer rounded-sm border border-rh-line bg-rh-bg px-2 py-0.5 font-mono text-xs text-rh-muted hover:text-rh-text"
+              >
+                {url}
+              </button>
+            ))}
+          </div>
+
+          {/* Requester public IP, for allowlisting on private networks */}
+          <div className="flex items-center justify-between gap-2 rounded-sm border border-rh-line bg-rh-bg px-3 py-2">
+            <div className="min-w-0">
+              <p className="text-xs text-rh-muted">
+                Requester public IP {requesterIpInfo ? `(${requesterIpInfo.ip_type || "type unknown"})` : "(lookup unavailable)"}
+              </p>
+              <p className="truncate font-mono text-ui text-rh-text">{requesterIpInfo?.egress_public_ip || "unknown"}</p>
+            </div>
+            <button
+              type="button"
+              disabled={!requesterIpInfo?.egress_public_ip}
+              onClick={async () => {
+                const ip = requesterIpInfo?.egress_public_ip;
+                if (!ip) return;
+                if (!(await copyTextSafely(ip, "The IP address"))) return;
+                setCopiedIp(true);
+                setTimeout(() => setCopiedIp(false), 2000);
+              }}
+              className="inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-sm border border-rh-line px-2.5 py-1 text-xs font-medium text-rh-text hover:bg-rh-raised disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+              title={requesterIpInfo?.allowlist_guidance || "Copy the public IP for your firewall allowlist"}
+            >
+              {copiedIp ? (
+                <Check className="h-3.5 w-3.5 text-rh-go" aria-hidden="true" />
+              ) : (
+                <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+              )}
+              {copiedIp ? "Copied" : "Copy IP"}
+            </button>
+          </div>
+          <p className="-mt-1 text-xs text-rh-muted">Allowlist this address if the target is on a private network or AWS VPC.</p>
         </div>
 
-        {/* Radio Button Switch for Model Tier */}
-        <div className="space-y-1">
-          <div className="flex items-center justify-between text-[10px] font-mono">
-            <span className="text-slate-400 font-semibold uppercase flex items-center gap-1">
-              <Sliders className="w-3 h-3 text-cyan-400" />
-              <span>Agent Model Tier</span>
-            </span>
-            <span className="text-cyan-300 font-bold uppercase tracking-wider">
-              {tierDisplayName}
-            </span>
-          </div>
+        {/* Spec and focus */}
+        <div className="flex flex-col gap-2">
+          <label htmlFor="composer-spec-url" className={LABEL}>
+            OpenAPI spec URL <span className="font-normal text-rh-muted">(optional)</span>
+          </label>
+          <input
+            id="composer-spec-url"
+            type="text"
+            value={specUrl}
+            onChange={(e) => setSpecUrl(e.target.value)}
+            placeholder="/openapi.json, or leave blank to auto-discover"
+            spellCheck={false}
+            className={`${FIELD} font-mono placeholder:font-sans`}
+          />
+        </div>
 
-          <div role="radiogroup" aria-label="Agent Model Tier" className="grid grid-cols-5 gap-1">
-            {TIERS.map((t) => {
-              const isSelected = modelTier === t.id;
-              return (
-                <label
-                  key={t.id}
-                  id={`tier-radio-${t.id}`}
-                  className={`relative flex items-center justify-between px-1.5 py-1 rounded-md text-[11px] font-mono cursor-pointer transition-all border ${
-                    isSelected
-                      ? "bg-gradient-to-b from-cyan-950/80 to-[#101e36] border-cyan-500/70 text-cyan-200 shadow-[0_0_8px_rgba(6,182,212,0.2)] font-semibold"
-                      : "bg-[#090f1d] border-[#162238] text-slate-400 hover:text-slate-200 hover:border-slate-700"
-                  }`}
-                  title={t.desc}
-                >
-                  <input
-                    type="radio"
-                    name="agent-model-tier"
-                    value={t.id}
-                    checked={isSelected}
-                    onChange={() => {
-                      setModelTier(t.id);
-                      setThinkingBudget(t.tokensNum);
-                    }}
-                    className="sr-only"
-                  />
-                  <div className="flex items-center gap-1 min-w-0">
-                    <span
-                      className={`w-2.5 h-2.5 rounded-full border flex items-center justify-center shrink-0 transition-colors ${
-                        isSelected ? "border-cyan-400 bg-cyan-950" : "border-slate-600 bg-slate-900"
-                      }`}
-                    >
-                      {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_3px_#22d3ee]" />}
-                    </span>
-                    <span className="truncate">{t.label}</span>
-                  </div>
-                  <span
-                    className={`text-[9px] px-1 py-0.2 rounded font-mono shrink-0 ml-0.5 ${
+        <div className="flex flex-col gap-2">
+          <label htmlFor="composer-directives" className={LABEL}>
+            Agent directives
+          </label>
+          <textarea
+            id="composer-directives"
+            rows={3}
+            value={directives}
+            onChange={(e) => setDirectives(e.target.value)}
+            placeholder="e.g. Focus on unauthenticated session access, IDOR tenant boundaries, and prompt injection canaries"
+            className={`${FIELD} resize-none leading-relaxed`}
+          />
+          <div className="flex flex-wrap gap-1.5">
+            {DIRECTIVE_HINTS.map((hint) => (
+              <button
+                key={hint.label}
+                type="button"
+                onClick={() => appendDirective(hint.text)}
+                title={hint.text}
+                className="inline-flex cursor-pointer items-center gap-1 rounded-sm border border-rh-line bg-rh-bg px-2 py-0.5 text-xs text-rh-muted hover:text-rh-text"
+              >
+                <Plus className="h-3 w-3" aria-hidden="true" />
+                {hint.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Agent settings */}
+        <div className="flex flex-col gap-4 rounded-sm border border-rh-line bg-rh-bg p-3">
+          <label
+            htmlFor="toggle-thinking"
+            className="flex cursor-pointer items-center justify-between gap-3"
+            title="Let the agent reason through several passes before each step"
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <BrainCircuit className={`h-4 w-4 shrink-0 ${thinking ? "text-rh-primary" : "text-rh-muted"}`} aria-hidden="true" />
+              <span className="flex flex-col">
+                <span className={LABEL}>Extended thinking</span>
+                <span className="text-xs text-rh-muted">{thinking ? "On: multi-pass reasoning" : "Off: single-pass answers"}</span>
+              </span>
+            </span>
+            <span className="relative inline-flex h-5 w-9 shrink-0 items-center">
+              <input
+                id="toggle-thinking"
+                type="checkbox"
+                role="switch"
+                checked={thinking}
+                onChange={(e) => setThinking(e.target.checked)}
+                className="peer sr-only"
+              />
+              <span
+                aria-hidden="true"
+                className="absolute inset-0 rounded-full bg-rh-line peer-checked:bg-rh-primary peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-rh-primary"
+              />
+              <span
+                aria-hidden="true"
+                className="absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-rh-text peer-checked:translate-x-4 peer-checked:bg-rh-bg"
+              />
+            </span>
+          </label>
+
+          <div className="flex min-w-0 flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <span className={LABEL}>Model tier</span>
+              <span className="text-xs font-medium text-rh-primary">{tierDisplayName}</span>
+            </div>
+            <div role="radiogroup" aria-label="Agent model tier" className="grid grid-cols-5 gap-1.5">
+              {TIERS.map((t) => {
+                const isSelected = modelTier === t.id;
+                return (
+                  <label
+                    key={t.id}
+                    id={`tier-radio-${t.id}`}
+                    title={t.desc}
+                    className={`relative flex cursor-pointer flex-col items-center rounded-sm border px-1 py-1.5 text-center has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-rh-primary ${
                       isSelected
-                        ? "bg-cyan-900/70 text-cyan-300 border border-cyan-700/60"
-                        : "bg-slate-800/80 text-slate-500"
+                        ? "border-rh-primary bg-rh-raised text-rh-text"
+                        : "border-rh-line text-rh-muted hover:text-rh-text"
                     }`}
                   >
-                    {t.tokens}
-                  </span>
+                    <input
+                      type="radio"
+                      name="agent-model-tier"
+                      value={t.id}
+                      checked={isSelected}
+                      onChange={() => {
+                        setModelTier(t.id);
+                        setThinkingBudget(t.tokensNum);
+                      }}
+                      className="sr-only"
+                    />
+                    <span className="text-ui font-medium leading-tight">{t.label}</span>
+                    <span className={`text-xs tabular-nums ${isSelected ? "text-rh-primary" : ""}`}>{t.tokens}</span>
+                  </label>
+                );
+              })}
+            </div>
+            {tierDesc && <p className="text-xs text-rh-muted">{tierDesc}</p>}
+          </div>
+
+          {thinking && (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <label htmlFor="composer-thinking-budget-slider" className={LABEL}>
+                  Reasoning budget
                 </label>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Reasoning Budget Tokens Slider when Thinking is Enabled */}
-        {thinking && (
-          <div className="pt-0.5 space-y-1">
-            <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
-              <span className="flex items-center gap-1 text-slate-400">
-                <Sparkles className="w-3 h-3 text-cyan-400" />
-                <span>Reasoning Budget Tokens:</span>
-              </span>
-              <span className="text-cyan-300 font-bold">{thinkingBudget.toLocaleString()} tokens</span>
-            </div>
-            <input
-              id="composer-thinking-budget-slider"
-              type="range"
-              min={1024}
-              max={32768}
-              step={1024}
-              value={thinkingBudget}
-              onChange={(e) => setThinkingBudget(Number(e.target.value))}
-              className="w-full accent-cyan-500 h-1 bg-slate-800 rounded-lg cursor-pointer"
-            />
-            <div className="flex justify-between text-[9px] font-mono text-slate-500">
-              <span>1k (Fast)</span>
-              <span>8k (Default)</span>
-              <span>32k (Max Pro)</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Profile & Max Steps */}
-      <div className="grid grid-cols-2 gap-2.5">
-        <div className="flex flex-col gap-1">
-          <label className="text-[11px] font-mono uppercase font-bold text-slate-400">
-            Execution Profile
-          </label>
-          <select
-            id="composer-select-profile"
-            value={profile}
-            onChange={(e) => setProfile(e.target.value)}
-            className="bg-[#07090e] border border-[#1e2a40] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 cursor-pointer"
-          >
-            <option value="standard">Standard (Multi-Agent)</option>
-            <option value="quick">Quick (Contract/Smoke)</option>
-            <option value="deep">Deep (Chaos & Adversarial)</option>
-          </select>
-        </div>
-
-        <div className="flex flex-col gap-1">
-          <div className="flex items-center justify-between">
-            <label className="text-[11px] font-mono uppercase font-bold text-slate-400">
-              Max Steps
-            </label>
-            {isCustomSteps && (
-              <span className="text-[9px] font-mono text-cyan-400 font-semibold uppercase">
-                Custom ({maxSteps})
-              </span>
-            )}
-          </div>
-          <div className="flex items-center gap-1.5">
-            <select
-              id="composer-max-steps-preset"
-              value={isCustomSteps ? "custom" : String(maxSteps)}
-              onChange={(e) => {
-                const val = e.target.value;
-                if (val === "custom") {
-                  setIsCustomSteps(true);
-                } else {
-                  setIsCustomSteps(false);
-                  const n = Number(val);
-                  setMaxSteps(n);
-                  setCustomInputValue(String(n));
-                }
-              }}
-              className={`${
-                isCustomSteps ? "w-1/2" : "w-full"
-              } bg-[#07090e] border border-[#1e2a40] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-500 cursor-pointer transition-all`}
-            >
-              <option value="5">5 Steps (Quick)</option>
-              <option value="10">10 Steps (Standard)</option>
-              <option value="15">15 Steps (Balanced)</option>
-              <option value="25">25 Steps (Deep)</option>
-              <option value="50">50 Steps (Exhaustive)</option>
-              <option value="custom">Custom...</option>
-            </select>
-
-            {isCustomSteps && (
-              <div className="relative w-1/2">
-                <input
-                  id="composer-max-steps"
-                  type="number"
-                  min={1}
-                  max={50}
-                  value={customInputValue}
-                  onChange={(e) => {
-                    const text = e.target.value;
-                    setCustomInputValue(text);
-                    const parsed = parseInt(text, 10);
-                    if (!isNaN(parsed) && parsed >= 1 && parsed <= 50) {
-                      setMaxSteps(parsed);
-                    }
-                  }}
-                  onBlur={() => {
-                    const parsed = parseInt(customInputValue, 10);
-                    if (isNaN(parsed) || parsed < 1) {
-                      setMaxSteps(1);
-                      setCustomInputValue("1");
-                    } else if (parsed > 50) {
-                      setMaxSteps(50);
-                      setCustomInputValue("50");
-                    } else {
-                      setMaxSteps(parsed);
-                      setCustomInputValue(String(parsed));
-                    }
-                  }}
-                  placeholder="1-50"
-                  className="w-full bg-[#07090e] border border-cyan-500/60 rounded-lg pl-2.5 pr-8 py-1.5 text-xs font-mono text-cyan-200 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-center"
-                />
-                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-500 pointer-events-none">
-                  steps
-                </span>
+                <span className="text-xs font-medium tabular-nums text-rh-primary">{thinkingBudget.toLocaleString()} tokens</span>
               </div>
-            )}
+              <input
+                id="composer-thinking-budget-slider"
+                type="range"
+                min={1024}
+                max={32768}
+                step={1024}
+                value={thinkingBudget}
+                onChange={(e) => setThinkingBudget(Number(e.target.value))}
+                className="h-1 w-full cursor-pointer accent-rh-primary"
+              />
+              <div className="flex justify-between text-xs text-rh-muted">
+                <span>1k fast</span>
+                <span>8k default</span>
+                <span>32k max</span>
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <label htmlFor="composer-select-profile" className={LABEL}>
+                Execution profile
+              </label>
+              <select
+                id="composer-select-profile"
+                value={profile}
+                onChange={(e) => setProfile(e.target.value)}
+                className={`${FIELD} cursor-pointer py-1.5`}
+              >
+                <option value="standard">Standard (multi-agent)</option>
+                <option value="quick">Quick (contract and smoke)</option>
+                <option value="deep">Deep (chaos and adversarial)</option>
+              </select>
+            </div>
+
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <label htmlFor="composer-max-steps-preset" className={LABEL}>
+                Max steps
+              </label>
+              <div className="flex items-center gap-1.5">
+                <select
+                  id="composer-max-steps-preset"
+                  value={isCustomSteps ? "custom" : String(maxSteps)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val === "custom") {
+                      setIsCustomSteps(true);
+                    } else {
+                      setIsCustomSteps(false);
+                      const n = Number(val);
+                      setMaxSteps(n);
+                      setCustomInputValue(String(n));
+                    }
+                  }}
+                  className={`${FIELD} min-w-0 cursor-pointer py-1.5 ${isCustomSteps ? "w-1/2" : "w-full"}`}
+                >
+                  <option value="5">5 (quick)</option>
+                  <option value="10">10 (standard)</option>
+                  <option value="15">15 (balanced)</option>
+                  <option value="25">25 (deep)</option>
+                  <option value="50">50 (exhaustive)</option>
+                  <option value="custom">Custom...</option>
+                </select>
+
+                {isCustomSteps && (
+                  <input
+                    id="composer-max-steps"
+                    type="number"
+                    min={1}
+                    max={50}
+                    value={customInputValue}
+                    aria-label="Custom max steps (1 to 50)"
+                    onChange={(e) => {
+                      const text = e.target.value;
+                      setCustomInputValue(text);
+                      const parsed = parseInt(text, 10);
+                      if (!isNaN(parsed) && parsed >= 1 && parsed <= 50) {
+                        setMaxSteps(parsed);
+                      }
+                    }}
+                    onBlur={() => {
+                      const parsed = parseInt(customInputValue, 10);
+                      if (isNaN(parsed) || parsed < 1) {
+                        setMaxSteps(1);
+                        setCustomInputValue("1");
+                      } else if (parsed > 50) {
+                        setMaxSteps(50);
+                        setCustomInputValue("50");
+                      } else {
+                        setMaxSteps(parsed);
+                        setCustomInputValue(String(parsed));
+                      }
+                    }}
+                    placeholder="1-50"
+                    className={`${FIELD} w-1/2 min-w-0 py-1.5 text-center tabular-nums`}
+                  />
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Launch Action */}
-      <button
-        id="btn-launch-swarm"
-        type="button"
-        onClick={onLaunch}
-        disabled={isRunning}
-        className="group relative w-full h-11 py-2 px-4 bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-600 hover:from-cyan-500 hover:via-sky-500 hover:to-blue-500 active:from-cyan-700 active:to-blue-700 border border-cyan-400/50 text-white rounded-xl font-bold text-xs tracking-wider flex items-center justify-center gap-2.5 shadow-[0_0_20px_rgba(6,182,212,0.28)] hover:shadow-[0_0_28px_rgba(6,182,212,0.45)] transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer active:scale-[0.99] overflow-hidden"
-      >
-        <span className="absolute inset-0 w-full h-full bg-gradient-to-r from-transparent via-white/15 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-700 ease-in-out pointer-events-none" />
-        {isRunning ? (
-          <>
-            <Loader2 className="w-4 h-4 animate-spin text-cyan-200 shrink-0" />
-            <span className="tracking-wide">EXECUTING SWARM PIPELINE</span>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-black/40 border border-white/20 text-cyan-200 uppercase font-bold tracking-wider shadow-inner">
-              {tierDisplayName}
-            </span>
-          </>
-        ) : (
-          <>
-            <Play className="w-4 h-4 fill-white shrink-0 group-hover:scale-110 transition-transform" />
-            <span className="tracking-wide">LAUNCH MULTI-AGENT SWARM</span>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-black/40 border border-white/20 text-cyan-200 uppercase font-bold tracking-wider shadow-inner">
-              {tierDisplayName}
-            </span>
-          </>
-        )}
-      </button>
-    </div>
+      {/* Pinned bottom: launch */}
+      <div className="flex shrink-0 flex-col gap-2 border-t border-rh-line p-4">
+        <p className="truncate text-xs text-rh-muted">
+          {tierDisplayName} tier · {maxSteps} steps · {profile} profile · thinking {thinking ? "on" : "off"}
+        </p>
+        <button
+          id="btn-launch-swarm"
+          type="button"
+          onClick={onLaunch}
+          disabled={isRunning}
+          aria-busy={isRunning}
+          className="inline-flex h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-sm bg-rh-primary px-4 text-sm font-semibold text-rh-bg hover:bg-rh-primary-hover disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-rh-primary"
+        >
+          {isRunning ? (
+            <>
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden="true" />
+              Running agent...
+            </>
+          ) : (
+            <>
+              <Play className="h-4 w-4 shrink-0 fill-current" aria-hidden="true" />
+              Run agent
+            </>
+          )}
+        </button>
+      </div>
+    </section>
   );
 }

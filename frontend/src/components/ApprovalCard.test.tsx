@@ -22,12 +22,12 @@ describe("ApprovalCard sign-off", () => {
     });
 
     render(<ApprovalCard runId="r1" evidenceLedger={ledger} defectCount={0} onSignOff={onSignOff} />);
-    fireEvent.change(screen.getByPlaceholderText(/Operator sign-off ID/), { target: { value: "op@example.test" } });
-    fireEvent.click(screen.getByText("Approve for Deployment"));
+    fireEvent.change(screen.getByLabelText(/Operator ID/), { target: { value: "op@example.test" } });
+    fireEvent.click(screen.getByText("Approve release"));
 
     await waitFor(() => expect(screen.getByRole("alert").textContent).toContain("denied"));
     expect(onSignOff).toHaveBeenCalledWith("approve", "op@example.test", "");
-    expect(screen.getByText("Pending Sign-Off")).toBeTruthy();
+    expect(screen.getByText("Pending sign-off")).toBeTruthy();
     expect(screen.queryByText("Approved")).toBeNull();
     vi.unstubAllGlobals();
   });
@@ -36,7 +36,102 @@ describe("ApprovalCard sign-off", () => {
     render(
       <ApprovalCard runId="r1" evidenceLedger={{}} defectCount={null} onSignOff={vi.fn(async () => null)} />
     );
-    expect((screen.getByText("Approve for Deployment").closest("button") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText("Approve release").closest("button") as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getAllByText("not evaluated").length).toBeGreaterThan(0);
+  });
+
+  const approveButton = () => screen.getByText("Approve release").closest("button") as HTMLButtonElement;
+  const typeOperator = () =>
+    fireEvent.change(screen.getByLabelText(/Operator ID/), { target: { value: "op@example.test" } });
+
+  it("never offers approval for a NO_GO verdict", () => {
+    render(
+      <ApprovalCard
+        runId="r1"
+        evidenceLedger={{ gate_verdict: "NO_GO", overall_readiness: 20 }}
+        defectCount={3}
+        onSignOff={vi.fn(async () => null)}
+      />
+    );
+    typeOperator();
+    expect(approveButton().disabled).toBe(true);
+    // Blocking the release stays available.
+    expect((screen.getByText("Block release").closest("button") as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("offers approval for GO and CONDITIONAL_GO", () => {
+    for (const verdict of ["GO", "CONDITIONAL_GO"]) {
+      const { unmount } = render(
+        <ApprovalCard
+          runId="r1"
+          evidenceLedger={{ gate_verdict: verdict, overall_readiness: 80 }}
+          defectCount={0}
+          onSignOff={vi.fn(async () => null)}
+        />
+      );
+      typeOperator();
+      expect(approveButton().disabled).toBe(false);
+      unmount();
+    }
+  });
+
+  it("only shows the state the backend ledger reports, not the clicked action", async () => {
+    // onSignOff succeeds but the ledger prop is unchanged: the card must stay pending.
+    const onSignOff = vi.fn(async () => null);
+    render(<ApprovalCard runId="r1" evidenceLedger={ledger} defectCount={0} onSignOff={onSignOff} />);
+    typeOperator();
+    fireEvent.click(screen.getByText("Approve release"));
+    await waitFor(() => expect(onSignOff).toHaveBeenCalled());
+    expect(screen.getByText("Pending sign-off")).toBeTruthy();
+  });
+
+  it("is a Release gate panel that starts open while a decision is pending and can be collapsed", () => {
+    render(<ApprovalCard runId="r1" evidenceLedger={ledger} defectCount={0} onSignOff={vi.fn(async () => null)} />);
+    const toggle = screen.getByRole("button", { name: /Release gate/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const body = document.getElementById(toggle.getAttribute("aria-controls") as string) as HTMLElement;
+    expect(body.className).not.toContain("hidden");
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(body.className).toContain("hidden");
+    // The verdict and review state stay visible in the header while collapsed.
+    expect(screen.getByText("Pending sign-off")).toBeTruthy();
+    expect(screen.getByText(/^go$/i)).toBeTruthy();
+
+    // Collapsing keeps what the operator already typed.
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("keeps typed sign-off details across a collapse and expand", () => {
+    render(<ApprovalCard runId="r1" evidenceLedger={ledger} defectCount={0} onSignOff={vi.fn(async () => null)} />);
+    typeOperator();
+    const toggle = screen.getByRole("button", { name: /Release gate/ });
+    fireEvent.click(toggle);
+    fireEvent.click(toggle);
+    expect((screen.getByLabelText(/Operator ID/) as HTMLInputElement).value).toBe("op@example.test");
+  });
+
+  it("shows the confirmed sign-off, collapsed by default, and no longer offers the actions", () => {
+    render(
+      <ApprovalCard
+        runId="r1"
+        evidenceLedger={{ ...ledger, approval_status: "APPROVED", approved_by: "lead@example.test", approval_notes: "all clear" }}
+        defectCount={0}
+        onSignOff={vi.fn(async () => null)}
+      />
+    );
+    expect(screen.getByRole("button", { name: /Release gate/ }).getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByText("Approved")).toBeTruthy();
+    expect(screen.getByText(/lead@example\.test/)).toBeTruthy();
+    expect(screen.queryByText("Approve release")).toBeNull();
+  });
+
+  it("explains why sign-off is unavailable instead of silently disabling it", () => {
+    render(<ApprovalCard runId="r1" evidenceLedger={ledger} defectCount={0} onSignOff={vi.fn(async () => null)} />);
+    expect(screen.getByText("Enter your operator ID to approve or block.")).toBeTruthy();
+    typeOperator();
+    expect(screen.queryByText("Enter your operator ID to approve or block.")).toBeNull();
   });
 });

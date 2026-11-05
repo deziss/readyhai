@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
-import { AutoRemediationCard } from "./AutoRemediationCard";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { AutoRemediationCard, REMEDIATION_TITLE } from "./AutoRemediationCard";
 import { StatefulChainFlow } from "./StatefulChainFlow";
 import { ConcurrencyBurstMeter } from "./ConcurrencyBurstMeter";
 import { Scenarios } from "./Scenarios";
@@ -18,11 +18,23 @@ describe("AutoRemediationCard", () => {
       />
     );
 
-    expect(screen.getByText("Auto-Remediation Git Patch")).toBeDefined();
+    expect(screen.getByText("Example remediation \u2014 adapt to your code")).toBeDefined();
     expect(screen.getByText("Enforce tenant isolation on workspace query.")).toBeDefined();
-    expect(screen.getByText("Copy Git Patch")).toBeDefined();
-    expect(screen.getByText("Copy Repro Script")).toBeDefined();
+    expect(screen.getByText("Copy example diff")).toBeDefined();
+    expect(screen.getByText("Copy repro script")).toBeDefined();
     expect(screen.getByText("+ new_secure_code();")).toBeDefined();
+  });
+
+  it("presents the diff as an example and never claims it is verified", () => {
+    const { container } = render(
+      <AutoRemediationCard patch="+ secure_fix()" explanation="Check the owner." reproScript="curl x" />
+    );
+    expect(REMEDIATION_TITLE).toBe("Example remediation \u2014 adapt to your code");
+    const text = (container.textContent ?? "") + " " + Array.from(container.querySelectorAll("[title]")).map((e) => e.getAttribute("title")).join(" ");
+    expect(text).not.toMatch(/verified/i);
+    expect(text).not.toMatch(/git patch/i);
+    expect(text).not.toMatch(/ready to apply|one-click/i);
+    expect(screen.getByText("Example diff")).toBeDefined();
   });
 
   it("copies patch to clipboard when clicked", async () => {
@@ -33,11 +45,25 @@ describe("AutoRemediationCard", () => {
 
     render(<AutoRemediationCard patch="+ secure_fix()" />);
 
-    const copyBtn = screen.getByText("Copy Git Patch");
+    const copyBtn = screen.getByText("Copy example diff");
     fireEvent.click(copyBtn);
 
     expect(writeTextMock).toHaveBeenCalledWith("+ secure_fix()");
-    expect(screen.getByText("Copied Patch!")).toBeDefined();
+    expect(await screen.findByText("Copied!")).toBeDefined();
+  });
+
+  it("does not claim success when the clipboard is unavailable", async () => {
+    Object.assign(navigator, { clipboard: undefined });
+    const notices: string[] = [];
+    const onNotice = (e: Event) => notices.push((e as CustomEvent<{ message: string }>).detail.message);
+    window.addEventListener("readyhai:notice", onNotice);
+
+    render(<AutoRemediationCard patch="+ secure_fix()" />);
+    fireEvent.click(screen.getByText("Copy example diff"));
+
+    await waitFor(() => expect(notices.length).toBe(1));
+    window.removeEventListener("readyhai:notice", onNotice);
+    expect(screen.queryByText("Copied!")).toBeNull();
   });
 });
 
@@ -85,11 +111,11 @@ describe("StatefulChainFlow", () => {
 
     render(<StatefulChainFlow steps={steps} chain={chain} />);
 
-    expect(screen.getByText("Stateful Scenario Chain Flow")).toBeDefined();
+    expect(screen.getByText("Stateful scenario chain")).toBeDefined();
     expect(screen.getByText("Alice")).toBeDefined();
     expect(screen.getByText("Bob")).toBeDefined();
     expect(screen.getByText('"ws_8f92"')).toBeDefined();
-    expect(screen.getByText("CRITICAL BREACH DETECTED")).toBeDefined();
+    expect(screen.getByText("Critical breach detected")).toBeDefined();
     expect(screen.getAllByText(/BOLA Breached/i).length).toBeGreaterThan(0);
   });
 
@@ -128,9 +154,9 @@ describe("StatefulChainFlow", () => {
 
     render(<StatefulChainFlow steps={steps} chain={chain} />);
 
-    expect(screen.getByText("PREREQUISITE SETUP NOT MET")).toBeDefined();
-    expect(screen.queryByText("CRITICAL BREACH DETECTED")).toBeNull();
-    expect(screen.getByText(/Prerequisite Setup Notice/i)).toBeDefined();
+    expect(screen.getByText("Prerequisite setup not met")).toBeDefined();
+    expect(screen.queryByText("Critical breach detected")).toBeNull();
+    expect(screen.getByText(/Prerequisite setup notice/i)).toBeDefined();
     expect(screen.getAllByText(/received HTTP 401/i).length).toBeGreaterThan(0);
   });
 });
@@ -144,11 +170,11 @@ describe("ConcurrencyBurstMeter", () => {
       />
     );
 
-    expect(screen.getByText("TOCTOU Concurrency Burst Meter")).toBeDefined();
-    expect(screen.getByText("5x Concurrent Burst")).toBeDefined();
+    expect(screen.getByText("TOCTOU concurrency burst")).toBeDefined();
+    expect(screen.getByText("5x concurrent burst")).toBeDefined();
     expect(screen.getByText("200 OK")).toBeDefined();
     expect(screen.getAllByText("409 Conflict").length).toBe(4);
-    expect(screen.getByText("MUTEX LOCK ENFORCED")).toBeDefined();
+    expect(screen.getByText("Mutex lock enforced")).toBeDefined();
   });
 
   it("identifies race condition vulnerability when multiple requests succeed", () => {
@@ -159,7 +185,7 @@ describe("ConcurrencyBurstMeter", () => {
       />
     );
 
-    expect(screen.getByText("RACE CONDITION VULNERABILITY")).toBeDefined();
+    expect(screen.getByText("Race condition vulnerability")).toBeDefined();
   });
 });
 
@@ -197,10 +223,10 @@ describe("Scenarios component", () => {
 
     render(<Scenarios testCases={testCases} />);
 
-    expect(screen.getByText("BOLA Test")).toBeDefined();
-    expect(screen.getByText("Stateful Chain")).toBeDefined();
-    expect(screen.getByText("TOCTOU Burst")).toBeDefined();
-    expect(screen.getByText("Auto-Remediation Git Patch")).toBeDefined();
+    expect(screen.getByText("BOLA test")).toBeDefined();
+    expect(screen.getByText("Stateful chain")).toBeDefined();
+    expect(screen.getByText("TOCTOU burst")).toBeDefined();
+    expect(screen.getByText("Example remediation \u2014 adapt to your code")).toBeDefined();
   });
 });
 
@@ -222,8 +248,8 @@ describe("ThreatTriage component", () => {
 
     expect(screen.getByText("Broken Object Level Authorization in Workspaces")).toBeDefined();
     expect(screen.getByText("API1:2023")).toBeDefined();
-    expect(screen.getByText("CRITICAL")).toBeDefined();
-    expect(screen.getByText("Auto-Remediation Git Patch")).toBeDefined();
+    expect(screen.getByText("Critical", { selector: "span" })).toBeDefined();
+    expect(screen.getByText("Example remediation \u2014 adapt to your code")).toBeDefined();
     expect(screen.getByText("Verifies user ID against workspace owner ID.")).toBeDefined();
   });
 });

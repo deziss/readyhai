@@ -7,46 +7,47 @@ interface VerdictBadgeProps {
 }
 
 /**
- * Gate verdict pill. Only a backend-reported GO is ever green; a missing or
+ * Gate verdict chip. Only a backend-reported GO is ever green; a missing or
  * unrecognised verdict renders neutral ("not evaluated").
  */
 export function VerdictBadge({ verdict, className = "" }: VerdictBadgeProps) {
-  const base = `inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-mono font-bold border tracking-wider ${className}`;
+  const base = `inline-flex items-center gap-1 px-2 py-0.5 rounded-[6px] text-xs font-semibold whitespace-nowrap ${className}`;
   switch (verdict) {
     case "GO":
       return (
-        <span className={`${base} bg-emerald-950/80 text-emerald-300 border-emerald-600/70`}>
-          <CheckCircle2 className="w-3 h-3" /> GO
+        <span className={`${base} bg-rh-go/15 text-rh-go`}>
+          <CheckCircle2 className="w-3.5 h-3.5" aria-hidden="true" /> GO
         </span>
       );
     case "CONDITIONAL_GO":
       return (
-        <span className={`${base} bg-amber-950/80 text-amber-300 border-amber-600/70`}>
-          <AlertTriangle className="w-3 h-3" /> CONDITIONAL GO
+        <span className={`${base} bg-rh-cond/15 text-rh-cond`}>
+          <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" /> Conditional go
         </span>
       );
     case "NO_GO":
       return (
-        <span className={`${base} bg-rose-950/80 text-rose-300 border-rose-600/70`}>
-          <XCircle className="w-3 h-3" /> NO GO
+        <span className={`${base} bg-rh-nogo/15 text-rh-nogo`}>
+          <XCircle className="w-3.5 h-3.5" aria-hidden="true" /> No go
         </span>
       );
     case "SCANNED":
       return (
         <span
-          className={`${base} bg-cyan-950/60 text-cyan-300 border-cyan-700/60`}
+          className={`${base} bg-rh-info/15 text-rh-info`}
           title="Reconnaissance scan only: no gate verdict was produced"
         >
-          <Radar className="w-3 h-3" /> SCANNED
+          <Radar className="w-3.5 h-3.5" aria-hidden="true" /> Scanned
         </span>
       );
     default:
       return (
         <span
-          className={`${base} bg-slate-900 text-slate-400 border-slate-700`}
+          className={`${base} bg-rh-raised text-rh-muted`}
           title="The backend did not report a gate verdict for this run"
         >
-          <HelpCircle className="w-3 h-3" /> {verdict ? verdict.replace(/_/g, " ") : "NOT EVALUATED"}
+          <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" />{" "}
+          {verdict ? verdict.replace(/_/g, " ") : "Not evaluated"}
         </span>
       );
   }

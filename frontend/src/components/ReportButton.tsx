@@ -58,7 +58,10 @@ interface ReportFrameProps {
   className?: string;
 }
 
-/** Authenticated HTML report in a sandboxed iframe (opaque origin: it cannot read the stored token). */
+/**
+ * Authenticated HTML report in a fully sandboxed iframe: no allow-scripts and no allow-same-origin,
+ * so the report has an opaque origin and runs no script (reports are static documents).
+ */
 export function ReportFrame({ path, title, className }: ReportFrameProps) {
   const version = useApiTokenVersion();
   const key = `${path}|${version}`;
@@ -88,15 +91,15 @@ export function ReportFrame({ path, title, className }: ReportFrameProps) {
 
   if (state.key !== key) {
     return (
-      <div className="w-full h-full flex items-center justify-center text-xs font-mono text-slate-400 gap-2">
-        <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+      <div className="w-full h-full flex items-center justify-center text-xs text-rh-muted gap-2">
+        <Loader2 className="w-4 h-4 animate-spin text-rh-primary" />
         Loading report...
       </div>
     );
   }
   if (state.error || !state.url) {
     return (
-      <div className="w-full h-full flex items-center justify-center p-6 text-xs font-mono text-rose-300 text-center">
+      <div className="w-full h-full flex items-center justify-center p-6 text-xs text-rh-nogo text-center">
         {state.error || "Report unavailable."}
       </div>
     );
@@ -106,7 +109,7 @@ export function ReportFrame({ path, title, className }: ReportFrameProps) {
       src={state.url}
       title={title}
       className={className}
-      sandbox="allow-scripts allow-modals"
+      sandbox=""
     />
   );
 }
