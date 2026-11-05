@@ -66,7 +66,7 @@ export interface TestCaseResult {
   component: string;
   technique: string;
   method: string;
-  status: "PASS" | "FAIL" | "WARN" | "BLOCKED" | "SKIPPED" | "PLANNED" | "PENDING";
+  status: "PASS" | "FAIL" | "WARN" | "BLOCKED" | "SKIPPED" | "PLANNED" | "PENDING" | "INCONCLUSIVE";
   /** null when the backend did not report a latency (planned / not executed). */
   latency_ms: number | null;
   curl: string;
