@@ -241,7 +241,7 @@ td{padding:10px 14px;border-bottom:1px solid #131f33;vertical-align:top}.wrap{ov
 pre{margin:0;padding:8px 12px;background:#05070d;border:1px solid #16243d;border-radius:6px;font:11px monospace;color:var(--cyan);white-space:pre-wrap;word-break:break-all}
 code{font-family:monospace;color:#cbd5e1}.mut{color:var(--mut);font-size:12px}.pillars{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
 .pillar{background:#090f1e;border:1px solid #1a2a44;border-radius:8px;padding:16px}.score{font:700 20px monospace;color:var(--cyan)}.ne{color:var(--warn)}
-.st-PASS{color:var(--ok)}.st-FAIL{color:var(--bad)}.st-WARN,.st-INCONCLUSIVE{color:var(--warn)}.st-BLOCKED,.st-SKIPPED{color:var(--mut)}
+.st-PASS{color:var(--ok)}.st-FAIL{color:var(--bad)}.st-WARN,.st-INCONCLUSIVE{color:var(--warn)}.st-BLOCKED,.st-SKIPPED,.st-NOT_APPLICABLE{color:var(--mut)}
 @media print{body{background:#fff;color:#000}.card{background:#fff;border-color:#ccc}td,code{color:#000!important}pre{background:#f8fafc;color:#000;border-color:#ccc}}
 "#;
 

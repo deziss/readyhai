@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 use super::triage::severity_for;
-use super::types::{PlannedCase, ResponseContract};
+use super::types::{PlannedCase, RedirectHop, ResponseContract};
 use crate::qa::api::{contract, latency};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,6 +346,109 @@ impl Expect {
     }
 }
 
+/// Is this redirect target (a `Location` value, relative or absolute) a login / sign-in / SSO /
+/// OAuth page? Matched on whole words of the host and path (the query string is ignored, so
+/// `/dashboard?next=/login` is not a login page and `/authors` is not an auth page). The one
+/// matcher behind the authz oracle, the executor's auth-wall detection and the planner.
+pub fn is_login_location(loc: &str) -> bool {
+    let l = loc.trim().to_ascii_lowercase();
+    let base = l.split(['?', '#']).next().unwrap_or("");
+    let words: Vec<&str> = base
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let word = |w: &str| {
+        w.contains("login")
+            || w.contains("signin")
+            || w.contains("oauth")
+            || w.contains("openid")
+            || matches!(w, "logon" | "sso" | "saml" | "auth" | "authn" | "adfs")
+            || w.starts_with("authenticat")
+            || w.starts_with("authoriz")
+            // auth0, auth2 ... but not author, authors, authority
+            || (w.starts_with("auth") && w[4..].chars().all(|c| c.is_ascii_digit()))
+    };
+    words.iter().any(|w| word(w)) || words.windows(2).any(|p| p[0] == "sign" && p[1] == "in")
+}
+
+/// Does an HTML body hold a password input: the page asks for credentials.
+pub fn has_password_field(body: &str) -> bool {
+    static R: OnceLock<Regex> = OnceLock::new();
+    re(&R, r#"(?i)<input\b[^>]*\btype\s*=\s*["']?password"#).is_match(body)
+}
+
+/// Why a response says "you need to log in" and whether the page the case targeted was reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WallSignal {
+    /// What was seen, for the report ("HTTP 307 redirect to a login page (/login)").
+    pub what: String,
+    /// A redirect to a login page: the request never reached the page it targeted, whatever the
+    /// final answer says.
+    pub redirected: bool,
+}
+
+/// The auth-wall evidence in a response (the final one, after any same-origin redirects followed:
+/// `chain`): a 401, a redirect to a login page, or a redirect that ended on a password form. None
+/// when the response is not a wall. Whether it applies to a case (no credential was sent, the case
+/// does not expect a denial) is the caller's call.
+pub fn auth_wall_signal(
+    status: u16,
+    content_type: &str,
+    headers: &[(String, String)],
+    body: &str,
+    chain: &[RedirectHop],
+) -> Option<WallSignal> {
+    let show = |loc: &str| crate::llm::untrusted::redact_then_truncate(loc, 120);
+    if let Some(h) = chain.iter().find(|h| is_login_location(&h.location)) {
+        return Some(WallSignal {
+            what: format!(
+                "HTTP {} redirect to a login page ({})",
+                h.status,
+                show(&h.location)
+            ),
+            redirected: true,
+        });
+    }
+    if (300..=399).contains(&status)
+        && let Some((_, loc)) = headers.iter().find(|(k, _)| k == "location")
+        && is_login_location(loc)
+    {
+        return Some(WallSignal {
+            what: format!("HTTP {status} redirect to a login page ({})", show(loc)),
+            redirected: true,
+        });
+    }
+    if status == 401 {
+        return Some(WallSignal {
+            what: "HTTP 401: the route requires credentials".into(),
+            redirected: false,
+        });
+    }
+    if (200..=299).contains(&status)
+        && !chain.is_empty()
+        && content_type.to_ascii_lowercase().contains("html")
+        && has_password_field(body)
+    {
+        return Some(WallSignal {
+            what: "the redirect ended on a page with a password form".into(),
+            redirected: true,
+        });
+    }
+    None
+}
+
+/// The case wants a redirect (expected 3xx, or its expected behaviour says so): the executor does
+/// not follow one for it, the raw 3xx is the evidence.
+pub fn expects_redirect(case: &PlannedCase) -> bool {
+    derive_expectation(case, Technique::parse(&case.technique)) == Expect::Redirect
+}
+
+/// The case wants the request refused (401/403): the raw status is the evidence, so it is never
+/// relabelled as an auth wall.
+pub fn expects_denial(case: &PlannedCase) -> bool {
+    derive_expectation(case, Technique::parse(&case.technique)) == Expect::Denied
+}
+
 fn sensitive_checks(case: &PlannedCase, o: &Observation, out: &mut Vec<OracleCheck>) {
     let code = o.status;
     let html = o.content_type.to_ascii_lowercase().contains("html");
@@ -402,10 +505,7 @@ fn denied_check(case: &PlannedCase, o: &Observation, tech: Technique, out: &mut 
                 .find(|(k, _)| k == "location")
                 .map(|(_, v)| v.to_ascii_lowercase())
                 .unwrap_or_default();
-            if ["login", "signin", "sign-in", "auth", "sso", "oauth"]
-                .iter()
-                .any(|k| loc.contains(k))
-            {
+            if is_login_location(&loc) {
                 chk(
                     "authz",
                     Verdict::Pass,
@@ -886,6 +986,19 @@ fn cors_check(o: &Observation, out: &mut Vec<OracleCheck>, warnings: &mut Vec<St
     });
 }
 
+/// "a" or "an" for the word that follows ("an injection", "a boundary").
+fn a_or_an(word: &str) -> &'static str {
+    if word
+        .chars()
+        .next()
+        .is_some_and(|c| "aeiouAEIOU".contains(c))
+    {
+        "an"
+    } else {
+        "a"
+    }
+}
+
 /// A boundary/negative/injection case with no explicit expectation passes only on class-specific
 /// evidence. The absence of a server error is not evidence.
 fn class_evidence(
@@ -926,7 +1039,8 @@ fn class_evidence(
             Verdict::Inconclusive,
             None,
             format!(
-                "HTTP {code}{why} without a server error: a {} case needs class-specific evidence (an explicit 4xx validation response, or a checked reflection) to pass, and the absence of a 5xx alone proves nothing",
+                "HTTP {code}{why} without a server error: {} {} case needs class-specific evidence (an explicit 4xx validation response, or a checked reflection) to pass, and the absence of a 5xx alone proves nothing",
+                a_or_an(tech.as_str()),
                 tech.as_str()
             ),
         ));
@@ -2584,5 +2698,154 @@ mod tests {
             judge("POST", &[r(200, "{}")], None, None).verdict,
             Verdict::Inconclusive
         );
+    }
+    // ------------------------------------------------------------ login matcher, auth wall
+
+    #[test]
+    fn the_login_matcher_knows_login_pages_and_not_lookalikes() {
+        for yes in [
+            "/login",
+            "/Login?next=/dashboard",
+            "/users/sign-in",
+            "/signin",
+            "/sso/start",
+            "https://idp.example.com/oauth2/authorize?client_id=1",
+            "https://tenant.auth0.com/authorize",
+            "/auth/callback",
+            "/account/authentication",
+            "https://accounts.example.com/saml/redirect",
+        ] {
+            assert!(is_login_location(yes), "{yes} is a login page");
+        }
+        for no in [
+            "/",
+            "/authors",
+            "/authors/42",
+            "/blog/author-bio",
+            "/associates",
+            "/dashboard?next=/login",
+            "/products?utm=sso",
+            "/pricing#login",
+            "",
+        ] {
+            assert!(!is_login_location(no), "{no} is not a login page");
+        }
+    }
+
+    #[test]
+    fn a_password_input_is_found_and_text_about_passwords_is_not() {
+        assert!(has_password_field(
+            r#"<form><input type="password" name="p"></form>"#
+        ));
+        assert!(has_password_field(
+            "<INPUT name=p class='x' TYPE = 'Password'>"
+        ));
+        assert!(!has_password_field(
+            r#"<input type="text" name="password_hint"> Reset your password here"#
+        ));
+        assert!(!has_password_field("{\"type\": \"password\"}"));
+    }
+
+    fn hop(status: u16, to: &str) -> RedirectHop {
+        RedirectHop {
+            status,
+            location: to.into(),
+        }
+    }
+
+    #[test]
+    fn auth_wall_signals_are_a_401_a_login_redirect_or_a_password_form_after_a_redirect() {
+        let loc = |v: &str| vec![("location".to_string(), v.to_string())];
+        // a 401
+        let w = auth_wall_signal(401, "application/json", &[], "{}", &[]).unwrap();
+        assert!(w.what.contains("401") && !w.redirected);
+        // a redirect to a login page that was not followed
+        let w = auth_wall_signal(307, "text/plain", &loc("/login"), "", &[]).unwrap();
+        assert!(w.what.contains("307") && w.what.contains("/login") && w.redirected);
+        // ... or one that was followed
+        let w = auth_wall_signal(
+            200,
+            "text/html",
+            &[],
+            "<h1>Sign in</h1>",
+            &[hop(302, "/accounts/login?next=/")],
+        )
+        .unwrap();
+        assert!(w.redirected && w.what.contains("login"));
+        // a redirect that ended on a password form
+        let w = auth_wall_signal(
+            200,
+            "text/html",
+            &[],
+            r#"<input type="password">"#,
+            &[hop(302, "/welcome")],
+        )
+        .unwrap();
+        assert!(w.redirected && w.what.contains("password"));
+        // not walls: a page with a password field that nothing redirected to, a plain 200, a
+        // redirect to somewhere else, a 403
+        assert_eq!(
+            auth_wall_signal(200, "text/html", &[], r#"<input type="password">"#, &[]),
+            None
+        );
+        assert_eq!(
+            auth_wall_signal(200, "application/json", &[], "{}", &[]),
+            None
+        );
+        assert_eq!(auth_wall_signal(302, "", &loc("/home"), "", &[]), None);
+        assert_eq!(
+            auth_wall_signal(200, "text/html", &[], "<p>ok</p>", &[hop(301, "/new-home")]),
+            None
+        );
+        assert_eq!(auth_wall_signal(403, "text/html", &[], "no", &[]), None);
+    }
+
+    #[test]
+    fn the_authz_oracle_uses_the_same_login_matcher() {
+        let mut c = case("authz", "GET", "/account");
+        c.expected_status = Some(401);
+        let mut o = obs(302, "text/plain", "");
+        let to_login = [("location".to_string(), "/users/sign-in".to_string())];
+        o.headers = &to_login;
+        assert_eq!(judge(&c, &o).verdict, Verdict::Pass);
+        let lookalike = [("location".to_string(), "/authors".to_string())];
+        o.headers = &lookalike;
+        assert_eq!(
+            judge(&c, &o).verdict,
+            Verdict::Inconclusive,
+            "/authors is not an authentication page"
+        );
+    }
+
+    #[test]
+    fn the_case_says_what_it_expects_for_redirects_and_denials() {
+        let mut c = case("state_transition", "GET", "/");
+        assert!(!expects_redirect(&c) && !expects_denial(&c));
+        c.expected_status = Some(307);
+        assert!(expects_redirect(&c));
+        c.expected_status = Some(401);
+        assert!(expects_denial(&c));
+        c.expected_status = Some(200);
+        assert!(!expects_redirect(&c) && !expects_denial(&c));
+        let mut t = case("state_transition", "GET", "/");
+        t.expected_behavior = "redirects as it did during discovery".into();
+        assert!(expects_redirect(&t));
+    }
+
+    #[test]
+    fn the_class_evidence_message_reads_right_for_every_technique() {
+        for (tech, article) in [
+            ("injection", "an injection case"),
+            ("boundary", "a boundary case"),
+            ("negative", "a negative case"),
+        ] {
+            let r = judge(
+                &case(tech, "GET", "/x"),
+                &obs(200, "application/json", "{}"),
+            );
+            let msg = r.reason().unwrap();
+            assert!(msg.contains(article), "{msg}");
+            assert!(!msg.contains("a injection"), "{msg}");
+        }
     }
 }

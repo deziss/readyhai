@@ -849,7 +849,7 @@ fn is_local(url: &str) -> bool {
 }
 
 /// (container-reachable base URL, needs host gateway). Same rewrite as web.rs.
-fn container_base(url: &str) -> (String, bool) {
+pub(crate) fn container_base(url: &str) -> (String, bool) {
     if !is_local(url) {
         return (url.to_string(), false);
     }

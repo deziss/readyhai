@@ -104,6 +104,19 @@ describe("ToolCallList stepper", () => {
     expect(detail().textContent).toContain("Verdict: go");
   });
 
+  it("shows a not-evaluated gate as neutral, not as a failed or red verdict", () => {
+    const done = buildStages(() => "succeeded");
+    const { container } = render(<ToolCallList stages={done} verdict="NOT_EVALUATED" />);
+    expect(screen.getAllByText("Not evaluated").length).toBeGreaterThan(0);
+    expect(container.innerHTML).not.toContain("rh-nogo");
+    expect(container.innerHTML).not.toMatch(/No go/i);
+    fireEvent.click(stageButtons()[5]);
+    expect(detail().textContent).toContain("Verdict: not evaluated");
+    // nothing is selected afterwards: the summary says what it means
+    fireEvent.click(stageButtons()[5]);
+    expect(detail().textContent).toContain("not a failure");
+  });
+
   it("never invents a verdict", () => {
     render(<ToolCallList stages={buildStages(() => "succeeded")} verdict={null} />);
     expect(screen.getByText("No verdict yet")).toBeTruthy();

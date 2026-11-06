@@ -1,0 +1,22 @@
+# Suite: no test accounts. The same fake Next.js app (buggy, as in `agent-spa`) with NO credentials:
+# `/` is a login wall and the API answers 401, so the agent cannot gather evidence. It must say so:
+# the verdict is NOT_EVALUATED (never NO_GO: nothing was proven), the ledger lists an auth_wall
+# blocker, and it reports no defect it cannot have seen.
+name = "agent-spa-noauth"
+kind = "agent"
+description = "Autonomous agent vs the spa-next fixture without credentials: NOT_EVALUATED with an auth-wall blocker"
+expect_verdict = "NOT_EVALUATED"
+expect_blocker = "auth_wall"
+
+[target]
+server = "tests/fixtures/spa-next/server.py"
+profile = "standard"
+max_steps = 60
+
+[thresholds]
+min_recall = 0.85
+max_false_positives = 0
+pass_k = true
+stable_verdict = true
+max_requests = 300
+max_seconds = 120

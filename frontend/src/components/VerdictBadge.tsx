@@ -8,7 +8,8 @@ interface VerdictBadgeProps {
 
 /**
  * Gate verdict chip. Only a backend-reported GO is ever green; a missing or
- * unrecognised verdict renders neutral ("not evaluated").
+ * unrecognised verdict renders neutral ("not evaluated"). A backend NOT_EVALUATED (too little
+ * conclusive evidence) is neutral too: it is not a failure, so it is never red.
  */
 export function VerdictBadge({ verdict, className = "" }: VerdictBadgeProps) {
   const base = `inline-flex items-center gap-1 px-2 py-0.5 rounded-[6px] text-xs font-semibold whitespace-nowrap ${className}`;
@@ -29,6 +30,15 @@ export function VerdictBadge({ verdict, className = "" }: VerdictBadgeProps) {
       return (
         <span className={`${base} bg-rh-nogo/15 text-rh-nogo`}>
           <XCircle className="w-3.5 h-3.5" aria-hidden="true" /> No go
+        </span>
+      );
+    case "NOT_EVALUATED":
+      return (
+        <span
+          className={`${base} bg-rh-raised text-rh-muted`}
+          title="Not enough conclusive evidence for a verdict. This is not a failure: see what to provide next."
+        >
+          <HelpCircle className="w-3.5 h-3.5" aria-hidden="true" /> Not evaluated
         </span>
       );
     case "SCANNED":

@@ -35,11 +35,14 @@ use std::time::{Duration, Instant};
 
 use super::budget::{BudgetUsage, RunBudget, SliceLimits};
 use super::exec::normalize_component;
-use super::exec::{CaseGate, ExecOptions, execute_cases_gated, is_mutating, is_safe_method};
+use super::exec::{
+    CaseGate, ExecOptions, MAX_REDIRECTS, execute_cases_gated, follows_redirects, is_mutating,
+    is_safe_method,
+};
 use super::oracle::{Technique, is_sensitive_path};
 use super::types::{
-    AgentsReport, AreaBudget, AreaReport, CancelToken, CaseExecutionResult, CreatedLedger,
-    PlannedCase, Quota, TriagedDefect, WaveTwoCase,
+    AgentsReport, AreaBudget, AreaReport, BlockReason, CancelToken, CaseExecutionResult,
+    CreatedLedger, PlannedCase, Quota, TriagedDefect, WaveTwoCase,
 };
 
 /// Worker threads when `READYHAI_AGENT_WORKERS` is not set.
@@ -96,6 +99,9 @@ impl Area {
 
     /// The area a case belongs to by what it is (what the planner records in `PlannedCase.area`).
     pub fn classify(c: &PlannedCase) -> Area {
+        if c.is_ledger_row() {
+            return Area::Ui; // a row of the crawl baseline: what the crawl found, and could not test
+        }
         let tech = Technique::parse(&c.technique);
         let chain = c.stateful_steps.as_ref().is_some_and(|s| !s.is_empty());
         let burst = c.concurrency_burst.is_some_and(|n| n > 1);
@@ -158,6 +164,9 @@ pub fn case_weight(c: &PlannedCase) -> u64 {
 /// burst, every step of a chain and its controls). An upper bound, so a slice sized from it never
 /// binds while the run has requests to give.
 pub fn request_demand(c: &PlannedCase, reruns: u32) -> usize {
+    if c.is_ledger_row() {
+        return 0; // a row of the ledger: nothing is sent
+    }
     if let Some(steps) = c.stateful_steps.as_ref().filter(|s| !s.is_empty()) {
         return steps.len() * 3 + 4;
     }
@@ -167,6 +176,9 @@ pub fn request_demand(c: &PlannedCase, reruns: u32) -> usize {
         1
     };
     let mut n = attempts * 2;
+    if follows_redirects(c) {
+        n += attempts * MAX_REDIRECTS; // every hop of a followed redirect is a request
+    }
     if let Some(b) = c.concurrency_burst.filter(|b| *b > 1) {
         n += (b as usize).min(10) + 2;
     }
@@ -414,6 +426,7 @@ fn bump(a: &mut AreaReport, results: &[CaseExecutionResult]) {
                 a.skipped += 1;
                 continue;
             }
+            "NOT_APPLICABLE" => continue, // nothing was sent and nothing was skipped
             _ => {}
         }
         a.executed += 1;
@@ -662,6 +675,30 @@ fn is_resumable(reason: &str) -> bool {
     reason.starts_with("request budget exhausted") || reason.starts_with("step budget exhausted")
 }
 
+/// A result whose cause may be gone on a second send: no answer (a timeout or any transport error),
+/// a 5xx, or a rate limit / request timeout (429, 408). Everything else that ends INCONCLUSIVE is
+/// deterministic: a redirect that was not followed, "no class evidence", a CORS 405, an auth wall.
+pub fn is_transient(r: &CaseExecutionResult) -> bool {
+    match r.status.as_str() {
+        "BLOCKED" => {
+            r.blocked_reason == Some(BlockReason::Transport)
+                || (r.blocked_reason.is_none()
+                    && r.failure_reason
+                        .as_deref()
+                        .is_some_and(|f| f.starts_with("Connection error")))
+        }
+        "INCONCLUSIVE" => matches!(r.status_code, Some(408 | 429 | 500..=599)),
+        _ => false,
+    }
+}
+
+fn transient_cause(r: &CaseExecutionResult) -> String {
+    match r.status_code {
+        Some(c) => format!("HTTP {c}"),
+        None => "no answer".into(),
+    }
+}
+
 /// Same operation: same number of path segments, equal except where both look like record ids.
 fn same_endpoint(a: &str, b: &str) -> bool {
     let path = |s: &str| s.split(['?', '#']).next().unwrap_or("").to_string();
@@ -693,8 +730,10 @@ fn follow_up_key(c: &PlannedCase) -> String {
 ///    identity that was let in: does what it exposes still honour its documented contract and stay
 ///    free of internal detail? The contract comes from the plan's own case for that operation.
 /// 2. `budget-resume`: a case an area budget cut off (SKIPPED) runs now from the reclaimed pool.
-/// 3. `inconclusive-reprobe`: a safe read that ended INCONCLUSIVE is sent once more (a status that
-///    comes and goes, a rate limit, a redirect that was a hiccup).
+/// 3. `inconclusive-reprobe`: a safe read whose result may be a hiccup is sent once more: a
+///    timeout or network error, a 5xx, a 429/408 (see [`is_transient`]). A deterministic
+///    INCONCLUSIVE (a redirect, "no class evidence", a CORS 405, an auth wall) answers the same
+///    way every time and is never re-sent.
 ///
 /// Rules apply in that order, within a rule by case id; at most `limit` follow-ups are returned. Nothing
 /// that writes is ever added: a resumed write is the plan's own.
@@ -784,8 +823,9 @@ pub fn plan_follow_ups(
                 case: origin.clone(),
                 resume: true,
             }),
-            "INCONCLUSIVE"
-                if is_safe_method(&origin.method)
+            "INCONCLUSIVE" | "BLOCKED"
+                if is_transient(r)
+                    && is_safe_method(&origin.method)
                     && single_read(origin)
                     && !origin.id.ends_with("-F1") =>
             {
@@ -803,7 +843,12 @@ pub fn plan_follow_ups(
                     b.push(FollowUp {
                         rule: RULE_REPROBE,
                         origin: origin.id.clone(),
-                        reason: format!("{} was INCONCLUSIVE: sent once more", origin.id),
+                        reason: format!(
+                            "{} was {} ({}): sent once more",
+                            origin.id,
+                            r.status,
+                            transient_cause(r)
+                        ),
                         case: f,
                         resume: false,
                     });
@@ -1606,14 +1651,21 @@ mod tests {
         let mut skipped = result("TC-007", "boundary", "SKIPPED");
         skipped.failure_reason =
             Some("request budget exhausted (area 'contract' allocation: 4 requests)".into());
+        // TC-005 was rate-limited: that may be gone on a second send
+        let mut limited = result("TC-005", "boundary", "INCONCLUSIVE");
+        limited.status_code = Some(429);
+        let mut limited_sub = result("TC-005-M1", "boundary", "INCONCLUSIVE");
+        limited_sub.status_code = Some(429);
+        let mut limited_write = result("TC-006", "boundary", "INCONCLUSIVE");
+        limited_write.status_code = Some(429);
         let results = vec![
             result("TC-001", "authz", "FAIL"),
             result("TC-002", "boundary", "PASS"),
             result("TC-003", "authz", "FAIL"),
             result("TC-004", "authz", "FAIL"),
-            result("TC-005", "boundary", "INCONCLUSIVE"),
-            result("TC-005-M1", "boundary", "INCONCLUSIVE"),
-            result("TC-006", "boundary", "INCONCLUSIVE"),
+            limited,
+            limited_sub,
+            limited_write,
             skipped,
         ];
         let f = plan_follow_ups(&cases, &results, 10);
@@ -1669,6 +1721,103 @@ mod tests {
                 .all(|f| f.rule != RULE_AUTH_TO_CONTRACT),
             "the plan already reads /admin/stats as anon with that technique"
         );
+    }
+
+    #[test]
+    fn only_transient_causes_are_reprobed() {
+        use crate::agent::types::fixtures::result;
+        let cases: Vec<PlannedCase> = (1..=12)
+            .map(|i| {
+                case(
+                    &format!("TC-{i:03}"),
+                    "contract",
+                    "GET",
+                    &format!("/r/{i}"),
+                    "medium",
+                )
+            })
+            .collect();
+        let inconclusive = |i: usize, code: u16| {
+            let mut r = result(&format!("TC-{i:03}"), "boundary", "INCONCLUSIVE");
+            r.status_code = Some(code);
+            r
+        };
+        let mut transport = result("TC-009", "boundary", "BLOCKED");
+        transport.status_code = None;
+        transport.blocked_reason = Some(BlockReason::Transport);
+        let mut legacy = result("TC-010", "boundary", "BLOCKED");
+        legacy.status_code = None;
+        legacy.failure_reason = Some("Connection error: operation timed out".into());
+        let mut wall = result("TC-011", "boundary", "BLOCKED");
+        wall.blocked_reason = Some(BlockReason::AuthWall);
+        wall.status_code = Some(401);
+        let mut crashed = result("TC-012", "boundary", "BLOCKED");
+        crashed.status_code = None;
+        crashed.failure_reason = Some("area worker failed".into());
+        let results = vec![
+            inconclusive(1, 429), // rate limited
+            inconclusive(2, 503), // upstream hiccup
+            inconclusive(3, 408), // timeout
+            inconclusive(4, 307), // a redirect: the same every time
+            inconclusive(5, 200), // no class evidence: the same every time
+            inconclusive(6, 405), // a CORS probe on a route that does not serve OPTIONS
+            inconclusive(7, 401), // an auth wall
+            inconclusive(8, 404),
+            transport, // no answer at all
+            legacy,    // an older run's transport error
+            wall,      // BLOCKED by the wall
+            crashed,   // BLOCKED, but not a transport error
+        ];
+        let follow_ups = plan_follow_ups(&cases, &results, 20);
+        let got: Vec<&str> = follow_ups.iter().map(|f| f.origin.as_str()).collect();
+        assert_eq!(
+            got,
+            ["TC-001", "TC-002", "TC-003", "TC-009", "TC-010"],
+            "429, 5xx, 408 and a missing answer are re-probed; a redirect, no class evidence, a 405, an auth wall and a 404 are not"
+        );
+        assert!(
+            follow_ups
+                .iter()
+                .all(|f| f.rule == RULE_REPROBE && f.case.id.ends_with("-F1"))
+        );
+        for (r, want) in [
+            (inconclusive(1, 500), true),
+            (inconclusive(1, 599), true),
+            (inconclusive(1, 600), false),
+            (inconclusive(1, 302), false),
+        ] {
+            assert_eq!(is_transient(&r), want, "{:?}", r.status_code);
+        }
+        // a PASS or a FAIL is never "transient"
+        assert!(!is_transient(&result("TC-001", "boundary", "PASS")));
+        assert!(!is_transient(&result("TC-001", "boundary", "FAIL")));
+    }
+
+    #[test]
+    fn a_ledger_row_asks_for_no_requests_and_a_followed_redirect_asks_for_more() {
+        let mut row = case("TC-001", "ui", "GET", "/", "low");
+        row.technique = "injection".into();
+        row.source = Some(crate::agent::types::SRC_NOT_APPLICABLE.into());
+        assert_eq!(request_demand(&row, 2), 0);
+        assert_eq!(
+            Area::classify(&row),
+            Area::Ui,
+            "the rows of the crawl baseline"
+        );
+        let mut wall = row.clone();
+        wall.source = Some(crate::agent::types::SRC_AUTH_WALL.into());
+        assert_eq!(request_demand(&wall, 2), 0);
+        // a read that follows redirects: every hop of every attempt is a request
+        let mut read = case("TC-002", "contract", "GET", "/page", "low");
+        read.technique = "state_transition".into();
+        assert_eq!(request_demand(&read, 2), 3 * 2 + 3 * MAX_REDIRECTS);
+        // an authorization case keeps the raw status, so it never redirects
+        let mut authz = case("TC-003", "auth", "GET", "/admin", "low");
+        authz.technique = "authz".into();
+        assert_eq!(request_demand(&authz, 2), 3 * 2);
+        // a write is sent once and never redirected
+        let write = case("TC-004", "state", "POST", "/orders", "low");
+        assert_eq!(request_demand(&write, 2), 2);
     }
 
     // ------------------------------------------------------------ the workers

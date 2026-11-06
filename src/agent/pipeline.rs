@@ -34,7 +34,10 @@ use super::triage::{add_llm_notes, derive_defects_verified};
 use super::types::*;
 use super::verify::{self, VerifyOptions};
 use crate::llm::untrusted::{self, clean_output, fence_capped};
-use crate::llm::{Budget, LlmConfig, ask_typed, call_params, clamp_thinking_budget, probe};
+use crate::llm::{
+    Budget, LatencyReport, LlmConfig, ask_typed, call_params, clamp_thinking_budget,
+    latency_report, probe, probe_latency,
+};
 
 /// How the run decides whether to use an LLM.
 #[derive(Debug, Clone, Default)]
@@ -149,6 +152,38 @@ fn resolve_llm(mode: &LlmMode) -> std::result::Result<LlmConfig, String> {
     }
 }
 
+/// The LLM's answer to a real 1-token completion (`/models` answering only says the server is up).
+/// Its words go into `llm_status`, e.g. "connected: vllm/m (latency 840 ms)".
+fn measure_llm(c: &LlmConfig) -> LatencyReport {
+    latency_report(&probe_latency(c))
+}
+
+/// A slow endpoint (answers in more than 10 s, or not at all in time) cannot serve long reasoning
+/// calls: hold the planner at the High tier (8192 tokens) and say so in the run notes.
+fn cap_if_slow(c: &mut LlmConfig, latency: &LatencyReport, notes: &mut Vec<String>) {
+    if !latency.slow {
+        return;
+    }
+    let mut note = format!("LLM endpoint is slow ({})", latency.summary);
+    if let Some(capped) = c.capped_to_high_tier() {
+        note.push_str(&format!(
+            "; planner thinking is capped at the High tier ({} tokens) instead of tier '{}' ({} tokens) so its calls fit the timeout",
+            capped.thinking_budget_tokens, c.model_tier, c.thinking_budget_tokens
+        ));
+        *c = capped;
+    }
+    notes.push(note);
+}
+
+/// Move what the LLM layer noted (a call that timed out and was retried smaller, ...) into the run's notes.
+fn take_llm_notes(rep: &mut AgentRunReport, llm: &mut Budget) {
+    for n in llm.notes.drain(..) {
+        if !rep.notes.contains(&n) {
+            rep.notes.push(n);
+        }
+    }
+}
+
 // ---------------------------------------------------------------- gate prose (advisory)
 
 const GATE_ROLE: &str = "You are a production-readiness reviewer. You receive facts that deterministic code computed from real HTTP test results. \
@@ -189,8 +224,9 @@ fn llm_gate(
         "Computed readiness facts:\n{}\nWrite the summary and your advisory opinion.",
         fence_capped(&facts, 240)
     );
+    // a summary of facts already computed: 2048 tokens and no reasoning, whatever tier the planner runs at
     let out: GateOut = ask_typed(
-        cfg,
+        &cfg.without_thinking(),
         budget,
         &untrusted::system(GATE_ROLE),
         &prompt,
@@ -681,7 +717,7 @@ pub(crate) fn delete_check_results(
                 "response": {"delete_status": del, "readback_get_status": get, "note": "the resource is still readable after the DELETE"},
                 "oracle": serde_json::to_value(&outcome).unwrap_or(Value::Null),
             });
-            CaseExecutionResult {
+            CaseExecutionResult { blocked_reason: None, redirect_chain: vec![],
                 case_id: id,
                 title,
                 component: l.path.clone(),
@@ -1012,8 +1048,12 @@ fn agent_stages(
     // LLM: resolved and probed once; every LLM step is skipped when it is not reachable
     let llm_cfg = match resolve_llm(&llm) {
         Ok(mut c) => {
+            let latency = measure_llm(&c);
             if req.thinking {
                 c = c.with_thinking(true, &req.model_tier, req.thinking_budget_tokens);
+            }
+            cap_if_slow(&mut c, &latency, &mut rep.notes);
+            if req.thinking {
                 let p = call_params(&c);
                 let sent = p.anthropic_thinking.is_some() || p.reasoning_effort.is_some();
                 log(
@@ -1022,7 +1062,7 @@ fn agent_stages(
                     "Extended Thinking (CoT)",
                     &format!(
                         "Thinking requested: tier '{}', budget {} tokens (clamped to {}..={}). What {} receives: {}",
-                        req.model_tier,
+                        c.model_tier,
                         c.thinking_budget_tokens,
                         crate::llm::MIN_THINKING_BUDGET,
                         crate::llm::MAX_THINKING_BUDGET,
@@ -1041,7 +1081,7 @@ fn agent_stages(
                 "completed",
                 Some("llm"),
             );
-            rep.llm_status = Some(format!("connected: {}", c.describe()));
+            rep.llm_status = Some(format!("connected: {} ({})", c.describe(), latency.summary));
             rep.model = c.model.clone();
             rep.provider = c.provider.id.to_string();
             Some(c)
@@ -1062,6 +1102,11 @@ fn agent_stages(
     rep.thinking = req.thinking;
     rep.model_tier = req.model_tier.clone();
     rep.thinking_budget_tokens = clamp_thinking_budget(req.thinking_budget_tokens);
+    if let Some(c) = llm_cfg.as_ref().filter(|_| req.thinking) {
+        // what the planner really runs at (a slow endpoint holds it at the High tier)
+        rep.model_tier = c.model_tier.clone();
+        rep.thinking_budget_tokens = c.thinking_budget_tokens;
+    }
     checkpoint(base, rep, &budget, &llm_budget);
 
     // 1. discovery
@@ -1074,6 +1119,16 @@ fn agent_stages(
         Some("deterministic"),
     );
     let mut disc = discover(&req.target, req.spec_url.as_deref(), 20, &mut budget);
+    // headless XHR capture (standard/deep, SPA, Docker + runner image present; a note otherwise)
+    super::discover::run_xhr_discovery(
+        &mut disc,
+        &req.target,
+        &req.profile,
+        &base.join(&rep.id),
+        &rep.id,
+        &mut budget,
+        !req.dry_run && nonprod_pin.unwrap_or_else(|| target_is_nonprod(&req.target)),
+    );
     log(
         &mut rep.steps,
         "Discovery",
@@ -1156,6 +1211,7 @@ fn agent_stages(
         change.as_ref().map(|a| &a.set),
         hints.as_ref(),
     );
+    take_llm_notes(rep, &mut llm_budget);
     // Never plan more than the allowance, and make sure what is cut is not what matters most
     let (limit, limit_why) = {
         let by_request = req.max_steps.filter(|&n| n > 0);
@@ -1654,11 +1710,14 @@ fn agent_stages(
         llm_cfg.as_ref().filter(|_| !budget.is_cancelled()),
         defects.is_empty(),
     ) {
-        match add_llm_notes(cfg, &mut llm_budget, &mut defects, &rep.executed_results) {
+        // short prose over defects found already: 2048 tokens and no reasoning, whatever the planner's tier
+        let light = cfg.without_thinking();
+        match add_llm_notes(&light, &mut llm_budget, &mut defects, &rep.executed_results) {
             Ok(k) if k > 0 => triage_src = "deterministic+llm-notes".into(),
             Ok(_) => rep.notes.push("LLM triage notes: none usable".into()),
             Err(e) => rep.notes.push(format!("LLM triage notes skipped: {e}")),
         }
+        take_llm_notes(rep, &mut llm_budget);
     }
     let failed = rep
         .executed_results
@@ -1720,6 +1779,7 @@ fn agent_stages(
             Ok(()) => gate_src = "computed+llm-advisory".into(),
             Err(e) => rep.notes.push(format!("LLM gate advisory skipped: {e}")),
         }
+        take_llm_notes(rep, &mut llm_budget);
     }
     log(
         &mut rep.steps,
@@ -1994,6 +2054,7 @@ pub(crate) fn run_discovery_in(
         rep.allowlist_guidance = guidance;
         let llm_cfg = match resolve_llm(&llm) {
             Ok(c) => {
+                let latency = measure_llm(&c);
                 log(
                     &mut rep.steps,
                     "Supervisor",
@@ -2002,7 +2063,7 @@ pub(crate) fn run_discovery_in(
                     "completed",
                     Some("llm"),
                 );
-                rep.llm_status = Some(format!("connected: {}", c.describe()));
+                rep.llm_status = Some(format!("connected: {} ({})", c.describe(), latency.summary));
                 rep.model = c.model.clone();
                 rep.provider = c.provider.id.to_string();
                 Some(c)
@@ -2069,6 +2130,7 @@ pub(crate) fn run_discovery_in(
             }),
         );
         rep.notes.extend(plan.notes.iter().cloned());
+        take_llm_notes(rep, &mut llm_budget);
         rep.stage_sources
             .insert("discovery".into(), "deterministic".into());
         rep.stage_sources
@@ -3607,6 +3669,102 @@ mod tests {
     }
 
     #[test]
+    fn a_slow_llm_holds_the_planner_at_the_high_tier_and_says_so() {
+        let base = mock::cfg("http://127.0.0.1:1/v1", &tmp("slow-cap-cfg"));
+        let mut c = base.with_thinking(true, "max_pro", 32_768);
+        let mut notes = Vec::new();
+        let fast = latency_report(&Ok(Duration::from_millis(840)));
+        cap_if_slow(&mut c, &fast, &mut notes);
+        assert!(notes.is_empty() && c.model_tier == "max_pro", "{notes:?}");
+        assert_eq!(fast.summary, "latency 840 ms");
+        let slow = latency_report(&Ok(Duration::from_secs(11)));
+        cap_if_slow(&mut c, &slow, &mut notes);
+        assert_eq!(
+            (c.model_tier.as_str(), c.thinking_budget_tokens),
+            ("high", 8192)
+        );
+        assert!(
+            notes.len() == 1
+                && notes[0].contains("slow")
+                && notes[0].contains("High tier")
+                && notes[0].contains("max_pro"),
+            "{notes:?}"
+        );
+        // already at High: slow is noted, nothing to cap
+        let mut notes = Vec::new();
+        cap_if_slow(&mut c, &slow, &mut notes);
+        assert_eq!(c.thinking_budget_tokens, 8192);
+        assert!(
+            notes.len() == 1 && !notes[0].contains("capped"),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn a_run_against_a_slow_llm_is_capped_and_reports_the_probe() {
+        let srv = start_srv(0, None);
+        // the 1-token probe outlasts the timeout; /models and every real call answer at once
+        let m = mock::start_status(|_, body| {
+            let v: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+            if v["max_tokens"] == 1 {
+                std::thread::sleep(Duration::from_millis(450));
+            }
+            (
+                200,
+                json!({"choices": [{"message": {"role": "assistant", "content":
+                    "{\"cases\": [], \"notes\": [], \"executive_summary\": \"fine\", \"gate_verdict\": \"GO\"}"}}]})
+                .to_string(),
+            )
+        });
+        let mut cfg = mock::cfg(&m.base, &tmp("slow-llm-cache"));
+        cfg.timeout_override = Some(Duration::from_millis(300));
+        let mut o = opts();
+        o.llm = LlmMode::Use(Box::new(cfg));
+        let mut rq = req(&srv.base, true);
+        rq.model_tier = "max_pro".into();
+        rq.thinking_budget_tokens = 32_768;
+        let rep = run_in(&tmp("slow-llm-run"), &rq, "run-llm-slow", o).unwrap();
+        let st = rep.llm_status.as_deref().unwrap();
+        assert!(
+            st.starts_with("connected: ") && st.contains("timed out"),
+            "{st}"
+        );
+        assert!(
+            rep.notes
+                .iter()
+                .any(|n| n.contains("LLM endpoint is slow") && n.contains("High tier")),
+            "{:?}",
+            rep.notes
+        );
+        assert_eq!(
+            (rep.model_tier.as_str(), rep.thinking_budget_tokens),
+            ("high", 8192)
+        );
+        // the planner ran with the capped budget, the gate and the triager without reasoning
+        let sent: Vec<serde_json::Value> = m
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap())
+            .collect();
+        let mut light = 0;
+        for b in &sent {
+            let max = b["max_tokens"].as_u64().unwrap();
+            assert!(max <= 10_240, "no call above the High tier: {b}");
+            let is_gate_or_triage = b["messages"][0]["content"].as_str().is_some_and(|c| {
+                c.contains("readiness reviewer") || c.contains("root-cause analyst")
+            });
+            if is_gate_or_triage {
+                light += 1;
+                assert_eq!(max, 2048, "{b}");
+                assert!(b.get("reasoning_effort").is_none(), "{b}");
+            }
+        }
+        assert!(light >= 1, "the gate call was made: {sent:?}");
+    }
+
+    #[test]
     fn llm_calls_count_against_the_run_budget_and_the_thinking_log_is_honest() {
         let srv = start_srv(0, None);
         let m = mock::start(|_| {
@@ -3626,7 +3784,18 @@ mod tests {
             "one call allowed, one made: {:?}",
             rep.notes
         );
-        assert_eq!(m.chat_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            m.chat_hits.load(Ordering::SeqCst),
+            2,
+            "the 1-token latency probe plus the one budgeted call"
+        );
+        assert!(
+            rep.llm_status
+                .as_deref()
+                .is_some_and(|s| s.starts_with("connected: ") && s.contains("(latency ")),
+            "{:?}",
+            rep.llm_status
+        );
         assert!(
             rep.notes
                 .iter()

@@ -12,9 +12,10 @@ use super::change::ChangeSet;
 use super::discover::{Discovery, SpecDoc};
 use super::exec::{Credentials, normalize_method};
 use super::memory::PlanHints;
-use super::oracle::Technique;
+use super::oracle::{Technique, is_login_location};
 use super::types::{
-    DiscoveredRoute, PlannedCase, ResponseContract, TargetTechProfile, any_prioritised, plan_order,
+    BlockReason, DiscoveredRoute, InputSurface, PlannedCase, ResponseContract, SRC_AUTH_WALL,
+    SRC_NOT_APPLICABLE, TargetTechProfile, any_prioritised, plan_order,
 };
 use crate::llm::untrusted::{self, clean, fence_capped};
 use crate::llm::{Budget, LlmConfig, ask_typed};
@@ -224,13 +225,151 @@ fn template_regex(tpl: &str) -> Option<regex::Regex> {
     regex::Regex::new(&re).ok()
 }
 
+// ---------------------------------------------------------------- input surface
+
+/// What a route takes as input: what discovery recorded, else derived from the route's shape (a
+/// JSON/API route, a form, a query string, a request body). A catch-all route (it answers like a
+/// path that cannot exist) and an SPA shell take none: the page is static HTML whatever the query.
+fn surface_of(r: &DiscoveredRoute) -> InputSurface {
+    let raw = raw_surface_of(r);
+    if raw == InputSurface::Form && sits_on_a_login(r) {
+        // the form is the login form (a page that asks for a password, or the page a redirect
+        // lands on): it is the way in, not something to feed injection payloads
+        return InputSurface::None;
+    }
+    raw
+}
+
+/// The route's own page is a login: it redirects to one, or asks for a password.
+fn sits_on_a_login(r: &DiscoveredRoute) -> bool {
+    r.auth_wall
+        || r.redirect_chain
+            .iter()
+            .any(|h| is_login_location(&h.location))
+}
+
+fn raw_surface_of(r: &DiscoveredRoute) -> InputSurface {
+    if r.catch_all {
+        return InputSurface::None;
+    }
+    // Discovery verified the route with a GET and the server refused the method (405/501): the
+    // route exists but takes another verb whose body shape is unknown without a spec. GET-based
+    // input cases there can only ever come back "405, not evidence".
+    if matches!(r.status_code, 405 | 501) && r.source != "openapi" {
+        return InputSurface::None;
+    }
+    if r.input_surface != InputSurface::None {
+        return r.input_surface;
+    }
+    if r.is_api {
+        InputSurface::Json
+    } else if r.is_spa_shell {
+        InputSurface::None
+    } else if r.has_form {
+        InputSurface::Form
+    } else if r.path.contains('?') {
+        InputSurface::Query
+    } else if r.has_body {
+        InputSurface::Json
+    } else {
+        InputSurface::None
+    }
+}
+
+/// The route needs credentials: a 401, a redirect to a login page, or a page that asks for a
+/// password (what discovery recorded in `auth_wall`).
+fn is_walled(r: &DiscoveredRoute) -> bool {
+    r.auth_wall
+        || r.status_code == 401
+        || r.redirect_chain
+            .iter()
+            .any(|h| is_login_location(&h.location))
+}
+
+/// (expected status, expected behaviour) of a liveness case on a route that answered `status` (the
+/// FIRST hop) in discovery. A redirect the executor follows (`redirected`: discovery recorded the
+/// chain) is expected to end on a 2xx page; one with no recorded chain is expected to redirect
+/// again (and the executor then does not follow it).
+fn liveness_expectation(status: Option<u16>, redirected: bool) -> (Option<u16>, &'static str) {
+    match status {
+        Some(200..=299) => (Some(200), "HTTP 200 OK with a valid response"),
+        Some(300..=399) if redirected => (
+            Some(200),
+            "the same-origin redirect is followed and the page it leads to answers 2xx",
+        ),
+        Some(300..=399) => (status, "redirects as it did during discovery"),
+        _ => (None, "responds without a server error"),
+    }
+}
+
+/// A route, with what keeps it from being a target (for the evidence of a ledger row).
+fn describe_route(r: &DiscoveredRoute) -> String {
+    let why = if r.catch_all {
+        "catch-all"
+    } else if r.is_spa_shell {
+        "SPA shell"
+    } else if is_walled(r) {
+        "login wall"
+    } else if (300..=399).contains(&r.status_code) {
+        "redirect"
+    } else {
+        "no input"
+    };
+    format!("{} ({why})", r.path)
+}
+
+/// A row of the ledger that sends nothing: a technique that has no surface to run on
+/// ([`BlockReason::NoSurface`], NOT_APPLICABLE, counted in no denominator) or a surface behind a
+/// login wall with no credential ([`BlockReason::AuthWall`], BLOCKED). The executor turns it into
+/// its result without a request (see `exec::ledger_row_result`).
+fn ledger_row(
+    technique: &str,
+    reason: BlockReason,
+    component: &str,
+    considered: &[String],
+) -> PlannedCase {
+    let label = match technique {
+        "injection" => "Injection",
+        "boundary" => "Boundary",
+        _ => "Negative",
+    };
+    let (title, source) = match reason {
+        BlockReason::AuthWall => (
+            format!("{label} tests blocked: the discovered routes are behind a login wall"),
+            SRC_AUTH_WALL,
+        ),
+        _ => (
+            format!("{label} tests not applicable: no input surface on the discovered routes"),
+            SRC_NOT_APPLICABLE,
+        ),
+    };
+    let hint = untrusted::clean(
+        &format!("routes considered: {}", considered.join(", ")),
+        300,
+    );
+    mk(
+        technique,
+        title,
+        "GET",
+        component.to_string(),
+        &hint,
+        None,
+        "no request is sent",
+        None,
+        "low",
+        "anon",
+        source,
+    )
+}
+
 // ---------------------------------------------------------------- baseline (crawl-grounded)
 
-fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
+fn baseline(d: &Discovery, creds: &Credentials, notes: &mut Vec<String>) -> Vec<PlannedCase> {
     let routes: Vec<&DiscoveredRoute> = d.routes.iter().filter(|r| r.source != "openapi").collect();
     let tech: &TargetTechProfile = &d.tech;
     let user = user_or_anon(creds);
     let user = user.as_str();
+    let has_role = creds.actor().is_some();
     let entry = routes
         .iter()
         .find(|r| r.path == "/")
@@ -238,31 +377,70 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
         .or_else(|| routes.first().map(|r| r.path.as_str()))
         .unwrap_or("/")
         .to_string();
-    let entry_status = routes
+    let entry_route = routes.iter().find(|r| r.path == entry);
+    let entry_status = entry_route.map(|r| r.status_code);
+    let entry_redirected = entry_route.is_some_and(|r| !r.redirect_chain.is_empty());
+    // the entry sits behind a login: with a credential the liveness probe is made as that role
+    let live_role = if has_role && entry_route.is_some_and(|r| is_walled(r)) {
+        user
+    } else {
+        "anon"
+    };
+
+    // Input surface. Injection, boundary and negative tests are aimed only at a route that takes
+    // input (a query string, a form, a JSON/API route, spec parameters) and that is real (not a
+    // catch-all answer) and reachable (not behind a login wall when there is no credential to get
+    // past it). Probes of sensitive files are not routes of the app.
+    let real: Vec<&DiscoveredRoute> = routes
         .iter()
-        .find(|r| r.path == entry)
-        .map(|r| r.status_code);
-    let content: Vec<&&DiscoveredRoute> = routes
-        .iter()
-        .filter(|r| r.path != "/" && r.source != "probe" && !r.path.starts_with("/api/"))
+        .copied()
+        .filter(|r| r.source != "probe")
         .collect();
-    let content_path = content.first().map(|r| r.path.clone());
+    let usable: Vec<&DiscoveredRoute> = real
+        .iter()
+        .copied()
+        .filter(|r| surface_of(r) != InputSurface::None && (has_role || !is_walled(r)))
+        .collect();
+    // With a spec, the API operations are the spec's: the baseline aims at pages (crawled
+    // routes that are not API routes) only. Without one, an API route found by the crawl, a
+    // script or the network log is all there is to aim at.
+    let attack: Option<&DiscoveredRoute> = usable
+        .iter()
+        .copied()
+        .find(|r| !r.is_api && !r.path.starts_with("/api/"))
+        .or_else(|| usable.first().copied().filter(|_| d.spec.is_none()));
+    // Discovery learned nothing about the target (no route at all, no spec): it cannot be said
+    // that a surface is missing, so the root is probed as before.
+    let blind = real.is_empty() && d.spec.is_none();
+    let target_path: Option<String> = attack
+        .map(|r| r.path.clone())
+        .or_else(|| blind.then(|| entry.clone()));
+    // a script vector is only reflected by a server-rendered HTML page that reads a parameter
+    let xss = match attack {
+        Some(r) => {
+            r.content_type.to_ascii_lowercase().contains("html")
+                && !r.is_spa_shell
+                && matches!(surface_of(r), InputSurface::Query | InputSurface::Form)
+        }
+        None => blind,
+    };
+    let content: Vec<&DiscoveredRoute> = real
+        .iter()
+        .copied()
+        .filter(|r| r.path != "/" && !r.path.starts_with("/api/") && !r.catch_all)
+        .collect();
     let secondary = content
         .iter()
         .map(|r| r.path.clone())
-        .find(|p| Some(p) != content_path.as_ref());
-    let form_path = routes
+        .find(|p| Some(p) != target_path.as_ref());
+    let form_path = usable
         .iter()
-        .find(|r| r.source != "probe" && (r.has_form || r.path.ends_with(".php")))
+        .find(|r| surface_of(r) == InputSurface::Form)
         .map(|r| r.path.clone());
 
     let mut out = vec![];
     // liveness of the entry point (and its cookies / headers)
-    let (live_status, live_behavior) = match entry_status {
-        Some(200..=299) => (Some(200), "HTTP 200 OK with a valid response"),
-        Some(300..=399) => (entry_status, "redirects as it did during discovery"),
-        _ => (None, "responds without a server error"),
-    };
+    let (live_status, live_behavior) = liveness_expectation(entry_status, entry_redirected);
     if !matches!(entry_status, Some(401 | 403)) {
         let t = if tech.is_php {
             "Entry page liveness and PHP session cookie hygiene"
@@ -274,12 +452,16 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
             t.into(),
             "GET",
             entry.clone(),
-            "Fetch the entry page without credentials and inspect status and cookies",
+            if live_role == "anon" {
+                "Fetch the entry page without credentials and inspect status and cookies"
+            } else {
+                "Fetch the entry page, which is behind a login, as the test account and inspect status and cookies"
+            },
             None,
             live_behavior,
             live_status,
             "low",
-            "anon",
+            live_role,
             "deterministic",
         );
         c.route_status = entry_status;
@@ -322,7 +504,11 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
     // routes that demanded credentials during discovery: a forged token must not open them
     for r in routes
         .iter()
-        .filter(|r| matches!(r.status_code, 401 | 403) && r.source == "crawl")
+        .filter(|r| {
+            matches!(r.status_code, 401 | 403)
+                && !r.catch_all
+                && !matches!(r.source.as_str(), "probe" | "openapi")
+        })
         .take(3)
     {
         let mut c = mk(
@@ -342,22 +528,23 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
         c.route_status = Some(r.status_code);
         out.push(c);
     }
-    // content cases only when there is something to point them at
-    let target_path = content_path.clone().unwrap_or_else(|| entry.clone());
-    if content_path.is_some() || d.spec.is_none() {
-        out.push(mk(
-            "injection",
-            format!("Reflected XSS probe ({target_path})"),
-            "GET",
-            target_path.clone(),
-            "Inject a script vector into a query parameter",
-            Some(format!("q={XSS}")),
-            "Payload is not reflected unescaped and causes no server error",
-            None,
-            "high",
-            user,
-            "deterministic",
-        ));
+    // input cases only when there is a route that takes input to point them at
+    if let Some(target_path) = &target_path {
+        if xss {
+            out.push(mk(
+                "injection",
+                format!("Reflected XSS probe ({target_path})"),
+                "GET",
+                target_path.clone(),
+                "Inject a script vector into a query parameter",
+                Some(format!("q={XSS}")),
+                "Payload is not reflected unescaped and causes no server error",
+                None,
+                "high",
+                user,
+                "deterministic",
+            ));
+        }
         out.push(mk(
             "injection",
             format!("SQL injection error probe ({target_path})"),
@@ -464,9 +651,38 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
             user,
             "deterministic",
         ));
+    } else if d.spec.is_none() {
+        // Nothing to aim an input test at, and no spec to take operations from. Say so in the
+        // ledger instead of sending doomed cases at a page that cannot answer them: BLOCKED when
+        // the app is behind a login wall and there is no credential (the user can fix that),
+        // NOT_APPLICABLE otherwise (nothing takes input; counted in no denominator).
+        let walled = !has_role && real.iter().any(|r| !r.catch_all && is_walled(r));
+        let reason = if walled {
+            BlockReason::AuthWall
+        } else {
+            BlockReason::NoSurface
+        };
+        let considered: Vec<String> = real.iter().take(6).map(|r| describe_route(r)).collect();
+        for t in ["injection", "boundary", "negative"] {
+            out.push(ledger_row(t, reason, &entry, &considered));
+        }
+        notes.push(if walled {
+            format!(
+                "no input test was planned: every discovered route with input is behind a login wall and there is no credential ({}). Provide test accounts to test what sits behind it",
+                considered.join(", ")
+            )
+        } else {
+            format!(
+                "no input test was planned: none of the discovered routes takes input (no query parameter, form or API endpoint: {}). Provide an OpenAPI spec or use the deep profile to find one",
+                considered.join(", ")
+            )
+        });
     }
     if let Some(s) = secondary {
-        let st = routes.iter().find(|r| r.path == s).map(|r| r.status_code);
+        let route = routes.iter().find(|r| r.path == s);
+        let st = route.map(|r| r.status_code);
+        let redirected = route.is_some_and(|r| !r.redirect_chain.is_empty());
+        let (expected, behavior) = liveness_expectation(st, redirected);
         let mut c = mk(
             "state_transition",
             format!("Page liveness ({s})"),
@@ -474,21 +690,50 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
             s.clone(),
             "Fetch a second discovered page",
             None,
-            if matches!(st, Some(200..=299)) {
-                "HTTP 200 OK with a valid response"
-            } else {
-                "responds without a server error"
-            },
-            if matches!(st, Some(200..=299)) {
-                Some(200)
-            } else {
-                None
-            },
+            behavior,
+            expected,
             "low",
             "anon",
             "deterministic",
         );
         c.route_status = st;
+        out.push(c);
+    }
+    // The API routes discovery found (no spec describes them): one authenticated read each, the
+    // positive path. A walled route is read as the test account; with none there is nothing to
+    // learn from the 401 the forged-token case does not already say.
+    for r in real
+        .iter()
+        .filter(|r| {
+            r.is_api
+                && r.path != "/"
+                && r.method.eq_ignore_ascii_case("GET")
+                && !r.catch_all
+                && !r.path.contains(['{', '?'])
+                && (has_role || !is_walled(r))
+        })
+        .take(3)
+    {
+        let as_role = has_role && is_walled(r);
+        let (expected, behavior) = if as_role {
+            (Some(200), "HTTP 2xx with the test account")
+        } else {
+            liveness_expectation(Some(r.status_code), !r.redirect_chain.is_empty())
+        };
+        let mut c = mk(
+            "state_transition",
+            format!("API liveness ({})", r.path),
+            "GET",
+            r.path.clone(),
+            "Read the discovered API route and check it answers",
+            None,
+            behavior,
+            expected,
+            "low",
+            if as_role { user } else { "anon" },
+            "deterministic",
+        );
+        c.route_status = Some(r.status_code);
         out.push(c);
     }
     // No concurrency burst here: a generic form route declares no request schema, so there is no
@@ -525,6 +770,7 @@ fn baseline(d: &Discovery, creds: &Credentials) -> Vec<PlannedCase> {
         p != "/"
             && !p.is_empty()
             && r.source != "probe"
+            && !r.catch_all
             && !is_sensitive_or_static_file(p)
             && (r.is_api || p.starts_with("/api/") || r.has_body)
     }) {
@@ -1396,7 +1642,7 @@ impl<'a> Known<'a> {
     fn new(routes: &'a [DiscoveredRoute]) -> Self {
         let mut exact = HashMap::new();
         let mut templates = vec![];
-        for r in routes {
+        for r in routes.iter().filter(|r| !r.catch_all) {
             if r.path.contains('{') {
                 if let Some(re) = template_regex(&r.path) {
                     templates.push((re, r));
@@ -1520,6 +1766,7 @@ fn llm_extras(
     let endpoints: Vec<Value> = d
         .routes
         .iter()
+        .filter(|r| !r.catch_all)
         .take(60)
         .map(|r| serde_json::json!({"method": r.method, "path": r.path, "status": r.status_code, "secured": r.secured, "title": r.title.as_deref().map(|t| clean(t, 80))}))
         .collect();
@@ -1683,7 +1930,7 @@ pub fn plan_cases_remembered(
             "quick profile: baseline plan only (OpenAPI-derived cases, concurrency bursts and LLM extras are planned at standard/deep)".into()
         });
     }
-    let mut cases = baseline(d, creds);
+    let mut cases = baseline(d, creds, &mut notes);
     let mut spec_n = 0;
     // the profile's baseline of operations; at quick (None) only the changed ones come from the spec
     let baseline_ops = match (depth.spec_ops(), focus) {
@@ -1810,6 +2057,11 @@ mod tests {
 
     fn route(path: &str, status: u16) -> DiscoveredRoute {
         DiscoveredRoute {
+            final_url: None,
+            redirect_chain: vec![],
+            auth_wall: false,
+            catch_all: false,
+            input_surface: Default::default(),
             path: path.into(),
             method: "GET".into(),
             status_code: status,
@@ -1920,6 +2172,11 @@ mod tests {
         d.routes = vec![
             route("/", 401),
             DiscoveredRoute {
+                final_url: None,
+                redirect_chain: vec![],
+                auth_wall: false,
+                catch_all: false,
+                input_surface: Default::default(),
                 path: "/.env".into(),
                 method: "GET".into(),
                 status_code: 401,
@@ -1933,6 +2190,11 @@ mod tests {
                 source: "probe".into(),
             },
             DiscoveredRoute {
+                final_url: None,
+                redirect_chain: vec![],
+                auth_wall: false,
+                catch_all: false,
+                input_surface: Default::default(),
                 path: "/.git/config".into(),
                 method: "GET".into(),
                 status_code: 401,
@@ -3503,5 +3765,479 @@ mod tests {
         let mut cut = with.cases.clone();
         cut.sort_by_key(|c| key(c));
         assert!(cut[..probes].iter().all(|c| !c.regression_of.is_empty()));
+    }
+    // ------------------------------------------------------------ input surface
+
+    fn plan_routes(routes: Vec<DiscoveredRoute>, creds: &Credentials) -> PlanOutcome {
+        let mut d = Discovery::default();
+        d.routes = routes;
+        plan_cases(None, "http://h", "standard", &d, None, creds)
+    }
+
+    fn input_cases(out: &PlanOutcome) -> Vec<&PlannedCase> {
+        out.cases
+            .iter()
+            .filter(|c| {
+                matches!(c.technique.as_str(), "injection" | "boundary" | "negative")
+                    && !c.is_ledger_row()
+            })
+            .collect()
+    }
+
+    fn ledger_rows(out: &PlanOutcome) -> Vec<&PlannedCase> {
+        out.cases.iter().filter(|c| c.is_ledger_row()).collect()
+    }
+
+    fn spa_shell(path: &str) -> DiscoveredRoute {
+        let mut r = route(path, 200);
+        r.is_spa_shell = true;
+        r
+    }
+
+    #[test]
+    fn a_route_that_refuses_get_is_not_a_get_input_surface() {
+        let mut r = route("/api/stt/transcribe", 405);
+        r.is_api = true;
+        r.input_surface = InputSurface::Json;
+        r.source = "js".into();
+        assert_eq!(surface_of(&r), InputSurface::None);
+        // a spec operation keeps its declared surface
+        r.source = "openapi".into();
+        assert_eq!(surface_of(&r), InputSurface::Json);
+    }
+
+    #[test]
+    fn the_input_surface_of_a_route_is_recorded_or_derived() {
+        let mut r = route("/page", 200);
+        assert_eq!(
+            surface_of(&r),
+            InputSurface::None,
+            "plain HTML takes nothing"
+        );
+        r.has_form = true;
+        assert_eq!(surface_of(&r), InputSurface::Form);
+        let mut r = route("/search?q=x", 200);
+        assert_eq!(surface_of(&r), InputSurface::Query);
+        r.is_api = true;
+        assert_eq!(surface_of(&r), InputSurface::Json, "an API route");
+        // what discovery recorded wins
+        let mut r = route("/x", 200);
+        r.input_surface = InputSurface::Spec;
+        assert_eq!(surface_of(&r), InputSurface::Spec);
+        // an SPA shell and a catch-all take nothing, whatever else is said about them
+        let mut shell = spa_shell("/");
+        shell.has_form = true;
+        assert_eq!(surface_of(&shell), InputSurface::None);
+        let mut ca = route("/anything", 200);
+        ca.catch_all = true;
+        ca.is_api = true;
+        ca.input_surface = InputSurface::Json;
+        assert_eq!(surface_of(&ca), InputSurface::None);
+        // walls: 401, a recorded wall, a redirect to a login
+        assert!(is_walled(&route("/a", 401)));
+        let mut w = route("/b", 200);
+        w.auth_wall = true;
+        assert!(is_walled(&w));
+        let mut l = route("/c", 307);
+        l.redirect_chain = vec![crate::agent::types::RedirectHop {
+            status: 307,
+            location: "/login".into(),
+        }];
+        assert!(is_walled(&l));
+        assert!(!is_walled(&route("/d", 200)));
+    }
+
+    #[test]
+    fn an_spa_shell_only_discovery_plans_no_input_case_and_says_why() {
+        let mut probe = route("/.env", 200);
+        probe.source = "probe".into();
+        let mut ca = route("/zz-random", 200);
+        ca.catch_all = true;
+        let out = plan_routes(vec![spa_shell("/"), ca, probe], &Credentials::none());
+        assert!(
+            input_cases(&out).is_empty(),
+            "no injection, boundary or negative case on a shell: {:?}",
+            input_cases(&out)
+                .iter()
+                .map(|c| &c.title)
+                .collect::<Vec<_>>()
+        );
+        // one NOT_APPLICABLE row per input technique, never sent
+        let rows = ledger_rows(&out);
+        let mut techs: Vec<&str> = rows.iter().map(|c| c.technique.as_str()).collect();
+        techs.sort();
+        assert_eq!(techs, ["boundary", "injection", "negative"]);
+        assert!(
+            rows.iter()
+                .all(|c| c.source.as_deref() == Some(SRC_NOT_APPLICABLE)
+                    && c.title.contains("not applicable")
+                    && c.input_hint.contains("/ (SPA shell)")
+                    && c.input_hint.contains("/zz-random (catch-all)")),
+            "{:?}",
+            rows.iter()
+                .map(|c| (&c.title, &c.input_hint))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            out.notes
+                .iter()
+                .any(|n| n.contains("no input test was planned"))
+        );
+        // the entry liveness and the sensitive-file probes stay, no CORS probe on a shell
+        assert!(
+            out.cases
+                .iter()
+                .any(|c| c.technique == "state_transition" && c.component == "/")
+        );
+        assert!(out.cases.iter().any(|c| c.component == "/.env"));
+        assert!(!out.cases.iter().any(|c| c.title.contains("CORS")));
+        // the rows are kept first when the plan is cut
+        let key = plan_order(false);
+        let r = rows[0];
+        assert_eq!(
+            key(r).1,
+            0,
+            "a ledger row is never the first thing a cut drops"
+        );
+    }
+
+    #[test]
+    fn a_login_redirect_blocks_the_input_techniques_instead_of_calling_them_not_applicable() {
+        let mut entry = route("/", 307);
+        entry.final_url = Some("http://h/login".into());
+        entry.redirect_chain = vec![crate::agent::types::RedirectHop {
+            status: 307,
+            location: "/login".into(),
+        }];
+        entry.auth_wall = true;
+        entry.is_spa_shell = true;
+        let out = plan_routes(vec![entry], &Credentials::none());
+        assert!(input_cases(&out).is_empty());
+        let rows = ledger_rows(&out);
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows.iter()
+                .all(|c| c.source.as_deref() == Some(SRC_AUTH_WALL)
+                    && c.title.contains("login wall")),
+            "{:?}",
+            rows.iter().map(|c| &c.title).collect::<Vec<_>>()
+        );
+        assert!(out.notes.iter().any(|n| n.contains("login wall")));
+        // liveness: the redirect is followed, so the final page is expected to answer 2xx, never
+        // "expected 307" and never "expected 2xx, got 307"
+        let live = out
+            .cases
+            .iter()
+            .find(|c| c.technique == "state_transition" && c.component == "/")
+            .unwrap();
+        assert_eq!(live.expected_status, Some(200));
+        assert!(live.expected_behavior.contains("redirect is followed"));
+        assert_eq!(live.route_status, Some(307));
+    }
+
+    #[test]
+    fn a_redirect_without_a_recorded_chain_is_still_expected_to_redirect() {
+        // discovery that does not record chains (an older report, a plain crawl): old behaviour
+        let out = plan_routes(vec![route("/", 301)], &Credentials::none());
+        let live = out
+            .cases
+            .iter()
+            .find(|c| c.technique == "state_transition")
+            .unwrap();
+        assert_eq!(live.expected_status, Some(301));
+        assert!(live.expected_behavior.contains("redirects as it did"));
+        assert!(
+            !crate::agent::exec::follows_redirects(live),
+            "a case that expects a redirect is not redirected"
+        );
+        // while the one that expects the final page is
+        let mut chained = route("/", 301);
+        chained.redirect_chain = vec![crate::agent::types::RedirectHop {
+            status: 301,
+            location: "/home".into(),
+        }];
+        let out = plan_routes(vec![chained], &Credentials::none());
+        let live = out
+            .cases
+            .iter()
+            .find(|c| c.technique == "state_transition")
+            .unwrap();
+        assert!(crate::agent::exec::follows_redirects(live));
+    }
+
+    #[test]
+    fn routes_that_take_input_get_the_input_cases_and_xss_only_on_html_that_reads_parameters() {
+        // a server-rendered page with a query string
+        let mut page = route("/search?q=x", 200);
+        page.input_surface = InputSurface::Query;
+        let out = plan_routes(vec![route("/", 200), page], &Credentials::none());
+        let titles: Vec<&str> = out.cases.iter().map(|c| c.title.as_str()).collect();
+        assert!(
+            titles
+                .iter()
+                .any(|t| t.starts_with("Reflected XSS probe (/search?q=x)"))
+        );
+        assert!(
+            titles
+                .iter()
+                .any(|t| t.starts_with("SQL injection error probe (/search?q=x)"))
+        );
+        assert!(ledger_rows(&out).is_empty());
+        // a JSON API route: the same cases, but nothing can reflect markup in a JSON body
+        let mut api = route("/api/items", 200);
+        api.is_api = true;
+        api.content_type = "application/json".into();
+        let out = plan_routes(vec![spa_shell("/"), api], &Credentials::none());
+        let titles: Vec<&str> = out.cases.iter().map(|c| c.title.as_str()).collect();
+        assert!(
+            titles
+                .iter()
+                .any(|t| t.starts_with("SQL injection error probe (/api/items)")),
+            "{titles:?}"
+        );
+        assert!(
+            titles
+                .iter()
+                .any(|t| t.starts_with("Path traversal probe (/api/items)"))
+        );
+        assert!(
+            !titles.iter().any(|t| t.contains("Reflected XSS")),
+            "no XSS probe on a JSON route: {titles:?}"
+        );
+        assert!(ledger_rows(&out).is_empty());
+        // a server-rendered form page: XSS and the form's POST cases
+        let mut form = route("/contact", 200);
+        form.has_form = true;
+        let out = plan_routes(vec![route("/", 200), form], &Credentials::none());
+        let titles: Vec<&str> = out.cases.iter().map(|c| c.title.as_str()).collect();
+        assert!(
+            titles
+                .iter()
+                .any(|t| t.starts_with("Reflected XSS probe (/contact)"))
+        );
+        assert!(
+            titles
+                .iter()
+                .any(|t| t.starts_with("Oversized form value tolerance (/contact)"))
+        );
+        assert!(titles.iter().any(|t| t.starts_with("Mass assignment")));
+        // the same page flagged as an SPA shell reflects nothing
+        let mut shell_form = route("/contact", 200);
+        shell_form.has_form = true;
+        shell_form.is_spa_shell = true;
+        shell_form.input_surface = InputSurface::Form; // discovery says there is a form
+        let out = plan_routes(vec![route("/", 200), shell_form], &Credentials::none());
+        assert!(!out.cases.iter().any(|c| c.title.contains("Reflected XSS")));
+    }
+
+    #[test]
+    fn a_route_behind_a_login_is_not_attacked_without_a_credential_and_is_with_one() {
+        let mut api = route("/api/items", 401);
+        api.is_api = true;
+        api.auth_wall = true;
+        api.content_type = "application/json".into();
+        let routes = vec![spa_shell("/"), api];
+        let out = plan_routes(routes.clone(), &Credentials::none());
+        assert!(
+            input_cases(&out)
+                .iter()
+                .all(|c| c.component != "/api/items"),
+            "{:?}",
+            input_cases(&out)
+                .iter()
+                .map(|c| &c.title)
+                .collect::<Vec<_>>()
+        );
+        let rows = ledger_rows(&out);
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows.iter()
+                .all(|c| c.source.as_deref() == Some(SRC_AUTH_WALL))
+        );
+        // what the wall does answer is still checked: a forged token must not open it
+        assert!(out.cases.iter().any(|c| c.technique == "authz"
+            && c.role.as_deref() == Some("forged")
+            && c.component == "/api/items"));
+        // with a credential the route is a target, and runs as that role
+        let out = plan_routes(routes, &Credentials::none().with("user", "t"));
+        assert!(ledger_rows(&out).is_empty());
+        assert!(
+            input_cases(&out)
+                .iter()
+                .any(|c| c.component == "/api/items" && c.role.as_deref() == Some("user"))
+        );
+    }
+
+    /// spa-next: `/` is a 307 to /login, discovery records the login page's form on it.
+    fn walled_root() -> DiscoveredRoute {
+        let mut r = spa_shell("/");
+        r.status_code = 307;
+        r.redirect_chain = vec![crate::agent::types::RedirectHop {
+            status: 307,
+            location: "/login?next=%2F".into(),
+        }];
+        r.auth_wall = true;
+        r.has_form = true;
+        r.input_surface = InputSurface::Form;
+        r
+    }
+
+    #[test]
+    fn a_login_form_is_not_an_input_surface_and_the_api_is_the_target_once_there_is_a_credential() {
+        let root = walled_root();
+        assert_eq!(
+            surface_of(&root),
+            InputSurface::None,
+            "its form is the login form"
+        );
+        let mut login = route("/login", 200);
+        login.auth_wall = true;
+        login.has_form = true;
+        login.input_surface = InputSurface::Form;
+        assert_eq!(surface_of(&login), InputSurface::None);
+        let mut api = route("/api/orders", 401);
+        api.is_api = true;
+        api.auth_wall = true;
+        api.source = "js".into();
+        api.content_type = "application/json".into();
+        api.input_surface = InputSurface::Json;
+        // the 401 of an API route does not make its JSON surface a login form
+        assert_eq!(surface_of(&api), InputSurface::Json);
+        let routes = vec![root, login, api];
+        // no credential: nothing to aim at, the wall is the blocker
+        let out = plan_routes(routes.clone(), &Credentials::none());
+        assert!(input_cases(&out).is_empty());
+        assert_eq!(ledger_rows(&out).len(), 3);
+        // with one: every input case goes to the API, as that role, never to `/`
+        let creds = Credentials::none().with("alice", "t");
+        let out = plan_routes(routes, &creds);
+        assert!(ledger_rows(&out).is_empty());
+        let input = input_cases(&out);
+        assert!(!input.is_empty());
+        assert!(
+            input
+                .iter()
+                .all(|c| c.component == "/api/orders" && c.role.as_deref() == Some("alice")),
+            "{:?}",
+            input
+                .iter()
+                .map(|c| (&c.title, &c.role))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            input
+                .iter()
+                .any(|c| c.payload.as_deref().is_some_and(|p| p.starts_with("q=")))
+                && input
+                    .iter()
+                    .any(|c| c.payload.as_deref().is_some_and(|p| p.contains("limit="))),
+            "the SQL probe reaches ?q= and the numeric one ?limit="
+        );
+        assert!(!out.cases.iter().any(|c| c.title.contains("Reflected XSS")));
+        // the entry liveness is made as the test account: anonymous it only meets the wall
+        let live = out
+            .cases
+            .iter()
+            .find(|c| c.technique == "state_transition" && c.component == "/")
+            .unwrap();
+        assert_eq!(live.role.as_deref(), Some("alice"));
+        assert_eq!(live.expected_status, Some(200));
+    }
+
+    #[test]
+    fn a_catch_all_route_is_never_a_target() {
+        let mut ca = route("/anything", 200);
+        ca.catch_all = true;
+        ca.has_form = true;
+        ca.is_api = true;
+        let mut ca2 = route("/other", 200);
+        ca2.catch_all = true;
+        let out = plan_routes(
+            vec![route("/", 200), ca.clone(), ca2.clone()],
+            &Credentials::none(),
+        );
+        assert!(
+            out.cases
+                .iter()
+                .all(|c| c.component != "/anything" && c.component != "/other"),
+            "{:?}",
+            out.cases.iter().map(|c| &c.component).collect::<Vec<_>>()
+        );
+        // the LLM may not aim at one either
+        let all = [route("/", 200), ca, ca2];
+        let known = Known::new(&all);
+        assert!(known.find("/anything").is_none() && known.find("/").is_some());
+    }
+
+    #[test]
+    fn with_a_spec_the_baseline_aims_at_pages_and_leaves_the_api_to_the_spec() {
+        let doc: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/qa-api/openapi.json")).unwrap();
+        let ops = crate::qa::plan::ops_from_doc(&doc);
+        let spec = SpecDoc {
+            doc,
+            ops,
+            base_path: String::new(),
+            source: "fixture".into(),
+        };
+        // the crawl found an API route at the root (an API-only target): no baseline input case
+        // at it, the spec's operations are tested instead
+        let mut root = route("/", 401);
+        root.is_api = true;
+        root.input_surface = InputSurface::Json;
+        root.content_type = "application/json".into();
+        let mut d = Discovery::default();
+        d.routes = vec![root];
+        d.spec = Some(spec.clone());
+        let out = plan_cases(None, "http://h", "standard", &d, None, &Credentials::none());
+        assert!(
+            !out.cases.iter().any(|c| c.component == "/"
+                && c.technique != "authz"
+                && c.technique != "state_transition"),
+            "{:?}",
+            out.cases
+                .iter()
+                .filter(|c| c.component == "/")
+                .map(|c| &c.title)
+                .collect::<Vec<_>>()
+        );
+        assert!(ledger_rows(&out).is_empty());
+        // a crawled page with a form is still a target
+        let mut form = route("/contact", 200);
+        form.has_form = true;
+        d.routes = vec![route("/", 200), form];
+        let out = plan_cases(None, "http://h", "standard", &d, None, &Credentials::none());
+        assert!(
+            out.cases
+                .iter()
+                .any(|c| c.component == "/contact" && c.technique == "injection")
+        );
+    }
+
+    #[test]
+    fn with_a_spec_and_with_nothing_discovered_the_plan_is_as_before() {
+        // nothing at all: the root is probed (nothing says a surface is missing)
+        let out = plan_routes(vec![], &Credentials::none());
+        assert!(ledger_rows(&out).is_empty());
+        assert!(input_cases(&out).iter().any(|c| c.component == "/"));
+        // a spec supplies the operations: no row claims there is no surface
+        let doc: Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/qa-api/openapi.json")).unwrap();
+        let ops = crate::qa::plan::ops_from_doc(&doc);
+        let mut d = Discovery::default();
+        d.routes = vec![spa_shell("/")];
+        d.spec = Some(SpecDoc {
+            doc,
+            ops,
+            base_path: String::new(),
+            source: "fixture".into(),
+        });
+        let out = plan_cases(None, "http://h", "standard", &d, None, &Credentials::none());
+        assert!(ledger_rows(&out).is_empty());
+        assert!(
+            out.cases
+                .iter()
+                .any(|c| c.technique == "injection" && c.component == "/search")
+        );
     }
 }

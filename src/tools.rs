@@ -659,17 +659,28 @@ impl Docker {
     }
 
     pub fn run(&self, ctx: &Ctx, spec: &ToolSpec) -> Result<ToolRun> {
-        let out = ctx.out_dir();
-        mkdir_open(&out);
+        self.run_dirs(&ctx.run_id, &ctx.src_dir(), &ctx.out_dir(), spec)
+    }
+
+    /// [`Docker::run`] without a [`Ctx`]: `src` is mounted read-only at /src and `out` writable at
+    /// /out (both must exist; in volume mode both must lie under the data volume).
+    pub fn run_dirs(
+        &self,
+        run_id: &str,
+        src: &Path,
+        out: &Path,
+        spec: &ToolSpec,
+    ) -> Result<ToolRun> {
+        mkdir_open(out);
         mkdir_open(&self.cache_dir);
         let mounts = [
             Mount {
-                host: ctx.src_dir(),
+                host: src.to_path_buf(),
                 dst: "/src",
                 rw: false,
             },
             Mount {
-                host: out,
+                host: out.to_path_buf(),
                 dst: "/out",
                 rw: true,
             },
@@ -679,7 +690,7 @@ impl Docker {
                 rw: spec.cache_rw,
             },
         ];
-        exec(self, &ctx.run_id, &mounts, spec)
+        exec(self, run_id, &mounts, spec)
     }
 
     /// `docker save` the image to a tar file (placed at /src/image.tar by the engine).

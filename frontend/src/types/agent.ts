@@ -1,5 +1,14 @@
 export type ModelTier = "low" | "medium" | "high" | "max" | "max_pro";
 
+/** Why a case could not produce evidence (BLOCKED / NOT_APPLICABLE). Backend spelling. */
+export type BlockReason = "auth_wall" | "out_of_scope" | "no_surface" | "transport";
+
+/** One redirect the executor followed: the status that redirected and where it pointed. */
+export interface RedirectHop {
+  status: number;
+  location: string;
+}
+
 export interface DiscoveredRoute {
   path: string;
   method: string;
@@ -66,7 +75,20 @@ export interface TestCaseResult {
   component: string;
   technique: string;
   method: string;
-  status: "PASS" | "FAIL" | "WARN" | "BLOCKED" | "SKIPPED" | "PLANNED" | "PENDING" | "INCONCLUSIVE";
+  status:
+    | "PASS"
+    | "FAIL"
+    | "WARN"
+    | "BLOCKED"
+    | "SKIPPED"
+    | "PLANNED"
+    | "PENDING"
+    | "INCONCLUSIVE"
+    | "NOT_APPLICABLE";
+  /** Set when status is BLOCKED or NOT_APPLICABLE: why no evidence could be gathered. */
+  blocked_reason?: BlockReason | string | null;
+  /** Same-origin redirects followed before the judged response (empty / absent: none). */
+  redirect_chain?: RedirectHop[];
   /** null when the backend did not report a latency (planned / not executed). */
   latency_ms: number | null;
   curl: string;
@@ -111,6 +133,8 @@ export interface CaseExecutionResult {
   is_spa_shell?: boolean;
   failure_reason?: string | null;
   expected_status?: number | null;
+  blocked_reason?: BlockReason | string | null;
+  redirect_chain?: RedirectHop[];
   stateful_steps?: StatefulStep[];
   stateful_chain?: StatefulStepExecution[];
   concurrency_burst?: number;
@@ -165,10 +189,53 @@ export interface AgentStep {
   timestamp: string;
 }
 
+/** Pre-pillars[] shape: a run saved before the backend sent `pillars`. Fallback only. */
 export interface PillarScore {
   score?: number | null;
   status?: string | null;
   evidence?: string | null;
+}
+
+/** One pillar as the backend reports it in `evidence_ledger.pillars[]`. */
+export interface LedgerPillar {
+  /** value | authority | safety | evidence */
+  id: string;
+  name: string;
+  /** null = not evaluated (no conclusive result), never a default score. */
+  score: number | null;
+  /** pass | fail | partial | not_evaluated */
+  status: string;
+  claim: string;
+  /** Conclusive (pass + warn + fail) share of the applicable cases, 0..=100; null = nothing applicable. */
+  confidence?: number | null;
+  techniques?: string[];
+  case_ids?: string[];
+  evidence_files?: string[];
+}
+
+/** Something that kept the run from gathering evidence, and the next step the user can take. */
+export interface LedgerBlocker {
+  reason: BlockReason | string;
+  detail: string;
+  next_step: string;
+  case_ids?: string[];
+}
+
+/** One row of the technique-coverage matrix. */
+export interface CoverageCell {
+  technique: string;
+  planned: number;
+  pass: number;
+  warn: number;
+  fail: number;
+  inconclusive: number;
+  blocked: number;
+  skipped: number;
+  /** Cases with no surface for this technique; excluded from every denominator. */
+  not_applicable?: number;
+  flaky?: number;
+  case_ids?: string[];
+  evidence_files?: string[];
 }
 
 export interface ExitCriterion {
@@ -178,15 +245,27 @@ export interface ExitCriterion {
 }
 
 export interface EvidenceLedger {
+  /** The pillars the backend evaluated (or did not): the source of the pillar cards. */
+  pillars?: LedgerPillar[];
+  /** Overall conclusive share of the applicable cases, 0..=100. */
+  confidence?: number | null;
+  /** What kept evidence from being gathered, with the next step for each. */
+  blockers?: LedgerBlocker[];
+  coverage?: CoverageCell[];
+  /** False when no pillar could be evaluated: the score is then not a result. */
+  evaluated?: boolean;
+  verdict_basis?: string;
+  /** Legacy per-pillar objects (old runs only). */
   contract?: PillarScore;
   authz?: PillarScore;
   resilience?: PillarScore;
   observability?: PillarScore;
-  value_score?: number;
-  authority_score?: number;
-  safety_score?: number;
-  evidence_score?: number;
+  value_score?: number | null;
+  authority_score?: number | null;
+  safety_score?: number | null;
+  evidence_score?: number | null;
   overall_readiness?: number;
+  /** GO | CONDITIONAL_GO | NO_GO | NOT_EVALUATED (| SCANNED for discovery-only runs) */
   gate_verdict?: string;
   composite_score?: number;
   verdict?: string;
@@ -278,6 +357,8 @@ export interface RawCaseResult {
   evidence?: string | null;
   assertion_details?: string | null;
   failure_reason?: string | null;
+  blocked_reason?: BlockReason | string | null;
+  redirect_chain?: RedirectHop[];
   /** Older backends nest the extra evidence fields under this object. */
   evidence_detail?: {
     adaptive_mutation?: RawCaseResult["adaptive_mutation"];

@@ -326,6 +326,8 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
                 _ => None,
             };
             CaseExecutionResult {
+                blocked_reason: None,
+                redirect_chain: vec![],
                 case_id: format!("CHK-{:03}", i + 1),
                 title: c.title.clone(),
                 component: c.id.clone(),
@@ -397,7 +399,7 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
         Verdict::Warn => "CONDITIONAL_GO",
         Verdict::Fail => "NO_GO",
     };
-    let ledger = EvidenceLedger {
+    let ledger = EvidenceLedger { confidence: None, blockers: vec![],
         value_score: None, authority_score: None, safety_score: None, evidence_score: None, overall_readiness: overall, gate_verdict: verdict.into(),
         executive_summary: format!("Core engine executed {} checks: {pass} passed, {fail} failed, {warn} partial, {errored} errored.", r.checks.len()),
         exit_criteria_checklist: vec![ExitCheckItem { criterion: "Engine verdict is PASS".into(), met: matches!(r.verdict, Verdict::Pass), details: r.reasons.join("; "), case_ids: vec![], evidence_files: vec![] }],

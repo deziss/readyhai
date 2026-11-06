@@ -2,6 +2,33 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] - 2026-11-06
+
+Agent reliability and accuracy: verdicts reflect the app, not the agent's blind spots. On the NuHire SPA, inconclusive results dropped from 15 of 18 to 1 of 8, and a false NO_GO became NOT_EVALUATED with the exact next step.
+
+### Added
+
+- **SPA discovery.** Soft-404 calibration (three random paths; status, length and normalised-text fingerprint) flags catch-all routes. Next.js routes are taken from `_buildManifest.js`, app-router chunk paths and the RSC payload. API paths are extracted from up to 30 same-origin JS chunks. `robots.txt` and `sitemap.xml` are read. More OpenAPI locations are tried (`/api-docs`, `/openapi.yaml`, `/swagger/v1/swagger.json`, `/api/v1/openapi.json`, `/.well-known/openapi`, `/docs` spec links). API hosts outside scope are reported ("add to scope.toml"), never called.
+- **Headless XHR discovery** (standard/deep, SPA, Docker): the Playwright runner's new `discover` mode navigates without clicking or submitting and records the API calls the app makes (templated paths, key names only, no values or auth headers). `READYHAI_AGENT_XHR=off` disables it. Rebuild the runner image (`docker build -t readyhai/playwright-runner:local runners/playwright`).
+- **Auth-wall detection.** A 401, a redirect to a login/SSO page or a password form marks the route `auth_wall`. Cases there without a credential are BLOCKED (auth wall) with the next step (`readyhai roles init`, `RH_<ROLE>_TOKEN`, storageState), not INCONCLUSIVE.
+- **Blockers and confidence.** The evidence ledger has `confidence` (conclusive share of applicable cases, overall and per pillar) and `blockers[]` (auth wall, no input surface, transport, out of scope) with a next step each; a new exit criterion requires 80% conclusive coverage.
+- **LLM reliability.** Per-call timeout scales with the request (`clamp(20 + max_tokens/40, 30, 300)` s, `READYHAI_LLM_TIMEOUT_SECS` overrides). A timed-out call is retried smaller (half `max_tokens`, no reasoning effort) instead of identically; a 5xx is retried once, then the next fallback model. A 1-token probe measures latency at run start; a slow endpoint caps planner thinking at the High tier. Gate and triage calls never use thinking.
+- **Eval.** New metrics: precision, inconclusive rate, confidence, blockers; new gates `max_inconclusive_rate`, `forbid_verdict`, `expect_blocker`. New Next.js-like fixture `tests/fixtures/spa-next` with suites `agent-spa` (seeded IDOR, SQL error leak, boundary 500), `agent-spa-clean` (must not be NO_GO) and `agent-spa-noauth` (must be NOT_EVALUATED with an auth-wall blocker).
+- **UI.** Pillar cards show the backend pillar name, claim and a confidence chip; a "What to provide next" card lists blockers; NOT_EVALUATED shows as a neutral "Not evaluated" (never red); scenarios show NOT_APPLICABLE and BLOCKED reasons and the redirect chain.
+
+### Changed
+
+- **Redirects.** Discovery records the first-hop status, redirect chain and final URL. The executor follows same-origin redirects (up to 5) for liveness, content and robustness cases and judges the final response; authz and sensitive-file probes keep the raw status. Verifier replays follow redirects too.
+- **Planner.** Injection, boundary and negative cases target only routes with an input surface (query, form, JSON/API, spec). SPA shells, catch-all routes, login forms and routes that refuse GET (405) get NOT_APPLICABLE rows instead of doomed cases; with credentials, API routes are preferred over the HTML entry page.
+- **Wave-2 re-probes** run only for transient causes (transport error, timeout, 5xx, 429, 408), not for redirects, missing evidence or CORS 405.
+- **Scoring.** Pillar score is `(pass + 0.5·warn) / conclusive`; a pillar is scored only at 50% confidence or more. NOT_EVALUATED when overall confidence is below 50%, or when an auth wall hides the app and only hygiene checks concluded. NO_GO stays for proven failures. The pass-rate criterion counts conclusive applicable cases only.
+
+### Fixed
+
+- Pillar claims and exit-criteria details started with ": 2 passed" (missing technique label).
+- UI pillar cards always said "No evidence text was reported" and used wrong labels ("API Contract" for functional correctness).
+- "a injection" wording.
+
 ## [0.5.0] - 2026-11-05
 
 LLM provider freedom, enterprise-scale specs, RBAC bootstrap and a PR bot.

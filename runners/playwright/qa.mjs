@@ -1,6 +1,12 @@
 // Senior-QA UI exploratory runner. usage: node qa.mjs [/out/qa-ui-input.json]
 // Input : {base_url,max_pages,modes[],viewports[],nonprod,roles[],journeys[],visual_baseline_dir,axe}
 // Output: /out/qa-ui.json (+ /out/shots, /out/traces). Forms are only exercised when nonprod=true.
+// Mode `discover` (exclusive; used by the agent's discovery): navigate the start URL and up to
+// max_pages same-origin links (GET only, no clicks, no form submits) and record every fetch/XHR
+// request the app makes: method, URL template, status, content type, JSON top-level key NAMES of
+// request and response. Values, cookies and Authorization are never recorded.
+// Input : {base_url,modes:["discover"],max_pages,max_requests,deadline_ms,writes,allowed_hosts[]}
+// Output: /out/xhr.json
 import { chromium } from 'playwright';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -22,6 +28,162 @@ const norm = (u) => { try { const x = new URL(u); x.hash = ''; return x.href; } 
 const VIEWPORTS = (input.viewports?.length ? input.viewports : [[375, 812], [768, 1024], [1366, 768]]).map((v) =>
   Array.isArray(v) ? { width: v[0], height: v[1] } : { width: v.width ?? v.w, height: v.height ?? v.h });
 const DANGER = /logout|log-out|signout|delete|remove|destroy|\bpay\b|payment|checkout|purchase|unsubscribe/i;
+
+// ---------------------------------------------------------------- discover mode (XHR capture)
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const ASSET_EXT = /\.(?:png|jpe?g|gif|svg|ico|webp|avif|css|js|mjs|map|woff2?|ttf|eot|mp4|mp3|pdf|zip|gz)(?:$|\?)/i;
+const UUID_SEG = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// numeric ids, uuids and long hex/base64-ish tokens are templated so one endpoint is one entry
+function templatePath(pathname) {
+  return pathname.split('/').map((seg) => {
+    if (!seg) return seg;
+    if (/^\d+$/.test(seg)) return '{id}';
+    if (UUID_SEG.test(seg)) return '{uuid}';
+    if (/^[0-9a-f]{16,}$/i.test(seg)) return '{hash}';
+    if (seg.length >= 20 && /^[A-Za-z0-9_-]+$/.test(seg) && /\d/.test(seg)) return '{token}';
+    return seg;
+  }).join('/');
+}
+// top-level key names of a JSON text (object keys, or the keys of the first element of an array); never values
+function jsonKeys(text) {
+  try {
+    let v = JSON.parse(text);
+    if (Array.isArray(v)) v = v.find((x) => x && typeof x === 'object' && !Array.isArray(x));
+    return v && typeof v === 'object' ? Object.keys(v).slice(0, 30).map((k) => trunc(k, 60)) : [];
+  } catch { return []; }
+}
+
+async function discoverMode() {
+  const maxLinks = Math.min(Math.max(1, input.max_pages || 8), 20);
+  const maxReq = Math.min(Math.max(1, input.max_requests || 200), 200);
+  const allowWrites = input.writes === true;
+  const allowedHosts = new Set((input.allowed_hosts || []).map((h) => String(h).toLowerCase()));
+  const dl = Date.now() + Math.min(input.deadline_ms || 60000, 120000);
+  const left = () => dl - Date.now();
+  const rep = { base_url: input.base_url, mode: 'discover', pages: [], requests: [], other_hosts: [], notes: [] };
+  const entries = new Map(); // "METHOD templated-path" -> entry
+  const others = new Map(); // host -> count
+  let total = 0;
+
+  const flush = () => {
+    rep.requests = [...entries.values()];
+    rep.other_hosts = [...others.entries()].map(([host, count]) => ({ host, count }));
+    writeFileSync(`${OUT}/xhr.json`, JSON.stringify(rep, null, 2));
+  };
+  // a hung page must not lose what was seen: write the partial report and leave
+  const watchdog = setTimeout(() => { rep.notes.push('watchdog: deadline exceeded, report is partial'); flush(); process.exit(0); }, left() + 20000);
+  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'] });
+  const c = await browser.newContext({ viewport: { width: 1280, height: 800 }, ignoreHTTPSErrors: true });
+  c.setDefaultNavigationTimeout(15000);
+  c.setDefaultTimeout(15000);
+
+  const keyOf = (req) => `${req.method().toUpperCase()} ${templatePath(new URL(req.url()).pathname)}`;
+  const entryFor = (req) => {
+    const u = new URL(req.url());
+    const method = req.method().toUpperCase();
+    const tpl = templatePath(u.pathname);
+    const key = keyOf(req);
+    let e = entries.get(key);
+    if (!e) {
+      if (entries.size >= 200) return null;
+      e = { method, path: tpl, sample_path: u.pathname.slice(0, 300), query_keys: [], status: 0, content_type: '',
+            req_keys: [], res_keys: [], has_auth: false, blocked: false, count: 0 };
+      entries.set(key, e);
+    }
+    e.count++;
+    for (const k of u.searchParams.keys()) if (e.query_keys.length < 20 && !e.query_keys.includes(k)) e.query_keys.push(trunc(k, 60));
+    const h = req.headers();
+    if (h.authorization) e.has_auth = true; // the value is never read into the report
+    const body = req.postData();
+    if (body && /json/i.test(h['content-type'] || '')) for (const k of jsonKeys(body)) if (e.req_keys.length < 30 && !e.req_keys.includes(k)) e.req_keys.push(k);
+    return e;
+  };
+
+  // The safety net: only the target origin (and hosts scope.toml lists) are ever contacted; other hosts
+  // are recorded by name and aborted. A non-GET request is let through only on a nonprod, non-dry run.
+  await c.route('**/*', async (route) => {
+    const req = route.request();
+    const url = req.url();
+    if (url.startsWith('data:') || url.startsWith('blob:')) return route.continue();
+    let u;
+    try { u = new URL(url); } catch { return route.abort(); }
+    const type = req.resourceType();
+    const isApiCall = type === 'fetch' || type === 'xhr';
+    const sameOrigin = u.origin === origin;
+    if (!sameOrigin && !allowedHosts.has(u.hostname.toLowerCase())) {
+      if (isApiCall) others.set(u.hostname.toLowerCase(), (others.get(u.hostname.toLowerCase()) || 0) + 1);
+      return route.abort();
+    }
+    if (isApiCall) {
+      if (total >= maxReq) return route.abort();
+      if (sameOrigin) {
+        const e = entryFor(req);
+        if (e && !SAFE_METHODS.has(req.method().toUpperCase()) && !allowWrites) { e.blocked = true; return route.abort(); }
+      }
+    } else if (!SAFE_METHODS.has(req.method().toUpperCase()) && !allowWrites) {
+      return route.abort(); // a page form post or beacon: navigation only
+    }
+    total++;
+    return route.continue();
+  });
+
+  const onResponse = async (resp) => {
+    try {
+      const req = resp.request();
+      const type = req.resourceType();
+      if ((type !== 'fetch' && type !== 'xhr') || new URL(req.url()).origin !== origin) return;
+      const e = entries.get(keyOf(req));
+      if (!e) return;
+      e.status = resp.status();
+      const ct = resp.headers()['content-type'] || '';
+      e.content_type = trunc(ct.split(';')[0].trim(), 80);
+      if (/json/i.test(ct) && resp.status() !== 204 && !(resp.status() >= 300 && resp.status() < 400)) {
+        const len = Number(resp.headers()['content-length'] || 0);
+        if (!len || len < 512 * 1024) {
+          const text = await resp.text().catch(() => '');
+          for (const k of jsonKeys(text)) if (e.res_keys.length < 30 && !e.res_keys.includes(k)) e.res_keys.push(k);
+        }
+      }
+    } catch { /* a response that cannot be read is simply not described */ }
+  };
+
+  const queue = [norm(input.base_url)];
+  const seen = new Set(queue);
+  while (queue.length && rep.pages.length < maxLinks && left() > 3000) {
+    const url = queue.shift();
+    const page = await c.newPage();
+    page.on('response', onResponse);
+    const rec = { url: trunc(url, 300), path: new URL(url).pathname + new URL(url).search, status: 0 };
+    try {
+      const resp = await page.goto(url, { waitUntil: 'load', timeout: Math.min(15000, left()) });
+      rec.status = resp ? resp.status() : 0;
+      await page.waitForLoadState('networkidle', { timeout: Math.min(4000, Math.max(500, left())) }).catch(() => {});
+      await page.waitForTimeout(500);
+      for (const h of await page.$$eval('a[href]', (as) => as.map((a) => a.href)).catch(() => [])) {
+        const n = norm(h);
+        if (!n || !/^https?:/.test(n)) continue;
+        const x = new URL(n);
+        if (x.origin !== origin || ASSET_EXT.test(x.pathname) || DANGER.test(x.pathname) || seen.has(n) || seen.size >= maxLinks * 5) continue;
+        seen.add(n);
+        queue.push(n);
+      }
+    } catch (e) {
+      rec.error = trunc(`navigation failed: ${String(e?.message ?? e).split('\n')[0]}`, 160);
+    }
+    rep.pages.push(rec);
+    await page.close();
+  }
+  if (left() <= 3000 && queue.length) rep.notes.push('deadline reached; pages left unvisited');
+  await c.close();
+  await browser.close();
+  clearTimeout(watchdog);
+  flush();
+}
+
+if (modes.has('discover')) {
+  await discoverMode();
+  process.exit(0);
+}
 
 mkdirSync(`${OUT}/shots`, { recursive: true });
 mkdirSync(`${OUT}/traces`, { recursive: true });

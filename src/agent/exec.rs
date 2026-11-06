@@ -7,7 +7,11 @@
 //!   target (exact match);
 //! * it is attached only through a client that validates TLS certificates: requests that carry a
 //!   real credential never go through the client that accepts invalid certificates;
-//! * redirects are never followed, so a credential cannot follow a `Location` to another host.
+//! * a redirect is followed only for a safe GET/HEAD liveness/content/robustness case, only to the
+//!   same origin (exact scheme, host and port), at most [`MAX_REDIRECTS`] hops, and every hop goes
+//!   through [`Clients::send`] again: a credential cannot follow a `Location` to another host.
+//!   Authorization cases, sensitive-file probes and forged-token requests are never redirected:
+//!   their raw status is the evidence.
 //!
 //! Verdict rules: every outcome (the base request, an adaptive-mutation probe, a concurrency
 //! burst, a stateful chain) is judged by `oracle` (`judge`, `judge_burst`, `judge_stateful`) with
@@ -22,16 +26,23 @@ use std::time::{Duration, Instant};
 
 use super::budget::RunBudget;
 use super::oracle::{
-    self, BurstFacts, CORS_PROBE_ORIGIN, Observation, OracleOutcome, Severity, Verdict,
+    self, BurstFacts, CORS_PROBE_ORIGIN, Observation, OracleOutcome, Severity, Technique, Verdict,
     is_cors_case,
 };
-use super::types::{AttemptRecord, CaseExecutionResult, PlannedCase, record_creation_response};
+use super::types::{
+    AttemptRecord, BlockReason, CaseExecutionResult, PlannedCase, RedirectHop, SRC_AUTH_WALL,
+    SRC_NOT_APPLICABLE, record_creation_response,
+};
 use crate::llm::{is_sensitive_key, redact_for_llm};
 
 pub const METHODS: [&str; 7] = ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"];
 const BODY_CAP: usize = 64 * 1024;
 const FORGED_TOKEN: &str = "forged.signature.token123";
 const MAX_BURST: usize = 10;
+/// Most same-origin redirects the executor follows for one request.
+pub const MAX_REDIRECTS: usize = 5;
+/// What to do about an auth wall; shared by the BLOCKED results, the ledger's blockers and the report.
+pub const NEXT_STEP_AUTH_WALL: &str = "provide test accounts: `readyhai roles init --spec <openapi.json>` writes a roles.toml skeleton; set RH_<ROLE>_TOKEN (e.g. RH_USER_TOKEN) or use a storageState login, then re-run";
 
 /// Canonical upper-case method if (and only if) it is on the allow-list.
 pub fn normalize_method(m: &str) -> Option<&'static str> {
@@ -600,6 +611,111 @@ impl Clients {
     }
 }
 
+/// A response after the same-origin redirects the executor followed.
+pub struct Followed {
+    pub seen: Seen,
+    /// The hops that were followed, in order (empty: the first response was the answer).
+    pub chain: Vec<RedirectHop>,
+    /// The URL that gave `seen`.
+    pub final_url: String,
+}
+
+impl Clients {
+    /// [`Clients::send`], then follow redirects to the run's own origin, at most `max_hops`. Every
+    /// hop goes through `send`, so the credential rules hold on each of them. The chain ends, and
+    /// the last response is returned as the 3xx it is, at a redirect to another origin, a missing
+    /// or unusable `Location`, a loop, or when `on_hop` refuses (the run budget). A failing hop is
+    /// an error. A request with a body is never redirected: only reads follow.
+    pub fn send_following(
+        &self,
+        r: &OutReq,
+        max_hops: usize,
+        on_hop: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<Followed, String> {
+        let mut seen = self.send(r)?;
+        let mut chain: Vec<RedirectHop> = vec![];
+        let mut url = r.url.to_string();
+        let mut visited = vec![url.clone()];
+        let mut total_ms = seen.latency_ms;
+        while r.body.is_none()
+            && chain.len() < max_hops
+            && matches!(seen.status, 301 | 302 | 303 | 307 | 308)
+        {
+            let Some(loc) = seen
+                .headers
+                .iter()
+                .find(|(k, _)| k == "location")
+                .map(|(_, v)| v.trim().to_string())
+                .filter(|l| !l.is_empty())
+            else {
+                break;
+            };
+            let Some(next) = reqwest::Url::parse(&url)
+                .ok()
+                .and_then(|b| b.join(&loc).ok())
+            else {
+                break;
+            };
+            if !self.is_target_url(next.as_str()) || visited.iter().any(|v| v == next.as_str()) {
+                break;
+            }
+            if on_hop().is_err() {
+                break;
+            }
+            chain.push(RedirectHop {
+                status: seen.status,
+                location: crate::llm::untrusted::redact_then_truncate(&loc, 200),
+            });
+            let hop = OutReq {
+                method: r.method,
+                url: next.as_str(),
+                body: None,
+                headers: r.headers,
+                bearer: r.bearer,
+            };
+            seen = self.send(&hop).map_err(|e| {
+                format!(
+                    "following the redirect to {} failed: {e}",
+                    crate::llm::untrusted::redact_then_truncate(next.path(), 80)
+                )
+            })?;
+            total_ms += seen.latency_ms;
+            url = next.to_string();
+            visited.push(url.clone());
+        }
+        seen.latency_ms = total_ms;
+        Ok(Followed {
+            seen,
+            chain,
+            final_url: url,
+        })
+    }
+}
+
+/// Does the executor follow a same-origin redirect for this case? Only a safe GET/HEAD read that
+/// is a liveness, content or robustness check. An authorization case, a sensitive-file probe, a
+/// forged-token request and a case that expects a redirect or a denial keep the raw status: that
+/// status is the evidence.
+pub fn follows_redirects(c: &PlannedCase) -> bool {
+    matches!(
+        c.method.trim().to_ascii_uppercase().as_str(),
+        "GET" | "HEAD"
+    ) && Technique::parse(&c.technique) != Technique::Authz
+        && auth_for(c) != Auth::Forged
+        && !oracle::is_sensitive_path(&c.component)
+        && !oracle::expects_redirect(c)
+        && !oracle::expects_denial(c)
+}
+
+/// The reproduction command of a request whose redirects were followed.
+fn follow_curl(curl: &str) -> String {
+    curl.replacen(
+        "curl -sS",
+        &format!("curl -sS -L --max-redirs {MAX_REDIRECTS}"),
+        1,
+    )
+}
+
 /// A real test credential travels only through the client that validates certificates.
 pub fn needs_validated_tls(b: Option<&Bearer>) -> bool {
     b.is_some_and(|b| b.real)
@@ -748,6 +864,8 @@ pub fn evidence_rel_path(case_id: &str) -> String {
 
 fn skeleton(c: &PlannedCase, status: &str, reason: String, curl: String) -> CaseExecutionResult {
     CaseExecutionResult {
+        blocked_reason: None,
+        redirect_chain: vec![],
         case_id: c.id.clone(),
         title: c.title.clone(),
         component: c.component.clone(),
@@ -775,6 +893,79 @@ fn skeleton(c: &PlannedCase, status: &str, reason: String, curl: String) -> Case
 
 fn skipped(c: &PlannedCase, reason: impl Into<String>, curl: String) -> CaseExecutionResult {
     skeleton(c, "SKIPPED", reason.into(), curl)
+}
+
+/// The result of a planner-made ledger row ([`SRC_NOT_APPLICABLE`], [`SRC_AUTH_WALL`]): nothing is
+/// sent, no step or request is spent. NOT_APPLICABLE counts toward no denominator; BLOCKED with
+/// `AuthWall` says what the user has to provide.
+fn ledger_row_result(c: &PlannedCase) -> Option<CaseExecutionResult> {
+    let (status, reason, why) = match c.source.as_deref()? {
+        SRC_NOT_APPLICABLE => (
+            "NOT_APPLICABLE",
+            BlockReason::NoSurface,
+            format!(
+                "no input surface: nothing on the discovered route(s) takes input that {} tests could exercise ({}). Not counted toward coverage",
+                c.technique, c.input_hint
+            ),
+        ),
+        SRC_AUTH_WALL => (
+            "BLOCKED",
+            BlockReason::AuthWall,
+            format!(
+                "auth wall: the discovered route(s) are behind a login and no credential was available, so the {} tests were not run ({}). Next step: {NEXT_STEP_AUTH_WALL}",
+                c.technique, c.input_hint
+            ),
+        ),
+        _ => return None,
+    };
+    let mut r = skeleton(c, status, why, String::new());
+    r.blocked_reason = Some(reason);
+    r.evidence = c.input_hint.clone();
+    Some(r)
+}
+
+/// Is this answer an auth wall for this case? Only when no credential was sent, and never for a
+/// case whose raw status is the evidence (authorization, a sensitive-file probe, a forged token, a
+/// CORS probe, an expected denial or redirect). A FAIL stays a FAIL. A redirect to a login page
+/// relabels a PASS too (the page the case targeted was never reached); a 401 or a password form
+/// only relabels an INCONCLUSIVE.
+fn auth_wall_of(
+    c: &PlannedCase,
+    spec: &RequestSpec,
+    auth: &ResolvedAuth,
+    seen: &Seen,
+    chain: &[RedirectHop],
+    outcome: &OracleOutcome,
+) -> Option<oracle::WallSignal> {
+    if auth.authenticated
+        || spec.auth == Auth::Forged
+        || Technique::parse(&c.technique) == Technique::Authz
+        || is_cors_case(c)
+        || oracle::is_sensitive_path(&c.component)
+        || oracle::expects_denial(c)
+        || oracle::expects_redirect(c)
+    {
+        return None;
+    }
+    // a case aimed at a login page is not walled off by the redirects that page does (/login to
+    // /login/): only what the final answer says counts
+    let chain = if oracle::is_login_location(&c.component) {
+        &[]
+    } else {
+        chain
+    };
+    let w = oracle::auth_wall_signal(
+        seen.status,
+        &seen.content_type,
+        &seen.headers,
+        &seen.body,
+        chain,
+    )?;
+    match outcome.verdict {
+        Verdict::Fail => None,
+        Verdict::Inconclusive => Some(w),
+        Verdict::Pass => w.redirected.then_some(w),
+    }
 }
 
 fn spa_shell(ct: &str, body: &str, is_spa_target: bool) -> bool {
@@ -994,6 +1185,9 @@ fn run_stateful_case(
 }
 
 fn run_case(ctx: &Ctx, c: &PlannedCase, budget: &mut RunBudget) -> Vec<CaseExecutionResult> {
+    if let Some(row) = ledger_row_result(c) {
+        return vec![row];
+    }
     if let Some(steps) = &c.stateful_steps
         && !steps.is_empty()
     {
@@ -1085,6 +1279,9 @@ fn exec_http(
     } else {
         1
     };
+    let follow = follows_redirects(c);
+    let mut first_chain: Vec<RedirectHop> = vec![];
+    let mut first_final_url = spec.url.clone();
     let mut attempts: Vec<(Option<Seen>, Option<OracleOutcome>, Option<String>)> = vec![];
     for attempt in 0..total {
         if let Err(m) = budget.take_request(ctx.host) {
@@ -1097,8 +1294,27 @@ fn exec_http(
             attempts.push((None, None, Some(format!("re-run not sent: {m}"))));
             break;
         }
-        match ctx.clients.send(&out_req(spec, auth.bearer.as_ref())) {
-            Ok(seen) => {
+        let req = out_req(spec, auth.bearer.as_ref());
+        let sent = if follow {
+            ctx.clients
+                .send_following(&req, MAX_REDIRECTS, &mut || budget.take_request(ctx.host))
+        } else {
+            ctx.clients.send(&req).map(|seen| Followed {
+                seen,
+                chain: vec![],
+                final_url: spec.url.clone(),
+            })
+        };
+        match sent {
+            Ok(Followed {
+                seen,
+                chain,
+                final_url,
+            }) => {
+                if attempt == 0 {
+                    first_chain = chain;
+                    first_final_url = final_url;
+                }
                 note_creation(&c.id, spec, &seen);
                 let shell = spa_shell(&seen.content_type, &seen.body, ctx.opts.is_spa_target);
                 let outcome = oracle::judge(
@@ -1146,7 +1362,13 @@ fn exec_http(
 
     // first attempt decides the shape of the result
     let (first_seen, first_outcome, first_err) = attempts.remove(0);
+    let curl = if first_chain.is_empty() {
+        curl
+    } else {
+        follow_curl(&curl)
+    };
     let mut res = skeleton(c, "BLOCKED", String::new(), curl.clone());
+    res.redirect_chain = first_chain.clone();
     res.failure_reason = None;
     res.attempts = records;
     res.evidence_file = Some(evidence_rel_path(&c.id));
@@ -1158,6 +1380,7 @@ fn exec_http(
     let (Some(seen), Some(outcome)) = (first_seen, first_outcome) else {
         let e = first_err.unwrap_or_else(|| "unknown error".into());
         res.status = "BLOCKED".into();
+        res.blocked_reason = Some(BlockReason::Transport);
         res.failure_reason = Some(format!("Connection error: {e}"));
         res.evidence = format!(
             "request failed: {}",
@@ -1213,11 +1436,49 @@ fn exec_http(
     } else {
         crate::llm::untrusted::redact_then_truncate(&seen.body, 300)
     };
+    if !first_chain.is_empty() {
+        // the judged response is the final one: say how it was reached
+        let hops: Vec<String> = first_chain
+            .iter()
+            .map(|h| format!("{} {}", h.status, h.location))
+            .collect();
+        res.evidence = crate::llm::untrusted::redact_then_truncate(
+            &format!(
+                "followed {} redirect(s) ({}), judged HTTP {}: {}",
+                first_chain.len(),
+                hops.join(" -> "),
+                seen.status,
+                res.evidence
+            ),
+            300,
+        );
+    }
     detail["response"] = json!({
         "status": seen.status, "content_type": seen.content_type, "latency_ms": seen.latency_ms,
         "headers": redacted_headers(&seen.headers),
         "body_excerpt": crate::llm::untrusted::redact_then_truncate(&seen.body, 4000),
     });
+    if !first_chain.is_empty() {
+        detail["response"]["final_url"] = json!(crate::llm::untrusted::redact_then_truncate(
+            &first_final_url,
+            300
+        ));
+        detail["redirect_chain"] = serde_json::to_value(&first_chain).unwrap_or(Value::Null);
+    }
+    if let Some(w) = auth_wall_of(c, spec, auth, &seen, &first_chain, &outcome) {
+        // no credential, and the target asked for one: not a verdict on the app, not a failure
+        let who = match &spec.auth {
+            Auth::Role(r) => format!(" for role '{r}'"),
+            _ => String::new(),
+        };
+        res.status = "BLOCKED".into();
+        res.blocked_reason = Some(BlockReason::AuthWall);
+        res.failure_reason = Some(format!(
+            "auth wall: {}. No credential was available{who}, so what sits behind the login was not tested. Next step: {NEXT_STEP_AUTH_WALL}",
+            w.what
+        ));
+        detail["auth_wall"] = json!(w.what);
+    }
     detail["oracle"] = serde_json::to_value(&outcome).unwrap_or(Value::Null);
     detail["attempts"] = serde_json::to_value(&res.attempts).unwrap_or(Value::Null);
     detail["flaky"] = json!(flaky);

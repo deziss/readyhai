@@ -44,6 +44,23 @@ describe("ApprovalCard sign-off", () => {
   const typeOperator = () =>
     fireEvent.change(screen.getByLabelText(/Operator ID/), { target: { value: "op@example.test" } });
 
+  it("explains a not-evaluated verdict as missing evidence and never offers approval", () => {
+    render(
+      <ApprovalCard
+        runId="r1"
+        evidenceLedger={{ gate_verdict: "NOT_EVALUATED", overall_readiness: 0, evaluated: false }}
+        defectCount={0}
+        onSignOff={vi.fn(async () => null)}
+      />
+    );
+    expect(screen.getAllByText("Not evaluated").length).toBeGreaterThan(0);
+    expect(screen.getByText(/not enough conclusive evidence/i)).toBeTruthy();
+    expect(screen.queryByText(/NO GO/)).toBeNull();
+    expect((screen.getByText("Approve release").closest("button") as HTMLButtonElement).disabled).toBe(true);
+    // 0 is a placeholder, not a score
+    expect(screen.queryByText("0%")).toBeNull();
+  });
+
   it("never offers approval for a NO_GO verdict", () => {
     render(
       <ApprovalCard

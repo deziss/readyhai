@@ -1,21 +1,28 @@
 import { describe, expect, it } from "vitest";
 import type { AgentRunRecord } from "@/types/agent";
 import {
+  blockReasonLabel,
   buildLedger,
   canApproveVerdict,
   confirmedSignOffStatus,
   getPillars,
   isGateVerdict,
+  isNotEvaluatedVerdict,
   isRunActive,
+  ledgerBlockers,
+  ledgerConfidence,
   ledgerScore,
   ledgerVerdict,
   normalizeCaseStatus,
+  normalizeExecutedCase,
   normalizeRunStatus,
   normalizeVerdict,
   numOrNull,
+  runCases,
   runEndedEarly,
   signOffBlockedReason,
 } from "./runs";
+import { NOT_EVALUATED_LEDGER } from "./testFixtures";
 
 describe("verdict normalizers", () => {
   it("normalizes strings and rejects non-strings", () => {
@@ -134,5 +141,173 @@ describe("run lifecycle status", () => {
     // completed and legacy runs: allowed (the verdict rules apply on top)
     expect(signOffBlockedReason({ status: "completed" }, "approve")).toBeNull();
     expect(signOffBlockedReason({}, "approve")).toBeNull();
+  });
+});
+
+describe("getPillars with the backend's pillars[]", () => {
+  const pillars = getPillars(NOT_EVALUATED_LEDGER);
+
+  it("uses the backend names, ids, claims and statuses, in the backend's order", () => {
+    expect(pillars.map((p) => p.key)).toEqual(["value", "authority", "safety", "evidence"]);
+    expect(pillars.map((p) => p.title)).toEqual([
+      "Functional correctness and input handling",
+      "Authorization and least privilege",
+      "Injection resistance and data safety",
+      "Reproducible evidence",
+    ]);
+    expect(pillars[0].evidence).toBe("boundary: 2 passed, 1 failed of 3 conclusive");
+    expect(pillars[0].status).toBe("partial");
+    expect(pillars[0].score).toBe(62);
+    expect(pillars[0].caseCount).toBe(3);
+  });
+
+  it("never shows the old hard-coded labels", () => {
+    const text = JSON.stringify(pillars);
+    for (const wrong of ["API Contract", "Schema Compliance", "Input Fuzzing", "Observability & Leak"]) {
+      expect(text).not.toContain(wrong);
+    }
+  });
+
+  it("carries the confidence and marks a pillar without conclusive evidence as not evaluated", () => {
+    expect(pillars[0].confidence).toBe(40);
+    expect(pillars[0].notEvaluated).toBe(false);
+    expect(pillars[1].score).toBeNull();
+    expect(pillars[1].notEvaluated).toBe(true);
+    expect(pillars[1].confidence).toBe(0);
+    expect(pillars[2].confidence).toBeNull();
+    expect(pillars[3].notEvaluated).toBe(false);
+  });
+
+  it("every pillar has its claim as evidence text (no 'No evidence text' for a reported claim)", () => {
+    expect(pillars.every((p) => p.evidence !== null)).toBe(true);
+  });
+
+  it("keeps an out-of-range confidence inside 0..=100 and ignores a non-number", () => {
+    const [a, b] = getPillars({
+      pillars: [
+        { id: "value", name: "V", score: 50, status: "partial", claim: "c", confidence: 140 },
+        { id: "authority", name: "A", score: 50, status: "partial", claim: "c", confidence: "x" as unknown as number },
+      ],
+    });
+    expect(a.confidence).toBe(100);
+    expect(b.confidence).toBeNull();
+  });
+
+  it("falls back to the legacy fields only for an old run without pillars[], with the backend's names", () => {
+    const legacy = getPillars({ value_score: 80, authz: { score: 70, status: "partial", evidence: "old text" } });
+    expect(legacy.map((p) => p.key)).toEqual(["value", "authority", "safety", "evidence"]);
+    expect(legacy[0].title).toBe("Functional correctness and input handling");
+    expect(legacy[0].score).toBe(80);
+    expect(legacy[1].score).toBe(70);
+    expect(legacy[1].evidence).toBe("old text");
+    expect(legacy[2].score).toBeNull();
+    expect(legacy[2].notEvaluated).toBe(true);
+    expect(legacy.every((p) => p.confidence === null)).toBe(true);
+  });
+
+  it("an empty pillars[] counts as an old run: four not-evaluated pillars, nothing invented", () => {
+    const empty = getPillars({ pillars: [] });
+    expect(empty).toHaveLength(4);
+    expect(empty.every((p) => p.score === null && p.notEvaluated)).toBe(true);
+  });
+});
+
+describe("not evaluated verdict", () => {
+  it("is recognised and is not a gate verdict that can be approved", () => {
+    expect(isNotEvaluatedVerdict("NOT_EVALUATED")).toBe(true);
+    expect(isNotEvaluatedVerdict("NO_GO")).toBe(false);
+    expect(isGateVerdict("NOT_EVALUATED")).toBe(false);
+    expect(canApproveVerdict("NOT_EVALUATED")).toBe(false);
+  });
+
+  it("its placeholder score of 0 is not a score", () => {
+    expect(NOT_EVALUATED_LEDGER.overall_readiness).toBe(0);
+    expect(ledgerScore(NOT_EVALUATED_LEDGER)).toBeNull();
+    expect(ledgerVerdict(NOT_EVALUATED_LEDGER)).toBe("NOT_EVALUATED");
+    // a real 0 from an evaluated run stays a score; a ledger that says it was not evaluated has none
+    expect(ledgerScore({ gate_verdict: "NO_GO", overall_readiness: 0, evaluated: true })).toBe(0);
+    expect(ledgerScore({ gate_verdict: "NO_GO", overall_readiness: 40 })).toBe(40);
+    expect(ledgerScore({ overall_readiness: 0, evaluated: false })).toBeNull();
+  });
+
+  it("buildLedger keeps the verdict, the blockers and the pillars of a stored run", () => {
+    const l = buildLedger({ evidence_ledger: NOT_EVALUATED_LEDGER } as AgentRunRecord);
+    expect(l?.gate_verdict).toBe("NOT_EVALUATED");
+    expect(l?.pillars).toHaveLength(4);
+    expect(l?.blockers).toHaveLength(2);
+    expect(ledgerScore(l)).toBeNull();
+  });
+
+  it("reads the overall confidence", () => {
+    expect(ledgerConfidence(NOT_EVALUATED_LEDGER)).toBe(22);
+    expect(ledgerConfidence({})).toBeNull();
+    expect(ledgerConfidence({ confidence: 250 })).toBe(100);
+  });
+});
+
+describe("blockers", () => {
+  it("turns the backend blockers into what to show, with the case count", () => {
+    const [auth, surface] = ledgerBlockers(NOT_EVALUATED_LEDGER);
+    expect(auth.reason).toBe("auth_wall");
+    expect(auth.label).toBe("Auth wall");
+    expect(auth.detail).toContain("307 to /login");
+    expect(auth.nextStep).toContain("readyhai roles init --spec");
+    expect(auth.caseCount).toBe(3);
+    expect(surface.label).toBe("No input surface");
+    expect(surface.caseCount).toBe(0);
+  });
+
+  it("is empty without blockers and skips entries that say nothing", () => {
+    expect(ledgerBlockers(null)).toEqual([]);
+    expect(ledgerBlockers({})).toEqual([]);
+    expect(ledgerBlockers({ blockers: [{ reason: "transport", detail: "", next_step: "" }] })).toEqual([]);
+    expect(
+      ledgerBlockers({ blockers: [{ reason: "something_new", detail: "d", next_step: "" }] })[0].label
+    ).toBe("Something new");
+  });
+
+  it("labels the block reasons", () => {
+    expect(blockReasonLabel("auth_wall")).toBe("Auth wall");
+    expect(blockReasonLabel("out_of_scope")).toBe("Out of scope");
+    expect(blockReasonLabel("transport")).toBe("No HTTP answer");
+    expect(blockReasonLabel(null)).toBeNull();
+    expect(blockReasonLabel("")).toBeNull();
+  });
+});
+
+describe("case results with the new statuses", () => {
+  it("keeps NOT_APPLICABLE (it is excluded from the counts, not skipped)", () => {
+    expect(normalizeCaseStatus("NOT_APPLICABLE")).toBe("NOT_APPLICABLE");
+    expect(normalizeCaseStatus("not_applicable")).toBe("NOT_APPLICABLE");
+  });
+
+  it("carries the block reason and the redirect chain of an executed case", () => {
+    const blocked = normalizeExecutedCase({
+      case_id: "TC-004",
+      status: "BLOCKED",
+      blocked_reason: "auth_wall",
+      redirect_chain: [
+        { status: 307, location: "/login" },
+        { status: 302, location: "/login?next=%2F" },
+        { status: "x", location: "/bad" } as never,
+      ],
+    });
+    expect(blocked.status).toBe("BLOCKED");
+    expect(blocked.blocked_reason).toBe("auth_wall");
+    expect(blocked.redirect_chain).toEqual([
+      { status: 307, location: "/login" },
+      { status: 302, location: "/login?next=%2F" },
+    ]);
+    const plain = normalizeExecutedCase({ case_id: "TC-001", status: "PASS" });
+    expect(plain.blocked_reason).toBeNull();
+    expect(plain.redirect_chain).toEqual([]);
+  });
+
+  it("runCases surfaces them from a run's executed_results", () => {
+    const cases = runCases({
+      executed_results: [{ case_id: "TC-009", status: "NOT_APPLICABLE", blocked_reason: "no_surface" }],
+    } as AgentRunRecord);
+    expect(cases[0].status).toBe("NOT_APPLICABLE");
+    expect(cases[0].blocked_reason).toBe("no_surface");
   });
 });

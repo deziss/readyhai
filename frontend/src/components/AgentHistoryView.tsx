@@ -36,12 +36,16 @@ import type {
 import { apiRequest, cancelAgentRun, notify, useApiTokenVersion } from "@/lib/api";
 import { copyTextSafely } from "@/lib/clipboard";
 import {
+  blockReasonLabel,
   buildLedger,
   canApproveVerdict,
   confirmedSignOffStatus,
   getPillars,
   isGateVerdict,
+  isNotEvaluatedVerdict,
   isRunActive,
+  ledgerBlockers,
+  ledgerConfidence,
   ledgerScore,
   ledgerVerdict,
   normalizeVerdict,
@@ -55,6 +59,7 @@ import {
 } from "@/lib/runs";
 import { ReportButton, ReportFrame } from "./ReportButton";
 import { VerdictBadge } from "./VerdictBadge";
+import { NextStepsCard, PillarCard } from "./LedgerPanels";
 import { RunStatusBadge } from "./RunStatusBadge";
 import { StatefulChainFlow } from "./StatefulChainFlow";
 import { ConcurrencyBurstMeter } from "./ConcurrencyBurstMeter";
@@ -73,6 +78,7 @@ const VERDICT_FILTER_LABEL = {
   GO: "GO",
   CONDITIONAL_GO: "Conditional",
   NO_GO: "No go",
+  NOT_EVALUATED: "Not evaluated",
 } as const;
 
 /** "INCONCLUSIVE" -> "Inconclusive"; display only, filter values keep the backend spelling. */
@@ -321,9 +327,29 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
   const selectedVerdict = ledgerVerdict(selectedLedger);
   const selectedPillars = getPillars(selectedLedger);
 
-  const getCaseStatusBadge = (status: string) => {
+  const getCaseStatusBadge = (status: string, blockedReason?: string | null) => {
     const chip = "px-2 py-0.5 rounded-[6px] text-xs font-semibold whitespace-nowrap";
+    const reason = blockReasonLabel(blockedReason);
     switch (status) {
+      case "BLOCKED":
+        // No evidence could be gathered: not a failure and not a pass.
+        return (
+          <span
+            className={`${chip} bg-rh-info/15 text-rh-info`}
+            title={reason ? `No evidence could be gathered: ${reason.toLowerCase()}` : "No evidence could be gathered"}
+          >
+            {reason ? `Blocked: ${reason.toLowerCase()}` : "Blocked"}
+          </span>
+        );
+      case "NOT_APPLICABLE":
+        return (
+          <span
+            className={`${chip} bg-rh-raised text-rh-muted`}
+            title={`Not counted: ${reason ? reason.toLowerCase() : "this technique has no surface on this route"}`}
+          >
+            Not applicable
+          </span>
+        );
       case "PASS":
         return <span className={`${chip} bg-rh-go/15 text-rh-go`}>Pass</span>;
       case "FAIL":
@@ -393,7 +419,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
             </div>
 
             <div role="group" aria-label="Filter by verdict" className="flex items-center gap-1 bg-rh-bg p-1 rounded-[6px] border border-rh-line">
-              {(["ALL", "GO", "CONDITIONAL_GO", "NO_GO"] as const).map((v) => (
+              {(["ALL", "GO", "CONDITIONAL_GO", "NO_GO", "NOT_EVALUATED"] as const).map((v) => (
                 <button
                   type="button"
                   key={v}
@@ -440,7 +466,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                 // Backend-reported values only; a run without them shows "not evaluated".
                 const gate = ledgerVerdict(run.evidence_ledger) ?? normalizeVerdict(run.gate_verdict);
                 const rawReadiness = ledgerScore(run.evidence_ledger) ?? numOrNull(run.readiness_score);
-                const readiness = gate === "SCANNED" ? null : rawReadiness;
+                const readiness = gate === "SCANNED" || gate === "NOT_EVALUATED" ? null : rawReadiness;
                 const routesCount = run.discovered_routes?.length || 0;
                 const casesCount = run.executed_results?.length || run.planned_cases?.length || run.cases_count || 0;
                 const defectsCount = runDefectCount(run) ?? 0;
@@ -861,7 +887,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                 <div className="space-y-4">
                   <div role="group" aria-label="Filter scenarios by status" className="flex flex-wrap items-center gap-1 bg-rh-surface p-1.5 rounded-[6px] border border-rh-line text-xs">
                     <span className="text-rh-muted px-2">Status</span>
-                    {(["ALL", "PASS", "FAIL", "WARN", "INCONCLUSIVE", "BLOCKED", "SKIPPED", "PLANNED"] as const).map((s) => (
+                    {(["ALL", "PASS", "FAIL", "WARN", "INCONCLUSIVE", "BLOCKED", "NOT_APPLICABLE", "SKIPPED", "PLANNED"] as const).map((s) => (
                       <button
                         type="button"
                         key={s}
@@ -873,7 +899,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                             : "text-rh-muted hover:bg-rh-raised hover:text-rh-text"
                         }`}
                       >
-                        {sentence(s)}
+                        {sentence(s.replace(/_/g, " "))}
                       </button>
                     ))}
                   </div>
@@ -947,7 +973,7 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                                 {tc.latency_ms != null && tc.latency_ms > 0 && (
                                   <span className="text-xs text-rh-muted hidden sm:inline tabular-nums">{tc.latency_ms}ms</span>
                                 )}
-                                {getCaseStatusBadge(tc.status)}
+                                {getCaseStatusBadge(tc.status, tc.blocked_reason)}
                                 {isExpanded ? (
                                   <ChevronUp className="w-4 h-4 text-rh-muted" aria-hidden="true" />
                                 ) : (
@@ -981,6 +1007,21 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                                     explanation={tc.remediation_explanation}
                                     reproScript={tc.reproduction_script}
                                   />
+                                )}
+
+                                {tc.redirect_chain && tc.redirect_chain.length > 0 && (
+                                  <div data-testid="redirect-chain">
+                                    <span className="text-xs text-rh-muted font-semibold">Redirects followed before this response</span>
+                                    <ol className="mt-1 flex flex-col gap-0.5 font-mono text-rh-text">
+                                      {tc.redirect_chain.map((hop, i) => (
+                                        <li key={i} className="break-all">
+                                          <span className="tabular-nums text-rh-cond">{hop.status}</span>
+                                          <span className="text-rh-muted"> to </span>
+                                          {hop.location}
+                                        </li>
+                                      ))}
+                                    </ol>
+                                  </div>
                                 )}
 
                                 {tc.assertion_details && (
@@ -1054,6 +1095,14 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                           <span className="text-rh-text font-semibold tabular-nums">{ledgerScore(selectedLedger)}/100</span>
                         )}
                       </span>
+                      {ledgerConfidence(selectedLedger) !== null && (
+                        <span
+                          className="text-xs text-rh-muted bg-rh-raised px-1.5 py-0.5 rounded-[6px] font-medium tabular-nums"
+                          title="Share of the applicable cases that gave a conclusive result"
+                        >
+                          confidence {ledgerConfidence(selectedLedger)}%
+                        </span>
+                      )}
                     </div>
                     {selectedLedger?.executive_summary && (
                       <p className="text-xs text-rh-text w-full leading-relaxed">{selectedLedger.executive_summary}</p>
@@ -1065,28 +1114,11 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                     )}
                   </div>
 
+                  <NextStepsCard blockers={ledgerBlockers(selectedLedger)} surface="surface" />
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {selectedPillars.map((pillar, idx) => (
-                      <div key={pillar.key} className="p-4 rounded-[10px] bg-rh-surface border border-rh-line space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-rh-text">
-                            {idx + 1}. {pillar.short}
-                          </span>
-                          {pillar.status && (
-                            <span className="px-2 py-0.5 rounded-[6px] text-xs font-semibold bg-rh-raised text-rh-text">
-                              {pillar.status}
-                            </span>
-                          )}
-                        </div>
-                        {pillar.score === null ? (
-                          <div className="text-sm text-rh-muted">not evaluated</div>
-                        ) : (
-                          <div className="text-2xl font-semibold text-rh-text tabular-nums">{pillar.score}/100</div>
-                        )}
-                        <p className="text-xs text-rh-muted">
-                          {pillar.evidence ?? "No evidence text was reported for this pillar."}
-                        </p>
-                      </div>
+                      <PillarCard key={pillar.key} pillar={pillar} index={idx} surface="surface" />
                     ))}
                   </div>
 
@@ -1137,6 +1169,8 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                             <p className="text-xs text-rh-cond">
                               {isGateVerdict(selectedVerdict)
                                 ? "The backend reported NO_GO for this run, so it cannot be approved. It can only be rejected."
+                                : isNotEvaluatedVerdict(selectedVerdict)
+                                ? "The backend could not evaluate this run (not enough conclusive evidence), so it cannot be approved. See what to provide next above, then run again."
                                 : "The backend reported no gate verdict for this run, so it cannot be approved."}
                             </p>
                           )}
@@ -1189,6 +1223,8 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                                   ? undefined
                                   : isGateVerdict(selectedVerdict)
                                   ? "NO_GO verdict: approval is unavailable"
+                                  : isNotEvaluatedVerdict(selectedVerdict)
+                                  ? "Not evaluated: approval is unavailable until there is enough evidence"
                                   : "No backend gate verdict: approval is unavailable"
                               }
                               className={`px-5 py-1.5 rounded-[6px] bg-rh-go hover:bg-rh-go/90 text-rh-bg text-xs font-semibold cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${FOCUS}`}
