@@ -27,8 +27,8 @@ use std::time::Duration;
 
 use super::budget::RunBudget;
 use super::exec::{
-    Clients, Credentials, OutReq, RequestSpec, ResolvedAuth, build_request, is_mutating,
-    resolve_auth,
+    Clients, Credentials, MAX_REDIRECTS, OutReq, RequestSpec, ResolvedAuth, build_request,
+    follows_redirects, is_mutating, resolve_auth,
 };
 use super::oracle::{self, Observation, OracleOutcome, Severity, Verdict};
 use super::types::{
@@ -287,7 +287,16 @@ fn replay_http(
         headers: &spec.extra_headers,
         bearer: auth.bearer.as_ref(),
     };
-    let seen = match ctx.clients.send(&out) {
+    // a replay sees what the executor saw: a case judged on the answer after a same-origin
+    // redirect is replayed through the same redirect
+    let sent = if follows_redirects(case) {
+        ctx.clients
+            .send_following(&out, MAX_REDIRECTS, &mut || Ok(()))
+            .map(|f| f.seen)
+    } else {
+        ctx.clients.send(&out)
+    };
+    let seen = match sent {
         Ok(s) => s,
         Err(e) => {
             return Replay::errored(

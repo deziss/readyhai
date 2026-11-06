@@ -1,9 +1,11 @@
 //! Evaluation harness: scores ReadyHai's QA engine and agent against fixtures with seeded defects.
 //!
 //! `readyhai eval` runs every suite in `tests/eval/<suite>.toml` `k` times and reports, per suite:
-//! recall (expected defects found), false positives (FAIL defects nobody expected), pass^k (every
-//! run meets the recall threshold), verdict stability, requests sent and wall time. The numbers are
-//! compared with the thresholds in the suite file and the process exits non-zero on any miss.
+//! recall (expected defects found), precision (reported defects that were expected), false
+//! positives (FAIL defects nobody expected), pass^k (every run meets the recall threshold), the
+//! inconclusive rate and confidence of agent runs, verdict stability and match, blockers, requests
+//! sent and wall time. The numbers are compared with the thresholds in the suite file and the
+//! process exits non-zero on any miss.
 //!
 //! Each run is isolated: its own `READYHAI_DATA` directory (so there is no baseline and no state
 //! carried between runs), a temp `scope.toml` that lists only 127.0.0.1/localhost as nonprod, a
@@ -55,6 +57,13 @@ pub struct SuiteSpec {
     /// Verdict every run must end with (qa: `NoGo/Fail`, agent: `NO_GO`, repo: `Warn`).
     #[serde(default)]
     pub expect_verdict: Option<String>,
+    /// Verdicts no run may end with (agent: `["NO_GO"]` for a clean target: a false alarm).
+    #[serde(default)]
+    pub forbid_verdict: Vec<String>,
+    /// A blocker reason (`auth_wall`, `out_of_scope`, `no_surface`, `transport`) every run must
+    /// list in `evidence_ledger.blockers` (agent).
+    #[serde(default)]
+    pub expect_blocker: Option<String>,
     #[serde(default)]
     pub thresholds: Thresholds,
     #[serde(default)]
@@ -134,6 +143,9 @@ pub struct TargetSpec {
     /// Source repository of the service under test, for a change-aware agent run.
     #[serde(default)]
     pub repo: Option<RepoSpec>,
+    /// Extra arguments for the fixture server, after `PORT LOGFILE` (e.g. `["--clean"]`).
+    #[serde(default)]
+    pub server_args: Vec<String>,
 }
 
 fn default_profile() -> String {
@@ -159,6 +171,11 @@ pub struct Thresholds {
     /// Longest wall time one run may take.
     #[serde(default)]
     pub max_seconds: Option<f64>,
+    /// Most INCONCLUSIVE results one agent run may have, as a share of the cases it executed
+    /// (PASS + WARN + FAIL + INCONCLUSIVE; NOT_APPLICABLE, SKIPPED and BLOCKED are not in it).
+    /// Unset = unchecked (the shipped older suites leave it off).
+    #[serde(default)]
+    pub max_inconclusive_rate: Option<f64>,
 }
 
 fn d_recall() -> f64 {
@@ -183,6 +200,7 @@ impl Default for Thresholds {
             stable_verdict: true,
             max_requests: None,
             max_seconds: None,
+            max_inconclusive_rate: None,
         }
     }
 }
@@ -259,15 +277,80 @@ pub struct RunScore {
     pub gap_found: Vec<String>,
     pub gap_missed: Vec<String>,
     pub false_positives: Vec<String>,
+    /// Reported defects that match an `[[expect]]` (any flavour: required, optional, known gap).
+    pub true_positives: usize,
+    /// true positives / (true positives + false positives). Extras that match an `[[allow]]` are in
+    /// neither count. 1.0 when the run reported nothing scorable (nothing was wrong).
+    pub precision: f64,
     /// Extras that matched an `[[allow]]`: `rule @ component: reason`.
     pub allowed_seen: Vec<String>,
     /// Everything scored in this run (rule @ component), for diagnosis.
     pub observed: Vec<String>,
     pub requests: usize,
     pub seconds: f64,
+    /// Agent only: case status (PASS, FAIL, INCONCLUSIVE, BLOCKED, NOT_APPLICABLE, ...) -> count.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub cases: BTreeMap<String, usize>,
+    /// Agent only: INCONCLUSIVE / (PASS + WARN + FAIL + INCONCLUSIVE). None: no case was executed.
+    pub inconclusive_rate: Option<f64>,
+    /// Agent only: the ledger's confidence (conclusive share of applicable cases, percent).
+    pub confidence: Option<u32>,
+    /// Agent only: the reasons in `evidence_ledger.blockers` (`auth_wall`, ...).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blockers: Vec<String>,
     /// Extra checks of this run (the `[change]` ones); each must hold in every run.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<Check>,
+}
+
+/// What an agent run's cases and ledger say about the quality of its evidence, reduced to what
+/// scoring needs. `Default` (no cases) for the executors that have none.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunStats {
+    /// Case status -> count, over every executed result.
+    pub cases: BTreeMap<String, usize>,
+    pub confidence: Option<u32>,
+    pub blockers: Vec<String>,
+}
+
+impl RunStats {
+    /// Count `statuses` (one per case result; case-insensitive, stored upper-case).
+    pub fn from_statuses<'a>(
+        statuses: impl IntoIterator<Item = &'a str>,
+        confidence: Option<u32>,
+        blockers: Vec<String>,
+    ) -> RunStats {
+        let mut cases = BTreeMap::new();
+        for s in statuses {
+            *cases.entry(s.trim().to_ascii_uppercase()).or_insert(0) += 1;
+        }
+        RunStats {
+            cases,
+            confidence,
+            blockers,
+        }
+    }
+}
+
+/// INCONCLUSIVE / executed applicable cases. "Executed applicable" = PASS + WARN + FAIL +
+/// INCONCLUSIVE: NOT_APPLICABLE (no surface) and SKIPPED (not run) are out, and so is BLOCKED (no
+/// request was sent; it has its own reason and is reported as a blocker). None when none ran.
+pub fn inconclusive_rate(cases: &BTreeMap<String, usize>) -> Option<f64> {
+    let n = |k: &str| cases.get(k).copied().unwrap_or(0);
+    let inconclusive = n("INCONCLUSIVE");
+    let executed = n("PASS") + n("WARN") + n("FAIL") + inconclusive;
+    (executed > 0).then(|| inconclusive as f64 / executed as f64)
+}
+
+impl RunScore {
+    /// Attach the evidence-quality numbers of an agent run.
+    pub fn with_stats(mut self, stats: RunStats) -> RunScore {
+        self.inconclusive_rate = inconclusive_rate(&stats.cases).map(round3);
+        self.cases = stats.cases;
+        self.confidence = stats.confidence;
+        self.blockers = stats.blockers;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -289,8 +372,19 @@ pub struct SuiteResult {
     /// Mean recall over completed runs.
     pub recall: f64,
     pub recall_min: f64,
+    /// Mean precision over completed runs (reported defects that were expected).
+    pub precision: f64,
+    pub precision_min: f64,
     /// Worst run.
     pub false_positives: usize,
+    /// Worst (highest) inconclusive rate of the agent runs; None: no run executed a case.
+    pub inconclusive_rate: Option<f64>,
+    /// Worst (lowest) ledger confidence over the runs (percent); None: not an agent suite.
+    pub confidence: Option<u32>,
+    /// Blocker reasons any run reported, sorted.
+    pub blockers: Vec<String>,
+    /// Every run ended with `expect_verdict`; None when the suite sets none.
+    pub verdict_match: Option<bool>,
     /// Every run reached `min_recall`.
     pub pass_k: bool,
     pub verdict_stable: bool,
@@ -420,6 +514,14 @@ pub fn score_run(
         })
         .map(|o| o.label())
         .collect();
+    let true_positives = considered
+        .iter()
+        .filter(|o| spec.expect.iter().any(|e| expect_matches(e, o)))
+        .count();
+    let precision = match true_positives + false_positives.len() {
+        0 => 1.0,
+        n => true_positives as f64 / n as f64,
+    };
 
     let allowed_seen: Vec<String> = considered
         .iter()
@@ -445,10 +547,16 @@ pub fn score_run(
         gap_found,
         gap_missed,
         false_positives,
+        true_positives,
+        precision: round3(precision),
         allowed_seen,
         observed: considered.iter().map(|o| o.label()).collect(),
         requests,
         seconds: round3(seconds),
+        cases: BTreeMap::new(),
+        inconclusive_rate: None,
+        confidence: None,
+        blockers: vec![],
         checks: vec![],
     }
 }
@@ -478,6 +586,28 @@ pub fn summarize_suite(
         .map(|r| r.false_positives.len())
         .max()
         .unwrap_or(0);
+    let precision = if n == 0 {
+        0.0
+    } else {
+        runs.iter().map(|r| r.precision).sum::<f64>() / n as f64
+    };
+    let precision_min = runs
+        .iter()
+        .map(|r| r.precision)
+        .fold(f64::INFINITY, f64::min);
+    let precision_min = if precision_min.is_finite() {
+        precision_min
+    } else {
+        0.0
+    };
+    let inconclusive_worst = runs
+        .iter()
+        .filter_map(|r| r.inconclusive_rate)
+        .fold(None, |a: Option<f64>, x| Some(a.map_or(x, |a| a.max(x))));
+    let confidence = runs.iter().filter_map(|r| r.confidence).min();
+    let mut blockers: Vec<String> = runs.iter().flat_map(|r| r.blockers.clone()).collect();
+    blockers.sort();
+    blockers.dedup();
     let pass_k = n == k && n > 0 && runs.iter().all(|r| r.recall >= t.min_recall);
     let verdicts: Vec<String> = runs.iter().map(|r| r.verdict.clone()).collect();
     let verdict_stable = n > 0 && verdicts.windows(2).all(|w| w[0] == w[1]);
@@ -541,12 +671,87 @@ pub fn summarize_suite(
     if t.stable_verdict {
         push("verdict stable", verdict_stable, verdicts.join(" | "));
     }
-    if let Some(want) = &spec.expect_verdict {
-        let ok = n > 0 && verdicts.iter().all(|v| v.eq_ignore_ascii_case(want));
+    let verdict_match = spec
+        .expect_verdict
+        .as_ref()
+        .map(|want| n > 0 && verdicts.iter().all(|v| v.eq_ignore_ascii_case(want)));
+    if let (Some(want), Some(ok)) = (&spec.expect_verdict, verdict_match) {
         push(
             "expected verdict",
             ok,
             format!("want {want}, got {}", verdicts.join(" | ")),
+        );
+    }
+    if !spec.forbid_verdict.is_empty() {
+        let hit: Vec<&String> = verdicts
+            .iter()
+            .filter(|v| {
+                spec.forbid_verdict
+                    .iter()
+                    .any(|f| v.eq_ignore_ascii_case(f))
+            })
+            .collect();
+        push(
+            "forbidden verdict",
+            n > 0 && hit.is_empty(),
+            format!(
+                "must not be {}, got {}",
+                spec.forbid_verdict.join(" or "),
+                verdicts.join(" | ")
+            ),
+        );
+    }
+    if let Some(want) = &spec.expect_blocker {
+        let missing: Vec<usize> = runs
+            .iter()
+            .filter(|r| !r.blockers.iter().any(|b| b.eq_ignore_ascii_case(want)))
+            .map(|r| r.run)
+            .collect();
+        push(
+            "expected blocker",
+            n > 0 && missing.is_empty(),
+            format!(
+                "want {want} in every run, got [{}]{}",
+                runs.iter()
+                    .map(|r| r.blockers.join(", "))
+                    .collect::<Vec<_>>()
+                    .join("] ["),
+                if missing.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; missing in run {}",
+                        missing
+                            .iter()
+                            .map(|r| r.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            ),
+        );
+    }
+    if let Some(max) = t.max_inconclusive_rate {
+        let none: Vec<usize> = runs
+            .iter()
+            .filter(|r| r.inconclusive_rate.is_none())
+            .map(|r| r.run)
+            .collect();
+        let ok = n > 0 && none.is_empty() && inconclusive_worst.is_some_and(|w| w <= max + 1e-9);
+        push(
+            "inconclusive rate",
+            ok,
+            match (inconclusive_worst, none.is_empty()) {
+                (_, false) => format!(
+                    "run {} executed no applicable case (nothing to rate)",
+                    none.iter()
+                        .map(|r| r.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                (Some(w), _) => format!("worst run {:.0}% vs <= {:.0}%", w * 100.0, max * 100.0),
+                (None, _) => "no run".into(),
+            },
         );
     }
     if let Some(max) = t.max_requests {
@@ -603,7 +808,13 @@ pub fn summarize_suite(
         runs,
         recall: round3(recall),
         recall_min: round3(recall_min),
+        precision: round3(precision),
+        precision_min: round3(precision_min),
         false_positives: fp,
+        inconclusive_rate: inconclusive_worst.map(round3),
+        confidence,
+        blockers,
+        verdict_match,
         pass_k,
         verdict_stable,
         verdicts,
@@ -727,8 +938,35 @@ fn validate_suite(s: &SuiteSpec) -> Result<()> {
             bail!("[memory] and target.repo cannot be combined");
         }
     }
-    if s.expect.is_empty() {
-        bail!("needs at least one [[expect]]");
+    if s.expect.is_empty()
+        && s.expect_verdict.is_none()
+        && s.forbid_verdict.is_empty()
+        && s.expect_blocker.is_none()
+    {
+        bail!(
+            "needs at least one [[expect]] (or, for a target without seeded defects, expect_verdict / forbid_verdict / expect_blocker)"
+        );
+    }
+    if let Some(b) = &s.expect_blocker {
+        if s.kind != SuiteKind::Agent {
+            bail!("expect_blocker is for kind agent");
+        }
+        if serde_json::from_value::<crate::agent::BlockReason>(serde_json::Value::String(
+            b.to_ascii_lowercase(),
+        ))
+        .is_err()
+        {
+            bail!(
+                "expect_blocker '{b}' is not a blocker reason (auth_wall, out_of_scope, no_surface, transport)"
+            );
+        }
+    }
+    if let Some(want) = &s.expect_verdict
+        && s.forbid_verdict
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case(want))
+    {
+        bail!("expect_verdict '{want}' is also in forbid_verdict");
     }
     let mut seen = std::collections::BTreeSet::new();
     for e in &s.expect {
@@ -751,6 +989,17 @@ fn validate_suite(s: &SuiteSpec) -> Result<()> {
     let t = &s.thresholds;
     if !(0.0..=1.0).contains(&t.min_recall) {
         bail!("min_recall must be within 0..=1");
+    }
+    if let Some(r) = t.max_inconclusive_rate {
+        if s.kind != SuiteKind::Agent {
+            bail!("max_inconclusive_rate is for kind agent (only agent runs have cases)");
+        }
+        if !(0.0..=1.0).contains(&r) {
+            bail!("max_inconclusive_rate must be within 0..=1");
+        }
+    }
+    if !s.target.server_args.is_empty() && s.target.server.is_none() {
+        bail!("target.server_args needs target.server");
     }
     Ok(())
 }
@@ -891,7 +1140,8 @@ fn count_lines(p: &Path) -> usize {
 }
 
 impl Fixture {
-    pub fn start(script: &Path, log: &Path) -> Result<Fixture> {
+    /// Start the server as `script PORT LOGFILE [args...]`.
+    pub fn start(script: &Path, log: &Path, args: &[String]) -> Result<Fixture> {
         if !script.is_file() {
             bail!("fixture server {} not found", script.display());
         }
@@ -901,6 +1151,7 @@ impl Fixture {
             .arg(script)
             .arg(port.to_string())
             .arg(log)
+            .args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -963,6 +1214,8 @@ struct Outcome {
     observed: Vec<Observed>,
     /// Run-level checks beyond recall and false positives (`[change]`).
     checks: Vec<Check>,
+    /// Evidence quality of an agent run (cases by status, confidence, blockers).
+    stats: RunStats,
 }
 
 fn rel(root: &Path, p: &str) -> PathBuf {
@@ -1012,6 +1265,7 @@ fn exec_qa(spec: &SuiteSpec, root: &Path, base_url: &str) -> Result<Outcome> {
         verdict: format!("{:?}/{:?}", qa.recommendation, run.verdict),
         observed,
         checks: vec![],
+        stats: RunStats::default(),
     })
 }
 
@@ -1041,6 +1295,7 @@ fn exec_repo(spec: &SuiteSpec, root: &Path) -> Result<Outcome> {
         verdict: format!("{:?}", run.verdict),
         observed,
         checks: vec![],
+        stats: RunStats::default(),
     })
 }
 
@@ -1170,7 +1425,27 @@ fn exec_agent(
         verdict,
         observed,
         checks,
+        stats: agent_stats(rep),
     })
+}
+
+/// Cases by status, the ledger's confidence and its blocker reasons (`auth_wall`, ...).
+pub fn agent_stats(rep: &crate::agent::AgentRunReport) -> RunStats {
+    let ledger = rep.evidence_ledger.as_ref();
+    let blockers = ledger
+        .map(|l| {
+            l.blockers
+                .iter()
+                .filter_map(|b| serde_json::to_value(b.reason).ok())
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    RunStats::from_statuses(
+        rep.executed_results.iter().map(|r| r.status.as_str()),
+        ledger.and_then(|l| l.confidence),
+        blockers,
+    )
 }
 
 /// What `[memory]` asks of a series of runs in one data directory: the first run remembers what it
@@ -1529,10 +1804,12 @@ fn run_suite(spec: &SuiteSpec, k: usize, root: &Path, work: &Path, scope: &Path)
         match run_once(spec, i, root, work, scope) {
             Ok(r) => {
                 eprintln!(
-                    "eval:   {} recall {:.2} · {} false positive(s) · {} request(s) · {:.1}s · {}",
+                    "eval:   {} recall {:.2} · precision {:.2} · {} false positive(s) · inconclusive {} · {} request(s) · {:.1}s · {}",
                     spec.name,
                     r.recall,
+                    r.precision,
                     r.false_positives.len(),
+                    pct(r.inconclusive_rate),
                     r.requests,
                     r.seconds,
                     r.verdict
@@ -1590,7 +1867,11 @@ fn run_once(
     }
 
     let fixture = match &spec.target.server {
-        Some(s) => Some(Fixture::start(&rel(root, s), &dir.join("requests.log"))?),
+        Some(s) => Some(Fixture::start(
+            &rel(root, s),
+            &dir.join("requests.log"),
+            &spec.target.server_args,
+        )?),
         None => None,
     };
     let url = fixture.as_ref().map(Fixture::url).unwrap_or_default();
@@ -1612,7 +1893,7 @@ fn run_once(
         seconds,
     );
     score.checks = outcome.checks;
-    Ok(score)
+    Ok(score.with_stats(outcome.stats))
 }
 
 const SCOPE_TOML: &str = "# Written by `readyhai eval`: the fixture runs on loopback and may be attacked.\n\
@@ -1682,6 +1963,11 @@ fn mark(ok: bool) -> &'static str {
     if ok { "PASS" } else { "FAIL" }
 }
 
+/// `12%`, or `-` when there is no number (not an agent suite, or nothing was executed).
+fn pct(x: Option<f64>) -> String {
+    x.map_or("-".into(), |x| format!("{:.0}%", x * 100.0))
+}
+
 /// The markdown summary: one table row per suite, then the detail of every suite that missed.
 pub fn render_markdown(s: &EvalSummary) -> String {
     let mut o = String::new();
@@ -1692,16 +1978,19 @@ pub fn render_markdown(s: &EvalSummary) -> String {
         s.started,
         s.k
     ));
-    o.push_str("| suite | kind | recall | min run | FP | pass^k | verdict | requests | time | open gaps | result |\n");
-    o.push_str("|---|---|---|---|---|---|---|---|---|---|---|\n");
+    o.push_str("| suite | kind | recall | min run | precision | FP | inconclusive | confidence | pass^k | verdict | requests | time | open gaps | result |\n");
+    o.push_str("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n");
     for r in &s.suites {
         o.push_str(&format!(
-            "| {} | {:?} | {:.2} | {:.2} | {} | {} | {} | {} | {:.1}s | {} | {} |\n",
+            "| {} | {:?} | {:.2} | {:.2} | {:.2} | {} | {} | {} | {} | {} | {} | {:.1}s | {} | {} |\n",
             r.name,
             r.kind,
             r.recall,
             r.recall_min,
+            r.precision,
             r.false_positives,
+            pct(r.inconclusive_rate),
+            r.confidence.map_or("-".into(), |c| format!("{c}%")),
             if r.pass_k { "yes" } else { "no" },
             if r.verdict_stable {
                 r.verdicts.first().cloned().unwrap_or_default()
@@ -1734,7 +2023,21 @@ pub fn render_markdown(s: &EvalSummary) -> String {
                 r.known_gaps_closed.join(", ")
             ));
         }
+        if !r.blockers.is_empty() {
+            o.push_str(&format!("- blockers reported: {}\n", r.blockers.join(", ")));
+        }
         for run in &r.runs {
+            if !run.cases.is_empty() {
+                o.push_str(&format!(
+                    "- run {} cases: {}\n",
+                    run.run,
+                    run.cases
+                        .iter()
+                        .map(|(k, v)| format!("{k} {v}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
             if !run.missed.is_empty() {
                 let with_notes: Vec<String> = run
                     .missed
@@ -1974,10 +2277,16 @@ known_gap = true
             gap_found: vec![],
             gap_missed: vec![],
             false_positives: (0..fp).map(|i| format!("fp{i}")).collect(),
+            true_positives: 0,
+            precision: 1.0,
             allowed_seen: vec![],
             observed: vec![],
             requests,
             seconds,
+            cases: BTreeMap::new(),
+            inconclusive_rate: None,
+            confidence: None,
+            blockers: vec![],
             checks: vec![],
         }
     }
@@ -2125,6 +2434,393 @@ known_gap = true
         ));
     }
 
+    fn counts(v: &[(&str, usize)]) -> BTreeMap<String, usize> {
+        v.iter().map(|(k, n)| (k.to_string(), *n)).collect()
+    }
+
+    #[test]
+    fn precision_is_true_positives_over_reported_and_allowed_extras_are_out() {
+        let s = spec("reason = \"role matrix view\"");
+        // 2 expected, 1 unexpected, 1 allowed extra: precision 2 / 3
+        let seen = [
+            obs("qa.api.bola", "GET /orders/{id}"),
+            obs("qa.api.slow_response", "GET /reports/slow"),
+            obs("qa.api.surprise", "GET /x"),
+            obs("qa.api.privilege_escalation", "GET /admin/stats"),
+        ];
+        let r = score_run(&s, 1, "NoGo", &seen, 0, 0.0);
+        assert_eq!(r.true_positives, 2);
+        assert_eq!(r.false_positives.len(), 1);
+        assert!((r.precision - 0.667).abs() < 1e-9, "{}", r.precision);
+        // all unexpected: precision 0; nothing reported: nothing was wrong, 1.0
+        let none = score_run(&s, 1, "NoGo", &[obs("qa.api.surprise", "x")], 0, 0.0);
+        assert_eq!(none.precision, 0.0);
+        let empty = score_run(&s, 1, "Go", &[], 0, 0.0);
+        assert_eq!(empty.precision, 1.0);
+        // only allowed extras: no true and no false positive, so still 1.0
+        let allowed = score_run(
+            &s,
+            1,
+            "NoGo",
+            &[obs("qa.api.privilege_escalation", "x")],
+            0,
+            0.0,
+        );
+        assert_eq!((allowed.true_positives, allowed.precision), (0, 1.0));
+        // the suite reports the mean and the worst run
+        let mut bad = run(1.0, 1, "NoGo", 1, 1.0);
+        bad.precision = 0.5;
+        let r = summarize_suite(&s, 2, vec![run(1.0, 0, "NoGo", 1, 1.0), bad], None);
+        assert!((r.precision - 0.75).abs() < 1e-9);
+        assert!((r.precision_min - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn inconclusive_rate_counts_executed_applicable_cases_only() {
+        // 3 inconclusive of 3 + 2 + 1 + 3 = 9 executed; NOT_APPLICABLE, SKIPPED, BLOCKED are out
+        let c = counts(&[
+            ("PASS", 3),
+            ("WARN", 2),
+            ("FAIL", 1),
+            ("INCONCLUSIVE", 3),
+            ("NOT_APPLICABLE", 7),
+            ("SKIPPED", 4),
+            ("BLOCKED", 5),
+        ]);
+        assert!((inconclusive_rate(&c).unwrap() - 1.0 / 3.0).abs() < 1e-9);
+        assert_eq!(inconclusive_rate(&counts(&[("PASS", 4)])), Some(0.0));
+        assert_eq!(
+            inconclusive_rate(&counts(&[("INCONCLUSIVE", 2)])),
+            Some(1.0)
+        );
+        // nothing executed (all blocked / not applicable): no rate, not 0 and not 1
+        assert_eq!(
+            inconclusive_rate(&counts(&[("BLOCKED", 5), ("NOT_APPLICABLE", 2)])),
+            None
+        );
+        assert_eq!(inconclusive_rate(&BTreeMap::new()), None);
+        // statuses are normalised
+        let st = RunStats::from_statuses(["pass", "PASS", " Inconclusive "], Some(66), vec![]);
+        assert_eq!(st.cases, counts(&[("INCONCLUSIVE", 1), ("PASS", 2)]));
+        let sc = run(1.0, 0, "GO", 1, 1.0).with_stats(st);
+        assert_eq!(sc.inconclusive_rate, Some(0.333));
+        assert_eq!(sc.confidence, Some(66));
+    }
+
+    fn agent_spec(extra: &str) -> SuiteSpec {
+        parse_suite(
+            &format!(
+                r#"
+name = "a"
+kind = "agent"
+{extra}
+[target]
+server = "s.py"
+"#
+            ),
+            "test",
+        )
+        .unwrap()
+    }
+
+    fn with_rate(rate: Option<f64>, cases: &[(&str, usize)], verdict: &str) -> RunScore {
+        let mut r = run(1.0, 0, verdict, 1, 1.0);
+        r.inconclusive_rate = rate;
+        r.cases = counts(cases);
+        r
+    }
+
+    #[test]
+    fn max_inconclusive_rate_gates_the_worst_run_and_is_off_by_default() {
+        let mut s = agent_spec("forbid_verdict = [\"NO_GO\"]");
+        // unset: no check at all, whatever the runs did
+        let off = summarize_suite(
+            &s,
+            1,
+            vec![with_rate(Some(0.9), &[("INCONCLUSIVE", 9)], "GO")],
+            None,
+        );
+        assert!(off.checks.iter().all(|c| c.name != "inconclusive rate"));
+        assert!(off.passed, "{:?}", off.checks);
+        assert_eq!(off.inconclusive_rate, Some(0.9), "still reported");
+
+        s.thresholds.max_inconclusive_rate = Some(0.25);
+        let ok = summarize_suite(
+            &s,
+            2,
+            vec![
+                with_rate(Some(0.1), &[("PASS", 9), ("INCONCLUSIVE", 1)], "GO"),
+                with_rate(Some(0.25), &[("PASS", 3), ("INCONCLUSIVE", 1)], "GO"),
+            ],
+            None,
+        );
+        assert!(check(&ok, "inconclusive rate").ok, "{:?}", ok.checks);
+        assert_eq!(ok.inconclusive_rate, Some(0.25));
+        // one bad run fails the suite even though the mean would pass
+        let bad = summarize_suite(
+            &s,
+            2,
+            vec![
+                with_rate(Some(0.0), &[("PASS", 9)], "GO"),
+                with_rate(Some(0.4), &[("PASS", 3), ("INCONCLUSIVE", 2)], "GO"),
+            ],
+            None,
+        );
+        let c = check(&bad, "inconclusive rate");
+        assert!(!c.ok && c.detail.contains("40%") && c.detail.contains("25%"));
+        // no executed case in a run: nothing to rate, so it cannot pass the gate
+        let none = summarize_suite(
+            &s,
+            1,
+            vec![with_rate(None, &[("BLOCKED", 4)], "NOT_EVALUATED")],
+            None,
+        );
+        let c = check(&none, "inconclusive rate");
+        assert!(
+            !c.ok && c.detail.contains("no applicable case"),
+            "{}",
+            c.detail
+        );
+    }
+
+    #[test]
+    fn forbid_verdict_fails_any_run_that_ends_with_it() {
+        let s = agent_spec("forbid_verdict = [\"NO_GO\", \"error\"]");
+        let ok = summarize_suite(
+            &s,
+            2,
+            vec![
+                run(1.0, 0, "GO", 1, 1.0),
+                run(1.0, 0, "NOT_EVALUATED", 1, 1.0),
+            ],
+            None,
+        );
+        assert!(check(&ok, "forbidden verdict").ok);
+        // case-insensitive, and one run is enough
+        let bad = summarize_suite(
+            &s,
+            2,
+            vec![run(1.0, 0, "GO", 1, 1.0), run(1.0, 0, "no_go", 1, 1.0)],
+            None,
+        );
+        let c = check(&bad, "forbidden verdict");
+        assert!(!c.ok && c.detail.contains("NO_GO or error"), "{}", c.detail);
+        assert!(!bad.passed);
+        // no runs: it never passes
+        let none = summarize_suite(&s, 1, vec![], Some("run 1: boom".into()));
+        assert!(!check(&none, "forbidden verdict").ok);
+    }
+
+    #[test]
+    fn expect_verdict_match_is_reported_and_exact() {
+        let s = agent_spec("expect_verdict = \"NOT_EVALUATED\"");
+        let ok = summarize_suite(&s, 1, vec![run(1.0, 0, "not_evaluated", 1, 1.0)], None);
+        assert_eq!(ok.verdict_match, Some(true));
+        let near = summarize_suite(&s, 1, vec![run(1.0, 0, "NOT_EVALUATED (x)", 1, 1.0)], None);
+        assert_eq!(near.verdict_match, Some(false), "exact, not a prefix");
+        assert!(!near.passed);
+        let none = summarize_suite(&agent_spec("forbid_verdict = [\"X\"]"), 1, vec![], None);
+        assert_eq!(
+            none.verdict_match, None,
+            "no expect_verdict: no match to report"
+        );
+    }
+
+    #[test]
+    fn expect_blocker_must_be_in_the_ledger_of_every_run() {
+        let s = agent_spec("expect_blocker = \"auth_wall\"");
+        let with = |b: &[&str]| {
+            let mut r = run(1.0, 0, "NOT_EVALUATED", 1, 1.0);
+            r.blockers = b.iter().map(|x| x.to_string()).collect();
+            r
+        };
+        let ok = summarize_suite(
+            &s,
+            2,
+            vec![with(&["auth_wall"]), with(&["no_surface", "auth_wall"])],
+            None,
+        );
+        assert!(check(&ok, "expected blocker").ok, "{:?}", ok.checks);
+        assert_eq!(ok.blockers, ["auth_wall", "no_surface"]);
+        let bad = summarize_suite(
+            &s,
+            2,
+            vec![with(&["auth_wall"]), with(&["no_surface"])],
+            None,
+        );
+        let c = check(&bad, "expected blocker");
+        assert!(
+            !c.ok && c.detail.contains("missing in run 1"),
+            "{}",
+            c.detail
+        );
+        // no blockers at all
+        let none = summarize_suite(&s, 1, vec![with(&[])], None);
+        assert!(!check(&none, "expected blocker").ok);
+    }
+
+    #[test]
+    fn agent_stats_reads_statuses_confidence_and_blocker_reasons_from_the_report() {
+        use crate::agent::fixtures::{report, result};
+        use crate::agent::{BlockReason, Blocker, EvidenceLedger};
+        let mut rep = report("r");
+        rep.executed_results = vec![
+            result("TC-1", "authz", "PASS"),
+            result("TC-2", "injection", "INCONCLUSIVE"),
+            result("TC-3", "injection", "NOT_APPLICABLE"),
+            result("TC-4", "state_transition", "BLOCKED"),
+        ];
+        let blocker = |reason| Blocker {
+            reason,
+            detail: String::new(),
+            next_step: String::new(),
+            case_ids: vec![],
+        };
+        rep.evidence_ledger = Some(EvidenceLedger {
+            confidence: Some(40),
+            blockers: vec![
+                blocker(BlockReason::AuthWall),
+                blocker(BlockReason::NoSurface),
+                blocker(BlockReason::OutOfScope),
+            ],
+            ..Default::default()
+        });
+        let st = agent_stats(&rep);
+        assert_eq!(
+            st.cases,
+            counts(&[
+                ("PASS", 1),
+                ("INCONCLUSIVE", 1),
+                ("NOT_APPLICABLE", 1),
+                ("BLOCKED", 1)
+            ])
+        );
+        assert_eq!(st.confidence, Some(40));
+        assert_eq!(st.blockers, ["auth_wall", "no_surface", "out_of_scope"]);
+        // an old report without a ledger: statuses only
+        rep.evidence_ledger = None;
+        let st = agent_stats(&rep);
+        assert_eq!((st.confidence, st.blockers.is_empty()), (None, true));
+    }
+
+    #[test]
+    fn suites_without_seeded_defects_need_a_verdict_or_blocker_expectation() {
+        let bad = |t: &str| parse_suite(t, "x").is_err();
+        let head = "name = \"t\"\nkind = \"agent\"\n";
+        let tail = "\n[target]\nserver = \"s.py\"\n";
+        assert!(bad(&format!("{head}{tail}")), "nothing to check");
+        assert!(!bad(&format!("{head}forbid_verdict = [\"NO_GO\"]{tail}")));
+        assert!(!bad(&format!(
+            "{head}expect_verdict = \"NOT_EVALUATED\"{tail}"
+        )));
+        assert!(!bad(&format!("{head}expect_blocker = \"auth_wall\"{tail}")));
+        // expect_blocker must name a real reason and belongs to the agent kind
+        assert!(bad(&format!("{head}expect_blocker = \"login\"{tail}")));
+        assert!(bad(
+            "name = \"t\"\nkind = \"repo\"\nexpect_blocker = \"auth_wall\"\n[target]\npath = \"p\"\n"
+        ));
+        // a verdict cannot be both expected and forbidden
+        assert!(bad(&format!(
+            "{head}expect_verdict = \"GO\"\nforbid_verdict = [\"go\"]{tail}"
+        )));
+        // max_inconclusive_rate: agent kind, 0..=1
+        assert!(!bad(&format!(
+            "{head}forbid_verdict = [\"X\"]{tail}[thresholds]\nmax_inconclusive_rate = 0.25\n"
+        )));
+        assert!(bad(&format!(
+            "{head}forbid_verdict = [\"X\"]{tail}[thresholds]\nmax_inconclusive_rate = 1.5\n"
+        )));
+        assert!(bad(
+            "name = \"t\"\nkind = \"repo\"\nforbid_verdict = [\"X\"]\n[target]\npath = \"p\"\n[thresholds]\nmax_inconclusive_rate = 0.2\n"
+        ));
+        // server_args need a server
+        assert!(bad(
+            "name = \"t\"\nkind = \"repo\"\nforbid_verdict = [\"X\"]\n[target]\npath = \"p\"\nserver_args = [\"--clean\"]\n"
+        ));
+    }
+
+    #[test]
+    fn markdown_shows_the_new_metrics_and_the_blockers() {
+        let mut s = agent_spec("expect_blocker = \"auth_wall\"");
+        s.thresholds.max_inconclusive_rate = Some(0.5);
+        let mut r = run(1.0, 0, "NOT_EVALUATED", 5, 1.0);
+        r.precision = 1.0;
+        r.blockers = vec!["auth_wall".into()];
+        let r = r.with_stats(RunStats::from_statuses(
+            ["PASS", "INCONCLUSIVE", "BLOCKED"],
+            Some(50),
+            vec!["auth_wall".into()],
+        ));
+        let res = summarize_suite(&s, 1, vec![r], None);
+        assert_eq!(res.confidence, Some(50));
+        let md = render_markdown(&EvalSummary {
+            version: "0".into(),
+            started: "now".into(),
+            k: 1,
+            passed: res.passed,
+            suites: vec![res],
+            report_json: PathBuf::new(),
+            report_md: PathBuf::new(),
+        });
+        assert!(
+            md.contains("| precision | FP | inconclusive | confidence |"),
+            "{md}"
+        );
+        assert!(md.contains("| 1.00 | 0 | 50% | 50% |"), "{md}");
+        assert!(md.contains("- blockers reported: auth_wall"), "{md}");
+        assert!(
+            md.contains("- run 1 cases: BLOCKED 1, INCONCLUSIVE 1, PASS 1"),
+            "{md}"
+        );
+        assert!(md.contains("PASS expected blocker"), "{md}");
+        assert!(
+            md.contains("PASS inconclusive rate: worst run 50% vs <= 50%"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn the_spa_suites_are_wired_to_the_fixture() {
+        let load = |name: &str| {
+            let text =
+                std::fs::read_to_string(crate_root().join(format!("tests/eval/{name}.toml")))
+                    .unwrap();
+            parse_suite(&text, name).unwrap()
+        };
+        let spa = load("agent-spa");
+        assert!(
+            spa.target.spec.is_none(),
+            "the agent has to find the API itself"
+        );
+        assert_eq!(spa.expect_verdict.as_deref(), Some("NO_GO"));
+        assert_eq!(spa.thresholds.max_inconclusive_rate, Some(0.25));
+        assert!(spa.thresholds.min_recall >= 0.85);
+        assert_eq!(spa.expect.len(), 3, "one expectation per seeded bug");
+        assert!(spa.target.server_args.is_empty());
+        let clean = load("agent-spa-clean");
+        assert_eq!(clean.target.server_args, ["--clean"]);
+        assert_eq!(clean.forbid_verdict, ["NO_GO"]);
+        assert!(clean.expect.is_empty() && clean.thresholds.max_false_positives <= 1);
+        assert_eq!(clean.thresholds.max_inconclusive_rate, Some(0.25));
+        assert_eq!(
+            clean.target.tokens, spa.target.tokens,
+            "same accounts, no bugs"
+        );
+        let noauth = load("agent-spa-noauth");
+        assert!(
+            noauth.target.tokens.is_empty(),
+            "no credentials is the point"
+        );
+        assert_eq!(noauth.expect_verdict.as_deref(), Some("NOT_EVALUATED"));
+        assert_eq!(noauth.expect_blocker.as_deref(), Some("auth_wall"));
+        for s in [&spa, &clean, &noauth] {
+            assert_eq!(
+                s.target.server.as_deref(),
+                Some("tests/fixtures/spa-next/server.py")
+            );
+        }
+    }
+
     fn crate_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
     }
@@ -2140,6 +2836,9 @@ known_gap = true
                 "agent-api",
                 "agent-diff",
                 "agent-memory",
+                "agent-spa-clean",
+                "agent-spa-noauth",
+                "agent-spa",
                 "qa-api",
                 "qa-repo"
             ]
@@ -2238,7 +2937,7 @@ known_gap = true
         let script = crate_root().join("tests/fixtures/qa-api/server.py");
         let dir = std::env::temp_dir().join(format!("rh-eval-fixture-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let fx = match Fixture::start(&script, &dir.join("req.log")) {
+        let fx = match Fixture::start(&script, &dir.join("req.log"), &[]) {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("skipping: no usable python3 ({e:#})");
@@ -2263,6 +2962,111 @@ known_gap = true
             .is_err(),
             "the server is killed on drop"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_spa_fixture_has_a_login_wall_a_catch_all_and_three_switchable_bugs() {
+        use reqwest::blocking::Client;
+        let script = crate_root().join("tests/fixtures/spa-next/server.py");
+        let dir = std::env::temp_dir().join(format!("rh-eval-spa-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let c = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        for clean in [false, true] {
+            let args: Vec<String> = clean.then(|| "--clean".to_string()).into_iter().collect();
+            let fx = match Fixture::start(&script, &dir.join(format!("req-{clean}.log")), &args) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("skipping: no usable python3 ({e:#})");
+                    break;
+                }
+            };
+            let u = |p: &str| format!("{}{p}", fx.url());
+            let alice = |p: &str| c.get(u(p)).bearer_auth("alice-token");
+            // the login wall: 307 to /login, a password field there, and a session gets through
+            let r = c.get(u("/")).send().unwrap();
+            assert_eq!(r.status().as_u16(), 307);
+            assert!(
+                r.headers()["location"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("/login")
+            );
+            let login = c.get(u("/login")).send().unwrap().text().unwrap();
+            assert!(login.contains("type=\"password\"") && login.contains("/_next/static/"));
+            assert_eq!(alice("/").send().unwrap().status().as_u16(), 200);
+            // the catch-all: unknown paths are one and the same 200 shell
+            let a = c.get(u("/rh0123456789ab")).send().unwrap();
+            assert_eq!(a.status().as_u16(), 200);
+            let (a, b) = (
+                a.text().unwrap(),
+                c.get(u("/pricing")).send().unwrap().text().unwrap(),
+            );
+            assert_eq!(a, b);
+            assert!(a.contains("_buildManifest.js") && a.contains("page-abc123.js"));
+            // what a spec-less agent can learn from
+            let manifest = c
+                .get(u("/_next/static/rhBuild01/_buildManifest.js"))
+                .send()
+                .unwrap()
+                .text()
+                .unwrap();
+            assert!(manifest.contains("\"/orders/[id]\"") && manifest.contains("__rewrites"));
+            let chunk = c
+                .get(u("/_next/static/chunks/app/(main)/settings/page-abc123.js"))
+                .send()
+                .unwrap()
+                .text()
+                .unwrap();
+            assert!(chunk.contains("\"/api/profile\"") && chunk.contains("api.example.invalid"));
+            assert!(
+                c.get(u("/sitemap.xml"))
+                    .send()
+                    .unwrap()
+                    .text()
+                    .unwrap()
+                    .contains("/pricing")
+            );
+            assert_eq!(
+                c.get(u("/_next/static/nope.js"))
+                    .send()
+                    .unwrap()
+                    .status()
+                    .as_u16(),
+                404
+            );
+            // the API needs a Bearer token
+            assert_eq!(
+                c.get(u("/api/orders")).send().unwrap().status().as_u16(),
+                401
+            );
+            assert_eq!(alice("/api/orders").send().unwrap().status().as_u16(), 200);
+            // bug 1: bob's order 3 for alice
+            let idor = alice("/api/orders/3").send().unwrap().status().as_u16();
+            // bug 2: a quote in q leaks a SQL error and a stack trace
+            let leak = alice("/api/orders?q=%27").send().unwrap();
+            let (leak_status, leak_body) = (leak.status().as_u16(), leak.text().unwrap());
+            // bug 3: bad paging
+            let paging = alice("/api/orders?limit=-1")
+                .send()
+                .unwrap()
+                .status()
+                .as_u16();
+            if clean {
+                assert_eq!((idor, leak_status, paging), (404, 200, 400));
+            } else {
+                assert_eq!((idor, leak_status, paging), (200, 500, 500));
+                assert!(leak_body.contains("SQLITE_ERROR") && leak_body.contains(".js:"));
+            }
+            // an order of your own is readable in both
+            assert_eq!(
+                alice("/api/orders/1").send().unwrap().status().as_u16(),
+                200
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

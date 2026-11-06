@@ -584,6 +584,8 @@ mod tests {
 
     fn fail(id: &str, comp: &str, tech: &str, code: &str, sev: Severity) -> CaseExecutionResult {
         CaseExecutionResult {
+            blocked_reason: None,
+            redirect_chain: vec![],
             case_id: id.into(),
             title: format!("case {id}"),
             component: comp.into(),

@@ -30,12 +30,17 @@ Per suite, over `k` independent runs:
 | Metric | Definition | Default threshold |
 |---|---|---|
 | **recall** | expected defects found / expected defects (required ones only). Reported as the mean over runs plus the worst run | mean >= 0.85 |
+| **precision** | reported defects that were expected / (expected + false positives), per run. A defect that matches an `[[allow]]` is in neither count; a run that reported nothing scores 1.0. Reported as the mean over runs plus the worst run | reported, no gate (the false-positive limit gates) |
 | **false positives** | defects the run reported that match no `[[expect]]` and no `[[allow]]`. Reported for the worst run | <= 2 |
+| **inconclusive rate** | agent only. INCONCLUSIVE cases / executed applicable cases (PASS + WARN + FAIL + INCONCLUSIVE; NOT_APPLICABLE, SKIPPED and BLOCKED are not in it, so a run that never got past a login wall has no rate). Worst run. A run that executed nothing cannot pass this gate | `max_inconclusive_rate`, unset = unchecked (the new SPA suites set 0.25) |
+| **confidence** | agent only. The ledger's `confidence`: conclusive cases / applicable cases, in percent. Worst run. Reported, not gated | reported |
 | **pass^k** | every one of the `k` runs reached the recall threshold. One lucky run does not count | true |
 | **verdict stability** | all `k` runs ended with the same verdict (a deterministic engine must not flip) | stable |
 | **requests** | requests the target saw, counted by the fixture server's own log (readiness probe excluded). Worst run | `max_requests` |
 | **wall time** | seconds per run, fixture start excluded. Worst run | `max_seconds` |
-| **expected verdict** | optional: every run must end with `expect_verdict` | unset |
+| **expected verdict** | optional: every run must end with `expect_verdict` (exact, case-insensitive). `verdict_match` in the JSON | unset |
+| **forbidden verdict** | optional: no run may end with a verdict in `forbid_verdict`, e.g. `["NO_GO"]` for a target with nothing wrong | unset |
+| **expected blocker** | optional, agent only: every run's `evidence_ledger.blockers` must list the reason `expect_blocker` (`auth_wall`, `out_of_scope`, `no_surface`, `transport`). The reasons seen are reported as `blockers` | unset |
 
 A suite passes when every check above passes. The process exits `1` if any suite fails.
 
@@ -56,9 +61,14 @@ silently and cannot turn the job red for something that is not a regression:
 | `agent-api` | `agent` | `agent::run_agentic_loop_with` against the same fixture: spec given, `dry_run` false, nonprod scope, deterministic (no LLM) | the same 7 bugs, matched through the failing oracle checks. All 7 gate recall; the agent reuses the QA engine's case generator, response validator, leak catalog and latency limit (`src/qa/api`), so a bug it cannot find yet would be flagged `known_gap` in its file |
 | `agent-diff` | `agent` | the agent with a source repo and a base ref (change-aware planning), profile `quick`: the harness builds a git repository from `tests/fixtures/qa-api-src` (commit 1 the service, commit 2 a PR that touches `app/search.py` and the changelog) | bug 4 of the qa-api server (`GET /search`, the one route the PR changed). The other six bugs are on untouched routes and are not expected: any other defect is a false positive (`max_false_positives = 0`). Also checks the change impact: the diff maps to exactly `GET /search`, its cases lead the plan, and all were sent |
 | `agent-memory` | `agent` | the agent **twice in the same data directory** against the same fixture (`[memory] runs = 2`), as `agent-api`; the last run is scored | the same 7 bugs. On top of recall and false positives, four checks over the series: the first run remembered what it found (every defect new); the second reports every seeded defect as **still open** (and none as new again); its plan **starts with the regression probes** (the reproduction case of each known defect that a planned case can re-test; a defect found by the teardown has none); and no case the first run planned is missing from the second (memory only reorders; the second plan may hold *more* reads, because the fixture's no-op DELETE leaves orders behind that the target now lists) |
+| `agent-spa` | `agent` | the agent against `tests/fixtures/spa-next` (a fake Next.js app behind a login wall: `/` is a 307 to `/login`, every unknown path is the same 200 HTML shell, the API lives only in the JS chunks the shell loads), **no spec**, test accounts `alice` and `bob`, deterministic, no LLM | the 3 bugs listed in `tests/fixtures/spa-next/server.py`: an IDOR on `GET /api/orders/{id}`, a SQL error and stack trace leaked by `?q='` (500), a 500 on out-of-range `limit` / `offset`. Recall >= 0.85, inconclusive rate <= 25%, verdict `NO_GO` |
+| `agent-spa-clean` | `agent` | the same app started with `--clean` (`target.server_args`), the same accounts | none: every bug is fixed. The false-positive guard: the verdict must **not** be `NO_GO`, at most 1 reported defect, inconclusive rate <= 25% |
+| `agent-spa-noauth` | `agent` | the same buggy app with **no credentials** | none can be seen. The agent cannot get past the wall and must say so: verdict `NOT_EVALUATED`, an `auth_wall` blocker in the ledger, no defect reported |
 | `qa-repo` | `repo` | static `engine::scan` (QA checks on) of `tests/fixtures/qa-repo`, findings with the `qa.` prefix | the suite/release defects in `tests/fixtures/qa-repo/EXPECTED.md` |
 
-Expected verdicts (`expect_verdict`, every run must end with it): `qa-api` `NoGo/Fail`, `qa-repo` none, `agent-api` and `agent-memory` `NO_GO`, `agent-diff` `CONDITIONAL_GO`.
+Expected verdicts (`expect_verdict`, every run must end with it): `qa-api` `NoGo/Fail`, `qa-repo` none, `agent-api`, `agent-memory` and `agent-spa` `NO_GO`, `agent-diff` `CONDITIONAL_GO`, `agent-spa-noauth` `NOT_EVALUATED`. `agent-spa-clean` forbids `NO_GO` instead of naming one.
+
+The three SPA suites exist because the first real run against a thin, login-walled SPA (NuHire) ended `NO_GO` at 55 with 15 of 18 cases INCONCLUSIVE, none of them a defect of the app: the agent's own blind spots (a 307 it did not follow, input tests aimed at an HTML shell, no route or API call found in the JS). They measure that directly: `agent-spa` that the agent gets through the wall and finds the API and the bugs behind it with few inconclusive cases, `agent-spa-clean` that it does not invent a failing verdict, `agent-spa-noauth` that missing evidence is reported as "not evaluated" with its reason and not as a failure.
 
 ### Isolation
 
@@ -81,18 +91,23 @@ process with other tests.
 `eval-report/eval-report.md` is the human summary (also appended to the GitHub job summary in CI):
 
 ```
-| suite | kind | recall | min run | FP | pass^k | verdict | requests | time | result |
+| suite | kind | recall | min run | precision | FP | inconclusive | confidence | pass^k | verdict | requests | time | open gaps | result |
 ```
 
-followed by one section per suite listing every check (`PASS`/`FAIL` with the numbers) and, for each
-run, the missed expectations and the false positives.
+(`inconclusive` and `confidence` are `-` for the `qa` and `repo` suites, which have no cases.) It is
+followed by one section per suite listing every check (`PASS`/`FAIL` with the numbers), the blockers
+the agent reported and, for each run, its case counts by status, the missed expectations and the
+false positives.
 
 `eval-report/eval-report.json` is the same data for machines. Top level: `version`, `started`, `k`,
 `passed`, `suites[]`. Each suite has `description`, `notes` (expectation id to what the seeded defect
-is), `recall`, `recall_min`, `false_positives`, `pass_k`, `verdict_stable`, `verdicts`,
+is), `recall`, `recall_min`, `precision`, `precision_min`, `false_positives`, `inconclusive_rate`
+(worst run, null when none), `confidence` (worst run), `blockers` (union over runs), `verdict_match`
+(null without `expect_verdict`), `pass_k`, `verdict_stable`, `verdicts`,
 `known_gaps_open`, `known_gaps_closed`, `requests`, `seconds`, `thresholds`, `checks[]`, `passed`,
 `error` and `runs[]`. Each run has `recall`, `found`, `missed`, `optional_found`, `optional_missed`,
-`gap_found`, `gap_missed`, `false_positives`, `allowed_seen` (extras that matched an `[[allow]]`, with
+`gap_found`, `gap_missed`, `false_positives`, `true_positives`, `precision`, `cases` (agent: status
+-> count), `inconclusive_rate`, `confidence`, `blockers`, `allowed_seen` (extras that matched an `[[allow]]`, with
 its reason), `observed` (every `rule @ component` the run reported that was scored; an agent defect
 with several failing checks shows them joined with `+`), `verdict`, `requests`, `seconds`.
 
@@ -100,6 +115,10 @@ Diagnosing a failure:
 
 | Symptom | Look at | Usual cause |
 |---|---|---|
+| `inconclusive rate` over the limit | `cases` of the run (counts by status), then the report's INCONCLUSIVE results | the planner aims cases at something that cannot answer them (an HTML shell, a redirect), or the executor does not follow a redirect |
+| `inconclusive rate` "executed no applicable case" | `cases`, `blockers` | everything was BLOCKED / NOT_APPLICABLE: the credentials did not reach the agent, or discovery found no surface |
+| `forbidden verdict` | `verdicts`, the run's ledger `reasons` | a false alarm: a proven-looking failure on a target with no bug (check `false_positives` and the FAIL cases), or inconclusive cases counted as failures |
+| `expected blocker` | `blockers` of the run | the agent did not name the wall (login redirect / 401) as the reason it had no evidence |
 | `recall` low, `missed` lists an id | that `[[expect]]` in the suite file, then `observed` of the run | the check stopped detecting the bug, or its rule id / component text changed (update the suite file if the change is intended) |
 | `false positives` > limit | the `false_positives` list of the run | a new rule fires on the fixture. If it is a real extra view of a seeded bug add an `[[allow]]`, otherwise fix the rule |
 | `pass^k` false, mean recall fine | per-run `recall` | detection depends on timing or ordering (flaky check) |
@@ -123,11 +142,14 @@ name = "qa-api"
 kind = "qa"                      # qa | agent | repo
 description = "what this suite proves"
 observe_prefix = "qa."           # optional: only score observations whose rule starts with this
-expect_verdict = "NoGo/Fail"     # optional: every run must end with this verdict
+expect_verdict = "NoGo/Fail"     # optional: every run must end with this verdict (exact, case-insensitive)
+forbid_verdict = ["NO_GO"]       # optional: no run may end with any of these (a target with nothing wrong)
+expect_blocker = "auth_wall"     # optional, agent only: every run's ledger must list this blocker reason
 
 [target]
-server  = "tests/fixtures/qa-api/server.py"    # qa, agent: python3 script, started as `server.py PORT LOGFILE`
-spec    = "tests/fixtures/qa-api/openapi.json" # qa, agent
+server  = "tests/fixtures/qa-api/server.py"    # qa, agent: python3 script, started as `server.py PORT LOGFILE [server_args...]`
+server_args = ["--clean"]                      # optional: extra arguments after PORT LOGFILE (e.g. a fixture's bug-free mode)
+spec    = "tests/fixtures/qa-api/openapi.json" # qa, agent (optional for agent: leave it out to make the agent find the API itself)
 roles   = "tests/fixtures/qa-api/roles.toml"   # qa
 path    = "tests/fixtures/qa-repo"             # repo: directory to scan
 profile = "standard"                           # quick | standard | deep
@@ -152,6 +174,7 @@ pass_k = true
 stable_verdict = true
 max_requests = 300               # per run; unset = unchecked
 max_seconds = 150                # per run; unset = unchecked
+max_inconclusive_rate = 0.25     # agent only, 0..=1: INCONCLUSIVE / executed applicable cases, worst run; unset = unchecked
 
 [[expect]]                       # one per seeded defect
 id = "idor"                      # unique within the file
@@ -180,6 +203,10 @@ What a "defect" is, per kind:
 
 `[change]` adds up to three checks to the suite (`changed operations`, `changed operations planned first`, `changed operations covered`); each must hold in every run, like `pass^k`.
 
+A suite with no seeded defect (a clean target, or a target the agent cannot see into) has no `[[expect]]`:
+it then needs at least one of `expect_verdict`, `forbid_verdict` or `expect_blocker`, and its recall is
+vacuously 1.0 (every reported defect is a false positive, bounded by `max_false_positives`).
+
 A defect is expected if it matches any `[[expect]]` (one defect may satisfy several), allowed if it
 matches an `[[allow]]`, and otherwise counts as a false positive.
 
@@ -187,7 +214,10 @@ matches an `[[allow]]`, and otherwise counts as a false positive.
 
 1. Put a fixture with **documented** seeded defects under `tests/fixtures/<name>/`. For a server,
    a stdlib-only `python3` script taking `PORT [REQUEST_LOG]` and writing one `METHOD /path` line per
-   request to the log (the harness counts requests from it). Use fake credentials only.
+   request to the log (the harness counts requests from it). It must answer `GET /health` with a 200
+   (the harness waits for it). Extra arguments come from `target.server_args`: give a fixture a
+   `--clean` mode and add a second suite over it, so a regression that invents a failure shows up too.
+   Use fake credentials only.
 2. Run the tool once by hand and look at what it reports (`readyhai qa ... --format json`).
 3. Create `tests/eval/<name>.toml` with one `[[expect]]` per seeded defect, taken from the *intended*
    behaviour, not copied from whatever the tool happens to print. If it misses a bug today, keep the

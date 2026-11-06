@@ -3,7 +3,7 @@
 import { useId, useState } from "react";
 import { CheckCircle2, ChevronDown, ChevronRight, ExternalLink, FileText, ShieldCheck, UserCheck, XCircle } from "lucide-react";
 import type { EvidenceLedger } from "@/types/agent";
-import { canApproveVerdict, isGateVerdict, ledgerScore, ledgerVerdict } from "@/lib/runs";
+import { canApproveVerdict, isGateVerdict, isNotEvaluatedVerdict, ledgerScore, ledgerVerdict } from "@/lib/runs";
 import { ReportButton } from "./ReportButton";
 import { VerdictBadge } from "./VerdictBadge";
 
@@ -42,6 +42,7 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
   const score = ledgerScore(evidenceLedger);
   const verdict = ledgerVerdict(evidenceLedger);
   const hasGateVerdict = isGateVerdict(verdict);
+  const notEvaluated = isNotEvaluatedVerdict(verdict);
   // Approval is only ever offered for GO / CONDITIONAL_GO. A NO_GO run can only be blocked.
   const canApprove = canApproveVerdict(verdict);
 
@@ -128,6 +129,8 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
               ? "Review the evidence and the score, then approve this release or block it."
               : hasGateVerdict
               ? "The backend reported NO GO for this run, so it can't be approved. You can only block the release."
+              : notEvaluated
+              ? "The backend could not evaluate this run: there is not enough conclusive evidence for a verdict, so it can't be approved. This is not a failure. The Evidence ledger says what to provide next; run again after that. You can still block the release."
               : "The backend did not report a gate verdict (GO, CONDITIONAL GO or NO GO) for this run, so it can't be approved."}
           </p>
 
@@ -220,6 +223,8 @@ export function ApprovalCard({ runId, evidenceLedger, defectCount, onSignOff }: 
                       ? undefined
                       : hasGateVerdict
                       ? "NO_GO verdict: approval is unavailable"
+                      : notEvaluated
+                      ? "Not evaluated: approval is unavailable until there is enough evidence"
                       : "No backend gate verdict: approval is unavailable"
                   }
                   className="inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-sm bg-rh-primary px-4 py-2 text-ui font-semibold text-rh-bg hover:bg-rh-primary-hover disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-rh-primary"

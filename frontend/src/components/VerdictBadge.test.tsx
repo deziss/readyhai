@@ -28,4 +28,14 @@ describe("VerdictBadge", () => {
     const { container } = render(<VerdictBadge verdict="GO" />);
     expect(container.innerHTML).toContain("rh-go");
   });
+
+  it("renders NOT_EVALUATED as a neutral 'Not evaluated', never red or green", () => {
+    const { container } = render(<VerdictBadge verdict="NOT_EVALUATED" />);
+    expect(screen.getByText("Not evaluated")).toBeTruthy();
+    expect(screen.queryByText(/NOT EVALUATED/)).toBeNull();
+    expect(container.innerHTML).toContain("text-rh-muted");
+    expect(container.innerHTML).not.toContain("rh-nogo");
+    expect(container.innerHTML).not.toContain("rh-go");
+    expect(container.innerHTML).not.toContain("No go");
+  });
 });

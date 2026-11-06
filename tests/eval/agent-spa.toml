@@ -1,0 +1,50 @@
+# Suite: the autonomous agent (agent::run_agentic_loop_with: NO spec, dry_run false, nonprod scope,
+# deterministic, no LLM) against the spa-next fixture: a fake Next.js app behind a login wall. `/`
+# answers 307 -> /login, every unknown path is the same 200 HTML shell (a soft-404), and the API
+# lives only in the JS chunks the shell loads. With test accounts (alice, bob) the agent must get
+# through the wall, find the API in the chunks and find the 3 seeded bugs of
+# tests/fixtures/spa-next/server.py, and most of its cases must conclude (inconclusive <= 25%).
+#
+# The agent reports defects, not rule ids, so `rule` matches the FAILING ORACLE CHECK CODES of the
+# defect's cases and `component` is the agent's path-only component (ids resolved: /api/orders/4).
+name = "agent-spa"
+kind = "agent"
+description = "Autonomous agent vs the 3 seeded bugs of the spa-next fixture (SPA behind a login wall, no spec, test accounts given)"
+expect_verdict = "NO_GO"
+
+[target]
+server = "tests/fixtures/spa-next/server.py"
+profile = "standard"
+max_steps = 60
+
+[target.tokens]
+alice = "alice-token"
+bob = "bob-token"
+
+[thresholds]
+min_recall = 0.85
+max_false_positives = 2
+pass_k = true
+stable_verdict = true
+max_inconclusive_rate = 0.25
+max_requests = 300
+max_seconds = 120
+
+[[expect]]
+id = "idor"
+rule = "authz"
+component = "/api/orders*"
+note = "bug 1: GET /api/orders/{id} returns any user's order (alice POSTs one, bob reads it)"
+
+[[expect]]
+id = "sql-leak"
+rule = "server_error"
+component = "/api/orders"
+title = "disclos"
+note = "bug 2: GET /api/orders?q=' -> 500 with a SQL error and a Node stack trace"
+
+[[expect]]
+id = "boundary-500"
+rule = "server_error"
+component = "/api/orders"
+note = "bug 3: limit above 1000000 or negative, offset negative -> 500"

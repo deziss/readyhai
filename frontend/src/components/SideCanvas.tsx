@@ -28,7 +28,10 @@ import type {
   EvidenceLedger,
 } from "@/types/agent";
 import {
+  blockReasonLabel,
   getPillars,
+  ledgerBlockers,
+  ledgerConfidence,
   ledgerScore,
   ledgerVerdict,
   normalizeVerdict,
@@ -38,6 +41,7 @@ import {
 } from "@/lib/runs";
 import { ReportButton, ReportFrame } from "./ReportButton";
 import { VerdictBadge } from "./VerdictBadge";
+import { NextStepsCard, PillarCard } from "./LedgerPanels";
 import { Scenarios } from "./Scenarios";
 import { AutoRemediationCard } from "./AutoRemediationCard";
 
@@ -379,6 +383,7 @@ export function SideCanvas({
                             </span>
                           ) : matchingTest ? (
                             <span
+                              title={blockReasonLabel(matchingTest.blocked_reason) ?? undefined}
                               className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-[6px] text-xs font-semibold ${
                                 matchingTest.status === "PASS"
                                   ? "bg-rh-go/15 text-rh-go"
@@ -452,6 +457,14 @@ export function SideCanvas({
                   Composite score: {ledgerScore(evidenceLedger)}%
                 </span>
               )}
+              {ledgerConfidence(evidenceLedger) !== null && (
+                <span
+                  className="text-xs text-rh-muted bg-rh-raised px-1.5 py-0.5 rounded-[6px] font-medium tabular-nums"
+                  title="Share of the applicable cases that gave a conclusive result"
+                >
+                  confidence {ledgerConfidence(evidenceLedger)}%
+                </span>
+              )}
             </div>
           </div>
 
@@ -468,41 +481,11 @@ export function SideCanvas({
             </p>
           )}
 
+          <NextStepsCard blockers={ledgerBlockers(evidenceLedger)} />
+
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {getPillars(evidenceLedger).map((pillar) => (
-              <div key={pillar.key} className="bg-rh-bg border border-rh-line rounded-[10px] p-3.5 flex flex-col gap-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-semibold text-rh-text">{pillar.title}</span>
-                  {pillar.status && (
-                    <span className="text-xs text-rh-text bg-rh-raised px-1.5 py-0.5 rounded-[6px] font-semibold">
-                      {humanize(pillar.status)}
-                    </span>
-                  )}
-                </div>
-                {pillar.score === null ? (
-                  <div className="text-xs text-rh-muted">Not evaluated</div>
-                ) : (
-                  <div className="flex items-center gap-2.5">
-                    <div
-                      className="flex-1 bg-rh-raised rounded-full h-2 overflow-hidden"
-                      role="progressbar"
-                      aria-label={`${pillar.title} score`}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      aria-valuenow={Math.max(0, Math.min(100, pillar.score))}
-                    >
-                      <div
-                        className="bg-rh-primary h-full rounded-full"
-                        style={{ width: `${Math.max(0, Math.min(100, pillar.score))}%` }}
-                      />
-                    </div>
-                    <span className="text-xs font-semibold text-rh-text tabular-nums">{pillar.score}%</span>
-                  </div>
-                )}
-                <p className="text-xs text-rh-muted leading-relaxed">
-                  {pillar.evidence ?? "No evidence text was reported for this pillar."}
-                </p>
-              </div>
+              <PillarCard key={pillar.key} pillar={pillar} />
             ))}
           </div>
 
@@ -622,6 +605,7 @@ export function SideCanvas({
               <option value="GO">GO</option>
               <option value="CONDITIONAL_GO">Conditional go</option>
               <option value="NO_GO">No go</option>
+              <option value="NOT_EVALUATED">Not evaluated</option>
               <option value="SCANNED">Scanned</option>
               <option value="NONE">No verdict</option>
             </select>
@@ -649,7 +633,7 @@ export function SideCanvas({
                     ((run.discovered_routes?.length ?? 0) > 0 || (run.planned_cases?.length ?? 0) > 0));
                 // Scan runs carry no real gate score; only show a score the backend actually evaluated.
                 const rawScore = numOrNull(run.evidence_ledger?.overall_readiness) ?? numOrNull(run.readiness_score);
-                const score = verdict === "SCANNED" ? null : rawScore;
+                const score = verdict === "SCANNED" || verdict === "NOT_EVALUATED" ? null : rawScore;
                 const routesCount = run.discovered_routes?.length || 0;
                 const casesCount =
                   run.executed_results?.length || run.planned_cases?.length || run.test_cases?.length || run.cases_count || 0;

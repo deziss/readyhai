@@ -6,10 +6,11 @@
 //! deterministic oracle failed them.
 use std::collections::BTreeMap;
 
+use super::exec::NEXT_STEP_AUTH_WALL;
 use super::oracle::Severity;
 use super::types::{
-    CaseExecutionResult, CoverageCell, EvidenceLedger, ExitCheckItem, LedgerClaim, LlmAdvisory,
-    PillarResult, TriagedDefect, VerificationSummary, evidence_share,
+    BlockReason, Blocker, CaseExecutionResult, CoverageCell, EvidenceLedger, ExitCheckItem,
+    LedgerClaim, LlmAdvisory, PillarResult, TriagedDefect, VerificationSummary, evidence_share,
 };
 
 const TECHNIQUES: [&str; 5] = [
@@ -19,6 +20,9 @@ const TECHNIQUES: [&str; 5] = [
     "injection",
     "state_transition",
 ];
+
+/// The techniques that need an input surface to exercise (see `plan::baseline`).
+const INPUT_TECHNIQUES: [&str; 3] = ["boundary", "negative", "injection"];
 
 /// (id, name, techniques, weight)
 const PILLARS: [(&str, &str, &[&str], u32); 3] = [
@@ -42,6 +46,12 @@ const PILLARS: [(&str, &str, &[&str], u32); 3] = [
     ),
 ];
 const EVIDENCE_WEIGHT: u32 = 15;
+/// A pillar is scored only when at least this share (percent) of its applicable cases was conclusive.
+const MIN_PILLAR_CONFIDENCE: u32 = 50;
+/// Below this overall confidence (percent) the run did not gather enough evidence to say GO or NO_GO.
+const MIN_OVERALL_CONFIDENCE: u32 = 50;
+/// The conclusive share (percent) a GO needs.
+const FULL_CONFIDENCE: u32 = 80;
 
 pub struct LedgerInput<'a> {
     pub results: &'a [CaseExecutionResult],
@@ -58,6 +68,7 @@ fn bucket(r: &CaseExecutionResult) -> &'static str {
         "FAIL" => "fail",
         "INCONCLUSIVE" => "inconclusive",
         "BLOCKED" => "blocked",
+        "NOT_APPLICABLE" => "not_applicable",
         _ => "skipped",
     }
 }
@@ -70,6 +81,7 @@ fn add(cell: &mut CoverageCell, r: &CaseExecutionResult) {
         "fail" => cell.fail += 1,
         "inconclusive" => cell.inconclusive += 1,
         "blocked" => cell.blocked += 1,
+        "not_applicable" => cell.not_applicable += 1,
         _ => cell.skipped += 1,
     }
     if r.flaky {
@@ -81,9 +93,24 @@ fn add(cell: &mut CoverageCell, r: &CaseExecutionResult) {
     }
 }
 
+/// Cases that gave an answer the oracle could judge: pass + warn + fail.
+fn conclusive(c: &CoverageCell) -> usize {
+    c.pass + c.warn + c.fail
+}
+
+/// Cases that could have gained evidence: planned, minus not applicable, minus not executed.
+fn applicable(c: &CoverageCell) -> usize {
+    c.planned.saturating_sub(c.not_applicable + c.skipped)
+}
+
+/// Conclusive share of the applicable cases, in whole percent (rounded down: 49.6% is not 50%).
+/// None when nothing was applicable.
+fn confidence_pct(conclusive: usize, applicable: usize) -> Option<u32> {
+    (applicable > 0).then(|| (conclusive * 100 / applicable) as u32)
+}
+
 fn status_of(c: &CoverageCell) -> &'static str {
-    let conclusive = c.pass + c.warn + c.fail;
-    if conclusive == 0 {
+    if conclusive(c) == 0 {
         "not_evaluated"
     } else if c.fail > 0 {
         "fail"
@@ -95,8 +122,13 @@ fn status_of(c: &CoverageCell) -> &'static str {
 }
 
 fn describe(c: &CoverageCell) -> String {
+    let na = if c.not_applicable > 0 {
+        format!(", {} not applicable", c.not_applicable)
+    } else {
+        String::new()
+    };
     format!(
-        "{}: {} passed, {} failed, {} warning(s), {} inconclusive, {} blocked, {} not executed of {} planned",
+        "{}: {} passed, {} failed, {} warning(s), {} inconclusive, {} blocked, {} not executed{na} of {} planned",
         c.technique, c.pass, c.fail, c.warn, c.inconclusive, c.blocked, c.skipped, c.planned
     )
 }
@@ -105,8 +137,12 @@ fn points(c: &CoverageCell) -> f64 {
     c.pass as f64 + 0.5 * c.warn as f64
 }
 
-fn merge(cells: &[&CoverageCell]) -> CoverageCell {
-    let mut m = CoverageCell::default();
+/// The cells of several techniques as one. `technique` labels it (`describe` starts with it).
+fn merge(technique: &str, cells: &[&CoverageCell]) -> CoverageCell {
+    let mut m = CoverageCell {
+        technique: technique.to_string(),
+        ..Default::default()
+    };
     for c in cells {
         m.planned += c.planned;
         m.pass += c.pass;
@@ -116,6 +152,7 @@ fn merge(cells: &[&CoverageCell]) -> CoverageCell {
         m.blocked += c.blocked;
         m.skipped += c.skipped;
         m.flaky += c.flaky;
+        m.not_applicable += c.not_applicable;
         m.case_ids.extend(c.case_ids.iter().cloned());
         m.evidence_files.extend(c.evidence_files.iter().cloned());
     }
@@ -138,6 +175,8 @@ pub fn not_evaluated(
     checklist: Vec<ExitCheckItem>,
 ) -> EvidenceLedger {
     EvidenceLedger {
+        confidence: None,
+        blockers: vec![],
         value_score: None,
         authority_score: None,
         safety_score: None,
@@ -263,6 +302,90 @@ pub fn compute(inp: &LedgerInput) -> EvidenceLedger {
     l
 }
 
+/// What kept evidence from being gathered, and what to do about it: from the results themselves.
+fn blockers_of(results: &[CaseExecutionResult], coverage: &[CoverageCell]) -> Vec<Blocker> {
+    let ids = |f: &dyn Fn(&CaseExecutionResult) -> bool| -> Vec<String> {
+        results
+            .iter()
+            .filter(|r| f(r))
+            .map(|r| r.case_id.clone())
+            .collect()
+    };
+    let mut out = vec![];
+    let wall = ids(&|r| r.blocked_reason == Some(BlockReason::AuthWall));
+    if !wall.is_empty() {
+        out.push(Blocker {
+            reason: BlockReason::AuthWall,
+            detail: format!(
+                "{} case(s) ran into a login wall (HTTP 401, a redirect to a login page or a password form) with no credential, so what sits behind the login was not tested",
+                wall.len()
+            ),
+            next_step: NEXT_STEP_AUTH_WALL.to_string(),
+            case_ids: wall,
+        });
+    }
+    let input: Vec<&CoverageCell> = coverage
+        .iter()
+        .filter(|c| INPUT_TECHNIQUES.contains(&c.technique.as_str()))
+        .collect();
+    let (input_planned, input_na): (usize, usize) = input
+        .iter()
+        .fold((0, 0), |(p, n), c| (p + c.planned, n + c.not_applicable));
+    if input_na > 0 && input_na * 2 >= input_planned {
+        out.push(Blocker {
+            reason: BlockReason::NoSurface,
+            detail: format!(
+                "no input surface (query parameters, forms or API endpoints) was found for the injection, boundary and negative tests: {input_na} of {input_planned} such case(s) are not applicable, so those techniques were not exercised"
+            ),
+            next_step: "provide the OpenAPI spec (the spec URL of the run, e.g. /openapi.json) or use the deep profile so that API endpoints and forms are discovered, then re-run".into(),
+            case_ids: ids(&|r| {
+                r.status == "NOT_APPLICABLE" && r.blocked_reason == Some(BlockReason::NoSurface)
+            }),
+        });
+    }
+    let transport = ids(&|r| {
+        r.status == "BLOCKED"
+            && (r.blocked_reason == Some(BlockReason::Transport)
+                || (r.blocked_reason.is_none()
+                    && r.failure_reason
+                        .as_deref()
+                        .is_some_and(|f| f.starts_with("Connection error"))))
+    });
+    if !transport.is_empty() {
+        out.push(Blocker {
+            reason: BlockReason::Transport,
+            detail: format!(
+                "{} case(s) got no HTTP answer from the target (connection error or timeout)",
+                transport.len()
+            ),
+            next_step: "check that the target is reachable from where ReadyHai runs (DNS, network, TLS certificate, firewall), then re-run".into(),
+            case_ids: transport,
+        });
+    }
+    let scope = ids(&|r| r.blocked_reason == Some(BlockReason::OutOfScope));
+    if !scope.is_empty() {
+        out.push(Blocker {
+            reason: BlockReason::OutOfScope,
+            detail: format!(
+                "{} case(s) would have left the allowed scope and were not sent",
+                scope.len()
+            ),
+            next_step: "add the host to scope.toml if it is yours to test, then re-run".into(),
+            case_ids: scope,
+        });
+    }
+    out
+}
+
+fn blocker_label(r: BlockReason) -> &'static str {
+    match r {
+        BlockReason::AuthWall => "auth wall",
+        BlockReason::OutOfScope => "out of scope",
+        BlockReason::NoSurface => "no input surface",
+        BlockReason::Transport => "target not reachable",
+    }
+}
+
 fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
     let exploratory: Vec<&CaseExecutionResult> = inp
         .results
@@ -325,26 +448,47 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
             .max()
     };
 
-    // 3. pillars
+    // 3. pillars: the score is over the conclusive cases only (an inconclusive case is missing
+    // evidence, not a failure), and is shown with its confidence, the conclusive share of the
+    // applicable cases. A pillar whose confidence is under the minimum is not scored at all.
     let mut pillars: Vec<PillarResult> = vec![];
     for (id, name, techs, _) in PILLARS {
-        let m = merge(&techs.iter().filter_map(|t| cell(t)).collect::<Vec<_>>());
-        let conclusive = m.pass + m.warn + m.fail;
-        let (score, status, claim) = if conclusive == 0 {
+        let m = merge(
+            &techs.join("/"),
+            &techs.iter().filter_map(|t| cell(t)).collect::<Vec<_>>(),
+        );
+        let (concl, appl) = (conclusive(&m), applicable(&m));
+        let conf = confidence_pct(concl, appl);
+        let (score, status, claim) = if concl == 0 {
             (
                 None,
                 "not_evaluated",
                 format!(
-                    "not evaluated: no conclusive result for {} ({} inconclusive, {} blocked, {} not executed of {} planned)",
+                    "not evaluated: no conclusive result for {} ({} inconclusive, {} blocked, {} not executed{} of {} planned)",
                     techs.join("/"),
                     m.inconclusive,
                     m.blocked,
                     m.skipped,
+                    if m.not_applicable > 0 {
+                        format!(", {} not applicable", m.not_applicable)
+                    } else {
+                        String::new()
+                    },
                     m.planned
                 ),
             )
+        } else if conf.is_some_and(|c| c < MIN_PILLAR_CONFIDENCE) {
+            (
+                None,
+                "not_evaluated",
+                format!(
+                    "not evaluated: only {concl} of {appl} applicable case(s) gave a conclusive result ({}% confidence, at least {MIN_PILLAR_CONFIDENCE}% is needed); {}",
+                    conf.unwrap_or(0),
+                    describe(&m)
+                ),
+            )
         } else {
-            let mut s = (100.0 * points(&m) / m.planned as f64).round() as u32;
+            let mut s = (100.0 * points(&m) / concl as f64).round() as u32;
             match sev_of_fail(techs) {
                 Some(Severity::Critical) => s = s.min(40),
                 Some(Severity::High) => s = s.min(65),
@@ -353,6 +497,7 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
             (Some(s), status_of(&m), describe(&m))
         };
         pillars.push(PillarResult {
+            confidence: conf,
             id: id.into(),
             name: name.into(),
             score,
@@ -365,12 +510,13 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
     }
     // evidence pillar: the share of executed cases that have a stored request/response pair (the
     // target answered and the evidence file exists). A reproduction command is generated for every
-    // case, so it proves nothing; a transport error or a missing file is not evidence.
-    let executed: Vec<&CaseExecutionResult> =
-        results.iter().filter(|r| r.status != "SKIPPED").collect();
+    // case, so it proves nothing; a transport error or a missing file is not evidence. A case that
+    // was never sent (SKIPPED, NOT_APPLICABLE, a ledger-only row) is not executed.
+    let executed: Vec<&CaseExecutionResult> = results.iter().filter(|r| r.was_sent()).collect();
     let (repro_ok, _) = evidence_share(results);
     pillars.push(if executed.is_empty() {
         PillarResult {
+            confidence: None,
             id: "evidence".into(),
             name: "Reproducible evidence".into(),
             score: None,
@@ -383,6 +529,7 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
     } else {
         let s = (100.0 * repro_ok as f64 / executed.len() as f64).round() as u32;
         PillarResult {
+            confidence: None,
             id: "evidence".into(),
             name: "Reproducible evidence".into(),
             score: Some(s),
@@ -406,7 +553,7 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
         }
     });
 
-    // 4. overall: weighted over evaluated pillars; at least one functional pillar must be evaluated
+    // 4. overall: weighted over the scored pillars; at least one functional pillar must be scored
     let weights: BTreeMap<&str, u32> = PILLARS
         .iter()
         .map(|(id, _, _, w)| (*id, *w))
@@ -420,52 +567,79 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
             den += w;
         }
     }
-    let functional_evaluated = pillars
+    let functional_scored = pillars
         .iter()
         .filter(|p| p.id != "evidence")
-        .any(|p| p.score.is_some());
-    let evaluated = functional_evaluated && den > 0;
-    let overall = if evaluated {
+        .any(|p| p.score.is_some())
+        && den > 0;
+    let overall_raw = if functional_scored {
         ((num as f64) / (den as f64)).round() as u32
     } else {
         0
     };
 
-    // 5. counts and verdict
+    // 5. counts, confidence and verdict
     let n = |b: &str| results.iter().filter(|r| bucket(r) == b).count();
-    let (pass, warn, fail, inconclusive, blocked, skipped) = (
+    let (pass, warn, fail, inconclusive, blocked, skipped, not_applicable) = (
         n("pass"),
         n("warn"),
         n("fail"),
         n("inconclusive"),
         n("blocked"),
         n("skipped"),
+        n("not_applicable"),
     );
     let total = results.len();
     let flaky = results.iter().filter(|r| r.flaky).count();
-    let conclusive = pass + warn + fail;
-    let coverage_ratio = if total == 0 {
-        0.0
-    } else {
-        conclusive as f64 / total as f64
-    };
+    let conclusive_n = pass + warn + fail;
+    let applicable_n = total.saturating_sub(skipped + not_applicable);
+    // the share of the applicable cases that gave an answer: how much of the verdict is evidence
+    let confidence = confidence_pct(conclusive_n, applicable_n);
+    let low_confidence = confidence.is_none_or(|c| c < MIN_OVERALL_CONFIDENCE);
+    let conf_text = confidence.map_or("n/a".to_string(), |c| format!("{c}%"));
     let unevaluated: Vec<&str> = pillars
         .iter()
         .filter(|p| p.score.is_none())
         .map(|p| p.id.as_str())
         .collect();
+    let blockers = blockers_of(results, &coverage);
 
+    // A login wall stopped cases and neither pillar that exercises the application (value: its
+    // behaviour and input handling; safety: injection) could be scored. What did conclude is
+    // hygiene that holds whatever the app does (sensitive files that are not there, a forged
+    // token refused at the door, an anonymous page load): that is not a verdict on the app.
+    let pillar_scored = |id: &str| pillars.iter().any(|p| p.id == id && p.score.is_some());
+    let app_unreached = blockers.iter().any(|b| b.reason == BlockReason::AuthWall)
+        && !pillar_scored("value")
+        && !pillar_scored("safety");
     let mut reasons: Vec<String> = vec![];
-    let computed = if !evaluated {
-        reasons.push("no pillar could be evaluated from conclusive results".into());
+    let computed = if critical > 0 {
+        // a proven critical defect is a finding whatever the coverage: never hidden behind NOT_EVALUATED
+        reasons.push(format!("{critical} critical defect(s)"));
+        if functional_scored && overall_raw < 70 {
+            reasons.push(format!("overall readiness {overall_raw} < 70"));
+        }
+        if low_confidence {
+            reasons.push(format!(
+                "only {conf_text} of the applicable cases were conclusive: the failure is proven, the rest of the target is not evaluated"
+            ));
+        }
+        "NO_GO"
+    } else if !functional_scored || low_confidence || app_unreached {
+        if !functional_scored {
+            reasons.push("no pillar could be evaluated from conclusive results".into());
+        }
+        if app_unreached {
+            reasons.push("insufficient evidence: the application sits behind a login wall and no credential was given, so neither its behaviour (value) nor its injection resistance (safety) could be evaluated; what concluded is hygiene that holds whatever the app does".into());
+        }
+        if low_confidence {
+            reasons.push(format!(
+                "insufficient evidence: only {conf_text} of the applicable cases reached a conclusive result (at least {MIN_OVERALL_CONFIDENCE}% is needed)"
+            ));
+        }
         "NOT_EVALUATED"
-    } else if critical > 0 || overall < 70 {
-        if critical > 0 {
-            reasons.push(format!("{critical} critical defect(s)"));
-        }
-        if overall < 70 {
-            reasons.push(format!("overall readiness {overall} < 70"));
-        }
+    } else if overall_raw < 70 {
+        reasons.push(format!("overall readiness {overall_raw} < 70"));
         "NO_GO"
     } else {
         if high > 0 {
@@ -486,14 +660,13 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
                 unevaluated.join(", ")
             ));
         }
-        if coverage_ratio < 0.8 {
+        if confidence.is_some_and(|c| c < FULL_CONFIDENCE) {
             reasons.push(format!(
-                "only {:.0}% of planned cases reached a conclusive result (need 80%)",
-                coverage_ratio * 100.0
+                "only {conf_text} of the applicable cases reached a conclusive result (need {FULL_CONFIDENCE}%)"
             ));
         }
-        if overall < 85 {
-            reasons.push(format!("overall readiness {overall} < 85"));
+        if overall_raw < 85 {
+            reasons.push(format!("overall readiness {overall_raw} < 85"));
         }
         if inp.dry_run && skipped > 0 {
             reasons.push("dry-run: state-changing cases were not executed".into());
@@ -504,6 +677,9 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
             "CONDITIONAL_GO"
         }
     };
+    // not evaluated: no readiness number (the pillars keep their own scores and confidence)
+    let evaluated = computed != "NOT_EVALUATED";
+    let overall = if evaluated { overall_raw } else { 0 };
 
     // 6. claims, each citing case ids and evidence files
     let mut claims: Vec<LedgerClaim> = vec![];
@@ -578,8 +754,43 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
             evidence_files: vec![],
         });
     }
-    let blocked_cases: Vec<&CaseExecutionResult> =
-        results.iter().filter(|r| r.status == "BLOCKED").collect();
+    let na_cases: Vec<&CaseExecutionResult> = results
+        .iter()
+        .filter(|r| r.status == "NOT_APPLICABLE")
+        .collect();
+    if !na_cases.is_empty() {
+        claims.push(LedgerClaim {
+            claim: format!(
+                "{} case(s) are not applicable: no input surface was found for them. They count toward no score, confidence or pass rate",
+                na_cases.len()
+            ),
+            status: "not_evaluated".into(),
+            case_ids: na_cases.iter().map(|r| r.case_id.clone()).collect(),
+            evidence_files: vec![],
+        });
+    }
+    let walled: Vec<&CaseExecutionResult> = results
+        .iter()
+        .filter(|r| r.blocked_reason == Some(BlockReason::AuthWall))
+        .collect();
+    if !walled.is_empty() {
+        claims.push(LedgerClaim {
+            claim: format!(
+                "{} case(s) are behind a login wall: no credential was available",
+                walled.len()
+            ),
+            status: "not_evaluated".into(),
+            case_ids: walled.iter().map(|r| r.case_id.clone()).collect(),
+            evidence_files: walled
+                .iter()
+                .filter_map(|r| r.evidence_file.clone())
+                .collect(),
+        });
+    }
+    let blocked_cases: Vec<&CaseExecutionResult> = results
+        .iter()
+        .filter(|r| r.status == "BLOCKED" && r.blocked_reason != Some(BlockReason::AuthWall))
+        .collect();
     if !blocked_cases.is_empty() {
         claims.push(LedgerClaim {
             claim: format!("{} case(s) could not reach the target", blocked_cases.len()),
@@ -627,10 +838,11 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
             evidence_files,
         };
     let pillar = |id: &str| pillars.iter().find(|p| p.id == id);
-    let pass_rate = if total == 0 {
+    // over the conclusive cases: an inconclusive, blocked or not applicable case is no pass and no fail
+    let pass_rate = if conclusive_n == 0 {
         0.0
     } else {
-        100.0 * pass as f64 / total as f64
+        100.0 * pass as f64 / conclusive_n as f64
     };
     let checklist = vec![
         item(
@@ -661,10 +873,18 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
             }),
         ),
         item(
-            "Pass rate >= 85% of planned cases",
-            total > 0 && pass_rate >= 85.0,
-            format!("{pass} of {total} passed ({pass_rate:.0}%)"),
+            "Pass rate >= 85% of conclusive applicable cases",
+            conclusive_n > 0 && pass_rate >= 85.0,
+            format!("{pass} of {conclusive_n} conclusive case(s) passed ({pass_rate:.0}%)"),
             ids(&|r| r.status == "PASS"),
+        ),
+        item(
+            "Conclusive coverage >= 80% of applicable cases",
+            confidence.is_some_and(|c| c >= FULL_CONFIDENCE),
+            format!(
+                "{conclusive_n} of {applicable_n} applicable case(s) were conclusive ({conf_text})"
+            ),
+            ids(&|r| matches!(r.status.as_str(), "PASS" | "WARN" | "FAIL")),
         ),
         item(
             "Authorization boundary exercised and held",
@@ -694,23 +914,42 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
             "Every executed case has stored request/response evidence",
             !executed.is_empty() && repro_ok == executed.len(),
             format!("{repro_ok} of {} executed", executed.len()),
-            ids(&|r| r.status != "SKIPPED"),
+            ids(&|r| r.was_sent()),
         ),
     ];
 
     // 8. summary, from facts only
     let mut summary = format!(
-        "Evaluated {conclusive} of {total} planned cases: {pass} passed, {fail} failed, {warn} warning(s), {inconclusive} inconclusive, {blocked} blocked, {skipped} not executed. Deterministic verdict: {computed}"
+        "Evaluated {conclusive_n} of {applicable_n} applicable cases ({total} planned, {not_applicable} not applicable, {skipped} not executed): {pass} passed, {fail} failed, {warn} warning(s), {inconclusive} inconclusive, {blocked} blocked. Confidence {conf_text}. Deterministic verdict: {computed}"
     );
     if !reasons.is_empty() {
         summary.push_str(&format!(" ({})", reasons.join("; ")));
     }
     summary.push('.');
+    if !blockers.is_empty() {
+        summary.push_str(" What kept evidence from being gathered: ");
+        summary.push_str(
+            &blockers
+                .iter()
+                .map(|b| {
+                    format!(
+                        "{}: {}. Next step: {}.",
+                        blocker_label(b.reason),
+                        b.detail,
+                        b.next_step
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
     if let Some(s) = inp.budget_stop {
         summary.push_str(&format!(" Run stopped early: {s}."));
     }
     let score = |id: &str| pillar(id).and_then(|p| p.score);
     EvidenceLedger {
+        confidence,
+        blockers,
         value_score: score("value"),
         authority_score: score("authority"),
         safety_score: score("safety"),
@@ -844,10 +1083,13 @@ pub fn apply_llm(
 mod tests {
     use super::*;
     use crate::agent::oracle::{OracleCheck, OracleOutcome, Verdict};
+    use crate::agent::types::BlockReason;
 
     fn res(id: &str, tech: &str, status: &str) -> CaseExecutionResult {
         let executed = status != "SKIPPED";
         CaseExecutionResult {
+            blocked_reason: None,
+            redirect_chain: vec![],
             case_id: id.into(),
             title: id.into(),
             component: "/x".into(),
@@ -985,23 +1227,411 @@ mod tests {
     }
 
     #[test]
-    fn blocked_warn_skipped_and_inconclusive_all_move_the_score() {
-        let base = ledger(&all_pass(), &[], false).overall_readiness;
-        for st in ["WARN", "BLOCKED", "SKIPPED", "INCONCLUSIVE"] {
-            let mut r = all_pass();
-            r.push(res("TC-006", "authz", st));
-            let l = ledger(&r, &[], false);
-            assert!(
-                l.overall_readiness < base,
-                "{st} must lower the score: {} !< {base}",
-                l.overall_readiness
-            );
-            assert_ne!(l.gate_verdict, "NOT_EVALUATED");
-        }
+    fn a_warning_lowers_the_score_and_missing_evidence_lowers_the_confidence() {
+        let base = ledger(&all_pass(), &[], false);
+        assert_eq!((base.confidence, base.overall_readiness), (Some(100), 100));
         // WARN counts for half
         let mut r = all_pass();
         r.push(res("TC-006", "authz", "WARN"));
-        assert_eq!(ledger(&r, &[], false).authority_score, Some(75));
+        let l = ledger(&r, &[], false);
+        assert_eq!(l.authority_score, Some(75));
+        assert!(l.overall_readiness < base.overall_readiness);
+        // an inconclusive, blocked or not executed case is no failure: the score is over the
+        // conclusive cases. The confidence says how much of the picture is missing.
+        for (st, conf) in [("INCONCLUSIVE", 83), ("BLOCKED", 83), ("SKIPPED", 100)] {
+            let mut r = all_pass();
+            r.push(res("TC-006", "authz", st));
+            let l = ledger(&r, &[], false);
+            assert_eq!(l.authority_score, Some(100), "{st}");
+            assert_eq!(l.confidence, Some(conf), "{st}");
+            assert_ne!(l.gate_verdict, "NOT_EVALUATED", "{st}");
+        }
+        // ... and the pillar shows its own confidence
+        let mut r = all_pass();
+        r.push(res("TC-006", "authz", "INCONCLUSIVE"));
+        let l = ledger(&r, &[], false);
+        let a = l.pillars.iter().find(|p| p.id == "authority").unwrap();
+        assert_eq!((a.score, a.confidence), (Some(100), Some(50)));
+        // a blocked case keeps the gate from GO
+        let mut r = all_pass();
+        r.push(res("TC-006", "authz", "BLOCKED"));
+        assert_eq!(ledger(&r, &[], false).gate_verdict, "CONDITIONAL_GO");
+    }
+
+    fn blocked_by(id: &str, tech: &str, why: BlockReason) -> CaseExecutionResult {
+        let mut r = res(id, tech, "BLOCKED");
+        r.blocked_reason = Some(why);
+        if why != BlockReason::Transport {
+            r.status_code = None;
+            r.evidence_file = None; // a ledger-only row: nothing was sent
+        }
+        r
+    }
+
+    fn not_applicable(id: &str, tech: &str) -> CaseExecutionResult {
+        let mut r = res(id, tech, "NOT_APPLICABLE");
+        r.status_code = None;
+        r.evidence_file = None;
+        r.blocked_reason = Some(BlockReason::NoSurface);
+        r
+    }
+
+    #[test]
+    fn a_pillar_is_scored_on_conclusive_cases_and_only_when_it_is_confident_enough() {
+        // 3 conclusive of 6 applicable: 50% confidence, scored over the 3 that answered
+        let mut r: Vec<CaseExecutionResult> = (1..=3)
+            .map(|i| res(&format!("TC-{i:03}"), "injection", "PASS"))
+            .collect();
+        r.extend((4..=6).map(|i| res(&format!("TC-{i:03}"), "injection", "INCONCLUSIVE")));
+        let l = ledger(&r, &[], false);
+        let p = l.pillars.iter().find(|p| p.id == "safety").unwrap();
+        assert_eq!(
+            (p.score, p.confidence),
+            (Some(100), Some(50)),
+            "{}",
+            p.claim
+        );
+        // 2 of 6: 33%, below the minimum: not scored, and the claim says why
+        let mut r: Vec<CaseExecutionResult> = (1..=2)
+            .map(|i| res(&format!("TC-{i:03}"), "injection", "PASS"))
+            .collect();
+        r.extend((3..=6).map(|i| res(&format!("TC-{i:03}"), "injection", "INCONCLUSIVE")));
+        let l = ledger(&r, &[], false);
+        let p = l.pillars.iter().find(|p| p.id == "safety").unwrap();
+        assert_eq!(
+            (p.score, p.confidence, p.status.as_str()),
+            (None, Some(33), "not_evaluated")
+        );
+        assert!(
+            p.claim.contains("only 2 of 6 applicable") && p.claim.contains("33%"),
+            "{}",
+            p.claim
+        );
+        assert_eq!(l.safety_score, None);
+        // pass and warn over the conclusive ones: (pass + 0.5 warn) / conclusive
+        let r = vec![
+            res("TC-001", "authz", "PASS"),
+            res("TC-002", "authz", "PASS"),
+            res("TC-003", "authz", "WARN"),
+            res("TC-004", "authz", "INCONCLUSIVE"),
+        ];
+        let l = ledger(&r, &[], false);
+        assert_eq!(l.authority_score, Some(83), "(2 + 0.5) / 3");
+    }
+
+    #[test]
+    fn not_applicable_cases_are_in_no_denominator() {
+        let mut r = all_pass();
+        r.extend([
+            not_applicable("TC-006", "injection"),
+            not_applicable("TC-007", "boundary"),
+            not_applicable("TC-008", "negative"),
+        ]);
+        let l = ledger(&r, &[], false);
+        // same scores, same confidence, same verdict as without the rows
+        let base = ledger(&all_pass(), &[], false);
+        assert_eq!(
+            (
+                l.value_score,
+                l.authority_score,
+                l.safety_score,
+                l.evidence_score,
+                l.confidence,
+                l.overall_readiness,
+                l.gate_verdict.as_str()
+            ),
+            (
+                base.value_score,
+                base.authority_score,
+                base.safety_score,
+                base.evidence_score,
+                base.confidence,
+                base.overall_readiness,
+                base.gate_verdict.as_str()
+            )
+        );
+        // the matrix shows them, in the cell of their technique
+        let inj = l
+            .coverage
+            .iter()
+            .find(|c| c.technique == "injection")
+            .unwrap();
+        assert_eq!((inj.planned, inj.not_applicable, inj.pass), (2, 1, 1));
+        // the evidence pillar counts what was sent only
+        let ev = l.pillars.iter().find(|p| p.id == "evidence").unwrap();
+        assert_eq!(ev.score, Some(100), "{}", ev.claim);
+        assert!(
+            l.exit_criteria_checklist
+                .iter()
+                .find(|c| c.criterion.starts_with("Every executed case"))
+                .unwrap()
+                .met
+        );
+        // a pillar with nothing but not applicable cases is not evaluated: absence of a found
+        // surface is not a pass, and the verdict cannot be GO
+        let only_na = vec![
+            res("TC-001", "state_transition", "PASS"),
+            res("TC-002", "authz", "PASS"),
+            not_applicable("TC-003", "injection"),
+        ];
+        let l = ledger(&only_na, &[], false);
+        assert_eq!(l.safety_score, None);
+        assert_eq!(l.gate_verdict, "CONDITIONAL_GO");
+        assert!(l.verdict_basis.contains("not evaluated: safety"));
+        // the claim cites the not applicable rows
+        assert!(
+            l.claims
+                .iter()
+                .any(|c| c.claim.contains("not applicable") && c.case_ids == ["TC-003"])
+        );
+    }
+
+    /// The NuHire run: 18 cases, 3 gave a result, 15 were inconclusive. Not one of them was a
+    /// defect of the app.
+    #[test]
+    fn mostly_inconclusive_is_not_evaluated_never_no_go() {
+        let mut r: Vec<CaseExecutionResult> = vec![
+            res("TC-001", "authz", "PASS"),
+            res("TC-002", "authz", "PASS"),
+            res("TC-003", "state_transition", "PASS"),
+        ];
+        let techs = [
+            "injection",
+            "boundary",
+            "negative",
+            "authz",
+            "state_transition",
+        ];
+        for i in 4..=18 {
+            r.push(res(&format!("TC-{i:03}"), techs[i % 5], "INCONCLUSIVE"));
+        }
+        let l = ledger(&r, &[], false);
+        assert_eq!(l.gate_verdict, "NOT_EVALUATED", "{}", l.verdict_basis);
+        assert_eq!(l.confidence, Some(16), "3 of 18");
+        assert!(!l.evaluated);
+        assert_eq!((l.composite_score, l.overall_readiness), (None, 0));
+        assert!(
+            l.verdict_basis.contains("insufficient evidence"),
+            "{}",
+            l.verdict_basis
+        );
+        assert!(
+            l.executive_summary.contains("Confidence 16%"),
+            "{}",
+            l.executive_summary
+        );
+        // the same run with the cases that did answer failing for real is a different story
+        let mut r2 = r.clone();
+        r2[0].status = "FAIL".into();
+        r2[0].oracle = res("x", "authz", "FAIL").oracle;
+        r2[0].oracle.as_mut().unwrap().checks[0].severity = Some(Severity::Critical);
+        let l = ledger(&r2, &[defect_with("critical", None)], false);
+        assert_eq!(
+            l.gate_verdict, "NO_GO",
+            "a proven critical defect is never hidden behind low coverage"
+        );
+        assert!(l.verdict_basis.contains("critical"), "{}", l.verdict_basis);
+    }
+
+    #[test]
+    fn a_proven_failure_with_enough_evidence_is_no_go_and_a_low_score_on_confident_pillars_too() {
+        // real critical failure
+        let mut c = all_pass();
+        let mut f = res("TC-006", "authz", "FAIL");
+        f.oracle.as_mut().unwrap().checks[0].severity = Some(Severity::Critical);
+        c.push(f);
+        let l = ledger(&c, &[defect_with("critical", None)], false);
+        assert_eq!(l.gate_verdict, "NO_GO");
+        assert!(l.evaluated && l.authority_score.unwrap() <= 40);
+        assert_eq!(l.confidence, Some(100));
+        // many medium failures: conclusive, confident, and below 70
+        let mut r: Vec<CaseExecutionResult> = vec![];
+        for i in 1..=10 {
+            r.push(res(
+                &format!("TC-{i:03}"),
+                "boundary",
+                if i <= 6 { "FAIL" } else { "PASS" },
+            ));
+        }
+        let l = ledger(&r, &[], false);
+        assert_eq!(l.gate_verdict, "NO_GO", "{}", l.verdict_basis);
+        assert!(l.verdict_basis.contains("< 70"), "{}", l.verdict_basis);
+    }
+
+    #[test]
+    fn the_blockers_say_what_stopped_the_evidence_and_what_to_provide() {
+        let mut r = all_pass();
+        r.push(blocked_by("TC-006", "injection", BlockReason::AuthWall));
+        r.push(blocked_by("TC-007", "boundary", BlockReason::AuthWall));
+        let l = ledger(&r, &[], false);
+        let b = l
+            .blockers
+            .iter()
+            .find(|b| b.reason == BlockReason::AuthWall)
+            .expect("auth wall blocker");
+        assert_eq!(b.case_ids, ["TC-006", "TC-007"]);
+        assert!(b.detail.contains("2 case(s)") && b.detail.contains("login"));
+        assert!(
+            b.next_step.contains("roles init") && b.next_step.contains("RH_<ROLE>_TOKEN"),
+            "{}",
+            b.next_step
+        );
+        assert!(
+            l.executive_summary.contains("auth wall") && l.executive_summary.contains("Next step"),
+            "{}",
+            l.executive_summary
+        );
+        // no input surface: most of the input techniques are not applicable
+        let mut r = vec![
+            res("TC-001", "state_transition", "PASS"),
+            res("TC-002", "authz", "PASS"),
+        ];
+        r.extend(
+            ["injection", "boundary", "negative"]
+                .iter()
+                .enumerate()
+                .map(|(i, t)| not_applicable(&format!("TC-{:03}", 3 + i), t)),
+        );
+        let l = ledger(&r, &[], false);
+        let b = l
+            .blockers
+            .iter()
+            .find(|b| b.reason == BlockReason::NoSurface)
+            .expect("no surface blocker");
+        assert_eq!(b.case_ids.len(), 3);
+        assert!(b.next_step.contains("spec"), "{}", b.next_step);
+        assert!(l.blockers.iter().all(|b| b.reason != BlockReason::AuthWall));
+        // transport
+        let mut r = all_pass();
+        r.push(blocked_by("TC-006", "authz", BlockReason::Transport));
+        let l = ledger(&r, &[], false);
+        assert!(
+            l.blockers
+                .iter()
+                .any(|b| b.reason == BlockReason::Transport && b.next_step.contains("reachable"))
+        );
+        // a clean run has none
+        assert!(ledger(&all_pass(), &[], false).blockers.is_empty());
+    }
+
+    #[test]
+    fn an_app_behind_a_login_is_not_evaluated_with_an_auth_wall_blocker() {
+        // the entry redirects to a login, nothing else is reachable: the sensitive-file probes
+        // answer and the rest is blocked by the wall
+        let r = vec![
+            blocked_by("TC-001", "state_transition", BlockReason::AuthWall),
+            res("TC-002", "authz", "PASS"),
+            res("TC-003", "authz", "PASS"),
+            blocked_by("TC-004", "injection", BlockReason::AuthWall),
+            blocked_by("TC-005", "boundary", BlockReason::AuthWall),
+            blocked_by("TC-006", "negative", BlockReason::AuthWall),
+        ];
+        let l = ledger(&r, &[], false);
+        assert_eq!(l.gate_verdict, "NOT_EVALUATED", "{}", l.verdict_basis);
+        assert_eq!(l.confidence, Some(33));
+        assert!(
+            l.blockers
+                .iter()
+                .any(|b| b.reason == BlockReason::AuthWall && b.case_ids.len() == 4)
+        );
+    }
+
+    /// spa-next without test accounts: the hygiene probes conclude (that is 55% of the cases) but
+    /// nothing says anything about the app behind the login.
+    #[test]
+    fn hygiene_that_holds_whatever_the_app_does_is_not_a_verdict_behind_a_login_wall() {
+        let r = vec![
+            blocked_by("TC-001", "state_transition", BlockReason::AuthWall),
+            res("TC-002", "authz", "PASS"), // /.env is the shell
+            res("TC-003", "authz", "PASS"), // /.git/config is the shell
+            res("TC-004", "authz", "PASS"), // forged token on /api/orders: 401
+            res("TC-005", "authz", "PASS"), // forged token on /api/profile: 401
+            blocked_by("TC-006", "injection", BlockReason::AuthWall),
+            blocked_by("TC-007", "boundary", BlockReason::AuthWall),
+            blocked_by("TC-008", "negative", BlockReason::AuthWall),
+            res("TC-009", "state_transition", "PASS"), // a catch-all page loads
+        ];
+        let l = ledger(&r, &[], false);
+        assert_eq!(l.confidence, Some(55), "5 of 9");
+        assert_eq!(
+            l.authority_score,
+            Some(100),
+            "the pillar is scored, and shown"
+        );
+        assert_eq!((l.value_score, l.safety_score), (None, None));
+        assert_eq!(l.gate_verdict, "NOT_EVALUATED", "{}", l.verdict_basis);
+        assert!(
+            l.verdict_basis.contains("behind a login wall"),
+            "{}",
+            l.verdict_basis
+        );
+        assert!(l.blockers.iter().any(|b| b.reason == BlockReason::AuthWall));
+        // the same run once the wall was passed for some of the app: scored, a gate verdict
+        let mut r2 = r.clone();
+        for (i, t) in [(0, "state_transition"), (6, "boundary"), (7, "negative")] {
+            r2[i] = res(&format!("TC-{:03}", i + 1), t, "PASS");
+        }
+        let l = ledger(&r2, &[], false);
+        assert_ne!(l.gate_verdict, "NOT_EVALUATED", "{}", l.verdict_basis);
+    }
+
+    #[test]
+    fn the_pass_rate_is_over_conclusive_cases_and_coverage_is_a_criterion_of_its_own() {
+        let crit = |l: &EvidenceLedger, name: &str| {
+            l.exit_criteria_checklist
+                .iter()
+                .find(|c| c.criterion.starts_with(name))
+                .unwrap_or_else(|| panic!("no criterion {name}"))
+                .clone()
+        };
+        // 9 pass, 1 inconclusive, 2 not applicable: pass rate 100% of the 9 conclusive, coverage 90%
+        let mut r: Vec<CaseExecutionResult> = (1..=9)
+            .map(|i| res(&format!("TC-{i:03}"), "boundary", "PASS"))
+            .collect();
+        r.push(res("TC-010", "boundary", "INCONCLUSIVE"));
+        r.push(not_applicable("TC-011", "injection"));
+        r.push(not_applicable("TC-012", "negative"));
+        let l = ledger(&r, &[], false);
+        let pass = crit(&l, "Pass rate");
+        assert!(pass.met, "{}", pass.details);
+        assert!(pass.criterion.contains("conclusive applicable"));
+        assert!(pass.details.contains("9 of 9"), "{}", pass.details);
+        let cov = crit(&l, "Conclusive coverage >= 80%");
+        assert!(cov.met, "{}", cov.details);
+        assert!(cov.details.contains("9 of 10"), "{}", cov.details);
+        // 6 conclusive of 10 applicable: 60% < 80%, and the verdict says so
+        let mut r: Vec<CaseExecutionResult> = (1..=6)
+            .map(|i| res(&format!("TC-{i:03}"), "boundary", "PASS"))
+            .collect();
+        r.extend((7..=10).map(|i| res(&format!("TC-{i:03}"), "boundary", "INCONCLUSIVE")));
+        let l = ledger(&r, &[], false);
+        assert!(!crit(&l, "Conclusive coverage >= 80%").met);
+        assert!(crit(&l, "Pass rate").met, "100% of what was conclusive");
+        assert_eq!(l.gate_verdict, "CONDITIONAL_GO");
+        assert!(l.verdict_basis.contains("need 80%"), "{}", l.verdict_basis);
+    }
+
+    #[test]
+    fn a_pillar_claim_names_its_techniques() {
+        // the merged cell carried no technique, so the claim began with ": 2 passed"
+        let l = ledger(&all_pass(), &[], false);
+        for p in l.pillars.iter().filter(|p| p.id != "evidence") {
+            assert!(
+                !p.claim.starts_with(':') && p.claim.starts_with(&p.techniques.join("/")),
+                "{}: {}",
+                p.id,
+                p.claim
+            );
+        }
+        let v = l.pillars.iter().find(|p| p.id == "value").unwrap();
+        assert!(
+            v.claim
+                .starts_with("boundary/negative/state_transition: 3 passed"),
+            "{}",
+            v.claim
+        );
+        let m = merge("a/b", &[]);
+        assert_eq!(m.technique, "a/b");
     }
 
     #[test]

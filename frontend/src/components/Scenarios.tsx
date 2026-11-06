@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import type { TestCaseResult } from "@/types/agent";
 import { copyTextSafely } from "@/lib/clipboard";
+import { blockReasonLabel } from "@/lib/runs";
 import { StatefulChainFlow } from "./StatefulChainFlow";
 import { ConcurrencyBurstMeter } from "./ConcurrencyBurstMeter";
 import { AutoRemediationCard } from "./AutoRemediationCard";
@@ -256,25 +257,45 @@ export function getOwaspClassification(tc: TestCaseResult): OwaspClassification 
   };
 }
 
-function getStatusBadge(status: string) {
+function getStatusBadge(status: string, blockedReason?: string | null) {
   switch (status) {
+    case "BLOCKED": {
+      // No evidence could be gathered: not a failure and not a pass. The reason says what to provide.
+      const reason = blockReasonLabel(blockedReason);
+      return {
+        bg: "bg-rh-info/15 text-rh-info",
+        dot: "bg-rh-info",
+        text: reason ? `Blocked: ${reason.toLowerCase()}` : "Blocked",
+        title: reason ? `No evidence could be gathered: ${reason.toLowerCase()}` : "No evidence could be gathered",
+      };
+    }
+    case "NOT_APPLICABLE": {
+      const reason = blockReasonLabel(blockedReason);
+      return {
+        bg: "bg-rh-raised text-rh-muted",
+        dot: "bg-rh-muted",
+        text: "Not applicable",
+        title: `Not counted: ${reason ? reason.toLowerCase() : "this technique has no surface on this route"}`,
+      };
+    }
     case "PASS":
-      return { bg: "bg-rh-go/15 text-rh-go", dot: "bg-rh-go", text: "Pass" };
+      return { bg: "bg-rh-go/15 text-rh-go", dot: "bg-rh-go", text: "Pass", title: undefined };
     case "FAIL":
-      return { bg: "bg-rh-nogo/15 text-rh-nogo", dot: "bg-rh-nogo", text: "Fail" };
+      return { bg: "bg-rh-nogo/15 text-rh-nogo", dot: "bg-rh-nogo", text: "Fail", title: undefined };
     case "INCONCLUSIVE":
-      return { bg: "bg-rh-cond/15 text-rh-cond", dot: "bg-rh-cond", text: "Inconclusive" };
+      return { bg: "bg-rh-cond/15 text-rh-cond", dot: "bg-rh-cond", text: "Inconclusive", title: undefined };
     case "WARN":
-      return { bg: "bg-rh-cond/15 text-rh-cond", dot: "bg-rh-cond", text: "Warn" };
+      return { bg: "bg-rh-cond/15 text-rh-cond", dot: "bg-rh-cond", text: "Warn", title: undefined };
     case "PLANNED":
     case "PENDING":
-      return { bg: "bg-rh-info/15 text-rh-info", dot: "bg-rh-info", text: "Planned" };
+      return { bg: "bg-rh-info/15 text-rh-info", dot: "bg-rh-info", text: "Planned", title: undefined };
     case "SKIPPED":
     default:
       return {
         bg: "bg-rh-raised text-rh-muted",
         dot: "bg-rh-muted",
         text: status ? status.charAt(0) + status.slice(1).toLowerCase() : "Skipped",
+        title: undefined,
       };
   }
 }
@@ -474,6 +495,8 @@ export function Scenarios({
             <option value="FAIL">Fail</option>
             <option value="INCONCLUSIVE">Inconclusive</option>
             <option value="WARN">Warn</option>
+            <option value="BLOCKED">Blocked</option>
+            <option value="NOT_APPLICABLE">Not applicable</option>
             <option value="SKIPPED">Skipped</option>
             <option value="PLANNED">Planned</option>
           </select>
@@ -514,7 +537,7 @@ export function Scenarios({
           {filteredCases.map((tc) => {
             const isExpanded = expandedRowId === tc.id;
             const owasp = getOwaspClassification(tc);
-            const statusBadge = getStatusBadge(tc.status);
+            const statusBadge = getStatusBadge(tc.status, tc.blocked_reason);
 
             const isBola =
               tc.technique?.toLowerCase().includes("bola") ||
@@ -578,7 +601,10 @@ export function Scenarios({
                   </span>
 
                   <span className="flex items-center gap-3 text-xs shrink-0">
-                    <span className={`px-2 py-0.5 rounded-[6px] text-xs font-semibold flex items-center gap-1.5 ${statusBadge.bg}`}>
+                    <span
+                      title={statusBadge.title}
+                      className={`px-2 py-0.5 rounded-[6px] text-xs font-semibold flex items-center gap-1.5 ${statusBadge.bg}`}
+                    >
                       <span className={`w-1.5 h-1.5 rounded-full ${statusBadge.dot}`} aria-hidden="true" />
                       {statusBadge.text}
                     </span>
@@ -783,6 +809,21 @@ export function Scenarios({
                           <span>Content type: </span>
                           <span className="text-rh-text font-mono">{tc.response_content_type || "unspecified"}</span>
                         </div>
+
+                        {tc.redirect_chain && tc.redirect_chain.length > 0 && (
+                          <div className="flex flex-col gap-1" data-testid="redirect-chain">
+                            <span className="text-rh-muted text-xs font-semibold">Redirects followed before this response</span>
+                            <ol className="flex flex-col gap-0.5 font-mono text-xs text-rh-text">
+                              {tc.redirect_chain.map((hop, i) => (
+                                <li key={i} className="break-all">
+                                  <span className="tabular-nums text-rh-cond">{hop.status}</span>
+                                  <span className="text-rh-muted"> to </span>
+                                  {hop.location}
+                                </li>
+                              ))}
+                            </ol>
+                          </div>
+                        )}
 
                         <div className="flex flex-col gap-1">
                           <div className="flex items-center justify-between">

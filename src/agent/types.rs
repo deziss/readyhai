@@ -96,7 +96,62 @@ pub struct AgentRunRequest {
     pub diff_base: Option<String>,
 }
 
+/// One hop of a redirect chain: the status that redirected and where it pointed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RedirectHop {
+    pub status: u16,
+    pub location: String,
+}
+
+/// Where a route takes input. `None` = nothing an input-class test (injection, boundary,
+/// negative) could exercise, so those techniques are not planned there.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputSurface {
+    #[default]
+    None,
+    Query,
+    Form,
+    Json,
+    Spec,
+}
+
+/// Soft-404 calibration: how the target answers paths that cannot exist. A route whose response
+/// matches is a catch-all (SPA shell / custom not-found page), not a real route.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Soft404Fingerprint {
+    pub status: u16,
+    /// Body length in bytes (matching allows a +/-5% tolerance).
+    pub len: usize,
+    /// Hash of the normalised visible text (tokens, numbers, timestamps stripped).
+    pub text_hash: String,
+}
+
+/// Why a case could not produce evidence. A BLOCKED case is not a failure and not a pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockReason {
+    /// The route sits behind a login wall and no role/credential was provided.
+    AuthWall,
+    /// The request would leave the allowed scope.
+    OutOfScope,
+    /// Nothing on the route accepts input for this technique.
+    NoSurface,
+    /// Transport error: no HTTP answer.
+    Transport,
+}
+
+/// Something that kept the run from gathering evidence, and what the user can do about it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Blocker {
+    pub reason: BlockReason,
+    pub detail: String,
+    pub next_step: String,
+    #[serde(default)]
+    pub case_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiscoveredRoute {
     pub path: String,
     pub method: String,
@@ -113,9 +168,23 @@ pub struct DiscoveredRoute {
     pub secured: Option<bool>,
     #[serde(default)]
     pub has_body: bool,
-    /// crawl | probe | openapi
+    /// crawl | probe | openapi | manifest | js | sitemap | xhr
     #[serde(default)]
     pub source: String,
+    /// URL the route finally answered from after same-origin redirects (None: no redirect).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_url: Option<String>,
+    /// Redirect hops before the final answer; `status_code` is the FIRST hop's status.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redirect_chain: Vec<RedirectHop>,
+    /// 401, or a redirect to a login/sign-in/SSO page, or a password form: needs credentials.
+    #[serde(default)]
+    pub auth_wall: bool,
+    /// The response matches the soft-404 fingerprint: not a real route.
+    #[serde(default)]
+    pub catch_all: bool,
+    #[serde(default)]
+    pub input_surface: InputSurface,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,7 +291,7 @@ pub struct AttemptRecord {
     pub verdict: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CaseExecutionResult {
     pub case_id: String,
     pub title: String,
@@ -230,7 +299,9 @@ pub struct CaseExecutionResult {
     #[serde(default = "default_method")]
     pub method: String,
     pub technique: String,
-    /// PASS | FAIL | WARN | INCONCLUSIVE | BLOCKED (could not run: transport error) | SKIPPED (not run: dry-run, budget, invalid)
+    /// PASS | FAIL | WARN | INCONCLUSIVE | BLOCKED (could not gather evidence: see `blocked_reason`)
+    /// | SKIPPED (not run: dry-run, budget, invalid) | NOT_APPLICABLE (technique has no surface on
+    /// this route; excluded from every denominator)
     pub status: String,
     pub status_code: Option<u16>,
     pub latency_ms: u64,
@@ -259,6 +330,12 @@ pub struct CaseExecutionResult {
     pub stateful_chain: Option<Vec<StatefulStepExecution>>,
     #[serde(default)]
     pub concurrency_burst_results: Option<Vec<u16>>,
+    /// Set when `status` is BLOCKED (or NOT_APPLICABLE): why no evidence could be gathered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<BlockReason>,
+    /// Same-origin redirects the executor followed before the judged response.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redirect_chain: Vec<RedirectHop>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -337,6 +414,8 @@ pub struct CoverageCell {
     pub blocked: usize,
     pub skipped: usize,
     pub flaky: usize,
+    #[serde(default)]
+    pub not_applicable: usize,
     pub case_ids: Vec<String>,
     pub evidence_files: Vec<String>,
 }
@@ -350,6 +429,9 @@ pub struct PillarResult {
     pub score: Option<u32>,
     pub status: String, // pass | fail | partial | not_evaluated
     pub claim: String,
+    /// Conclusive (pass+warn+fail) share of the applicable cases, 0..=100. None: nothing applicable.
+    #[serde(default)]
+    pub confidence: Option<u32>,
     pub techniques: Vec<String>,
     pub case_ids: Vec<String>,
     pub evidence_files: Vec<String>,
@@ -419,6 +501,13 @@ pub struct EvidenceLedger {
     /// What the independent verifier did with the failed cases (None: older run / not attached).
     #[serde(default)]
     pub verification: Option<VerificationSummary>,
+    /// Conclusive share of the applicable cases over the whole run, 0..=100.
+    #[serde(default)]
+    pub confidence: Option<u32>,
+    /// What kept evidence from being gathered (auth wall, no API surface, LLM down, ...) and the
+    /// next step for each. Drives NOT_EVALUATED explanations in the report and UI.
+    #[serde(default)]
+    pub blockers: Vec<Blocker>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -673,10 +762,51 @@ pub struct AgentRunSummary {
 
 // ---------------------------------------------------------------- shared run-lifecycle API
 
+/// `PlannedCase::source` of a planner-made ledger row that sends nothing: no technique has a
+/// surface on the discovered routes. The executor turns it into a NOT_APPLICABLE result
+/// (`BlockReason::NoSurface`) without a request, a step or any budget.
+pub const SRC_NOT_APPLICABLE: &str = "ledger:not_applicable";
+/// Same, for routes behind a login wall with no credential to get past it: a BLOCKED result
+/// (`BlockReason::AuthWall`).
+pub const SRC_AUTH_WALL: &str = "ledger:auth_wall";
+
+impl PlannedCase {
+    /// A planner-made ledger row (see [`SRC_NOT_APPLICABLE`], [`SRC_AUTH_WALL`]), not a request.
+    pub fn is_ledger_row(&self) -> bool {
+        matches!(
+            self.source.as_deref(),
+            Some(SRC_NOT_APPLICABLE) | Some(SRC_AUTH_WALL)
+        )
+    }
+}
+
 impl CaseExecutionResult {
+    /// A request went to the target for this result: not SKIPPED, not NOT_APPLICABLE, and not a
+    /// ledger-only BLOCKED row (an auth wall the planner already knew about, nothing was sent).
+    /// A transport error counts: the request was sent, it just got no answer.
+    pub fn was_sent(&self) -> bool {
+        match self.status.as_str() {
+            "SKIPPED" | "NOT_APPLICABLE" => false,
+            "BLOCKED" => {
+                self.status_code.is_some()
+                    || !matches!(
+                        self.blocked_reason,
+                        Some(
+                            BlockReason::AuthWall
+                                | BlockReason::NoSurface
+                                | BlockReason::OutOfScope
+                        )
+                    )
+            }
+            _ => true,
+        }
+    }
+
     /// A SKIPPED result for a planned case that was never sent (dropped by plan truncation, ...).
     pub fn not_run(case: &PlannedCase, reason: impl Into<String>) -> Self {
         CaseExecutionResult {
+            blocked_reason: None,
+            redirect_chain: vec![],
             case_id: case.id.clone(),
             title: case.title.clone(),
             component: case.component.clone(),
@@ -709,10 +839,10 @@ impl CaseExecutionResult {
     }
 }
 
-/// (executed cases with stored request/response evidence, executed cases). SKIPPED cases were never
-/// sent and are not counted. The evidence pillar should be this share, not a constant.
+/// (executed cases with stored request/response evidence, executed cases). Cases that were never
+/// sent (SKIPPED, NOT_APPLICABLE, ledger-only rows: see `was_sent`) are not counted. The evidence pillar should be this share, not a constant.
 pub fn evidence_share(results: &[CaseExecutionResult]) -> (usize, usize) {
-    let executed = results.iter().filter(|r| r.status != "SKIPPED");
+    let executed = results.iter().filter(|r| r.was_sent());
     let total = executed.clone().count();
     (executed.filter(|r| r.has_stored_evidence()).count(), total)
 }
@@ -729,7 +859,7 @@ pub fn profile_case_cap(profile: &str) -> Option<usize> {
 /// Sort key: lower runs first and is dropped last. Access control (auth), stateful scenarios and
 /// OpenAPI-derived cases outrank generic probes; the root liveness probe is always kept.
 pub fn case_priority(c: &PlannedCase) -> (u8, u8) {
-    let class = if c.component == "/" || c.technique == "authz" {
+    let class = if c.component == "/" || c.technique == "authz" || c.is_ledger_row() {
         0
     } else if c.stateful_steps.as_ref().is_some_and(|s| !s.is_empty())
         || c.concurrency_burst.is_some_and(|b| b > 1)

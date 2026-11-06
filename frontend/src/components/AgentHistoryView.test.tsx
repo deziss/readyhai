@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { NOT_EVALUATED_LEDGER } from "@/lib/testFixtures";
 import { AgentHistoryView } from "./AgentHistoryView";
 
 const run = (id: string, status: string, over: Record<string, unknown> = {}) => ({
@@ -119,5 +120,80 @@ describe("AgentHistoryView run statuses", () => {
     const approve = await screen.findByText("Approve production gate");
     expect((approve.closest("button") as HTMLButtonElement).disabled).toBe(true);
     expect(within(document.body).getByText(/failed run cannot be approved/i)).toBeTruthy();
+  });
+});
+
+describe("AgentHistoryView with a not-evaluated run", () => {
+  const NE = run("20260101-000000-eeeeeeeeeeeeeee1", "completed", {
+    evidence_ledger: NOT_EVALUATED_LEDGER,
+    executed_results: [
+      {
+        case_id: "TC-001",
+        title: "Liveness of /",
+        component: "/",
+        technique: "liveness",
+        method: "GET",
+        status: "PASS",
+        status_code: 200,
+        redirect_chain: [{ status: 307, location: "/login" }],
+      },
+      {
+        case_id: "TC-002",
+        title: "Cross-user read",
+        component: "/api/me",
+        technique: "authz",
+        method: "GET",
+        status: "BLOCKED",
+        blocked_reason: "auth_wall",
+      },
+      {
+        case_id: "TC-003",
+        title: "Injection on the shell",
+        component: "/",
+        technique: "injection",
+        method: "GET",
+        status: "NOT_APPLICABLE",
+        blocked_reason: "no_surface",
+      },
+    ],
+  });
+
+  function stub() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ runs: [NE] }), { status: 200 }))
+    );
+  }
+
+  it("lists the run as Not evaluated, not as No go, with no score", async () => {
+    stub();
+    const { container } = render(<AgentHistoryView />);
+    await screen.findAllByText("https://20260101-000000-eeeeeeeeeeeeeee1.example/");
+    expect(screen.getAllByText("Not evaluated").length).toBeGreaterThan(0);
+    expect(container.innerHTML).not.toContain("0/100");
+    expect(screen.queryByText("No go", { selector: "span" })).toBeNull();
+  });
+
+  it("shows the scenario chips for blocked and not-applicable cases and the redirect chain", async () => {
+    stub();
+    render(<AgentHistoryView />);
+    await screen.findAllByText("https://20260101-000000-eeeeeeeeeeeeeee1.example/");
+    expect(screen.getByText("Blocked: auth wall")).toBeTruthy();
+    expect(screen.getByText("Not applicable", { selector: "span" })).toBeTruthy();
+    fireEvent.click(screen.getByText("Liveness of /"));
+    expect(screen.getByTestId("redirect-chain").textContent).toContain("/login");
+  });
+
+  it("shows what to provide next, the backend pillars and their confidence in the ledger tab", async () => {
+    stub();
+    render(<AgentHistoryView />);
+    await screen.findAllByText("https://20260101-000000-eeeeeeeeeeeeeee1.example/");
+    fireEvent.click(screen.getByRole("tab", { name: /Evidence ledger/ }));
+    const card = await screen.findByRole("region", { name: "What to provide next" });
+    expect(within(card).getByText(/readyhai roles init --spec/)).toBeTruthy();
+    expect(screen.getByText(/1\. Functional correctness and input handling/)).toBeTruthy();
+    expect(screen.getByText("confidence 40%")).toBeTruthy();
+    expect(screen.getAllByText("Not evaluated: insufficient evidence").length).toBe(2);
+    expect(screen.getByText(/cannot be approved/i)).toBeTruthy();
   });
 });

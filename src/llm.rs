@@ -63,6 +63,28 @@ pub const ENV_MODEL: &str = "READYHAI_LLM_MODEL";
 pub const ENV_MODELS: &str = "READYHAI_LLM_MODELS";
 pub const ENV_PROVIDER: &str = "READYHAI_LLM_PROVIDER";
 pub const ENV_ALLOW_CLOUD: &str = "READYHAI_LLM_ALLOW_CLOUD";
+/// Fixed per-call timeout in whole seconds, replacing the size-based one (see [`call_timeout_secs`]).
+pub const ENV_TIMEOUT_SECS: &str = "READYHAI_LLM_TIMEOUT_SECS";
+
+/// Per-call timeout for a request that may produce `max_tokens` tokens: `20 s + max_tokens / 40`
+/// (a slow server makes about 40 tokens/s), clamped to 30..=300 s. A fixed 60 s killed every
+/// reasoning call (Max Pro asks for ~35k tokens) while a 1-token probe does not need minutes.
+pub fn call_timeout_secs(max_tokens: u32) -> u64 {
+    (20 + u64::from(max_tokens) / 40).clamp(30, 300)
+}
+
+/// Reachability / latency probe ceiling: a slower answer than this is reported as a timeout.
+const LATENCY_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+/// A probe answer slower than this means long reasoning calls will not fit (see `probe_latency`).
+pub const SLOW_LATENCY: Duration = Duration::from_secs(10);
+/// Thinking budget of the High tier, the ceiling a slow endpoint is held to.
+pub const HIGH_TIER_BUDGET: u32 = 8192;
+/// After a timeout a call is retried smaller at most this many times before the next model is tried.
+const MAX_TIMEOUT_DOWNGRADES: usize = 2;
+/// Smallest `max_tokens` a timeout downgrade goes down to.
+const DOWNGRADE_FLOOR_TOKENS: u32 = 1024;
+/// A server error (5xx) is retried once, then the next model in the chain is tried.
+const MAX_SERVER_ERROR_RETRIES: u32 = 1;
 
 pub const CATALOG: &[ProviderDescriptor] = &[
     ProviderDescriptor {
@@ -307,9 +329,45 @@ pub struct LlmConfig {
     pub thinking_budget_tokens: u32,
     /// Model tier (low, medium, high, max, max_pro).
     pub model_tier: String,
+    /// `READYHAI_LLM_TIMEOUT_SECS`: one timeout for every call instead of the size-based one.
+    pub timeout_override: Option<Duration>,
 }
 
 impl LlmConfig {
+    /// The timeout of one call that may produce `max_tokens` tokens ([`call_timeout_secs`], unless
+    /// `READYHAI_LLM_TIMEOUT_SECS` is set).
+    pub fn call_timeout(&self, max_tokens: u32) -> Duration {
+        self.timeout_override
+            .unwrap_or_else(|| Duration::from_secs(call_timeout_secs(max_tokens)))
+    }
+
+    /// The same config without reasoning: what gate and triage calls use. Such a call is a short
+    /// summary of facts already computed, so it is capped at 2048 tokens and sends no
+    /// `reasoning_effort` whatever tier the planner runs at.
+    pub fn without_thinking(&self) -> Self {
+        let mut c = self.clone();
+        c.thinking = false;
+        c
+    }
+
+    /// For a slow endpoint: the High tier (8192-token budget) in place of a bigger one. None when
+    /// thinking is off or the config is not above High already.
+    pub fn capped_to_high_tier(&self) -> Option<Self> {
+        let top = matches!(
+            self.model_tier.to_ascii_lowercase().as_str(),
+            "max" | "max_pro"
+        );
+        if !self.thinking || !(top || self.thinking_budget_tokens > HIGH_TIER_BUDGET) {
+            return None;
+        }
+        let mut c = self.clone();
+        if top {
+            c.model_tier = "high".into();
+        }
+        c.thinking_budget_tokens = c.thinking_budget_tokens.min(HIGH_TIER_BUDGET);
+        Some(c)
+    }
+
     pub fn from_env() -> Result<Self> {
         Self::from_vars(|k| std::env::var(k).ok())
     }
@@ -342,6 +400,12 @@ impl LlmConfig {
         }
         if let Some(k) = val(ENV_API_KEY) {
             cfg.api_key = Some(ApiKey::new(k));
+        }
+        if let Some(t) = val(ENV_TIMEOUT_SECS) {
+            cfg.timeout_override = Some(match t.parse::<u64>() {
+                Ok(n) if (1..=3600).contains(&n) => Duration::from_secs(n),
+                _ => bail!("{ENV_TIMEOUT_SECS} must be a whole number of seconds from 1 to 3600"),
+            });
         }
         Ok(cfg)
     }
@@ -379,6 +443,7 @@ impl LlmConfig {
             thinking: false,
             thinking_budget_tokens: 8192,
             model_tier: "high".to_string(),
+            timeout_override: None,
         })
     }
 
@@ -718,13 +783,41 @@ fn backoff(cfg: &LlmConfig, attempt: u32, retry_after: Option<&str>) -> Duration
     Duration::from_millis(base.saturating_add(jitter))
 }
 
-/// Send the request built by `build`, retrying 429/5xx/timeouts with exponential backoff.
-/// Connection refusals and 4xx (except 408/425/429) fail immediately: they will not heal by waiting.
+/// Client-level timeout of structured calls: only a backstop, every request sets its own.
+const CLIENT_BACKSTOP_SECS: u64 = 3660;
+
+/// `max_tokens` the tool-calling chat clients ask for (Anthropic sends it; OpenAI-compatible servers
+/// default to something comparable): the size their timeout is derived from.
+const CHAT_MAX_TOKENS: u32 = 4096;
+
+/// A call that hit its per-call timeout. It is never retried identically (the same request would
+/// time out again): `raw_chat` sends a smaller one, anything else moves on to the next model.
+#[derive(Debug)]
+struct CallTimedOut(String);
+
+impl std::fmt::Display for CallTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for CallTimedOut {}
+
+/// True when `e` is a per-call timeout (as opposed to a refusal, a bad status or an unusable answer).
+pub fn is_timeout_error(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<CallTimedOut>().is_some()
+}
+
+/// Send the request built by `build`. 429 (and 408/425) are retried with the server's `Retry-After`
+/// or exponential backoff up to `cfg.max_attempts`; a 5xx is retried once; a timeout is an error
+/// ([`CallTimedOut`]) at once. Connection refusals and 4xx (except 408/425/429) fail immediately:
+/// they will not heal by waiting. The caller sets the per-call timeout on the request.
 fn send_retrying(
     cfg: &LlmConfig,
     build: impl Fn() -> reqwest::blocking::RequestBuilder,
 ) -> Result<reqwest::blocking::Response> {
     let attempts = cfg.max_attempts.max(1);
+    let mut server_retries = 0;
     let mut last: Option<anyhow::Error> = None;
     for attempt in 0..attempts {
         let delay;
@@ -734,6 +827,12 @@ fn send_retrying(
                 if !retryable_status(code) || attempt + 1 == attempts {
                     return Ok(r);
                 }
+                if code >= 500 {
+                    if server_retries >= MAX_SERVER_ERROR_RETRIES {
+                        return Ok(r);
+                    }
+                    server_retries += 1;
+                }
                 delay = backoff(
                     cfg,
                     attempt,
@@ -742,13 +841,7 @@ fn send_retrying(
                 last = Some(anyhow::anyhow!("HTTP {code}"));
             }
             Err(e) if e.is_timeout() => {
-                if attempt + 1 == attempts {
-                    return Err(anyhow::anyhow!(
-                        "LLM request timed out after {attempts} attempts: {e}"
-                    ));
-                }
-                delay = backoff(cfg, attempt, None);
-                last = Some(e.into());
+                return Err(CallTimedOut("LLM request timed out".into()).into());
             }
             Err(e) => return Err(e.into()),
         }
@@ -765,7 +858,7 @@ impl ChatClient for OpenAiClient {
             self.cfg.base_url()?.trim_end_matches('/')
         );
         let key = key(&self.cfg)?;
-        let c = http(Duration::from_secs(120))?;
+        let c = http(self.cfg.call_timeout(CHAT_MAX_TOKENS))?;
         try_models(&self.cfg, |model| {
             let body = self.body_for(model, system, messages, tools);
             let r = send_retrying(&self.cfg, || {
@@ -797,7 +890,7 @@ impl ChatClient for AnthropicClient {
         self.cfg.guard()?;
         let url = format!("{}/v1/messages", self.cfg.base_url()?.trim_end_matches('/'));
         let key = key(&self.cfg)?;
-        let c = http(Duration::from_secs(120))?;
+        let c = http(self.cfg.call_timeout(CHAT_MAX_TOKENS))?;
         try_models(&self.cfg, |model| {
             let body = self.body_for(model, system, messages, tools);
             let r = send_retrying(&self.cfg, || {
@@ -973,6 +1066,66 @@ pub fn probe(cfg: &LlmConfig) -> bool {
     matches!(probe_status(cfg), Some(code) if code < 500)
 }
 
+/// One real chat completion of a single token with a tiny prompt, one attempt, no retry: how long the
+/// endpoint takes to answer when it has to generate (`/models` answering only says the server is up).
+/// Ok carries the latency (any 2xx answer); a timeout is the typed timeout error ([`is_timeout_error`]).
+pub fn probe_latency(cfg: &LlmConfig) -> Result<Duration> {
+    cfg.guard()?;
+    let base = cfg.base_url()?;
+    let timeout = cfg
+        .timeout_override
+        .map_or(LATENCY_PROBE_TIMEOUT, |t| t.min(LATENCY_PROBE_TIMEOUT));
+    let c = http(timeout)?;
+    let key = key(cfg)?;
+    let base = base.trim_end_matches('/');
+    let rq = match cfg.provider.transport {
+        Transport::OpenAiChat => c.post(format!("{base}/chat/completions")).json(&json!({
+            "model": cfg.model,
+            "messages": [{"role": "user", "content": "ping"}],
+            "max_tokens": 1,
+            "temperature": 0,
+        })),
+        Transport::AnthropicMessages => c.post(format!("{base}/v1/messages")).json(&json!({
+            "model": cfg.model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        })),
+    };
+    let t0 = std::time::Instant::now();
+    match authorize(cfg, rq, &key).send() {
+        Ok(r) if r.status().is_success() => Ok(t0.elapsed()),
+        Ok(r) => bail!("latency probe failed: HTTP {}", r.status().as_u16()),
+        Err(e) if e.is_timeout() => Err(CallTimedOut(format!(
+            "latency probe timed out after {} s",
+            timeout.as_secs()
+        ))
+        .into()),
+        Err(_) => bail!("latency probe failed: connection error"),
+    }
+}
+
+/// What a latency probe means for a run: the words for `llm_status` and whether the endpoint is
+/// too slow for long reasoning calls (answers in more than [`SLOW_LATENCY`], or does not answer a
+/// 1-token request in time although `/models` did).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LatencyReport {
+    pub summary: String,
+    pub slow: bool,
+}
+
+pub fn latency_report(probe: &Result<Duration>) -> LatencyReport {
+    match probe {
+        Ok(d) => LatencyReport {
+            summary: format!("latency {} ms", d.as_millis()),
+            slow: *d > SLOW_LATENCY,
+        },
+        Err(e) => LatencyReport {
+            summary: format!("{e}"),
+            slow: is_timeout_error(e),
+        },
+    }
+}
+
 /// Fetch list of models from provider /models endpoint.
 pub fn query_models(cfg: &LlmConfig) -> Result<Value> {
     cfg.guard()?;
@@ -1000,6 +1153,9 @@ pub struct Budget {
     started: std::time::Instant,
     /// The run's wall-clock deadline: no call starts after it.
     deadline: Option<std::time::Instant>,
+    /// What the LLM layer did that a reader of the run should know (a call that timed out and was
+    /// retried smaller, ...). The caller moves these into the run's notes.
+    pub notes: Vec<String>,
 }
 
 impl Budget {
@@ -1011,6 +1167,7 @@ impl Budget {
             elapsed: Duration::ZERO,
             started: std::time::Instant::now(),
             deadline: None,
+            notes: Vec::new(),
         }
     }
     pub fn per_run() -> Self {
@@ -1192,30 +1349,65 @@ pub fn call_params(cfg: &LlmConfig) -> CallParams {
     }
 }
 
-fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
-    let base = cfg.base_url()?;
-    let c = http(Duration::from_secs(60))?;
-    let key = key(cfg)?;
-    let p = call_params(cfg);
-    try_models(cfg, |model| match cfg.provider.transport {
+/// The next, smaller request after a timeout: half the `max_tokens` (never below
+/// [`DOWNGRADE_FLOOR_TOKENS`]) and no `reasoning_effort`. None when that changes nothing (the request is
+/// already at the floor with no reasoning), because repeating the identical request is pointless.
+fn downgrade(max_tokens: u32, has_effort: bool) -> Option<u32> {
+    let next = (max_tokens / 2).max(DOWNGRADE_FLOOR_TOKENS).min(max_tokens);
+    (next < max_tokens || has_effort).then_some(next)
+}
+
+/// How one attempt of a structured call is shaped (see [`downgrade`]).
+#[derive(Clone, Copy)]
+struct Shape {
+    max_tokens: u32,
+    effort: Option<&'static str>,
+}
+
+impl Shape {
+    fn describe(&self) -> String {
+        match self.effort {
+            Some(e) => format!("max_tokens {} with reasoning_effort {e}", self.max_tokens),
+            None => format!("max_tokens {}", self.max_tokens),
+        }
+    }
+}
+
+/// One request of a structured call, as shaped by `shape`, with its own timeout.
+#[allow(clippy::too_many_arguments)]
+fn raw_once(
+    cfg: &LlmConfig,
+    c: &reqwest::blocking::Client,
+    base: &str,
+    key: &Option<String>,
+    model: &str,
+    system: &str,
+    prompt: &str,
+    p: &CallParams,
+    shape: Shape,
+) -> Result<String> {
+    let timeout = cfg.call_timeout(shape.max_tokens);
+    match cfg.provider.transport {
         Transport::OpenAiChat => {
             let url = format!("{}/chat/completions", base.trim_end_matches('/'));
             let mut body = json!({
                 "model": model,
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                "max_tokens": p.max_tokens,
+                "max_tokens": shape.max_tokens,
                 "response_format": {"type": "json_object"},
             });
             if let Some(t) = p.temperature {
                 body["temperature"] = json!(t);
             }
-            if let Some(e) = p.reasoning_effort {
+            if let Some(e) = shape.effort {
                 body["reasoning_effort"] = json!(e);
             }
             // Servers that reject an optional field answer 400: drop the optional fields (first the
             // response format and reasoning effort, then the temperature) and ask again.
             for attempt in 0..3 {
-                let r = send_retrying(cfg, || authorize(cfg, c.post(&url).json(&body), &key))?;
+                let r = send_retrying(cfg, || {
+                    authorize(cfg, c.post(&url).timeout(timeout).json(&body), key)
+                })?;
                 if r.status().as_u16() == 400 && attempt < 2 {
                     if let Some(o) = body.as_object_mut() {
                         if attempt == 0 {
@@ -1242,7 +1434,7 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
                 }],
                 &[],
             );
-            b["max_tokens"] = json!(p.max_tokens);
+            b["max_tokens"] = json!(shape.max_tokens);
             if let Some(t) = p.temperature {
                 b["temperature"] = json!(t);
             }
@@ -1250,7 +1442,9 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
                 b["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
             }
             let url = format!("{}/v1/messages", base.trim_end_matches('/'));
-            let r = send_retrying(cfg, || authorize(cfg, c.post(&url).json(&b), &key))?;
+            let r = send_retrying(cfg, || {
+                authorize(cfg, c.post(&url).timeout(timeout).json(&b), key)
+            })?;
             let v: Value = r.error_for_status()?.json()?;
             let text = v["content"]
                 .as_array()
@@ -1262,6 +1456,67 @@ fn raw_chat(cfg: &LlmConfig, system: &str, prompt: &str) -> Result<String> {
                 bail!("LLM returned empty content");
             }
             Ok(text)
+        }
+    }
+}
+
+/// A structured single-shot call. Each request gets a timeout sized to the answer it may produce
+/// ([`LlmConfig::call_timeout`]). When one times out it is not repeated as it was: it is sent again
+/// with half the `max_tokens` and no `reasoning_effort`, at most [`MAX_TIMEOUT_DOWNGRADES`] times,
+/// and then the next model in the chain is tried. What happened goes to `notes` (never a key).
+fn raw_chat(
+    cfg: &LlmConfig,
+    system: &str,
+    prompt: &str,
+    notes: &mut Vec<String>,
+) -> Result<String> {
+    let base = cfg.base_url()?;
+    // each request carries its own timeout; the client's is only a backstop above the largest one
+    let c = http(Duration::from_secs(CLIENT_BACKSTOP_SECS))?;
+    let key = key(cfg)?;
+    let p = call_params(cfg);
+    try_models(cfg, |model| {
+        let mut shape = Shape {
+            max_tokens: p.max_tokens,
+            effort: p.reasoning_effort,
+        };
+        let mut trail: Vec<String> = Vec::new();
+        loop {
+            match raw_once(cfg, &c, &base, &key, model, system, prompt, &p, shape) {
+                Err(e) if is_timeout_error(&e) => {
+                    let after = cfg.call_timeout(shape.max_tokens);
+                    let after = match after.as_secs() {
+                        0 => format!("{} ms", after.as_millis()),
+                        n => format!("{n} s"),
+                    };
+                    trail.push(format!("{after} at {}", shape.describe()));
+                    let next = downgrade(shape.max_tokens, shape.effort.is_some())
+                        .filter(|_| trail.len() <= MAX_TIMEOUT_DOWNGRADES);
+                    let Some(max_tokens) = next else {
+                        let why = format!(
+                            "'{model}' timed out {} time(s): {}",
+                            trail.len(),
+                            trail.join(", ")
+                        );
+                        notes.push(format!("LLM call gave up: {why}"));
+                        return Err(CallTimedOut(format!("LLM request timed out: {why}")).into());
+                    };
+                    shape = Shape {
+                        max_tokens,
+                        effort: None,
+                    };
+                }
+                done => {
+                    if done.is_ok() && !trail.is_empty() {
+                        notes.push(format!(
+                            "LLM call to '{model}' timed out ({}); the retry with {} succeeded",
+                            trail.join(", "),
+                            shape.describe()
+                        ));
+                    }
+                    return done;
+                }
+            }
         }
     })
 }
@@ -1295,7 +1550,7 @@ pub fn ask_json_with(
     budget.check()?;
     budget.calls += 1;
     let t0 = std::time::Instant::now();
-    let reply = raw_chat(cfg, system, prompt);
+    let reply = raw_chat(cfg, system, prompt, &mut budget.notes);
     budget.elapsed += t0.elapsed();
     let text = reply?;
     let v = parse_json_object(&text)?;
@@ -1855,7 +2110,7 @@ mod tests {
 
     #[test]
     fn failed_calls_fall_back_to_the_next_model_in_order() {
-        // m1: 500 (retried until attempts run out), m2: 404 (not retried), m3: answers
+        // m1: 500 (retried once), m2: 404 (not retried), m3: answers
         let m = mock::start_status(|_, body| match model_of(body).as_str() {
             "m1" => (500, "{}".into()),
             "m2" => (404, "{}".into()),
@@ -1864,7 +2119,7 @@ mod tests {
         let c = fallback_cfg(&m, "fallback", "m1,m2,m3");
         let mut b = Budget::per_run();
         assert_eq!(ask_json(&c, &mut b, "s", "p").unwrap()["ok"], true);
-        assert_eq!(models_seen(&m), ["m1", "m1", "m1", "m2", "m3"]);
+        assert_eq!(models_seen(&m), ["m1", "m1", "m2", "m3"]);
         assert_eq!(b.calls, 1, "fallbacks are part of one logical call");
 
         // an unusable answer (reasoning only / empty) is a failure too
@@ -2066,6 +2321,16 @@ mod tests {
         let m = mock::start_status(|_, _| (500, "{\"error\":\"boom\"}".into()));
         let c = mock::cfg(&m.base, &tmpdir("giveup"));
         assert!(ask_json(&c, &mut Budget::per_run(), "s", "p").is_err());
+        assert_eq!(
+            m.chat_hits.load(Ordering::SeqCst),
+            2,
+            "a 5xx is retried once, not max_attempts times"
+        );
+
+        // 429 keeps the full retry budget (Retry-After is honoured by the mock as 0)
+        let m = mock::start_status(|_, _| (429, "{\"error\":\"slow\"}".into()));
+        let c = mock::cfg(&m.base, &tmpdir("giveup-429"));
+        assert!(ask_json(&c, &mut Budget::per_run(), "s", "p").is_err());
         assert_eq!(m.chat_hits.load(Ordering::SeqCst) as u32, c.max_attempts);
 
         let m = mock::start_status(|_, _| (401, "{\"error\":\"nope\"}".into()));
@@ -2074,8 +2339,8 @@ mod tests {
         assert_eq!(m.chat_hits.load(Ordering::SeqCst), 1, "401 is not retried");
     }
 
-    #[test]
-    fn timeout_is_retried() {
+    /// A server that accepts connections and never answers; the counter is how many arrived.
+    fn silent_server() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/v1", l.local_addr().unwrap());
         let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2087,20 +2352,312 @@ mod tests {
                 held.push(s); // accept and never answer
             }
         });
+        (base, accepted)
+    }
+
+    fn body_of(req: &str) -> Value {
+        serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+    }
+
+    fn sent_bodies(m: &mock::Mock) -> Vec<Value> {
+        m.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| body_of(r))
+            .collect()
+    }
+
+    #[test]
+    fn a_timeout_is_not_retried_identically() {
+        let (base, accepted) = silent_server();
         let mut c = mock::cfg(&base, &tmpdir("timeout"));
-        c.max_attempts = 2;
-        let cfg = c.clone();
+        c.timeout_override = Some(Duration::from_millis(200));
         let t = std::time::Instant::now();
-        let r = send_retrying(&cfg, || {
-            reqwest::blocking::Client::builder()
-                .timeout(Duration::from_millis(150))
-                .build()
-                .unwrap()
-                .get(format!("{base}/models"))
-        });
-        assert!(r.is_err() && r.unwrap_err().to_string().contains("timed out"));
-        assert_eq!(accepted.load(Ordering::SeqCst), 2);
+        // 2048 tokens -> one smaller request (1024); then nothing would change, so it stops
+        let e = ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap_err();
+        assert!(is_timeout_error(&e), "{e:#}");
+        assert!(e.to_string().contains("timed out"), "{e:#}");
+        assert!(e.to_string().contains("max_tokens"), "{e:#}");
+        assert_eq!(accepted.load(Ordering::SeqCst), 2, "{e:#}");
         assert!(t.elapsed() < Duration::from_secs(5));
+
+        // the chat clients send once per model and do not repeat a timed-out request
+        let before = accepted.load(Ordering::SeqCst);
+        let msgs = [Msg {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+        let e = client(c).chat("sys", &msgs, &[]).unwrap_err();
+        assert!(is_timeout_error(&e), "{e:#}");
+        assert_eq!(accepted.load(Ordering::SeqCst), before + 1);
+    }
+
+    #[test]
+    fn call_timeout_scales_with_the_answer_size() {
+        // 20 s + max_tokens / 40, clamped to 30..=300
+        assert_eq!(call_timeout_secs(1), 30);
+        assert_eq!(call_timeout_secs(400), 30);
+        assert_eq!(call_timeout_secs(2048), 71);
+        assert_eq!(call_timeout_secs(10_240), 276);
+        assert_eq!(call_timeout_secs(34_816), 300);
+        assert_eq!(call_timeout_secs(u32::MAX), 300);
+        let mut c = LlmConfig::resolve(Some("vllm"), None, false).unwrap();
+        assert_eq!(c.call_timeout(10_240), Duration::from_secs(276));
+        c.timeout_override = Some(Duration::from_secs(45));
+        assert_eq!(c.call_timeout(10_240), Duration::from_secs(45));
+        assert_eq!(c.call_timeout(1), Duration::from_secs(45));
+    }
+
+    #[test]
+    fn timeout_env_override() {
+        let base = ("READYHAI_LLM_URL", "http://localhost:8000/v1");
+        let get = |v: &str| LlmConfig::from_vars(vars(&[base, ("READYHAI_LLM_TIMEOUT_SECS", v)]));
+        assert_eq!(
+            get("45").unwrap().timeout_override,
+            Some(Duration::from_secs(45))
+        );
+        assert_eq!(
+            get(" 7 ").unwrap().timeout_override,
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(get("").unwrap().timeout_override, None, "empty is unset");
+        assert!(
+            LlmConfig::from_vars(vars(&[base]))
+                .unwrap()
+                .timeout_override
+                .is_none()
+        );
+        for bad in ["abc", "0", "-3", "3601", "1.5"] {
+            let e = get(bad).unwrap_err().to_string();
+            assert!(e.contains("READYHAI_LLM_TIMEOUT_SECS"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn downgrade_halves_tokens_to_a_floor_and_stops_when_nothing_changes() {
+        assert_eq!(downgrade(34_816, true), Some(17_408));
+        assert_eq!(downgrade(2048, false), Some(1024));
+        assert_eq!(downgrade(1500, false), Some(1024));
+        assert_eq!(
+            downgrade(1024, true),
+            Some(1024),
+            "dropping the effort is a change"
+        );
+        assert_eq!(downgrade(1024, false), None);
+        assert_eq!(downgrade(512, false), None, "never grows");
+    }
+
+    fn thinking_cfg(m: &mock::Mock, name: &str, models: &str) -> LlmConfig {
+        let mut c = fallback_cfg(m, name, models);
+        c.thinking = true;
+        c.thinking_budget_tokens = 8192;
+        c.model_tier = "high".into();
+        c.timeout_override = Some(Duration::from_millis(500));
+        c
+    }
+
+    fn max_tokens_of(b: &Value) -> u64 {
+        b["max_tokens"].as_u64().unwrap()
+    }
+
+    #[test]
+    fn a_timed_out_call_is_retried_smaller_and_without_reasoning() {
+        // answers fast once the request is under 6000 tokens; a bigger one outlasts the 500 ms timeout
+        let m = mock::start_status(|_, body| {
+            let big = serde_json::from_str::<Value>(body).unwrap()["max_tokens"]
+                .as_u64()
+                .unwrap()
+                > 6000;
+            if big {
+                std::thread::sleep(Duration::from_millis(650));
+            }
+            (200, ok_body("{\"ok\": true}"))
+        });
+        let c = thinking_cfg(&m, "downgrade-ok", "m1");
+        let mut b = Budget::per_run();
+        assert_eq!(ask_json(&c, &mut b, "s", "p").unwrap()["ok"], true);
+        let bodies = sent_bodies(&m);
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        assert_eq!(max_tokens_of(&bodies[0]), 10_240);
+        assert_eq!(bodies[0]["reasoning_effort"], "high");
+        assert_eq!(max_tokens_of(&bodies[1]), 5120);
+        assert!(bodies[1].get("reasoning_effort").is_none(), "{}", bodies[1]);
+        assert_eq!(b.calls, 1, "the retry is part of one logical call");
+        let note = b.notes.join(" | ");
+        assert!(
+            note.contains("timed out") && note.contains("succeeded") && note.contains("5120"),
+            "{note}"
+        );
+        assert!(!note.contains("Bearer"), "{note}");
+    }
+
+    #[test]
+    fn at_most_two_downgrades_then_the_next_model() {
+        // m1 never answers in time; m2 answers
+        let m = mock::start_status(|_, body| {
+            if model_of(body) == "m1" {
+                std::thread::sleep(Duration::from_millis(550));
+            }
+            (200, ok_body("{\"ok\": true}"))
+        });
+        let c = thinking_cfg(&m, "downgrade-chain", "m1,m2");
+        let mut b = Budget::per_run();
+        assert_eq!(ask_json(&c, &mut b, "s", "p").unwrap()["ok"], true);
+        assert_eq!(models_seen(&m), ["m1", "m1", "m1", "m2"]);
+        let sizes: Vec<u64> = sent_bodies(&m).iter().map(max_tokens_of).collect();
+        // the next model starts again from the full request
+        assert_eq!(sizes, [10_240, 5120, 2560, 10_240]);
+        assert!(
+            b.notes.iter().any(|n| n.contains("gave up")),
+            "{:?}",
+            b.notes
+        );
+
+        // with no model left the error says what was tried
+        let m = mock::start_status(|_, _| {
+            std::thread::sleep(Duration::from_millis(550));
+            (200, ok_body("{}"))
+        });
+        let c = thinking_cfg(&m, "downgrade-exhausted", "m1");
+        let e = ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap_err();
+        assert!(is_timeout_error(&e), "{e:#}");
+        let msg = e.to_string();
+        assert!(
+            msg.contains("3 time(s)")
+                && msg.contains("max_tokens 10240")
+                && msg.contains("max_tokens 2560"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn a_server_error_is_retried_once_then_the_next_model_is_tried() {
+        let m = mock::start_status(|_, body| {
+            if model_of(body) == "m1" {
+                (500, "{}".into())
+            } else {
+                (200, ok_body("{\"ok\": true}"))
+            }
+        });
+        let c = fallback_cfg(&m, "five-hundred", "m1,m2");
+        assert_eq!(
+            ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap()["ok"],
+            true
+        );
+        assert_eq!(models_seen(&m), ["m1", "m1", "m2"]);
+        // a 500 that heals on the retry stays on the same model
+        let m = mock::start_status(|hit, _| {
+            if hit == 0 {
+                (500, "{}".into())
+            } else {
+                (200, ok_body("{\"ok\": true}"))
+            }
+        });
+        let c = fallback_cfg(&m, "five-hundred-heals", "m1,m2");
+        ask_json(&c, &mut Budget::per_run(), "s", "p").unwrap();
+        assert_eq!(models_seen(&m), ["m1", "m1"]);
+    }
+
+    #[test]
+    fn probe_latency_sends_a_one_token_completion() {
+        let m = mock::start(|_| {
+            std::thread::sleep(Duration::from_millis(120));
+            "x".into()
+        });
+        let c = mock::cfg(&m.base, &tmpdir("latency"));
+        let d = probe_latency(&c).unwrap();
+        assert!(
+            d >= Duration::from_millis(120) && d < Duration::from_secs(5),
+            "{d:?}"
+        );
+        let bodies = sent_bodies(&m);
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(max_tokens_of(&bodies[0]), 1);
+        assert!(bodies[0].get("reasoning_effort").is_none());
+        assert!(
+            bodies[0].to_string().len() < 200,
+            "tiny prompt: {}",
+            bodies[0]
+        );
+        let r = latency_report(&Ok(d));
+        assert!(
+            r.summary.starts_with("latency ") && r.summary.ends_with(" ms"),
+            "{r:?}"
+        );
+        assert!(!r.slow);
+    }
+
+    #[test]
+    fn probe_latency_times_out_although_models_answers() {
+        let m = mock::start_status(|_, _| {
+            std::thread::sleep(Duration::from_millis(700));
+            (200, ok_body("x"))
+        });
+        let mut c = mock::cfg(&m.base, &tmpdir("latency-slow"));
+        c.timeout_override = Some(Duration::from_millis(300));
+        let e = probe_latency(&c).unwrap_err();
+        assert!(is_timeout_error(&e), "{e:#}");
+        assert!(probe(&c), "/models answers: the server is up");
+        let r = latency_report(&Err(e));
+        assert!(r.slow && r.summary.contains("timed out"), "{r:?}");
+        // an HTTP error is a failed probe, not a slow endpoint
+        let bad = mock::start_status(|_, _| (401, "{}".into()));
+        let c = mock::cfg(&bad.base, &tmpdir("latency-401"));
+        let r = latency_report(&probe_latency(&c));
+        assert!(!r.slow && r.summary.contains("401"), "{r:?}");
+        // unreachable
+        let mut c = LlmConfig::resolve(Some("vllm"), None, false).unwrap();
+        c.base_override = Some("http://127.0.0.1:1/v1".into());
+        assert!(probe_latency(&c).is_err());
+    }
+
+    #[test]
+    fn latency_above_ten_seconds_is_slow() {
+        assert!(!latency_report(&Ok(Duration::from_millis(840))).slow);
+        assert!(!latency_report(&Ok(SLOW_LATENCY)).slow);
+        assert!(latency_report(&Ok(Duration::from_millis(10_001))).slow);
+        assert_eq!(
+            latency_report(&Ok(Duration::from_millis(840))).summary,
+            "latency 840 ms"
+        );
+    }
+
+    #[test]
+    fn a_slow_endpoint_caps_thinking_at_the_high_tier() {
+        let base = LlmConfig::resolve(Some("vllm"), None, false).unwrap();
+        let think =
+            |on: bool, tier: &str, budget: u32| base.clone().with_thinking(on, tier, budget);
+        let c = think(true, "max_pro", 32_768);
+        let capped = c.capped_to_high_tier().unwrap();
+        assert_eq!(capped.model_tier, "high");
+        assert_eq!(capped.thinking_budget_tokens, 8192);
+        assert_eq!(call_params(&capped).max_tokens, 10_240);
+        assert!(think(true, "high", 8192).capped_to_high_tier().is_none());
+        assert!(think(true, "medium", 2048).capped_to_high_tier().is_none());
+        assert!(think(false, "max", 32_768).capped_to_high_tier().is_none());
+        // a big budget under a lower tier name is held to the High budget, the name is kept
+        let k = think(true, "medium", 20_000).capped_to_high_tier().unwrap();
+        assert_eq!(
+            (k.model_tier.as_str(), k.thinking_budget_tokens),
+            ("medium", 8192)
+        );
+    }
+
+    #[test]
+    fn gate_and_triage_calls_never_think() {
+        let m = mock::start(|_| "{\"ok\": true}".into());
+        let mut c = mock::cfg(&m.base, &tmpdir("light"));
+        c = c.with_thinking(true, "max_pro", 32_768);
+        // the planner's config reasons ...
+        ask_json(&c, &mut Budget::per_run(), "s", "planner").unwrap();
+        // ... the gate's and the triager's do not
+        ask_json(&c.without_thinking(), &mut Budget::per_run(), "s", "gate").unwrap();
+        let bodies = sent_bodies(&m);
+        assert_eq!(max_tokens_of(&bodies[0]), 34_816);
+        assert_eq!(bodies[0]["reasoning_effort"], "high");
+        assert_eq!(max_tokens_of(&bodies[1]), 2048);
+        assert!(bodies[1].get("reasoning_effort").is_none(), "{}", bodies[1]);
     }
 
     #[test]

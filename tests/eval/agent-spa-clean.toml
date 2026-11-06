@@ -1,0 +1,27 @@
+# Suite: the false-positive guard. The same fake Next.js app as `agent-spa`, started with --clean
+# (every seeded bug fixed: other people's orders are 404, a quote in ?q= is harmless, bad paging is
+# a 400) and the same test accounts. There is nothing to find, so the run must NOT end NO_GO and
+# must report at most one defect; its cases must still conclude (inconclusive <= 25%).
+name = "agent-spa-clean"
+kind = "agent"
+description = "Autonomous agent vs the bug-free spa-next fixture: no false NO_GO"
+forbid_verdict = ["NO_GO"]
+
+[target]
+server = "tests/fixtures/spa-next/server.py"
+server_args = ["--clean"]
+profile = "standard"
+max_steps = 60
+
+[target.tokens]
+alice = "alice-token"
+bob = "bob-token"
+
+[thresholds]
+min_recall = 0.85
+max_false_positives = 1
+pass_k = true
+stable_verdict = true
+max_inconclusive_rate = 0.25
+max_requests = 300
+max_seconds = 120

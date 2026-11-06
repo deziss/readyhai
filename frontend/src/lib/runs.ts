@@ -1,9 +1,12 @@
 import type {
   AgentRunRecord,
   EvidenceLedger,
+  LedgerBlocker,
+  LedgerPillar,
   PlannedCase,
   RawCaseResult,
   RawDefect,
+  RedirectHop,
   TestCaseResult,
   ThreatFinding,
 } from "@/types/agent";
@@ -110,41 +113,141 @@ export function ledgerVerdict(el?: EvidenceLedger | null): string | null {
   return normalizeVerdict(el?.gate_verdict) ?? normalizeVerdict(el?.verdict);
 }
 
+/** The backend could not reach a verdict: too little conclusive evidence. Not a failure, not a pass. */
+export const NOT_EVALUATED = "NOT_EVALUATED";
+
+export function isNotEvaluatedVerdict(v: string | null | undefined): boolean {
+  return v === NOT_EVALUATED;
+}
+
+/**
+ * The overall score, or null when the backend did not evaluate the run. A not-evaluated ledger
+ * reports 0 as a placeholder: that is not a result and must never be shown as "0%".
+ */
 export function ledgerScore(el?: EvidenceLedger | null): number | null {
+  if (isNotEvaluatedVerdict(normalizeVerdict(el?.gate_verdict)) || el?.evaluated === false) return null;
   return numOrNull(el?.overall_readiness) ?? numOrNull(el?.composite_score);
 }
 
-export interface PillarView {
-  key: "contract" | "authz" | "resilience" | "observability";
-  title: string;
-  short: string;
-  score: number | null;
-  status: string | null;
-  evidence: string | null;
+/** Overall confidence (0..=100) the backend reported: the conclusive share of applicable cases. */
+export function ledgerConfidence(el?: EvidenceLedger | null): number | null {
+  const c = numOrNull(el?.confidence);
+  return c === null ? null : Math.max(0, Math.min(100, Math.round(c)));
 }
 
-/** The four pillars as reported by the backend; any missing piece is null. */
+export interface PillarView {
+  /** Backend pillar id (value | authority | safety | evidence). */
+  key: string;
+  /** The backend's own name for the pillar. */
+  title: string;
+  score: number | null;
+  /** pass | fail | partial | not_evaluated, as reported (lower case). */
+  status: string | null;
+  /** The backend's claim: what the evidence says. */
+  evidence: string | null;
+  /** Conclusive share of the applicable cases, 0..=100; null when not reported. */
+  confidence: number | null;
+  /** No score or an explicit not_evaluated status: show "Not evaluated: insufficient evidence". */
+  notEvaluated: boolean;
+  caseCount: number;
+}
+
+function clampPct(v: unknown): number | null {
+  const n = numOrNull(v);
+  return n === null ? null : Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function pillarView(p: LedgerPillar): PillarView {
+  const score = numOrNull(p.score);
+  const status = strOrNull(p.status)?.trim().toLowerCase() ?? null;
+  return {
+    key: p.id,
+    title: strOrNull(p.name) ?? p.id,
+    score,
+    status,
+    evidence: strOrNull(p.claim),
+    confidence: clampPct(p.confidence),
+    notEvaluated: score === null || status === "not_evaluated",
+    caseCount: Array.isArray(p.case_ids) ? p.case_ids.length : 0,
+  };
+}
+
+/**
+ * Backend pillar names and ids, with the pre-pillars[] ledger fields each one was once read from.
+ * Used only for a run saved before the backend sent `pillars`; the names are the backend's.
+ */
+const LEGACY_PILLARS = [
+  { id: "value", name: "Functional correctness and input handling", nested: "contract", score: "value_score" },
+  { id: "authority", name: "Authorization and least privilege", nested: "authz", score: "authority_score" },
+  { id: "safety", name: "Injection resistance and data safety", nested: "resilience", score: "safety_score" },
+  { id: "evidence", name: "Reproducible evidence", nested: "observability", score: "evidence_score" },
+] as const;
+
+/**
+ * The pillars as the backend reported them (`evidence_ledger.pillars[]`: name, score, status, claim,
+ * confidence). Only an old run without `pillars` falls back to the legacy fields; whatever is missing
+ * stays null so the UI says "not evaluated" instead of inventing a score or a label.
+ */
 export function getPillars(el?: EvidenceLedger | null): PillarView[] {
-  const p = (
-    key: PillarView["key"],
-    title: string,
-    short: string,
-    nested: EvidenceLedger["contract"],
-    legacy: number | undefined
-  ): PillarView => ({
-    key,
-    title,
-    short,
-    score: numOrNull(nested?.score) ?? numOrNull(legacy),
-    status: strOrNull(nested?.status),
-    evidence: strOrNull(nested?.evidence),
-  });
-  return [
-    p("contract", "1. API Contract & Schema Compliance", "Contract Fidelity", el?.contract, el?.value_score),
-    p("authz", "2. Authorization & Tenant Isolation", "AuthZ Boundary", el?.authz, el?.authority_score),
-    p("resilience", "3. Input Fuzzing & Boundary Resilience", "Failure Resilience", el?.resilience, el?.safety_score),
-    p("observability", "4. Observability & Leak Detection", "Observability", el?.observability, el?.evidence_score),
-  ];
+  if (Array.isArray(el?.pillars) && el.pillars.length > 0) {
+    return el.pillars.filter((p): p is LedgerPillar => !!p && typeof p.id === "string").map(pillarView);
+  }
+  return LEGACY_PILLARS.map((l) =>
+    pillarView({
+      id: l.id,
+      name: l.name,
+      score: numOrNull(el?.[l.nested]?.score) ?? numOrNull(el?.[l.score]),
+      status: el?.[l.nested]?.status ?? "",
+      claim: el?.[l.nested]?.evidence ?? "",
+    })
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Blockers: what kept the run from gathering evidence, and what to provide next
+// ---------------------------------------------------------------------------
+
+const BLOCK_REASON_LABEL: Record<string, string> = {
+  auth_wall: "Auth wall",
+  out_of_scope: "Out of scope",
+  no_surface: "No input surface",
+  transport: "No HTTP answer",
+};
+
+/** Human label for a backend block reason, or null when the case carries none. */
+export function blockReasonLabel(reason: unknown): string | null {
+  const r = strOrNull(reason)?.trim().toLowerCase();
+  if (!r) return null;
+  return BLOCK_REASON_LABEL[r] ?? r.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+}
+
+export interface BlockerView {
+  reason: string;
+  label: string;
+  detail: string;
+  nextStep: string;
+  caseCount: number;
+}
+
+/** The ledger's blockers, ready to render. Entries with neither a detail nor a next step are dropped. */
+export function ledgerBlockers(el?: EvidenceLedger | null): BlockerView[] {
+  if (!Array.isArray(el?.blockers)) return [];
+  const out: BlockerView[] = [];
+  for (const b of el.blockers as LedgerBlocker[]) {
+    if (!b || typeof b !== "object") continue;
+    const detail = strOrNull(b.detail);
+    const nextStep = strOrNull(b.next_step);
+    if (!detail && !nextStep) continue;
+    const reason = strOrNull(b.reason) ?? "unknown";
+    out.push({
+      reason,
+      label: blockReasonLabel(reason) ?? "Blocked",
+      detail: detail ?? "",
+      nextStep: nextStep ?? "",
+      caseCount: Array.isArray(b.case_ids) ? b.case_ids.length : 0,
+    });
+  }
+  return out;
 }
 
 /**
@@ -183,12 +286,25 @@ const CASE_STATUSES = [
   "PLANNED",
   "PENDING",
   "INCONCLUSIVE",
+  "NOT_APPLICABLE",
 ] as const;
 
 export function normalizeCaseStatus(raw: unknown): TestCaseResult["status"] {
   const s = typeof raw === "string" ? raw.trim().toUpperCase() : "";
   // Unknown / missing status is NOT a pass: show it as skipped (not evaluated).
   return (CASE_STATUSES as readonly string[]).includes(s) ? (s as TestCaseResult["status"]) : "SKIPPED";
+}
+
+/** The followed redirects the backend reported, malformed hops dropped. */
+export function normalizeRedirects(raw: unknown): RedirectHop[] {
+  if (!Array.isArray(raw)) return [];
+  const hops: RedirectHop[] = [];
+  for (const h of raw) {
+    const status = numOrNull((h as RedirectHop | null)?.status);
+    const location = strOrNull((h as RedirectHop | null)?.location);
+    if (status !== null && location) hops.push({ status, location });
+  }
+  return hops;
 }
 
 export function normalizeExecutedCase(c: RawCaseResult): TestCaseResult {
@@ -201,6 +317,8 @@ export function normalizeExecutedCase(c: RawCaseResult): TestCaseResult {
     technique: c.technique || "",
     method: c.method || "GET",
     status,
+    blocked_reason: strOrNull(c.blocked_reason),
+    redirect_chain: normalizeRedirects(c.redirect_chain),
     latency_ms: numOrNull(c.latency_ms),
     curl: c.curl_reproduction || c.reproduction_curl || c.curl || "",
     request_payload: c.request_payload ?? null,
@@ -283,6 +401,8 @@ export function mergeRetestResult(base: TestCaseResult, raw: RawCaseResult): Tes
   return {
     ...base,
     status: u.status,
+    blocked_reason: u.blocked_reason ?? null,
+    redirect_chain: u.redirect_chain,
     latency_ms: u.latency_ms,
     curl: u.curl || base.curl,
     response_status: u.response_status ?? base.response_status ?? null,

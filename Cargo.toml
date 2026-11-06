@@ -1,6 +1,6 @@
 [package]
 name = "readyhai"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Self-hosted QA tester and production-readiness gate"
 authors = ["Anshu Kushawaha <kushawahaanshu8858@gmail.com>"]

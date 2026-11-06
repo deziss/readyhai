@@ -70,6 +70,7 @@ const VERDICT_LABEL: Record<string, string> = {
   GO: "Go",
   CONDITIONAL_GO: "Conditional go",
   NO_GO: "No go",
+  NOT_EVALUATED: "Not evaluated",
 };
 
 type Tone = "neutral" | "active" | "go" | "cond" | "nogo";
@@ -96,6 +97,7 @@ function stageView(stage: StageState, verdict: string | null | undefined) {
     if (verdict === "GO") return { tone: "go" as Tone, text: "Verdict: go" };
     if (verdict === "CONDITIONAL_GO") return { tone: "cond" as Tone, text: "Verdict: conditional go" };
     if (verdict === "NO_GO") return { tone: "nogo" as Tone, text: "Verdict: no go" };
+    if (verdict === "NOT_EVALUATED") return { tone: "neutral" as Tone, text: "Verdict: not evaluated" };
     return { tone: "neutral" as Tone, text: "No verdict reported" };
   }
   const tone: Tone =
@@ -146,7 +148,9 @@ export function ToolCallList({ stages, verdict = null }: ToolCallListProps) {
     : failedStage
     ? "text-rh-nogo"
     : allSucceeded
-    ? "text-rh-go"
+    ? verdict === "NOT_EVALUATED"
+      ? "text-rh-muted"
+      : "text-rh-go"
     : "text-rh-muted";
 
   // What the fixed-height detail area shows when no stage is selected.
@@ -155,7 +159,9 @@ export function ToolCallList({ stages, verdict = null }: ToolCallListProps) {
     : failedStage
     ? `The run stopped at ${failedStage.label}. The error is shown in the notice at the top of the page.`
     : allSucceeded
-    ? verdict && VERDICT_LABEL[verdict]
+    ? verdict === "NOT_EVALUATED"
+      ? "The run finished without enough conclusive evidence for a verdict (not evaluated, not a failure). The Evidence ledger says what to provide next."
+      : verdict && VERDICT_LABEL[verdict]
       ? `The run finished with a ${VERDICT_LABEL[verdict].toLowerCase()} verdict. Select a stage to see what it did.`
       : "The run finished without a gate verdict. Select a stage to see what it did."
     : "Run the agent from the command center to start the pipeline. Select a stage to see what it does.";

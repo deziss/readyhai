@@ -20,7 +20,7 @@ jobs:
 
       - name: ReadyHai gate
         id: readyhai
-        uses: deziss/readyhai@v0.5.0 # pin a release tag
+        uses: deziss/readyhai@v0.6.0 # pin a release tag
         with:
           target: .
           profile: quick

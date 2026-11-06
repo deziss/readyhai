@@ -1,0 +1,1361 @@
+{
+  "version": "0.5.0",
+  "started": "2026-11-06T13:45:04.746493748Z",
+  "k": 2,
+  "suites": [
+    {
+      "name": "agent-api",
+      "kind": "agent",
+      "description": "Autonomous agent vs the 7 seeded bugs of the qa-api fixture",
+      "notes": {
+        "admin-no-auth": "bug 2: unauthenticated GET /admin/stats answers 200",
+        "contract-total": "bug 5: GET /orders/2 omits the required field total. Found by reading the ids the collection lists and validating each body against the spec schema (the QA engine's validator)",
+        "delete-noop": "bug 6: DELETE answers 204 but the order stays (found by the cleanup read-back)",
+        "idor": "bug 1: stateful BOLA chain (alice POSTs an order, bob GETs it) fails the authz check",
+        "note-500": "bug 3: POST /orders with a note over 100 characters -> 500. Found by the boundary probe the planner generates from the spec's maxLength (the QA engine's case generator)",
+        "slow-report": "bug 7: /reports/slow sleeps 1.5 s. Found by the latency oracle (the QA engine's 1000 ms p95 limit), confirmed by the verifier replay",
+        "traceback-leak": "bug 4: q=' -> 500 with a traceback (reported as one 'Internal error details disclosed' defect)"
+      },
+      "k": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "NO_GO",
+          "recall": 1.0,
+          "found": [
+            "idor",
+            "admin-no-auth",
+            "note-500",
+            "traceback-leak",
+            "contract-total",
+            "delete-noop",
+            "slow-report"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 7,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "authz @ /admin/stats",
+            "authz @ /orders",
+            "server_error @ /search",
+            "contract_fields @ /orders/2",
+            "server_error @ /orders",
+            "delete_not_effective @ /orders/{id}",
+            "slow_response @ /reports/slow"
+          ],
+          "requests": 106,
+          "seconds": 16.23,
+          "cases": {
+            "FAIL": 15,
+            "INCONCLUSIVE": 4,
+            "PASS": 33
+          },
+          "inconclusive_rate": 0.077,
+          "confidence": 92
+        },
+        {
+          "run": 2,
+          "verdict": "NO_GO",
+          "recall": 1.0,
+          "found": [
+            "idor",
+            "admin-no-auth",
+            "note-500",
+            "traceback-leak",
+            "contract-total",
+            "delete-noop",
+            "slow-report"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 7,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "authz @ /admin/stats",
+            "authz @ /orders",
+            "server_error @ /search",
+            "contract_fields @ /orders/2",
+            "server_error @ /orders",
+            "delete_not_effective @ /orders/{id}",
+            "slow_response @ /reports/slow"
+          ],
+          "requests": 106,
+          "seconds": 16.224,
+          "cases": {
+            "FAIL": 15,
+            "INCONCLUSIVE": 4,
+            "PASS": 33
+          },
+          "inconclusive_rate": 0.077,
+          "confidence": 92
+        }
+      ],
+      "recall": 1.0,
+      "recall_min": 1.0,
+      "precision": 1.0,
+      "precision_min": 1.0,
+      "false_positives": 0,
+      "inconclusive_rate": 0.077,
+      "confidence": 92,
+      "blockers": [],
+      "verdict_match": true,
+      "pass_k": true,
+      "verdict_stable": true,
+      "verdicts": [
+        "NO_GO",
+        "NO_GO"
+      ],
+      "known_gaps_open": [],
+      "known_gaps_closed": [],
+      "requests": 106,
+      "seconds": 16.23,
+      "thresholds": {
+        "min_recall": 0.85,
+        "max_false_positives": 2,
+        "pass_k": true,
+        "stable_verdict": true,
+        "max_requests": 250,
+        "max_seconds": 120.0,
+        "max_inconclusive_rate": null
+      },
+      "checks": [
+        {
+          "name": "runs completed",
+          "ok": true,
+          "detail": "2/2 completed"
+        },
+        {
+          "name": "recall",
+          "ok": true,
+          "detail": "mean 1.000 (min run 1.000) vs >= 0.85"
+        },
+        {
+          "name": "false positives",
+          "ok": true,
+          "detail": "worst run 0 vs <= 2"
+        },
+        {
+          "name": "pass^k",
+          "ok": true,
+          "detail": "2/2 runs at recall >= 0.85"
+        },
+        {
+          "name": "verdict stable",
+          "ok": true,
+          "detail": "NO_GO | NO_GO"
+        },
+        {
+          "name": "expected verdict",
+          "ok": true,
+          "detail": "want NO_GO, got NO_GO | NO_GO"
+        },
+        {
+          "name": "request budget",
+          "ok": true,
+          "detail": "worst run 106 vs <= 250"
+        },
+        {
+          "name": "time budget",
+          "ok": true,
+          "detail": "worst run 16.2s vs <= 120s"
+        }
+      ],
+      "passed": true,
+      "error": null
+    },
+    {
+      "name": "agent-diff",
+      "kind": "agent",
+      "description": "A PR that touches one route: the agent plans that operation first, in full, and finds its bug",
+      "notes": {
+        "traceback-leak": "bug 4: q=' -> 500 with a traceback, found by the injection cases planned for the changed GET /search"
+      },
+      "k": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "CONDITIONAL_GO",
+          "recall": 1.0,
+          "found": [
+            "traceback-leak"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 1,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "server_error @ /search"
+          ],
+          "requests": 20,
+          "seconds": 2.008,
+          "cases": {
+            "FAIL": 1,
+            "PASS": 7
+          },
+          "inconclusive_rate": 0.0,
+          "confidence": 100,
+          "checks": [
+            {
+              "name": "changed operations",
+              "ok": true,
+              "detail": "2 changed file(s) -> reported [GET /search], expected [GET /search]"
+            },
+            {
+              "name": "changed operations planned first",
+              "ok": true,
+              "detail": "5 changed case(s), the last at position 5; the first other case at 6"
+            },
+            {
+              "name": "changed operations covered",
+              "ok": true,
+              "detail": "5 of 5 planned case(s) sent (100%) vs >= 100%"
+            }
+          ]
+        },
+        {
+          "run": 2,
+          "verdict": "CONDITIONAL_GO",
+          "recall": 1.0,
+          "found": [
+            "traceback-leak"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 1,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "server_error @ /search"
+          ],
+          "requests": 20,
+          "seconds": 2.01,
+          "cases": {
+            "FAIL": 1,
+            "PASS": 7
+          },
+          "inconclusive_rate": 0.0,
+          "confidence": 100,
+          "checks": [
+            {
+              "name": "changed operations",
+              "ok": true,
+              "detail": "2 changed file(s) -> reported [GET /search], expected [GET /search]"
+            },
+            {
+              "name": "changed operations planned first",
+              "ok": true,
+              "detail": "5 changed case(s), the last at position 5; the first other case at 6"
+            },
+            {
+              "name": "changed operations covered",
+              "ok": true,
+              "detail": "5 of 5 planned case(s) sent (100%) vs >= 100%"
+            }
+          ]
+        }
+      ],
+      "recall": 1.0,
+      "recall_min": 1.0,
+      "precision": 1.0,
+      "precision_min": 1.0,
+      "false_positives": 0,
+      "inconclusive_rate": 0.0,
+      "confidence": 100,
+      "blockers": [],
+      "verdict_match": true,
+      "pass_k": true,
+      "verdict_stable": true,
+      "verdicts": [
+        "CONDITIONAL_GO",
+        "CONDITIONAL_GO"
+      ],
+      "known_gaps_open": [],
+      "known_gaps_closed": [],
+      "requests": 20,
+      "seconds": 2.01,
+      "thresholds": {
+        "min_recall": 0.85,
+        "max_false_positives": 0,
+        "pass_k": true,
+        "stable_verdict": true,
+        "max_requests": 40,
+        "max_seconds": 30.0,
+        "max_inconclusive_rate": null
+      },
+      "checks": [
+        {
+          "name": "runs completed",
+          "ok": true,
+          "detail": "2/2 completed"
+        },
+        {
+          "name": "recall",
+          "ok": true,
+          "detail": "mean 1.000 (min run 1.000) vs >= 0.85"
+        },
+        {
+          "name": "false positives",
+          "ok": true,
+          "detail": "worst run 0 vs <= 0"
+        },
+        {
+          "name": "pass^k",
+          "ok": true,
+          "detail": "2/2 runs at recall >= 0.85"
+        },
+        {
+          "name": "verdict stable",
+          "ok": true,
+          "detail": "CONDITIONAL_GO | CONDITIONAL_GO"
+        },
+        {
+          "name": "expected verdict",
+          "ok": true,
+          "detail": "want CONDITIONAL_GO, got CONDITIONAL_GO | CONDITIONAL_GO"
+        },
+        {
+          "name": "request budget",
+          "ok": true,
+          "detail": "worst run 20 vs <= 40"
+        },
+        {
+          "name": "time budget",
+          "ok": true,
+          "detail": "worst run 2.0s vs <= 30s"
+        },
+        {
+          "name": "changed operations",
+          "ok": true,
+          "detail": "2 changed file(s) -> reported [GET /search], expected [GET /search]"
+        },
+        {
+          "name": "changed operations planned first",
+          "ok": true,
+          "detail": "5 changed case(s), the last at position 5; the first other case at 6"
+        },
+        {
+          "name": "changed operations covered",
+          "ok": true,
+          "detail": "5 of 5 planned case(s) sent (100%) vs >= 100%"
+        }
+      ],
+      "passed": true,
+      "error": null
+    },
+    {
+      "name": "agent-memory",
+      "kind": "agent",
+      "description": "The agent remembers the 7 seeded bugs between two runs in one data directory: still open, probes first",
+      "notes": {
+        "admin-no-auth": "bug 2: unauthenticated GET /admin/stats answers 200",
+        "contract-total": "bug 5: GET /orders/2 omits the required field total. Found by reading the ids the collection lists and validating each body against the spec schema (the QA engine's validator)",
+        "delete-noop": "bug 6: DELETE answers 204 but the order stays (found by the cleanup read-back)",
+        "idor": "bug 1: stateful BOLA chain (alice POSTs an order, bob GETs it) fails the authz check",
+        "note-500": "bug 3: POST /orders with a note over 100 characters -> 500. Found by the boundary probe the planner generates from the spec's maxLength (the QA engine's case generator)",
+        "slow-report": "bug 7: /reports/slow sleeps 1.5 s. Found by the latency oracle (the QA engine's 1000 ms p95 limit), confirmed by the verifier replay",
+        "traceback-leak": "bug 4: q=' -> 500 with a traceback (reported as one 'Internal error details disclosed' defect)"
+      },
+      "k": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "NO_GO",
+          "recall": 1.0,
+          "found": [
+            "idor",
+            "admin-no-auth",
+            "note-500",
+            "traceback-leak",
+            "contract-total",
+            "delete-noop",
+            "slow-report"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 7,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "authz @ /admin/stats",
+            "authz @ /orders",
+            "server_error @ /search",
+            "contract_fields @ /orders/2",
+            "server_error @ /orders",
+            "delete_not_effective @ /orders/{id}",
+            "slow_response @ /reports/slow"
+          ],
+          "requests": 213,
+          "seconds": 32.543,
+          "cases": {
+            "FAIL": 15,
+            "INCONCLUSIVE": 4,
+            "PASS": 34
+          },
+          "inconclusive_rate": 0.075,
+          "confidence": 92,
+          "checks": [
+            {
+              "name": "memory: first run remembered",
+              "ok": true,
+              "detail": "first_run true, remembered true, 7 new of 7 defect(s)"
+            },
+            {
+              "name": "memory: seeded defects still open",
+              "ok": true,
+              "detail": "7 of 7 expected defect(s) reported still open (7 defect(s) in all)"
+            },
+            {
+              "name": "memory: regression probes lead the plan",
+              "ok": true,
+              "detail": "13 probe(s) lead the plan of 42 case(s), none after the first other case; 6 of 6 still-open defect(s) have one"
+            },
+            {
+              "name": "memory: no case dropped",
+              "ok": true,
+              "detail": "run 1 planned 41 case(s), the last run 42 (1 more)"
+            }
+          ]
+        },
+        {
+          "run": 2,
+          "verdict": "NO_GO",
+          "recall": 1.0,
+          "found": [
+            "idor",
+            "admin-no-auth",
+            "note-500",
+            "traceback-leak",
+            "contract-total",
+            "delete-noop",
+            "slow-report"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 7,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "authz @ /admin/stats",
+            "authz @ /orders",
+            "server_error @ /search",
+            "contract_fields @ /orders/2",
+            "server_error @ /orders",
+            "delete_not_effective @ /orders/{id}",
+            "slow_response @ /reports/slow"
+          ],
+          "requests": 213,
+          "seconds": 32.55,
+          "cases": {
+            "FAIL": 15,
+            "INCONCLUSIVE": 4,
+            "PASS": 34
+          },
+          "inconclusive_rate": 0.075,
+          "confidence": 92,
+          "checks": [
+            {
+              "name": "memory: first run remembered",
+              "ok": true,
+              "detail": "first_run true, remembered true, 7 new of 7 defect(s)"
+            },
+            {
+              "name": "memory: seeded defects still open",
+              "ok": true,
+              "detail": "7 of 7 expected defect(s) reported still open (7 defect(s) in all)"
+            },
+            {
+              "name": "memory: regression probes lead the plan",
+              "ok": true,
+              "detail": "13 probe(s) lead the plan of 42 case(s), none after the first other case; 6 of 6 still-open defect(s) have one"
+            },
+            {
+              "name": "memory: no case dropped",
+              "ok": true,
+              "detail": "run 1 planned 41 case(s), the last run 42 (1 more)"
+            }
+          ]
+        }
+      ],
+      "recall": 1.0,
+      "recall_min": 1.0,
+      "precision": 1.0,
+      "precision_min": 1.0,
+      "false_positives": 0,
+      "inconclusive_rate": 0.075,
+      "confidence": 92,
+      "blockers": [],
+      "verdict_match": true,
+      "pass_k": true,
+      "verdict_stable": true,
+      "verdicts": [
+        "NO_GO",
+        "NO_GO"
+      ],
+      "known_gaps_open": [],
+      "known_gaps_closed": [],
+      "requests": 213,
+      "seconds": 32.55,
+      "thresholds": {
+        "min_recall": 0.85,
+        "max_false_positives": 2,
+        "pass_k": true,
+        "stable_verdict": true,
+        "max_requests": 500,
+        "max_seconds": 240.0,
+        "max_inconclusive_rate": null
+      },
+      "checks": [
+        {
+          "name": "runs completed",
+          "ok": true,
+          "detail": "2/2 completed"
+        },
+        {
+          "name": "recall",
+          "ok": true,
+          "detail": "mean 1.000 (min run 1.000) vs >= 0.85"
+        },
+        {
+          "name": "false positives",
+          "ok": true,
+          "detail": "worst run 0 vs <= 2"
+        },
+        {
+          "name": "pass^k",
+          "ok": true,
+          "detail": "2/2 runs at recall >= 0.85"
+        },
+        {
+          "name": "verdict stable",
+          "ok": true,
+          "detail": "NO_GO | NO_GO"
+        },
+        {
+          "name": "expected verdict",
+          "ok": true,
+          "detail": "want NO_GO, got NO_GO | NO_GO"
+        },
+        {
+          "name": "request budget",
+          "ok": true,
+          "detail": "worst run 213 vs <= 500"
+        },
+        {
+          "name": "time budget",
+          "ok": true,
+          "detail": "worst run 32.5s vs <= 240s"
+        },
+        {
+          "name": "memory: first run remembered",
+          "ok": true,
+          "detail": "first_run true, remembered true, 7 new of 7 defect(s)"
+        },
+        {
+          "name": "memory: seeded defects still open",
+          "ok": true,
+          "detail": "7 of 7 expected defect(s) reported still open (7 defect(s) in all)"
+        },
+        {
+          "name": "memory: regression probes lead the plan",
+          "ok": true,
+          "detail": "13 probe(s) lead the plan of 42 case(s), none after the first other case; 6 of 6 still-open defect(s) have one"
+        },
+        {
+          "name": "memory: no case dropped",
+          "ok": true,
+          "detail": "run 1 planned 41 case(s), the last run 42 (1 more)"
+        }
+      ],
+      "passed": true,
+      "error": null
+    },
+    {
+      "name": "agent-spa-clean",
+      "kind": "agent",
+      "description": "Autonomous agent vs the bug-free spa-next fixture: no false NO_GO",
+      "notes": {},
+      "k": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "CONDITIONAL_GO",
+          "recall": 1.0,
+          "found": [],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 0,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [],
+          "requests": 55,
+          "seconds": 5.804,
+          "cases": {
+            "INCONCLUSIVE": 4,
+            "PASS": 12
+          },
+          "inconclusive_rate": 0.25,
+          "confidence": 75
+        },
+        {
+          "run": 2,
+          "verdict": "CONDITIONAL_GO",
+          "recall": 1.0,
+          "found": [],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 0,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [],
+          "requests": 55,
+          "seconds": 5.795,
+          "cases": {
+            "INCONCLUSIVE": 4,
+            "PASS": 12
+          },
+          "inconclusive_rate": 0.25,
+          "confidence": 75
+        }
+      ],
+      "recall": 1.0,
+      "recall_min": 1.0,
+      "precision": 1.0,
+      "precision_min": 1.0,
+      "false_positives": 0,
+      "inconclusive_rate": 0.25,
+      "confidence": 75,
+      "blockers": [],
+      "verdict_match": null,
+      "pass_k": true,
+      "verdict_stable": true,
+      "verdicts": [
+        "CONDITIONAL_GO",
+        "CONDITIONAL_GO"
+      ],
+      "known_gaps_open": [],
+      "known_gaps_closed": [],
+      "requests": 55,
+      "seconds": 5.804,
+      "thresholds": {
+        "min_recall": 0.85,
+        "max_false_positives": 1,
+        "pass_k": true,
+        "stable_verdict": true,
+        "max_requests": 300,
+        "max_seconds": 120.0,
+        "max_inconclusive_rate": 0.25
+      },
+      "checks": [
+        {
+          "name": "runs completed",
+          "ok": true,
+          "detail": "2/2 completed"
+        },
+        {
+          "name": "recall",
+          "ok": true,
+          "detail": "mean 1.000 (min run 1.000) vs >= 0.85"
+        },
+        {
+          "name": "false positives",
+          "ok": true,
+          "detail": "worst run 0 vs <= 1"
+        },
+        {
+          "name": "pass^k",
+          "ok": true,
+          "detail": "2/2 runs at recall >= 0.85"
+        },
+        {
+          "name": "verdict stable",
+          "ok": true,
+          "detail": "CONDITIONAL_GO | CONDITIONAL_GO"
+        },
+        {
+          "name": "forbidden verdict",
+          "ok": true,
+          "detail": "must not be NO_GO, got CONDITIONAL_GO | CONDITIONAL_GO"
+        },
+        {
+          "name": "inconclusive rate",
+          "ok": true,
+          "detail": "worst run 25% vs <= 25%"
+        },
+        {
+          "name": "request budget",
+          "ok": true,
+          "detail": "worst run 55 vs <= 300"
+        },
+        {
+          "name": "time budget",
+          "ok": true,
+          "detail": "worst run 5.8s vs <= 120s"
+        }
+      ],
+      "passed": true,
+      "error": null
+    },
+    {
+      "name": "agent-spa-noauth",
+      "kind": "agent",
+      "description": "Autonomous agent vs the spa-next fixture without credentials: NOT_EVALUATED with an auth-wall blocker",
+      "notes": {},
+      "k": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "NOT_EVALUATED",
+          "recall": 1.0,
+          "found": [],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 0,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [],
+          "requests": 42,
+          "seconds": 4.685,
+          "cases": {
+            "BLOCKED": 4,
+            "PASS": 5,
+            "SKIPPED": 1
+          },
+          "inconclusive_rate": 0.0,
+          "confidence": 55,
+          "blockers": [
+            "auth_wall"
+          ]
+        },
+        {
+          "run": 2,
+          "verdict": "NOT_EVALUATED",
+          "recall": 1.0,
+          "found": [],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 0,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [],
+          "requests": 42,
+          "seconds": 4.69,
+          "cases": {
+            "BLOCKED": 4,
+            "PASS": 5,
+            "SKIPPED": 1
+          },
+          "inconclusive_rate": 0.0,
+          "confidence": 55,
+          "blockers": [
+            "auth_wall"
+          ]
+        }
+      ],
+      "recall": 1.0,
+      "recall_min": 1.0,
+      "precision": 1.0,
+      "precision_min": 1.0,
+      "false_positives": 0,
+      "inconclusive_rate": 0.0,
+      "confidence": 55,
+      "blockers": [
+        "auth_wall"
+      ],
+      "verdict_match": true,
+      "pass_k": true,
+      "verdict_stable": true,
+      "verdicts": [
+        "NOT_EVALUATED",
+        "NOT_EVALUATED"
+      ],
+      "known_gaps_open": [],
+      "known_gaps_closed": [],
+      "requests": 42,
+      "seconds": 4.69,
+      "thresholds": {
+        "min_recall": 0.85,
+        "max_false_positives": 0,
+        "pass_k": true,
+        "stable_verdict": true,
+        "max_requests": 300,
+        "max_seconds": 120.0,
+        "max_inconclusive_rate": null
+      },
+      "checks": [
+        {
+          "name": "runs completed",
+          "ok": true,
+          "detail": "2/2 completed"
+        },
+        {
+          "name": "recall",
+          "ok": true,
+          "detail": "mean 1.000 (min run 1.000) vs >= 0.85"
+        },
+        {
+          "name": "false positives",
+          "ok": true,
+          "detail": "worst run 0 vs <= 0"
+        },
+        {
+          "name": "pass^k",
+          "ok": true,
+          "detail": "2/2 runs at recall >= 0.85"
+        },
+        {
+          "name": "verdict stable",
+          "ok": true,
+          "detail": "NOT_EVALUATED | NOT_EVALUATED"
+        },
+        {
+          "name": "expected verdict",
+          "ok": true,
+          "detail": "want NOT_EVALUATED, got NOT_EVALUATED | NOT_EVALUATED"
+        },
+        {
+          "name": "expected blocker",
+          "ok": true,
+          "detail": "want auth_wall in every run, got [auth_wall] [auth_wall]"
+        },
+        {
+          "name": "request budget",
+          "ok": true,
+          "detail": "worst run 42 vs <= 300"
+        },
+        {
+          "name": "time budget",
+          "ok": true,
+          "detail": "worst run 4.7s vs <= 120s"
+        }
+      ],
+      "passed": true,
+      "error": null
+    },
+    {
+      "name": "agent-spa",
+      "kind": "agent",
+      "description": "Autonomous agent vs the 3 seeded bugs of the spa-next fixture (SPA behind a login wall, no spec, test accounts given)",
+      "notes": {
+        "boundary-500": "bug 3: limit above 1000000 or negative, offset negative -> 500",
+        "idor": "bug 1: GET /api/orders/{id} returns any user's order (alice POSTs one, bob reads it)",
+        "sql-leak": "bug 2: GET /api/orders?q=' -> 500 with a SQL error and a Node stack trace"
+      },
+      "k": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "NO_GO",
+          "recall": 1.0,
+          "found": [
+            "idor",
+            "sql-leak",
+            "boundary-500"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 3,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "authz @ /api/orders",
+            "server_error @ /api/orders",
+            "server_error @ /api/orders"
+          ],
+          "requests": 79,
+          "seconds": 7.899,
+          "cases": {
+            "FAIL": 3,
+            "INCONCLUSIVE": 3,
+            "PASS": 10
+          },
+          "inconclusive_rate": 0.188,
+          "confidence": 81
+        },
+        {
+          "run": 2,
+          "verdict": "NO_GO",
+          "recall": 1.0,
+          "found": [
+            "idor",
+            "sql-leak",
+            "boundary-500"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 3,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "authz @ /api/orders",
+            "server_error @ /api/orders",
+            "server_error @ /api/orders"
+          ],
+          "requests": 79,
+          "seconds": 7.892,
+          "cases": {
+            "FAIL": 3,
+            "INCONCLUSIVE": 3,
+            "PASS": 10
+          },
+          "inconclusive_rate": 0.188,
+          "confidence": 81
+        }
+      ],
+      "recall": 1.0,
+      "recall_min": 1.0,
+      "precision": 1.0,
+      "precision_min": 1.0,
+      "false_positives": 0,
+      "inconclusive_rate": 0.188,
+      "confidence": 81,
+      "blockers": [],
+      "verdict_match": true,
+      "pass_k": true,
+      "verdict_stable": true,
+      "verdicts": [
+        "NO_GO",
+        "NO_GO"
+      ],
+      "known_gaps_open": [],
+      "known_gaps_closed": [],
+      "requests": 79,
+      "seconds": 7.899,
+      "thresholds": {
+        "min_recall": 0.85,
+        "max_false_positives": 2,
+        "pass_k": true,
+        "stable_verdict": true,
+        "max_requests": 300,
+        "max_seconds": 120.0,
+        "max_inconclusive_rate": 0.25
+      },
+      "checks": [
+        {
+          "name": "runs completed",
+          "ok": true,
+          "detail": "2/2 completed"
+        },
+        {
+          "name": "recall",
+          "ok": true,
+          "detail": "mean 1.000 (min run 1.000) vs >= 0.85"
+        },
+        {
+          "name": "false positives",
+          "ok": true,
+          "detail": "worst run 0 vs <= 2"
+        },
+        {
+          "name": "pass^k",
+          "ok": true,
+          "detail": "2/2 runs at recall >= 0.85"
+        },
+        {
+          "name": "verdict stable",
+          "ok": true,
+          "detail": "NO_GO | NO_GO"
+        },
+        {
+          "name": "expected verdict",
+          "ok": true,
+          "detail": "want NO_GO, got NO_GO | NO_GO"
+        },
+        {
+          "name": "inconclusive rate",
+          "ok": true,
+          "detail": "worst run 19% vs <= 25%"
+        },
+        {
+          "name": "request budget",
+          "ok": true,
+          "detail": "worst run 79 vs <= 300"
+        },
+        {
+          "name": "time budget",
+          "ok": true,
+          "detail": "worst run 7.9s vs <= 120s"
+        }
+      ],
+      "passed": true,
+      "error": null
+    },
+    {
+      "name": "qa-api",
+      "kind": "qa",
+      "description": "QA engine vs the 7 seeded bugs of the qa-api fixture",
+      "notes": {
+        "admin-no-auth": "bug 2: /admin/stats needs no token",
+        "contract-total": "bug 5: GET /orders/2 omits the required field total",
+        "delete-noop": "bug 6: DELETE answers 204 but keeps the order",
+        "idor": "bug 1: GET /orders/{id} returns any user's order",
+        "note-500": "bug 3: note longer than 100 chars -> 500",
+        "slow-report": "bug 7: /reports/slow sleeps 1.5 s",
+        "traceback-leak": "bug 4: q=' -> 500 with a Python traceback in the body"
+      },
+      "k": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "NoGo/Fail",
+          "recall": 1.0,
+          "found": [
+            "idor",
+            "admin-no-auth",
+            "note-500",
+            "traceback-leak",
+            "contract-total",
+            "delete-noop",
+            "slow-report"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 7,
+          "precision": 1.0,
+          "allowed_seen": [
+            "qa.api.privilege_escalation @ GET /admin/stats: bug 2 seen through the role matrix: alice is denied by roles.toml but reaches the endpoint",
+            "qa.api.server_error @ GET /search: bug 4 also surfaces as a plain 500 on the same endpoint"
+          ],
+          "observed": [
+            "qa.api.bola @ GET /orders/{id}",
+            "qa.api.delete_not_effective @ DELETE /orders/{id}",
+            "qa.api.authz_missing @ GET /admin/stats",
+            "qa.api.privilege_escalation @ GET /admin/stats",
+            "qa.api.server_error @ POST /orders",
+            "qa.api.server_error @ GET /search",
+            "qa.api.contract_violation @ GET /orders/{id}",
+            "qa.api.error_leak @ GET /search",
+            "qa.api.slow_response @ GET /reports/slow"
+          ],
+          "requests": 123,
+          "seconds": 31.941,
+          "inconclusive_rate": null,
+          "confidence": null
+        },
+        {
+          "run": 2,
+          "verdict": "NoGo/Fail",
+          "recall": 1.0,
+          "found": [
+            "idor",
+            "admin-no-auth",
+            "note-500",
+            "traceback-leak",
+            "contract-total",
+            "delete-noop",
+            "slow-report"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 7,
+          "precision": 1.0,
+          "allowed_seen": [
+            "qa.api.privilege_escalation @ GET /admin/stats: bug 2 seen through the role matrix: alice is denied by roles.toml but reaches the endpoint",
+            "qa.api.server_error @ GET /search: bug 4 also surfaces as a plain 500 on the same endpoint"
+          ],
+          "observed": [
+            "qa.api.bola @ GET /orders/{id}",
+            "qa.api.delete_not_effective @ DELETE /orders/{id}",
+            "qa.api.authz_missing @ GET /admin/stats",
+            "qa.api.privilege_escalation @ GET /admin/stats",
+            "qa.api.server_error @ POST /orders",
+            "qa.api.server_error @ GET /search",
+            "qa.api.contract_violation @ GET /orders/{id}",
+            "qa.api.error_leak @ GET /search",
+            "qa.api.slow_response @ GET /reports/slow"
+          ],
+          "requests": 123,
+          "seconds": 31.895,
+          "inconclusive_rate": null,
+          "confidence": null
+        }
+      ],
+      "recall": 1.0,
+      "recall_min": 1.0,
+      "precision": 1.0,
+      "precision_min": 1.0,
+      "false_positives": 0,
+      "inconclusive_rate": null,
+      "confidence": null,
+      "blockers": [],
+      "verdict_match": true,
+      "pass_k": true,
+      "verdict_stable": true,
+      "verdicts": [
+        "NoGo/Fail",
+        "NoGo/Fail"
+      ],
+      "known_gaps_open": [],
+      "known_gaps_closed": [],
+      "requests": 123,
+      "seconds": 31.941,
+      "thresholds": {
+        "min_recall": 0.85,
+        "max_false_positives": 2,
+        "pass_k": true,
+        "stable_verdict": true,
+        "max_requests": 300,
+        "max_seconds": 150.0,
+        "max_inconclusive_rate": null
+      },
+      "checks": [
+        {
+          "name": "runs completed",
+          "ok": true,
+          "detail": "2/2 completed"
+        },
+        {
+          "name": "recall",
+          "ok": true,
+          "detail": "mean 1.000 (min run 1.000) vs >= 0.85"
+        },
+        {
+          "name": "false positives",
+          "ok": true,
+          "detail": "worst run 0 vs <= 2"
+        },
+        {
+          "name": "pass^k",
+          "ok": true,
+          "detail": "2/2 runs at recall >= 0.85"
+        },
+        {
+          "name": "verdict stable",
+          "ok": true,
+          "detail": "NoGo/Fail | NoGo/Fail"
+        },
+        {
+          "name": "expected verdict",
+          "ok": true,
+          "detail": "want NoGo/Fail, got NoGo/Fail | NoGo/Fail"
+        },
+        {
+          "name": "request budget",
+          "ok": true,
+          "detail": "worst run 123 vs <= 300"
+        },
+        {
+          "name": "time budget",
+          "ok": true,
+          "detail": "worst run 31.9s vs <= 150s"
+        }
+      ],
+      "passed": true,
+      "error": null
+    },
+    {
+      "name": "qa-repo",
+      "kind": "repo",
+      "description": "QA suite and release checks vs the seeded defects of the qa-repo fixture",
+      "notes": {
+        "critical-uncovered": "app/auth.py is at 0%",
+        "eol-runtime": "Dockerfile uses python:3.8, which is end of life",
+        "low-coverage": "overall coverage 42% is under 60%",
+        "migration-failure": "alembic downgrade raises NotImplementedError; only found with a [test] image, i.e. docker",
+        "test-smells": "a test without assert, a skipped test, a sleep >= 1s",
+        "untested-routes": "/health, /orders/{id}, /admin/stats are never referenced by a test"
+      },
+      "k": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "Warn",
+          "recall": 1.0,
+          "found": [
+            "low-coverage",
+            "critical-uncovered",
+            "untested-routes",
+            "test-smells",
+            "eol-runtime"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [
+            "migration-failure"
+          ],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 9,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "qa.release.eol_runtime @ Dockerfile",
+            "qa.suite.critical_uncovered @ app/auth.py",
+            "qa.suite.low_coverage @ coverage.xml",
+            "qa.suite.untested_routes @ GET /health",
+            "qa.suite.untested_routes @ GET /orders/{id}",
+            "qa.suite.untested_routes @ GET /admin/stats",
+            "qa.suite.test_smells @ tests/test_orders.py",
+            "qa.suite.test_smells @ tests/test_orders.py",
+            "qa.suite.test_smells @ tests/test_orders.py"
+          ],
+          "requests": 0,
+          "seconds": 0.103,
+          "inconclusive_rate": null,
+          "confidence": null
+        },
+        {
+          "run": 2,
+          "verdict": "Warn",
+          "recall": 1.0,
+          "found": [
+            "low-coverage",
+            "critical-uncovered",
+            "untested-routes",
+            "test-smells",
+            "eol-runtime"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [
+            "migration-failure"
+          ],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 9,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "qa.release.eol_runtime @ Dockerfile",
+            "qa.suite.critical_uncovered @ app/auth.py",
+            "qa.suite.low_coverage @ coverage.xml",
+            "qa.suite.untested_routes @ GET /health",
+            "qa.suite.untested_routes @ GET /orders/{id}",
+            "qa.suite.untested_routes @ GET /admin/stats",
+            "qa.suite.test_smells @ tests/test_orders.py",
+            "qa.suite.test_smells @ tests/test_orders.py",
+            "qa.suite.test_smells @ tests/test_orders.py"
+          ],
+          "requests": 0,
+          "seconds": 0.102,
+          "inconclusive_rate": null,
+          "confidence": null
+        }
+      ],
+      "recall": 1.0,
+      "recall_min": 1.0,
+      "precision": 1.0,
+      "precision_min": 1.0,
+      "false_positives": 0,
+      "inconclusive_rate": null,
+      "confidence": null,
+      "blockers": [],
+      "verdict_match": null,
+      "pass_k": true,
+      "verdict_stable": true,
+      "verdicts": [
+        "Warn",
+        "Warn"
+      ],
+      "known_gaps_open": [],
+      "known_gaps_closed": [],
+      "requests": 0,
+      "seconds": 0.103,
+      "thresholds": {
+        "min_recall": 0.85,
+        "max_false_positives": 2,
+        "pass_k": true,
+        "stable_verdict": true,
+        "max_requests": null,
+        "max_seconds": 60.0,
+        "max_inconclusive_rate": null
+      },
+      "checks": [
+        {
+          "name": "runs completed",
+          "ok": true,
+          "detail": "2/2 completed"
+        },
+        {
+          "name": "recall",
+          "ok": true,
+          "detail": "mean 1.000 (min run 1.000) vs >= 0.85"
+        },
+        {
+          "name": "false positives",
+          "ok": true,
+          "detail": "worst run 0 vs <= 2"
+        },
+        {
+          "name": "pass^k",
+          "ok": true,
+          "detail": "2/2 runs at recall >= 0.85"
+        },
+        {
+          "name": "verdict stable",
+          "ok": true,
+          "detail": "Warn | Warn"
+        },
+        {
+          "name": "time budget",
+          "ok": true,
+          "detail": "worst run 0.1s vs <= 60s"
+        }
+      ],
+      "passed": true,
+      "error": null
+    }
+  ],
+  "passed": true
+}

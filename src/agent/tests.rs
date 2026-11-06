@@ -626,7 +626,19 @@ fn credentials_come_only_from_the_request_or_env_never_the_server() {
     // no credential for role "user": request goes out bare, the result says why, and it is not a FAIL
     let r = run_cases(&[user_case.clone()], &fx.base, &o);
     assert_eq!(fx.requests().last().unwrap().auth, None);
-    assert_eq!(r[0].status, "INCONCLUSIVE", "{:?}", r[0]);
+    assert_eq!(
+        (r[0].status.as_str(), r[0].blocked_reason),
+        ("BLOCKED", Some(BlockReason::AuthWall)),
+        "a 401 with no credential for the role is a login wall, not a verdict: {:?}",
+        r[0]
+    );
+    assert!(
+        r[0].failure_reason
+            .as_deref()
+            .unwrap()
+            .contains("roles init"),
+        "the result says what to provide"
+    );
     assert!(
         r[0].evidence_detail.as_ref().unwrap()["request"]["auth_note"]
             .as_str()
@@ -721,6 +733,419 @@ fn redirects_are_observed_not_followed() {
     let r = run_cases(&[c], &fx.base, &o);
     assert_eq!(r[0].status_code, Some(302));
     assert_eq!(fx.requests().len(), 1);
+}
+
+/// A target that redirects in every way the executor has to tell apart.
+fn redirect_fixture() -> Fixture {
+    let to = |code: u16, loc: &str| -> Reply {
+        (
+            code,
+            "text/plain",
+            vec![("Location".to_string(), loc.to_string())],
+            String::new(),
+        )
+    };
+    start_server(Arc::new(move |r: &Req| {
+        match (r.method, r.path) {
+        ("GET" | "HEAD", "/") => to(307, "/login"),
+        ("GET" | "HEAD", "/login") => (
+            200,
+            "text/html",
+            vec![],
+            "<html><form><input type=\"password\" name=\"p\"></form></html>".into(),
+        ),
+        ("GET" | "HEAD", "/moved") => to(301, "/final"),
+        ("GET" | "HEAD", "/final") => json(200, serde_json::json!({"ok": true})),
+        ("GET", "/offsite") => to(302, "http://other.invalid/x"),
+        ("GET", "/loop-a") => to(302, "/loop-b"),
+        ("GET", "/loop-b") => to(302, "/loop-a"),
+        ("GET", p) if p.starts_with("/chain/") => {
+            let n: u32 = p["/chain/".len()..].parse().unwrap_or(0);
+            to(302, &format!("/chain/{}", n + 1))
+        }
+        ("GET", "/to-missing") => to(302, "/gone"),
+        ("GET", "/.env") => to(302, "/login"),
+        ("GET", "/needs-auth") => json(401, serde_json::json!({"error": "unauthorized"})),
+        ("GET", "/leaky-401") => (
+            401,
+            "text/plain",
+            vec![],
+            "Traceback (most recent call last):\n  File \"/srv/app.py\", line 3, in view\nKeyError: 'user'".into(),
+        ),
+        ("GET", "/home-login") => (
+            200,
+            "text/html",
+            vec![],
+            "<html><input type=\"password\"></html>".into(),
+        ),
+        _ => json(404, serde_json::json!({"error": "no such route"})),
+    }
+    }))
+}
+
+fn paths(fx: &Fixture) -> Vec<String> {
+    fx.requests().into_iter().map(|s| s.target).collect()
+}
+
+#[test]
+fn same_origin_redirects_are_followed_for_reads_and_the_chain_is_recorded() {
+    let fx = redirect_fixture();
+    let mut live = case("TC-001", "state_transition", "GET", "/moved");
+    live.expected_status = Some(200);
+    let mut head = case("TC-002", "negative", "HEAD", "/moved");
+    head.expected_status = Some(200);
+    let mut o = exec_opts();
+    o.reruns = 0;
+    let r = run_cases(&[live], &fx.base, &o);
+    let c = &r[0];
+    assert_eq!(c.status, "PASS", "{c:?}");
+    assert_eq!(
+        c.status_code,
+        Some(200),
+        "the judged response is the final one"
+    );
+    assert_eq!(
+        c.redirect_chain,
+        [RedirectHop {
+            status: 301,
+            location: "/final".into()
+        }]
+    );
+    assert_eq!(paths(&fx), ["/moved", "/final"]);
+    assert!(
+        c.evidence
+            .starts_with("followed 1 redirect(s) (301 /final), judged HTTP 200"),
+        "{}",
+        c.evidence
+    );
+    assert!(
+        c.reproduction_curl.contains("-L --max-redirs 5"),
+        "the reproduction follows the redirect too: {}",
+        c.reproduction_curl
+    );
+    let d = c.evidence_detail.as_ref().unwrap();
+    assert_eq!(d["redirect_chain"][0]["status"], 301);
+    assert!(
+        d["response"]["final_url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/final")
+    );
+    // a HEAD read follows too
+    let r = run_cases(&[head], &fx.base, &o);
+    assert_eq!(r[0].redirect_chain.len(), 1, "{:?}", r[0]);
+    // the bearer of a role goes along every hop on the target, and only there
+    let mut as_user = case("TC-003", "state_transition", "GET", "/moved");
+    as_user.expected_status = Some(200);
+    as_user.role = Some("user".into());
+    o.credentials = Credentials::none().with("user", "alice-token");
+    let before = fx.requests().len();
+    let r = run_cases(&[as_user], &fx.base, &o);
+    assert_eq!(r[0].status, "PASS", "{:?}", r[0]);
+    let hops: Vec<_> = fx.requests().into_iter().skip(before).collect();
+    assert_eq!(hops.len(), 2);
+    assert!(
+        hops.iter()
+            .all(|s| s.auth.as_deref() == Some("Bearer alice-token"))
+    );
+}
+
+#[test]
+fn authorization_cases_sensitive_files_and_expected_redirects_keep_the_raw_status() {
+    let fx = redirect_fixture();
+    let mut o = exec_opts();
+    o.reruns = 0;
+    // an authorization case: the raw status is the evidence
+    let mut authz = case("TC-001", "authz", "GET", "/moved");
+    authz.expected_status = Some(401);
+    // a sensitive-file probe answered with a redirect
+    let mut env = case("TC-002", "authz", "GET", "/.env");
+    env.expected_status = Some(403);
+    // a case that expects the redirect
+    let mut redirects = case("TC-003", "state_transition", "GET", "/moved");
+    redirects.expected_status = Some(301);
+    // a forged token request
+    let mut forged = case("TC-004", "state_transition", "GET", "/moved");
+    forged.role = Some("forged".into());
+    let r = run_cases(&[authz, env, redirects, forged], &fx.base, &o);
+    for c in &r {
+        assert!(c.redirect_chain.is_empty(), "{c:?}");
+        assert!(matches!(c.status_code, Some(301 | 302)), "{c:?}");
+    }
+    assert_eq!(
+        status_of(&r, "TC-003").status,
+        "PASS",
+        "redirected with 301 as expected"
+    );
+    assert_eq!(fx.requests().len(), 4, "one request each, nothing followed");
+}
+
+#[test]
+fn a_redirect_off_the_target_a_loop_and_a_long_chain_stop_the_following() {
+    let fx = redirect_fixture();
+    let mut o = exec_opts();
+    o.reruns = 0;
+    let mut off = case("TC-001", "state_transition", "GET", "/offsite");
+    off.expected_status = Some(200);
+    let r = run_cases(&[off], &fx.base, &o);
+    assert_eq!(r[0].status_code, Some(302));
+    assert!(
+        r[0].redirect_chain.is_empty(),
+        "never off the target's origin"
+    );
+    assert_eq!(r[0].status, "INCONCLUSIVE", "{:?}", r[0]);
+    assert_eq!(paths(&fx), ["/offsite"]);
+
+    let fx = redirect_fixture();
+    let mut lp = case("TC-002", "state_transition", "GET", "/loop-a");
+    lp.expected_status = Some(200);
+    let r = run_cases(&[lp], &fx.base, &o);
+    assert_eq!(
+        paths(&fx),
+        ["/loop-a", "/loop-b"],
+        "a loop is cut at the first repeat"
+    );
+    assert_eq!(r[0].status_code, Some(302));
+
+    let fx = redirect_fixture();
+    let mut long = case("TC-003", "state_transition", "GET", "/chain/0");
+    long.expected_status = Some(200);
+    let r = run_cases(&[long], &fx.base, &o);
+    assert_eq!(r[0].redirect_chain.len(), 5, "at most five hops");
+    assert_eq!(fx.requests().len(), 6);
+    assert_eq!(r[0].status_code, Some(302));
+    assert_eq!(r[0].status, "INCONCLUSIVE");
+}
+
+#[test]
+fn a_followed_redirect_is_judged_on_the_final_response() {
+    let fx = redirect_fixture();
+    let mut c = case("TC-001", "state_transition", "GET", "/to-missing");
+    c.expected_status = Some(200);
+    let mut o = exec_opts();
+    o.reruns = 0;
+    let r = run_cases(&[c], &fx.base, &o);
+    assert_eq!(r[0].status, "FAIL", "{:?}", r[0]);
+    assert_eq!(r[0].status_code, Some(404));
+    assert!(
+        r[0].failure_reason
+            .as_deref()
+            .unwrap()
+            .contains("got HTTP 404")
+    );
+    assert_eq!(
+        r[0].redirect_chain.len(),
+        1,
+        "the evidence shows how it got there"
+    );
+}
+
+#[test]
+fn a_redirect_to_a_login_page_without_a_credential_is_an_auth_wall() {
+    let fx = redirect_fixture();
+    let mut live = case("TC-001", "state_transition", "GET", "/");
+    live.expected_status = Some(200);
+    let mut o = exec_opts();
+    o.reruns = 0;
+    let r = run_cases(&[live.clone()], &fx.base, &o);
+    let c = &r[0];
+    assert_eq!(
+        (c.status.as_str(), c.blocked_reason),
+        ("BLOCKED", Some(BlockReason::AuthWall)),
+        "{c:?}"
+    );
+    assert_eq!(c.redirect_chain.len(), 1);
+    assert_eq!(c.status_code, Some(200), "the login page answered");
+    let why = c.failure_reason.as_deref().unwrap();
+    assert!(
+        why.contains("redirect to a login page")
+            && why.contains("/login")
+            && why.contains("roles init"),
+        "{why}"
+    );
+    assert_eq!(
+        c.evidence_detail.as_ref().unwrap()["auth_wall"],
+        "HTTP 307 redirect to a login page (/login)"
+    );
+    // with a credential for the role the case runs as it: no wall
+    live.role = Some("user".into());
+    o.credentials = Credentials::none().with("user", "alice-token");
+    let r = run_cases(&[live], &fx.base, &o);
+    assert_eq!(r[0].status, "PASS", "{:?}", r[0]);
+    assert_eq!(r[0].blocked_reason, None);
+}
+
+#[test]
+fn a_401_with_no_credential_is_an_auth_wall_but_a_failure_or_a_denial_is_not() {
+    let fx = redirect_fixture();
+    let mut o = exec_opts();
+    o.reruns = 0;
+    let mut wall = case("TC-001", "state_transition", "GET", "/needs-auth");
+    wall.expected_status = Some(200);
+    // no expectation at all: INCONCLUSIVE before, still not a verdict on the app
+    let robust = case("TC-002", "boundary", "GET", "/needs-auth");
+    // a FAIL stays a FAIL: the 401 body leaks a stack trace
+    let mut leaky = case("TC-003", "boundary", "GET", "/leaky-401");
+    leaky.expected_behavior = "handled without a server error".into();
+    // the case expects the denial: that is its evidence
+    let mut denied = case("TC-004", "authz", "GET", "/needs-auth");
+    denied.expected_status = Some(401);
+    let mut denied2 = case("TC-005", "state_transition", "GET", "/needs-auth");
+    denied2.expected_status = Some(401);
+    // a page with a password field that nothing redirected to is just a page; so is a login page
+    let mut form = case("TC-006", "state_transition", "GET", "/home-login");
+    form.expected_status = Some(200);
+    let mut login = case("TC-007", "state_transition", "GET", "/login");
+    login.expected_status = Some(200);
+    let r = run_cases(
+        &[wall, robust, leaky, denied, denied2, form, login],
+        &fx.base,
+        &o,
+    );
+    for id in ["TC-001", "TC-002"] {
+        let c = status_of(&r, id);
+        assert_eq!(
+            (c.status.as_str(), c.blocked_reason, c.status_code),
+            ("BLOCKED", Some(BlockReason::AuthWall), Some(401)),
+            "{id}: {c:?}"
+        );
+    }
+    assert_eq!(
+        status_of(&r, "TC-003").status,
+        "FAIL",
+        "{:?}",
+        status_of(&r, "TC-003")
+    );
+    assert_eq!(status_of(&r, "TC-004").status, "PASS");
+    assert_eq!(status_of(&r, "TC-005").status, "PASS");
+    assert_eq!(status_of(&r, "TC-006").status, "PASS");
+    assert_eq!(status_of(&r, "TC-007").status, "PASS");
+    assert!(r.iter().filter(|c| c.blocked_reason.is_some()).count() == 2);
+}
+
+#[test]
+fn a_failure_after_a_followed_redirect_is_replayed_through_the_same_redirect() {
+    use super::verify::{VerifyOptions, no_raise, verify_failures};
+    let fx = redirect_fixture();
+    let mut c = case("TC-001", "state_transition", "GET", "/to-missing");
+    c.expected_status = Some(200);
+    let cases = vec![c];
+    let mut o = exec_opts();
+    o.reruns = 0;
+    let mut results = run_cases(&cases, &fx.base, &o);
+    assert_eq!(results[0].status, "FAIL", "{:?}", results[0]);
+    let creds = Credentials::none();
+    let out = verify_failures(
+        &mut results,
+        &cases,
+        &fx.base,
+        &VerifyOptions {
+            k: 2,
+            raise_k: no_raise(),
+            dry_run: false,
+            is_spa_target: false,
+            credentials: &creds,
+            timeout: Duration::from_secs(5),
+        },
+        &mut RunBudget::new(50, 50, Duration::from_secs(60), 0.0),
+    );
+    let rec = out.summary.record("TC-001").unwrap();
+    assert_eq!(
+        (rec.reproduced, rec.completed),
+        (2, 2),
+        "the replays see the 404 behind the redirect, as the executor did: {rec:?}"
+    );
+    assert_eq!(
+        results[0].status, "FAIL",
+        "confirmed, so it stays a failure"
+    );
+}
+
+#[test]
+fn a_transport_error_is_blocked_as_transport() {
+    let mut c = case("TC-001", "state_transition", "GET", "/");
+    c.expected_status = Some(200);
+    let r = run_cases(&[c], &dead_port_url(), &exec_opts());
+    assert_eq!(
+        (r[0].status.as_str(), r[0].blocked_reason),
+        ("BLOCKED", Some(BlockReason::Transport))
+    );
+    assert!(r[0].was_sent(), "the request went out, it got no answer");
+}
+
+#[test]
+fn ledger_rows_are_results_without_a_request_a_step_or_a_budget() {
+    let fx = redirect_fixture();
+    let mut na = case("TC-001", "injection", "GET", "/");
+    na.source = Some(SRC_NOT_APPLICABLE.into());
+    na.input_hint = "routes considered: / (SPA shell)".into();
+    let mut wall = case("TC-002", "boundary", "GET", "/");
+    wall.source = Some(SRC_AUTH_WALL.into());
+    let mut budget = RunBudget::new(0, 0, Duration::from_secs(60), 0.0);
+    let r = execute_cases_with(&[na, wall], &fx.base, &exec_opts(), &mut budget);
+    assert!(fx.requests().is_empty(), "nothing is sent");
+    assert_eq!(budget.steps_used(), 0);
+    let (a, b) = (&r[0], &r[1]);
+    assert_eq!(
+        (a.status.as_str(), a.blocked_reason),
+        ("NOT_APPLICABLE", Some(BlockReason::NoSurface))
+    );
+    assert!(
+        a.failure_reason
+            .as_deref()
+            .unwrap()
+            .contains("no input surface")
+    );
+    assert_eq!(
+        (b.status.as_str(), b.blocked_reason),
+        ("BLOCKED", Some(BlockReason::AuthWall))
+    );
+    assert!(b.failure_reason.as_deref().unwrap().contains("roles init"));
+    assert!(r.iter().all(|c| !c.was_sent() && c.evidence_file.is_none()));
+}
+
+#[test]
+fn an_app_behind_a_login_is_not_evaluated_and_never_no_go() {
+    // the NuHire shape: the entry redirects to a login, only that is discovered
+    let fx = redirect_fixture();
+    let rep = run_in(&tmp("wall"), &req(&fx.base), "run-wall", opts()).unwrap();
+    let l = rep.evidence_ledger.as_ref().unwrap();
+    assert_eq!(
+        l.gate_verdict, "NOT_EVALUATED",
+        "{}\n{}",
+        l.verdict_basis, l.executive_summary
+    );
+    assert!(!l.evaluated);
+    assert!(
+        l.blockers
+            .iter()
+            .any(|b| b.reason == BlockReason::AuthWall && b.next_step.contains("roles init")),
+        "{:?}",
+        l.blockers
+    );
+    assert!(
+        l.executive_summary.contains("auth wall"),
+        "{}",
+        l.executive_summary
+    );
+    // no case was sent at the shell with an input payload that could never be answered
+    assert!(
+        rep.executed_results
+            .iter()
+            .filter(|r| matches!(r.technique.as_str(), "injection" | "boundary" | "negative"))
+            .all(|r| r.status == "BLOCKED" || r.status == "NOT_APPLICABLE"),
+        "{:?}",
+        rep.executed_results
+            .iter()
+            .map(|r| (&r.case_id, &r.technique, &r.status))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        rep.executed_results
+            .iter()
+            .all(|r| r.status != "INCONCLUSIVE")
+            || l.gate_verdict != "NO_GO"
+    );
 }
 
 #[test]
@@ -1173,7 +1598,16 @@ fn llm_cannot_override_the_gate_and_every_prompt_is_fenced() {
     );
 
     // the injection guard: every prompt has the SYSTEM preamble, balanced fences, and no secrets
-    let reqs = m.requests.lock().unwrap().clone();
+    let all = m.requests.lock().unwrap().clone();
+    // the 1-token latency probe at run start is the fixed prompt "ping": it carries no data to fence
+    let reqs: Vec<&String> = all
+        .iter()
+        .filter(|r| {
+            let b: Value = serde_json::from_str(r.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            b["max_tokens"] != 1
+        })
+        .collect();
+    assert!(all.len() > reqs.len(), "the latency probe was sent");
     assert!(reqs.len() >= 3);
     let mut saw_title = false;
     for raw in reqs {
@@ -1278,6 +1712,11 @@ fn hostile_report() -> AgentRunReport {
         status: "completed".into(),
         steps: vec![],
         discovered_routes: vec![DiscoveredRoute {
+            final_url: None,
+            redirect_chain: vec![],
+            auth_wall: false,
+            catch_all: false,
+            input_surface: Default::default(),
             path: evil.into(),
             method: "GET".into(),
             status_code: 0,
@@ -1318,6 +1757,8 @@ fn hostile_report() -> AgentRunReport {
         since_last_run: None,
     };
     let mk = |id: &str, status: &str| CaseExecutionResult {
+        blocked_reason: None,
+        redirect_chain: vec![],
         case_id: id.into(),
         title: evil.into(),
         component: evil.into(),

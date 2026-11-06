@@ -956,6 +956,7 @@ pub fn observe(f: &RunFacts) -> Observation {
                 t.skipped += 1;
                 continue;
             }
+            "NOT_APPLICABLE" => continue, // nothing was sent, nothing was skipped
             _ => {}
         }
         t.executed += 1;
