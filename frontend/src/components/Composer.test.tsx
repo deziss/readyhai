@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer } from "./Composer";
 
@@ -101,6 +101,16 @@ describe("Composer behaviour", () => {
     fireEvent.click(screen.getByLabelText(/Max Pro/));
     expect(props.setModelTier).toHaveBeenCalledWith("max_pro");
     expect(props.setThinkingBudget).toHaveBeenCalledWith(32768);
+  });
+
+  it("warns that Max and Max Pro are slow and recommends High for flash models", () => {
+    renderComposer({ modelTier: "high" });
+    expect(screen.queryByRole("note")).toBeNull();
+    cleanup();
+    renderComposer({ modelTier: "max_pro" });
+    const note = screen.getByRole("note");
+    expect(note.textContent).toMatch(/32k reasoning budget/);
+    expect(note.textContent).toMatch(/use High for faster/);
   });
 
   it("uses plain, sentence-case copy with no arrows", () => {
