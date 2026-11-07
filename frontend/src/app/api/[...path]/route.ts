@@ -1,4 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
+import { Agent, fetch as undiciFetch } from "undici";
+
+// Agent runs are synchronous on the backend and can take far longer than Node fetch's default
+// 300 s headers timeout (a deep run is often 5-10 min), which surfaced as "fetch failed" / 502
+// while the run itself completed. Wait as long as the backend's own run limit
+// (READYHAI_RUN_TIMEOUT_SECS, default 3600) plus a margin.
+const runTimeoutMs =
+  (Number(process.env.READYHAI_RUN_TIMEOUT_SECS) > 0
+    ? Number(process.env.READYHAI_RUN_TIMEOUT_SECS)
+    : 3600) *
+    1000 +
+  120_000;
+const backendAgent = new Agent({
+  headersTimeout: runTimeoutMs,
+  bodyTimeout: runTimeoutMs,
+  keepAliveTimeout: 10_000,
+});
 
 export async function proxy(
   request: NextRequest,
@@ -23,24 +40,26 @@ export async function proxy(
     const isBodyAllowed = !["GET", "HEAD"].includes(request.method);
     const body = isBodyAllowed ? await request.arrayBuffer() : undefined;
 
-    const res = await fetch(targetUrl.toString(), {
+    const res = await undiciFetch(targetUrl.toString(), {
       method: request.method,
       headers: reqHeaders,
-      body,
-      // @ts-expect-error duplex required for Node fetch with body
-      duplex: isBodyAllowed && body ? "half" : undefined,
+      body: body ? Buffer.from(body) : undefined,
+      dispatcher: backendAgent,
     });
 
-    const resHeaders = new Headers(res.headers);
+    const resHeaders = new Headers();
+    res.headers.forEach((value, key) => resHeaders.append(key, value));
     resHeaders.delete("content-encoding");
 
-    return new NextResponse(res.body, {
+    return new NextResponse(res.body as ReadableStream<Uint8Array> | null, {
       status: res.status,
       statusText: res.statusText,
       headers: resHeaders,
     });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
+    const cause =
+      error instanceof Error && error.cause instanceof Error ? ` (${error.cause.message})` : "";
+    const message = (error instanceof Error ? error.message : String(error)) + cause;
     return NextResponse.json(
       { error: `Backend proxy connection failed: ${message}` },
       { status: 502 }

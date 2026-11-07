@@ -2,6 +2,13 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] - 2026-11-07
+
+### Fixed
+
+- **"Agent run failed (HTTP 502): Backend proxy connection failed: fetch failed".** The UI's API proxy used Node's built-in `fetch`, which gives up after 300 s waiting for response headers, while agent runs are synchronous and a deep run often takes longer; the run completed on the backend but the browser got a 502. The proxy now uses an undici dispatcher whose header and body timeouts follow the backend's run limit (`READYHAI_RUN_TIMEOUT_SECS`, default 3600 s, plus 2 min), and a proxy error now includes its cause.
+- **One slow LLM call could use the whole LLM budget.** A Max Pro planner call (34k tokens) on a small model ran ~6 minutes, then the gate advisory found the budget exhausted. Each call (with its downgrade retries) is now limited to 60% of the run's remaining LLM time (at least 10 s, never more than its own timeout), and no further downgrade starts past that deadline.
+
 ## [0.6.0] - 2026-11-06
 
 Agent reliability and accuracy: verdicts reflect the app, not the agent's blind spots. On the NuHire SPA, inconclusive results dropped from 15 of 18 to 1 of 8, and a false NO_GO became NOT_EVALUATED with the exact next step.
