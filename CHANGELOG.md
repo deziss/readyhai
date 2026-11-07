@@ -2,6 +2,12 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.6.2] - 2026-11-07
+
+### Changed
+
+- **Model tier picker.** Descriptions now state the speed trade-off, and High is marked as the recommended tier for small and flash models. Picking Max or Max Pro shows a note: the 16k/32k reasoning budget slows the planner, so with models like qwen3.8-flash use High for faster runs (the planner is also capped at High automatically when the model answers slowly).
+
 ## [0.6.1] - 2026-11-07
 
 ### Fixed

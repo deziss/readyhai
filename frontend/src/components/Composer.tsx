@@ -57,11 +57,29 @@ const MODES: { id: Mode; label: string; icon: typeof Zap }[] = [
 const STEP_PRESETS = [5, 10, 15, 25, 50];
 
 const TIERS: { id: ModelTier; label: string; tokens: string; tokensNum: number; desc: string }[] = [
-  { id: "low", label: "Low", tokens: "1k", tokensNum: 1024, desc: "Fast probe and reconnaissance" },
-  { id: "medium", label: "Med", tokens: "4k", tokensNum: 4096, desc: "Standard QA and contracts" },
-  { id: "high", label: "High", tokens: "8k", tokensNum: 8192, desc: "Deep OWASP and boundary analysis (recommended)" },
-  { id: "max", label: "Max", tokens: "16k", tokensNum: 16384, desc: "Exhaustive mutation and state invariants" },
-  { id: "max_pro", label: "Max Pro", tokens: "32k", tokensNum: 32768, desc: "Frontier swarm and adversarial canaries" },
+  { id: "low", label: "Low", tokens: "1k", tokensNum: 1024, desc: "Fastest planning: reconnaissance and smoke checks" },
+  { id: "medium", label: "Med", tokens: "4k", tokensNum: 4096, desc: "Quick planning for standard QA and contract checks" },
+  {
+    id: "high",
+    label: "High",
+    tokens: "8k",
+    tokensNum: 8192,
+    desc: "Recommended: deep OWASP and boundary planning at a good speed, best fit for small and flash models",
+  },
+  {
+    id: "max",
+    label: "Max",
+    tokens: "16k",
+    tokensNum: 16384,
+    desc: "Exhaustive mutation and state-invariant planning; planner calls take noticeably longer",
+  },
+  {
+    id: "max_pro",
+    label: "Max Pro",
+    tokens: "32k",
+    tokensNum: 32768,
+    desc: "Largest reasoning budget for frontier models; slowest planning",
+  },
 ];
 
 const DIRECTIVE_HINTS: { label: string; text: string }[] = [
@@ -472,6 +490,13 @@ export function Composer({
               })}
             </div>
             {tierDesc && <p className="text-xs text-rh-muted">{tierDesc}</p>}
+            {(modelTier === "max" || modelTier === "max_pro") && (
+              <p role="note" className="text-xs text-rh-cond">
+                Slower runs: a {modelTier === "max_pro" ? "32k" : "16k"} reasoning budget makes the planner wait
+                for long answers. With small or flash models (for example qwen3.8-flash) use High for faster
+                runs; the planner is capped at High automatically when the model answers slowly.
+              </p>
+            )}
           </div>
 
           {thinking && (
