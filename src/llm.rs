@@ -65,6 +65,10 @@ pub const ENV_PROVIDER: &str = "READYHAI_LLM_PROVIDER";
 pub const ENV_ALLOW_CLOUD: &str = "READYHAI_LLM_ALLOW_CLOUD";
 /// Fixed per-call timeout in whole seconds, replacing the size-based one (see [`call_timeout_secs`]).
 pub const ENV_TIMEOUT_SECS: &str = "READYHAI_LLM_TIMEOUT_SECS";
+/// Shortest timeout a call is given, even when its share of the run budget is smaller.
+const MIN_CALL_SECS: u64 = 10;
+/// Share of the run's remaining LLM time one call (with its retries) may use.
+const CALL_SHARE_OF_BUDGET: f64 = 0.6;
 
 /// Per-call timeout for a request that may produce `max_tokens` tokens: `20 s + max_tokens / 40`
 /// (a slow server makes about 40 tokens/s), clamped to 30..=300 s. A fixed 60 s killed every
@@ -331,14 +335,32 @@ pub struct LlmConfig {
     pub model_tier: String,
     /// `READYHAI_LLM_TIMEOUT_SECS`: one timeout for every call instead of the size-based one.
     pub timeout_override: Option<Duration>,
+    /// Latest moment the current call (all its downgrade retries included) may run until; set
+    /// from the run's LLM budget so one slow call cannot use up the time of every later stage.
+    pub call_deadline: Option<std::time::Instant>,
 }
 
 impl LlmConfig {
     /// The timeout of one call that may produce `max_tokens` tokens ([`call_timeout_secs`], unless
     /// `READYHAI_LLM_TIMEOUT_SECS` is set).
     pub fn call_timeout(&self, max_tokens: u32) -> Duration {
-        self.timeout_override
-            .unwrap_or_else(|| Duration::from_secs(call_timeout_secs(max_tokens)))
+        let t = self
+            .timeout_override
+            .unwrap_or_else(|| Duration::from_secs(call_timeout_secs(max_tokens)));
+        match self.call_deadline {
+            // the floor applies to the budget share only, never raising a shorter configured timeout
+            Some(d) => t.min(
+                d.saturating_duration_since(std::time::Instant::now())
+                    .max(Duration::from_secs(MIN_CALL_SECS)),
+            ),
+            None => t,
+        }
+    }
+
+    /// The call's deadline has passed: no further (downgraded) attempt.
+    fn past_call_deadline(&self) -> bool {
+        self.call_deadline
+            .is_some_and(|d| std::time::Instant::now() >= d)
     }
 
     /// The same config without reasoning: what gate and triage calls use. Such a call is a short
@@ -444,6 +466,7 @@ impl LlmConfig {
             thinking_budget_tokens: 8192,
             model_tier: "high".to_string(),
             timeout_override: None,
+            call_deadline: None,
         })
     }
 
@@ -1183,6 +1206,23 @@ impl Budget {
     pub fn remaining_calls(&self) -> usize {
         self.max_calls.saturating_sub(self.calls)
     }
+    /// LLM time left: the smaller of the time budget and the run's wall-clock deadline.
+    pub fn time_left(&self) -> Duration {
+        let budget = self.max_total.saturating_sub(self.started.elapsed());
+        match self.deadline {
+            Some(d) => budget.min(d.saturating_duration_since(std::time::Instant::now())),
+            None => budget,
+        }
+    }
+    /// Deadline for the next call: a share of the time left, so a slow planner call (a large
+    /// reasoning budget on a small model) leaves time for the gate and triage calls after it.
+    pub fn call_deadline(&self) -> std::time::Instant {
+        let share = self
+            .time_left()
+            .mul_f64(CALL_SHARE_OF_BUDGET)
+            .max(Duration::from_secs(MIN_CALL_SECS));
+        std::time::Instant::now() + share
+    }
     fn check(&self) -> Result<()> {
         if self.calls >= self.max_calls {
             bail!("LLM call budget exhausted ({} calls)", self.max_calls);
@@ -1491,7 +1531,8 @@ fn raw_chat(
                     };
                     trail.push(format!("{after} at {}", shape.describe()));
                     let next = downgrade(shape.max_tokens, shape.effort.is_some())
-                        .filter(|_| trail.len() <= MAX_TIMEOUT_DOWNGRADES);
+                        .filter(|_| trail.len() <= MAX_TIMEOUT_DOWNGRADES)
+                        .filter(|_| !cfg.past_call_deadline());
                     let Some(max_tokens) = next else {
                         let why = format!(
                             "'{model}' timed out {} time(s): {}",
@@ -1550,7 +1591,10 @@ pub fn ask_json_with(
     budget.check()?;
     budget.calls += 1;
     let t0 = std::time::Instant::now();
-    let reply = raw_chat(cfg, system, prompt, &mut budget.notes);
+    let mut bounded = cfg.clone();
+    let d = budget.call_deadline();
+    bounded.call_deadline = Some(cfg.call_deadline.map_or(d, |c| c.min(d)));
+    let reply = raw_chat(&bounded, system, prompt, &mut budget.notes);
     budget.elapsed += t0.elapsed();
     let text = reply?;
     let v = parse_json_object(&text)?;
@@ -1579,6 +1623,27 @@ pub fn ask_typed<T: serde::de::DeserializeOwned>(
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn one_call_gets_only_a_share_of_the_run_budget() {
+        let b = Budget::new(20, Duration::from_secs(300));
+        let left = b
+            .call_deadline()
+            .saturating_duration_since(std::time::Instant::now());
+        assert!(
+            left <= Duration::from_secs(181) && left >= Duration::from_secs(170),
+            "{left:?}"
+        );
+        // a 34k-token Max Pro call would get 300 s alone; under the deadline it gets the share
+        let mut c = LlmConfig::resolve(Some("vllm"), None, false).unwrap();
+        assert_eq!(c.call_timeout(34_816), Duration::from_secs(300));
+        c.call_deadline = Some(b.call_deadline());
+        assert!(c.call_timeout(34_816) <= Duration::from_secs(181));
+        // an exhausted budget still allows the minimum, never zero
+        c.call_deadline = Some(std::time::Instant::now());
+        assert_eq!(c.call_timeout(34_816), Duration::from_secs(MIN_CALL_SECS));
+        assert!(c.past_call_deadline());
+    }
 
     #[test]
     fn container_rewrites_loopback_llm_url() {
