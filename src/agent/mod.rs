@@ -25,6 +25,8 @@
 
 #![allow(dead_code, unused_imports)]
 
+pub mod attacks;
+pub mod browser_sec;
 mod budget;
 pub mod change;
 mod discover;
@@ -33,9 +35,11 @@ pub mod lead;
 mod ledger;
 pub mod memory;
 pub mod mutation;
+pub mod oast;
 mod oracle;
 mod pipeline;
 mod plan;
+pub mod react;
 pub mod remediation;
 mod report;
 pub mod stateful;
@@ -43,6 +47,7 @@ mod store;
 mod triage;
 mod types;
 pub mod verify;
+pub mod whitebox;
 
 #[cfg(test)]
 mod tests;

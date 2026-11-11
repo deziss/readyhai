@@ -930,13 +930,16 @@ pub fn harvest_ids(
             break;
         }
         let resolved = resolve_auth(&auth, creds);
-        let sent = clients.send(&OutReq {
-            method: "GET",
-            url: &url,
-            body: None,
-            headers: &[],
-            bearer: resolved.bearer.as_ref(),
-        });
+        let sent = clients.send_resolved(
+            &OutReq {
+                method: "GET",
+                url: &url,
+                body: None,
+                headers: &[],
+                bearer: resolved.bearer.as_ref(),
+            },
+            &resolved,
+        );
         let mut found: Vec<String> = vec![];
         if let Ok(seen) = sent
             && (200..300).contains(&seen.status)
@@ -1538,7 +1541,40 @@ pub(crate) fn discover_scoped(
 
     // 4. sensitive-file probes: status only, GET, safe in dry-run. An answer that is the
     // catch-all page is flagged, so it is not mistaken for an exposed file.
-    for probe in ["/.env", "/.git/config"] {
+    // Core probes always run; extended secret/backup/debug probes run when budget is plentiful
+    // so diff-aware runs with tight budgets keep room for targeted verification.
+    let mut sensitive_probes: Vec<&str> = vec!["/.env", "/.git/config"];
+    if budget.max_requests() >= 80 && extras_ok(budget) {
+        sensitive_probes.extend([
+            "/.git/HEAD",
+            "/.svn/entries",
+            "/.hg/hgrc",
+            "/.htaccess",
+            "/.htpasswd",
+            "/.DS_Store",
+            "/.dockerenv",
+            "/.npmrc",
+            "/.pypirc",
+            "/.aws/credentials",
+            "/backup.sql",
+            "/dump.sql",
+            "/db.sql",
+            "/secrets.json",
+            "/secrets.yml",
+            "/phpinfo.php",
+            "/info.php",
+            "/actuator/env",
+            "/actuator/heapdump",
+            "/actuator/mappings",
+            "/debug/vars",
+            "/debug/pprof",
+            "/server-status",
+        ]);
+    }
+    for (idx, probe) in sensitive_probes.into_iter().enumerate() {
+        if idx >= 2 && !extras_ok(budget) {
+            break;
+        }
         if d.routes.iter().any(|r| r.path == probe) {
             continue;
         }
@@ -2691,5 +2727,46 @@ mod site_tests {
         assert_eq!(local_path("https://evil.test/p", "x.test"), None);
         assert_eq!(local_path("//evil.test/p", "x.test"), None);
         assert_eq!(local_path("rel/path", "x.test"), None);
+    }
+
+    #[test]
+    fn sensitive_probes_cover_expanded_wordlist_respecting_budget_and_soft404() {
+        let (port, _) = site(|_, p| match p {
+            "/" => html("<html><body>hi</body></html>"),
+            "/.git/HEAD" => page(200, "text/plain", "ref: refs/heads/main\n"),
+            "/actuator/env" => page(200, "application/json", r#"{"propertySources":[]}"#),
+            "/backup.sql" => page(200, "text/plain", "-- MySQL dump\nCREATE TABLE u(id INT);"),
+            _ => page(404, "text/html", "<html>not found</html>"),
+        });
+        let mut b = budget();
+        let d = discover_scoped(&format!("http://127.0.0.1:{port}"), None, 20, &mut b, None);
+        assert!(
+            d.routes
+                .iter()
+                .any(|r| r.path == "/.git/HEAD" && r.status_code == 200)
+        );
+        assert!(
+            d.routes
+                .iter()
+                .any(|r| r.path == "/actuator/env" && r.status_code == 200)
+        );
+        assert!(
+            d.routes
+                .iter()
+                .any(|r| r.path == "/backup.sql" && r.status_code == 200)
+        );
+        assert!(d.routes.iter().any(|r| r.path == "/.aws/credentials"));
+
+        // Tight budget (like diff-aware mode max_requests = 40): skips extended wordlist
+        let mut tight = crate::agent::budget::RunBudget::new(20, 40, Duration::from_secs(30), 0.0);
+        let d_tight = discover_scoped(
+            &format!("http://127.0.0.1:{port}"),
+            None,
+            20,
+            &mut tight,
+            None,
+        );
+        assert!(d_tight.routes.iter().any(|r| r.path == "/.env"));
+        assert!(!d_tight.routes.iter().any(|r| r.path == "/.aws/credentials"));
     }
 }

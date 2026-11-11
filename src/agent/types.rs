@@ -223,6 +223,42 @@ pub struct ResponseContract {
     pub latency: bool,
 }
 
+fn default_oast_wait_ms() -> u64 {
+    350
+}
+
+/// Optional deterministic differential / timing / template / redirect / OAST verification oracle
+/// attached to a [`PlannedCase`], executed identically during exploration and verification replays.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProbeOracle {
+    BooleanDiff {
+        baseline_payload: String,
+        false_payload: String,
+    },
+    TimeDelay {
+        baseline_payload: String,
+        min_delay_ms: u64,
+    },
+    Ssti {
+        expected_eval: String,
+    },
+    OpenRedirect {
+        canary_host: String,
+    },
+    OastCallback {
+        placeholder: String,
+        #[serde(default = "default_oast_wait_ms")]
+        wait_ms: u64,
+    },
+    ExcessiveDataExposure,
+    GraphqlIntrospection,
+    DomXss {
+        #[serde(default)]
+        canary: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlannedCase {
     pub id: String,
@@ -236,6 +272,15 @@ pub struct PlannedCase {
     /// for body methods it is the request body.
     #[serde(default)]
     pub payload: Option<String>,
+    /// Custom request headers attached to the request (excluding credential overrides).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub headers: Vec<(String, String)>,
+    /// Explicit Content-Type override for the request body (validated).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_type: Option<String>,
+    /// Optional specialized verification oracle (differential, timing, SSTI, redirect, OAST, PII).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_oracle: Option<ProbeOracle>,
     pub expected_behavior: String,
     #[serde(default)]
     pub expected_status: Option<u16>,
@@ -364,6 +409,9 @@ pub struct TriagedDefect {
     pub remediation_explanation: Option<String>,
     #[serde(default)]
     pub reproduction_script: Option<String>,
+    /// White-box source location / call chain discovered via AST analysis (when `--repo` is supplied).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_context: Option<String>,
     /// The independent verifier replayed the failure and it reproduced on every replay.
     #[serde(default)]
     pub verified: bool,

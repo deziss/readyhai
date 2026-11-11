@@ -1,6 +1,6 @@
 # Architecture
 
-Single Rust crate (`readyhai`, edition 2024, about 78,000 lines in `src/` including unit tests; 17 direct dependencies). One binary provides the CLI, the REST server, the MCP stdio server, the eval harness and a health probe. The Agent Studio is a separate Next.js app in `frontend/`.
+Single Rust crate (`readyhai`, edition 2024, about 101,300 lines in `src/` including unit tests; 23 direct dependencies, adding 6 Tree-sitter grammars). One binary provides the CLI, the REST server, the MCP stdio server, the eval harness and a health probe. The Agent Studio is a separate Next.js app in `frontend/`.
 
 ## Components
 
@@ -8,11 +8,12 @@ Single Rust crate (`readyhai`, edition 2024, about 78,000 lines in `src/` includ
 |---|---|---|
 | CLI | `src/main.rs` | clap derive. Subcommands `scan`, `qa`, `agent`, `agent-memory show\|accept\|forget`, `eval`, `bundle export\|import`, `doctor`, `baseline accept`, `checks`, `tools pull\|update`, `serve`, `dashboard`, `mcp`, `ping`. Maps verdicts to exit codes (scan 0/1/2, qa and agent 0/1/2, error 3). |
 | Engine | `src/engine.rs` | Parses target, takes snapshot, detects facts, loops over the check registry, dedups, applies suppressions and baseline, runs the gate, writes `run.json`. |
-| Check registry ("mods") | `src/checks.rs` | `Check { id, title, kinds, min_profile, tool, intrusive, run }`. `checks::all()` concatenates the 41 built-in checks plus optional plugins. |
+| Check registry ("mods") | `src/checks.rs` | `Check { id, title, kinds, min_profile, tool, intrusive, run }`. `checks::all()` concatenates the 45 built-in checks (2 `[intrusive]`) plus optional plugins. |
 | Native rules | `src/rules.rs` | `readiness.*` checks (Dockerfile, deps, compose, k8s, CI, repo hygiene) and fact detection. In-process, no containers. |
-| Tool runners and parsers | `src/tools.rs` | Docker sandbox runner, create-policy, lock file, gitleaks/grype/semgrep/hadolint/checkov/dockle/image-inspect/JUnit/SARIF parsers, `tests.own`, plugins, `tools pull|update`. |
-| Supply-chain checks | `src/supply.rs` | OSV-Scanner reachability, OpenSSF Scorecard, Spectral, oasdiff. |
-| Web checks | `src/web.rs` | Native `web.smoke`, plus Schemathesis, ZAP baseline, Playwright runner containers. |
+| AST & taint auditor | `src/code_audit.rs` | `security.code_audit`: native Tree-sitter AST & cross-file (up to 3 hops) taint tracking (SQLi, CMDi, SSRF, path traversal, SSTI) and sibling auth middleware checks across Python, JS/TS, Go, and PHP; also powers OSV AST import enrichment and agent white-box linking. |
+| Tool runners and parsers | `src/tools.rs` | Docker sandbox runner, create-policy, lock file, gitleaks/grype/semgrep/opengrep/hadolint/checkov/dockle/image-inspect/JUnit/SARIF parsers, `tests.own`, plugins, `tools pull|update`. |
+| Supply-chain checks | `src/supply.rs` | OSV-Scanner reachability + AST import enrichment, OpenSSF Scorecard, Spectral, oasdiff. |
+| Web checks | `src/web.rs` | Native `web.smoke` (headers, weak CSP, TLS chain/expiry/protocol via OpenSSL), plus Schemathesis, Nuclei, ZAP baseline/active, Playwright runner containers. |
 | Host checks | `src/host.rs` | SSH probe (Linux/macOS/Windows), host package CVEs through grype, Lynis. |
 | Android checks | `src/android.rs` | MobSF per-scan container, adb runtime check. |
 | Snapshot | `src/snapshot.rs` | Filtered copy of the repo. Secret-bearing files become empty placeholders. |
@@ -41,14 +42,13 @@ The agent is a deterministic pipeline with an optional LLM on the side:
 [target URL, optional spec, optional repo + diff_base]
         |
         v
-1. Discovery ----------> crawl (same-host redirects only), route classification, SPA detection, spec read, ids of existing records
+1. Discovery ----------> crawl (same-host redirects only), route classification, SPA/XHR detection, spec read, ids of existing records; with `--repo`, Tree-sitter AST white-box handler/sink/guard inventory (`whitebox.rs`)
         |
         v
-2. Planner ------------> baseline from the crawl + spec-driven cases (shared QA generators); changed operations first
-        |                 (change.rs); known defects first (memory.rs); every case tagged with an area; optional validated LLM extras
+2. Planner ------------> baseline from crawl + spec-driven cases (`qa::api::synth`) + deep-security attack modules (`attacks/{auth,bopla,injection,logic}`) + white-box probes (`whitebox.rs`); changed operations first (`change.rs`); known defects first (`memory.rs`); optional validated LLM extras
+        |
         v
-3. Explorer = Lead ----> allocates a budget slice per area, runs auth | contract | state | ui workers, merges by case id,
-        |                 plans at most one wave of deterministic follow-ups (lead.rs); every response judged by the oracle
+3. Explorer = Lead ----> allocates budget slice per area, runs auth | contract | state | ui workers with in-process OAST collector (`oast.rs`), merges by case id, plans deterministic wave 2 (`lead.rs`), runs adaptive ReAct follow-ups (`react.rs`) and Playwright DOM security (`browser_sec.rs`); every response judged by the oracle
         v
 4. Verifier -----------> replays every FAIL k times through the same oracle; not reproduced = INCONCLUSIVE (verify.rs)
         |
@@ -76,7 +76,12 @@ The agent is a deterministic pipeline with an optional LLM on the side:
 | `mod.rs` | Module wiring and the design rules above |
 | `pipeline.rs` | The run: stage order, checkpoints, LLM resolution, `RunOptions`, cancellation, cleanup/teardown, memory hooks, `run_agentic_loop_with`, `run_discovery_scan` |
 | `discover.rs` | Crawl and route discovery, tech detection, `SpecDoc`, id harvesting |
-| `plan.rs` | The planner: baseline, spec-driven cases (`qa::api::synth`, `qa::plan`), depth by profile, `plan_cases_changed`, `plan_cases_remembered`, LLM extras validation |
+| `whitebox.rs` | Tree-sitter AST source-sink bridge (`src/code_audit.rs`): enriches discovery, plans hidden-route exploit probes, annotates defects with `file:line handler` linkage |
+| `attacks/` | Modular adversarial generators: `auth.rs` (JWT tampering, BFLA, proxy/header ACL bypass), `bopla.rs` (excessive data exposure, mass assignment), `injection.rs` (param-guided open redirect, SSRF, path traversal, SSTI, blind SQLi/CMDi), `logic.rs` (TOCTOU, step skip, negative values, HPP, GraphQL) |
+| `oast.rs` | In-process loopback HTTP callback collector (`OastCollector`, `__OAST_URL__` substitution, `oast_callback` correlation) |
+| `browser_sec.rs` | Playwright interactive DOM security orchestrator (`runners/playwright/agent_browser.mjs`: DOM XSS, DOM sinks, storage leaks, cookie hygiene, sourcemaps, clickjacking) |
+| `react.rs` | Bounded adaptive ReAct follow-up exploration loop under `Budget` (`react_lead`) |
+| `plan.rs` | The planner: baseline, spec-driven cases (`qa::api::synth`, `qa::plan`), depth by profile, `plan_cases_changed`, `plan_cases_remembered`, `plan_cases_remembered_with_whitebox`, LLM extras validation |
 | `change.rs` | Change-aware planning: `git diff`, route extraction (`qa::suite::extract_routes`), operation mapping, optional context retriever |
 | `lead.rs` | The lead: areas, budget allocation, workers, write ordering, merge, wave 2, the "Agents" report |
 | `budget.rs` | `RunBudget`, per-host `HostLimiter`, slices, environment overrides |
@@ -418,6 +423,9 @@ Flow: engine runs all checks -> findings -> baseline + policy gate -> verdict ->
 | TOCTOU bursts | `src/agent/stateful.rs` | `std::sync::Barrier` synchronized bursts, planned only for spec-declared create operations |
 | Verifier | `src/agent/verify.rs` | Replays failures k times; pass^k |
 | Lead and area workers | `src/agent/lead.rs` | `auth`, `contract`, `state`, `ui`; wave 2 |
+| Attack modules | `src/agent/attacks/*.rs` | `auth` (JWT/BFLA/ACL bypass), `bopla` (excessive exposure/mass assignment), `injection` (open redirect, SSRF, traversal, SSTI, blind SQLi/CMDi), `logic` (TOCTOU, workflow, HPP, GraphQL) |
+| In-process OAST & BrowserSecurity | `src/agent/oast.rs`, `src/agent/browser_sec.rs` | Loopback callback listener (`__OAST_URL__`) and Playwright DOM/XSS/storage/cookie verification (`agent_browser.mjs`) |
+| White-box bridge & ReAct loop | `src/agent/whitebox.rs`, `src/agent/react.rs` | AST source-sink discovery/annotation and bounded adaptive follow-up waves |
 | Change-aware planning | `src/agent/change.rs` | `--repo` and `--diff-base` |
 | Memory | `src/agent/memory.rs` | "Since last run", acceptance |
 | Example remediation | `src/agent/remediation.rs` | Generic guidance labelled "example - adapt to your code"; never applied or tested; the invented diffs of earlier builds are gone |

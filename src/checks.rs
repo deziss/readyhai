@@ -57,6 +57,7 @@ impl Check {
 
 pub fn all(plugin_dir: Option<&std::path::Path>) -> Vec<Check> {
     let mut v = crate::rules::checks();
+    v.extend(crate::code_audit::checks());
     v.extend(crate::tools::checks());
     v.extend(crate::web::checks());
     v.extend(crate::host::checks());

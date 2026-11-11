@@ -52,7 +52,7 @@ npx tsc --noEmit          # type check (CI runs it)
 npm test                  # vitest run: jsdom, Testing Library, src/**/*.test.{ts,tsx}
 ```
 
-CI (`.github/workflows/ci.yml`, job `frontend`) runs `npm ci`, `npm run lint`, `npx tsc --noEmit` and `npm test` on node 24. The tests (86 cases) cover the API helpers (`src/lib/api.ts`, `runs.ts`, `clipboard.ts`, `deepAuditCache.ts`) and the components with logic worth pinning: run status chips, cancel flow, composer, pipeline stepper, floating task widget, approval card and verdict badge.
+CI (`.github/workflows/ci.yml`, job `frontend`) runs `npm ci`, `npm run lint`, `npx tsc --noEmit` and `npm test` on node 24. The tests (127 cases) cover the API helpers (`src/lib/api.ts`, `runs.ts`, `clipboard.ts`, `deepAuditCache.ts`) and the components with logic worth pinning: run status chips, cancel flow, composer, pipeline stepper, floating task widget, approval card and verdict badge.
 
 The dev server proxies `/api/*` to the ReadyHai backend (`http://127.0.0.1:8080` by default); start the backend first (`READYHAI_TOKEN=... readyhai serve`).
 

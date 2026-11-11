@@ -8,22 +8,25 @@ Status key: **Done** (implemented, covered by tests or verification), **Done, li
 |---|---|---|---|
 | 0 Skeleton | Crate, models, sandbox executor with create-policy and reaper, snapshot + denylist, `scan`, JSON + HTML report, `serve` + compose | **Done** | Plan said SQLite; the build uses files only. Exit criterion (fixture scan, secrets guard) passed in verification round 1. |
 | 1 Repo + Image | Syft/Grype, Semgrep, Gitleaks, Checkov, Hadolint, Dockle, readiness rules, own-tests, fingerprints + baseline, gate, SARIF/JUnit, Jenkins stage | **Done** | Verification round 1: all 10 steps passed. Kustomize rendering not done. NuHire check is a printing test, not an asserting one. |
-| 2 Web/API | Smoke, Schemathesis, Playwright runner, ZAP baseline, scope enforcement, log clustering, GitHub/GitLab templates | **Done, live** | ZAP (2 findings) and Schemathesis (6) ran against the fixture API and the Playwright runner was built on 2026-10-30. TLS expiry/protocol checks missing. |
+| 2 Web/API | Smoke (weak CSP, TLS expiry/protocol/chain), Schemathesis, Playwright runner, Nuclei, ZAP baseline & active (`nonprod` + `deep`), scope enforcement, log clustering, GitHub/GitLab templates | **Done, live** | ZAP (2 findings) and Schemathesis (6) ran against the fixture API and Playwright runner was built on 2026-10-30; weak CSP, TLS, Nuclei, and active ZAP added in `0.7.0`. |
 | 3 Hosts | SSH executor + host-key verify, Linux probe + Lynis + package CVEs, macOS/Windows probe + core rules | **Done-unverified-live** | Linux verified live (round 2). OpenSSH client instead of russh. Windows probe untested on a real host. The container image ships `ssh`. |
 | 4 Android | MobSF per-scan container, BYO-device ADB runtime | **Done, live** (MobSF) | MobSF verified on InsecureBankv2 on 2026-10-30 (11 normalized findings, secrets count-only). The adb runtime check needs `adb` on the machine (not in the image). |
 | 5 CI + PostSync | ArgoCD PostSync Job, API polish, deferred items as needed | **Done-unverified-live** | Recipes written; the PostSync manifest has not run on a cluster. |
 | 6 Agentic | Autonomous agent loop + Evidence Ledger + Studio | **Done, live** | 4-agent pipeline (`src/agent/`), four-pillar Evidence Ledger, live-verified with a local vLLM reasoning model. The in-binary SPA (`src/web_ui.rs`) was removed in favour of the Next.js Studio. |
 | 7 Super agent | Shared QA checks, verifier, code-aware planning, lead and area sub-agents, per-target memory, eval harness | **Done** | Landed in 0.2.0 and 0.3.0 (2026-11-05). Detection is gated by the eval suites (7/7 seeded bugs). Not yet run against a real, non-fixture application. |
-| 8 Studio revamp | Design system, command center, release gate in the workspace, six-stage stepper, cancel, sandboxed reports, token settings | **Done** | 0.4.0. UI behaviour is covered by vitest; no browser end-to-end test runs in CI. |
-| 9 Later | See "Next" and "Later" below | **Next** / **Later** | |
+| 8 Studio revamp | Design system, command center, release gate in the workspace, six-stage stepper, cancel, sandboxed reports, token settings | **Done** | `0.4.0`–`0.6.2`. UI behaviour is covered by vitest (127 cases); no browser end-to-end test runs in CI. |
+| 9 Deep security | Native Tree-sitter cross-file taint/auth audit (`security.code_audit`), Opengrep, Nuclei, active ZAP, TLS/CSP checks, modular `attacks/*`, in-process OAST, Playwright `BrowserSecurity`, white-box `--repo` AST bridge, ReAct follow-up waves, `security-deep` + `whitebox-exploit` evals | **Done** | Landed in `0.7.0`. Gated across 10 deterministic CI eval suites with 0 false positives. |
+| 10 Later | See "Next" and "Later" below | **Next** / **Later** | |
 
 ## Next
 
-Ordered by value, each one built on a mechanism that already exists:
+Ordered by value, each one built on mechanisms already in place:
 
-1. **Browser-UI agent area (Playwright).** A fifth area in the lead that drives the existing Playwright runner (`runners/playwright`, the engine behind `qa.ui`): follow the crawled journeys with a role's `storageState`, fill and submit forms with boundary inputs, check console errors and broken navigation. Findings go through the same oracle, the same verifier replay (a UI failure must reproduce k times) and the same cleanup ledger; the area gets its own budget slice. Exit criterion: an eval suite with a UI fixture (`tests/fixtures/qa-ui`) where the agent finds the seeded UI bugs, with no false positives.
-2. **LLM-guided exploration under the verifier.** Let the model propose the next probes from what it has observed (new parameters, state sequences, unusual headers). Every proposal is validated against the discovered routes and spec before it is planned, runs through the deterministic oracle, is replayed by the verifier, and stays `exploratory` (not scored) unless a deterministic check fails it, as today's LLM extras already are. The budget caps calls and requests. Exit criterion: an eval suite with a bug that only a guided sequence reaches, and a measured false-positive rate of 0 on the existing suites with guidance on.
-3. **Multi-target dashboards.** Trends and comparisons across targets and services (for a fleet such as NuHire's 13 services): the static dashboard (`readyhai dashboard`, `<data>/index.jsonl`) and the agent memory aggregates feed a Studio view and a REST listing per target, showing verdict history, open and regressed defects, flaky case classes and coverage per operation. Exit criterion: one page that answers "which service got worse since last week".
+1. **Multi-target dashboards.** Trends and comparisons across targets and services (for a fleet such as NuHire's 13 services): the static dashboard (`readyhai dashboard`, `<data>/index.jsonl`) and the agent memory aggregates feed a Studio view and a REST listing per target, showing verdict history, open and regressed defects, flaky case classes and coverage per operation. Exit criterion: one page that answers "which service got worse since last week".
+2. **Verified PR patch synthesis (Fixer).** Validate proposed patches against the repo AST and unit tests before opening a fix PR or diff (today remediation is generic, labelled example guidance).
+3. **Full-stack multi-hop runtime/service correlation.** Extend AST taint/auth linking across microservice boundaries and live distributed traces.
+
+*(Completed from prior "Next": Playwright browser-UI security agent area (`BrowserSecurity` / `agent_browser.mjs`) and bounded adaptive ReAct follow-up exploration under the verifier (`react.rs`) landed in `0.7.0`.)*
 
 ## Later
 
@@ -37,17 +40,17 @@ Ordered by value, each one built on a mechanism that already exists:
 
 ## Deferred from v1 (still open)
 
-- Scanning and dependency sources: OSV as a second source with dedup, buildx attestation reading.
-- Web and mobile testing: Nuclei, ZAP active scan, Maestro.
+- Scanning and dependency sources: buildx attestation reading; full semantic taint rulesets across compiled languages beyond Python/JS/TS/Go/PHP.
+- Mobile testing: Maestro, iOS.
 - Windows: HardeningKitty, KB-to-CVE matching. Windows and macOS package CVEs.
-- Platform: `targets import`, weighted score, SQLite store and persisted queue, memory-budget scheduler, kustomize rendering, TLS expiry/protocol checks, `gix`-based index reading, pinned git-clone container, `insta` snapshots, JSON-schema'd check IO (`schemars`). (Done since v1: Markdown report in `qa`, k6, axe-core, licence policy, scope checks on redirects and the OpenAPI URL, the first intrusive check.)
+- Platform: `targets import`, weighted score, SQLite store and persisted queue, memory-budget scheduler, kustomize rendering, `gix`-based index reading, pinned git-clone container, `insta` snapshots, JSON-schema'd check IO (`schemars`). *(Done since v1: Markdown report in `qa`, k6, axe-core, licence policy, scope checks on redirects and the OpenAPI URL, `qa.resilience`, Nuclei, `tool.zap_active`, TLS weak-protocol/expiry/chain checks, weak CSP checks, `security.code_audit`, `tool.opengrep`, OSV AST import check.)*
 
 ## Agent design: what exists and what does not
 
 1. **MCP server** (`readyhai mcp`): done. Scan tools plus the async agent tools (`readyhai_agent_swarm` returns a run id, `readyhai_agent_status`, `readyhai_agent_cancel`, `readyhai_agent_discover`).
 2. **Loop roles:**
-   - *Planner*: done, deterministic, grounded in the crawl and the spec; the LLM may only add validated cases.
-   - *Explorer*: done as the lead agent with `auth`, `contract`, `state` and `ui` (crawl-grounded HTTP) areas. Driving a browser is the first "Next" item.
+   - *Planner*: done, deterministic, grounded in the crawl, the spec, modular deep-security generators (`attacks/*`), and white-box AST handlers (`--repo`); the LLM may only add validated cases.
+   - *Explorer*: done as the lead agent with `auth`, `contract`, `state` and `ui` areas, in-process OAST collector (`oast.rs`), bounded adaptive ReAct follow-up waves (`react.rs`), and interactive Playwright DOM security (`browser_sec.rs`).
    - *Verifier*: done (`verify.rs`).
    - *Triager*: done (`triage.rs`).
    - *Reporter*: done for reports and example guidance; a *Fixer* that proposes validated patches is "Later".
@@ -71,7 +74,7 @@ Ordered by value, each one built on a mechanism that already exists:
 | 10 | ArgoCD PostSync Job: pin the image tag or digest instead of `latest`; not run on a cluster | `ci/argocd-postsync-job.yaml` |
 | 11 | Target-supplied `readyhai.toml` is trusted for test image/command and suppressions (server/MCP force `[test] network=false`, and the report notes how many suppressions came from the target) | `engine.rs` |
 | 13 | KEV fails on any KEV match, not only runtime dependencies | `policy.rs` |
-| 15 | No TLS expiry or protocol check; no kustomize rendering | `web.rs`, `rules.rs` |
+| 15 | No kustomize rendering *(TLS expiry/protocol checks fixed in `0.7.0`)* | `rules.rs` |
 | 16 | NuHire acceptance test has no assertions | `rules.rs::nuhire_user_service` |
 | 17 | The fixture contains no symlink, so symlink dropping is untested end to end | `tests/fixtures/vuln-app` |
 | 18 | Web, ZAP and Playwright cannot reach a target bound only to `127.0.0.1` from inside containers (bind to `0.0.0.0`, or use the host's LAN address) | `web.rs` |
@@ -82,11 +85,9 @@ Ordered by value, each one built on a mechanism that already exists:
 | 30 | Bundle manifest unsigned; `full` set (~8-9 GB) not exported end to end; no Ollama image or GGUF serving in the bundle | `bundle.rs` |
 | 31 | Prisma and Flyway migrations detected but not executed; the migration check needs a `[test]` image | `qa/suite.rs` |
 | 32 | The REST `POST /api/agent/run` is synchronous (the HTTP call returns when the run ends; the id of a run in progress comes from `GET /api/agent/runs`); only MCP returns the id at once | `serve.rs` |
-| 33 | `agent --diff-base` needs a spec; without one the change impact is `skipped` | `agent/change.rs` |
-| 34 | The agent covers HTTP APIs and crawled pages, not browser behaviour | "Next" item 1 |
-| 35 | Version files still read 0.1.0 while the changelog describes 0.2.0 to 0.4.0 | `VERSION`, `Cargo.toml`, `scripts/version.sh set` |
+| 33 | `agent --diff-base` needs a spec for diff-based operation mapping (though `--repo` white-box AST discovery in `0.7.0` still finds hidden routes and sinks) | `agent/change.rs`, `agent/whitebox.rs` |
 
-Fixed since the last roadmap: tool images unpinned (16 of 17 digests pinned), Playwright runner never built, ZAP and Schemathesis never run live, MobSF API shapes unverified, the errored-check-is-only-WARN deviation (`errored_fails`), `baseline accept` promoting perf only (spec, visual and perf are all promoted), LLM only mock-tested (live-verified with local vLLM), the API executor not executing AI-proposed cases (the agent does), `READYHAI_OFFLINE` disabling the LAN LLM (mode `offline+lan-llm`), the agent's own HTTP client following redirects (it never does), the hard-coded agent-prod host exclusion (removed: scope.toml is the only host policy), the GitLab and GitHub recipe placeholders.
+Fixed since earlier roadmaps: TLS expiry/protocol checks (`0.7.0`), Playwright `BrowserSecurity` and adaptive ReAct exploration (`0.7.0`), `Nuclei` and `tool.zap_active` (`0.7.0`), OSV AST import reachability (`0.7.0`), native cross-file AST taint/auth audit (`0.7.0`), single-source versioning (`0.2.0` -> `0.7.0`, `18` of `19` container digests pinned in `tools.lock.toml`).
 
 ## History of increments
 
@@ -101,3 +102,6 @@ Fixed since the last roadmap: tool images unpinned (16 of 17 digests pinned), Pl
 | 0.2.0 | 2026-11-05 | Review fixes, verifier, cleanup confirmation, eval harness, CI gates |
 | 0.3.0 | 2026-11-05 | Shared QA checks, code-aware planning, lead and sub-agents, memory |
 | 0.4.0 | 2026-11-05 | UI revamp, docs refresh |
+| 0.5.0 | 2026-11-05 | Multi-provider LLM, enterprise OpenAPI scaling, RBAC bootstrap, PR bot |
+| 0.6.0–0.6.2 | 2026-11-06–2026-11-07 | SPA/XHR discovery, ledger confidence & blockers, proxy timeout & model tier fixes |
+| 0.7.0 | 2026-11-12 | Deep security scanning (Tree-sitter AST audit, Opengrep/Nuclei/active ZAP, TLS/CSP checks, modular attacks, OAST, `BrowserSecurity`, white-box bridge, ReAct, 10 eval suites) |

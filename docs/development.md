@@ -13,14 +13,14 @@ readyhai/
   data/endoflife.json      end-of-life snapshot (embedded)
   src/                     the crate (below)
   probe/                   linux.sh  macos.sh  windows.ps1   (embedded with include_str!, piped over ssh)
-  runners/playwright/      Dockerfile  package.json  crawl.mjs qa.mjs pdf.mjs   (UI QA and PDF; image published to GHCR)
+  runners/playwright/      Dockerfile  package.json  crawl.mjs qa.mjs pdf.mjs agent_browser.mjs   (UI QA, PDF, and agent DOM security; image published to GHCR)
   runners/context_retriever/  Python (LangGraph, BGE-M3) retriever the agent can query for change notes
   frontend/                the Next.js Agent Studio (own README, own package.json)
   ci/                      Jenkinsfile.stage  github-action.yml  gitlab-ci.yml  argocd-postsync-job.yaml
   .github/workflows/       ci.yml  image.yml  release.yml  scorecard.yml
-  scripts/version.sh       single-source versioning
+  scripts/                 version.sh (single-source versioning), bench_owasp.{sh,ps1} (opt-in OWASP benchmark harness)
   tests/eval/              eval suites (*.toml)
-  tests/fixtures/          vuln-app, qa-api, qa-api-src, qa-repo, qa-ui, qa-perf, resilience, host-probe, android, logs, tool-outputs, mcp
+  tests/fixtures/          vuln-app, qa-api, qa-api-src, qa-repo, qa-ui, qa-perf, resilience, host-probe, android, logs, tool-outputs, mcp, spa-next, security-deep, whitebox-exploit
   docs/                    this documentation
 ```
 
@@ -30,26 +30,27 @@ Lines include the unit tests that live in the same file.
 
 | Module | Lines | Owns |
 |---|---|---|
-| `main.rs` | 750 | CLI (clap), exit codes, summary printing, the `agent` and `agent-memory` commands |
-| `model.rs` | 390 | Shared types: `Finding`, `CheckStatus`, `Target`, `Run`, `Profile`, `Verdict`, `ErrorCluster` |
-| `engine.rs` | 990 | Orchestration, target parsing, run ids, data dir, git clone, deadlines |
-| `checks.rs`, `ctx.rs`, `facts.rs`, `config.rs` | 70, 50, 30, 70 | `Check` struct and registry `all()`, per-run context, `Facts`, `readyhai.toml` types |
-| `snapshot.rs` | 300 | Denylist and filtered copy |
-| `policy.rs`, `baseline.rs` | 310, 145 | Suppressions, summary, verdict; baseline file and diff |
-| `scope.rs` | 980 | `scope.toml`, host classification, egress guard, fail-closed loading |
-| `rules.rs` | 2,050 | Native readiness checks, fact detection, Dockerfile/compose/k8s parsing |
-| `tools.rs` | 2,800 | Docker runner, create-policy, lock file, parsers, scrubbers, `tests.own`, plugins, `tools pull/update` |
-| `supply.rs` | 1,180 | OSV reachability, Scorecard, Spectral, oasdiff |
-| `web.rs`, `host.rs`, `android.rs` | 980, 1,130, 1,180 | `web.smoke`, Schemathesis, ZAP, Playwright; SSH, probes, Lynis, host CVE; MobSF client, adb runtime, logcat |
-| `logs.rs`, `report.rs` | 190, 600 | Error clustering and redaction; HTML, JSON, SARIF, JUnit |
-| `network.rs` | 3,900 | Network lab: regress, curl, deep audit, multi-region, HAR, requester IP |
-| `serve.rs` | 3,620 | REST API, scan worker, egress guard, agent and network routes, auth middleware |
-| `mcp.rs` | 1,720 | MCP stdio server, `precheck`, async agent swarm |
-| `llm.rs`, `llm/untrusted.rs` | 1,550, 180 | Provider catalog, call parameters, cache; untrusted-text helpers |
-| `qa/` (mod, model, plan, triage, recommend, report, roles, ai, perf, resilience, suite, ui) and `qa/api/` (spec, synth, exec, authz, stateful, contract, latency, mod) | 9,800 + 6,700 | The senior-QA engine, see the module map in [architecture.md](architecture.md) |
-| `agent/` (mod, pipeline, discover, plan, change, lead, budget, exec, oracle, verify, mutation, stateful, triage, ledger, memory, remediation, report, store, types, tests) | 32,800 | The agent, see the module map in [architecture.md](architecture.md#agent-architecture-srcagent) |
-| `eval.rs` | 2,680 | `readyhai eval`: suite files, fixture launcher, scoring, reports |
-| `bundle.rs`, `dashboard.rs` | 870, 340 | Offline bundle, `doctor`; static dashboard |
+| `main.rs` | 777 | CLI (clap), exit codes, summary printing, the `agent` and `agent-memory` commands |
+| `model.rs` | 393 | Shared types: `Finding`, `CheckStatus`, `Target`, `Run`, `Profile`, `Verdict`, `ErrorCluster` |
+| `engine.rs` | 1,002 | Orchestration, target parsing, run ids, data dir, git clone, deadlines |
+| `checks.rs`, `ctx.rs`, `facts.rs`, `config.rs` | 71, 49, 27, 68 | `Check` struct and registry `all()`, per-run context, `Facts`, `readyhai.toml` types |
+| `snapshot.rs` | 299 | Denylist and filtered copy |
+| `policy.rs`, `baseline.rs` | 311, 145 | Suppressions, summary, verdict; baseline file and diff |
+| `scope.rs` | 977 | `scope.toml`, host classification, egress guard, fail-closed loading |
+| `rules.rs` | 2,045 | Native readiness checks, fact detection, Dockerfile/compose/k8s parsing |
+| `code_audit.rs` | 2,006 | Tree-sitter cross-file taint tracking, auth middleware consistency, OSV AST import index |
+| `tools.rs` | 2,976 | Docker runner, create-policy, lock file, parsers, scrubbers, `tests.own`, plugins, `tools pull/update` |
+| `supply.rs` | 1,248 | OSV reachability + AST import check, Scorecard, Spectral, oasdiff |
+| `web.rs`, `host.rs`, `android.rs` | 1,596, 1,132, 1,184 | `web.smoke` (headers, CSP, TLS), Schemathesis, Nuclei, ZAP baseline/active, Playwright; SSH, probes, Lynis, host CVE; MobSF client, adb runtime, logcat |
+| `logs.rs`, `report.rs` | 192, 719 | Error clustering and redaction; HTML, JSON, SARIF, JUnit |
+| `network.rs` | 3,913 | Network lab: regress, curl, deep audit, multi-region, HAR, requester IP |
+| `serve.rs` | 3,652 | REST API, scan worker, egress guard, agent and network routes, auth middleware |
+| `mcp.rs` | 1,716 | MCP stdio server, `precheck`, async agent swarm |
+| `llm.rs` (+ `llm/untrusted.rs`) | 3,121 + untrusted | Provider catalog, call parameters, cache; untrusted-text helpers |
+| `qa/` (including `qa/api/`) | 18,824 | The senior-QA engine, see the module map in [architecture.md](architecture.md) |
+| `agent/` (`attacks/`, `browser_sec`, `oast`, `react`, `whitebox`, `discover/`, `lead`, `verify`, `oracle`, `plan`, `exec`, `memory`, `ledger`, ...) | 47,960 | The autonomous agent, see the module map in [architecture.md](architecture.md#agent-architecture-srcagent) |
+| `eval.rs` | 3,538 | `readyhai eval`: suite files, fixture launcher, scoring, reports |
+| `bundle.rs`, `dashboard.rs` | 860, 340 | Offline bundle, `doctor`; static dashboard |
 
 ## Adding a check
 
@@ -62,7 +63,7 @@ Check::new("readiness.foo", "Foo hardening", &[TargetKind::Repo], Profile::Quick
     Ok(CheckOutput::findings(vec![ /* Finding::new(check, rule, Category, Severity, title, location) */ ]))
 })
 // .tool("grype")   // set when it needs a container: gives --no-tools / no-docker skipping and shows in `checks`
-// .intrusive()     // only runs with --profile deep on a nonprod host; `qa.resilience` is the only built-in user
+// .intrusive()     // only runs with --profile deep on a nonprod host; `tool.zap_active` and `qa.resilience` use it
 ```
 
 3. Return `CheckOutput::status(CheckStatus::NotApplicable(..)/Skipped(..)/Partial(..))` for the non-pass cases; never emit an empty pass when you could not look. `Err(..)` becomes `errored`.
@@ -101,7 +102,7 @@ Run only dev builds and tests on the author's machine (see constraints). With ca
 ```bash
 export PATH=$PATH:$HOME/.cargo/bin
 cargo check
-cargo test -j 2                  # about 640 unit tests; no Docker needed (-j 2 keeps the build light)
+cargo test -j 2                  # 814 Rust tests (3 ignored); no Docker needed (-j 2 keeps the build light)
 cargo test nuhire -- --ignored   # NuHire dump (needs the nuhire checkout)
 cargo run -- eval                # detection quality vs seeded bugs (python3 + git; see eval.md)
 EVAL_SUITES=qa-repo EVAL_K=1 cargo test -j 2 eval::tests::live_eval -- --ignored --nocapture

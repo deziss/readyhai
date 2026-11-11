@@ -5,9 +5,9 @@
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted QA tester and production-readiness gate.
 
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.6.2-brightgreen.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.7.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/tests-640%2B%20Rust-informational.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-814%20Rust-informational.svg)](#testing)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)
 
 Point ReadyHai at a codebase, a container image, an API/web app, an SSH host, or an Android APK.  
@@ -37,14 +37,14 @@ Modern deployments often rely on dozens of disparate tools (`trivy`, `semgrep`, 
 
 | Target | What ReadyHai Checks |
 |---|---|
-| **Repository (`repo`)** | Dependencies/SBOM, CVEs, SAST, secret leak detection, IaC misconfigurations, Dockerfile anti-patterns, test coverage, migration safety, native readiness rules. |
+| **Repository (`repo`)** | Dependencies/SBOM, CVEs with OSV call-graph + AST import reachability, native Tree-sitter AST & cross-file taint/auth-guard audit (`security.code_audit`), Opengrep intra-file taint (`tool.opengrep`), Semgrep SAST, secret leak detection, IaC misconfigurations, Dockerfile anti-patterns, test coverage, migration safety, native readiness rules. |
 | **Container Image (`image`)** | Distro SBOM, package CVEs, CIS benchmarks via Dockle, non-root execution, healthchecks, layer sizes. |
-| **Web & APIs (`web`)** | Smoke status, TLS/security headers, CSP, cookie security, CORS policy, Schemathesis fuzzing, OWASP ZAP baseline, Playwright crawler. |
+| **Web & APIs (`web`)** | Smoke status, TLS chain/expiry/protocol inspection, security headers & weak CSP, cookie security, CORS policy, Schemathesis fuzzing, Nuclei template scanner, OWASP ZAP baseline & active nonprod scan, Playwright crawler (including client storage secrets, HttpOnly cookies, source maps, postMessage handlers). |
 | **Host over SSH (`ssh://`)** | OS hardening, Lynis audit, kernel patches, listening ports, failed systemd units, journal errors, package CVEs (Linux, macOS, Windows). |
 | **Android APK (`android:`)** | MobSF static analysis, dangerous permissions, hardcoded secrets, crash and ANR extraction from connected ADB devices/emulators. |
 | **QA Test Suite (`qa`)** | Synthetic OpenAPI test generation, RBAC authorization matrix, k6 load testing, resilience & chaos testing, axe-core a11y, visual diffs, suite and release quality, a computed Go / Conditional Go / No-Go / Inconclusive recommendation. |
-| **Super Agent (`agent`)** | Autonomous adversarial QA of an HTTP target: shared QA API checks, code-aware planning from a git diff, a lead agent with four area sub-agents, an independent verifier, per-target memory, stateful BOLA chains, TOCTOU bursts, and a deterministic four-pillar Evidence Ledger with a GO / CONDITIONAL_GO / NO_GO gate. |
-| **Eval (`eval`)** | Scores the QA engine and the agent against fixtures with seeded defects: recall, false positives, pass^k, verdict stability, request and time budgets. |
+| **Super Agent (`agent`)** | Autonomous adversarial security & QA of an HTTP target: shared QA API checks, deep-security attack probes (JWT tampering, BFLA, ACL/path bypass, BOPLA, blind SQLi/CMDi, SSTI, OAST SSRF, TOCTOU, GraphQL/HPP), Playwright `BrowserSecurity` (DOM XSS, sinks, storage leaks), white-box `--repo` AST source-sink correlation, adaptive ReAct follow-up waves, independent verifier, per-target memory, and a deterministic four-pillar Evidence Ledger with a GO / CONDITIONAL_GO / NO_GO gate. |
+| **Eval (`eval`)** | Scores the QA engine and the agent across 10 fixtures with seeded defects (`security-deep`, `whitebox-exploit`, `agent-api`, `agent-spa*`, `qa-api`, `qa-repo`, etc.): recall, false positives, pass^k, verdict stability, request and time budgets. |
 
 ---
 
@@ -53,7 +53,9 @@ Modern deployments often rely on dozens of disparate tools (`trivy`, `semgrep`, 
 The agent (`readyhai agent`, `POST /api/agent/run`, MCP `readyhai_agent_swarm`) is an orchestrator-worker structure around a deterministic core. The LLM is optional: when one is configured and reachable it can add validated test cases, prose notes and an advisory opinion, and it never changes a verdict.
 
 - **Shared QA checks.** With an OpenAPI spec the agent reuses the QA engine's case generator, response validator, error-leak catalog and latency limit (`src/qa/api`), reads the ids of existing records from collection endpoints and validates each one against the spec. On the eval fixture it finds 7 of 7 seeded bugs.
-- **Code-aware planning.** `--repo DIR --diff-base REF` maps `git diff REF...HEAD` to OpenAPI operations; changed operations get the full case set, are planned first and cut last, and the report has a Change impact section. An optional context retriever adds advisory notes.
+- **Modular deep-security attacks (`src/agent/attacks/`).** Dedicated probe generators for JWT tampering (`alg:none`, stripped signatures, claim escalation, `kid` traversal), BFLA, reverse-proxy/header ACL bypasses (`/.`, `..;/`, `X-Forwarded-For`, `X-Original-URL`, `X-Rewrite-URL`), BOPLA excessive exposure & mass assignment, parameter-targeted Open Redirect / SSTI / multi-encoded path traversal / blind boolean & time-delay SQLi / command injection, OAST-backed blind SSRF, TOCTOU concurrency races, HTTP parameter pollution, and GraphQL introspection.
+- **In-process OAST & BrowserSecurity.** An ephemeral loopback HTTP listener (`src/agent/oast.rs`) correlates out-of-band `__OAST_URL__` SSRF callbacks during execution and verification, while interactive Playwright (`src/agent/browser_sec.rs`, `runners/playwright/agent_browser.mjs`) verifies DOM XSS, DOM sinks, storage/cookie hygiene, exposed source maps, and clickjacking without storing raw secret values.
+- **White-box AST bridge & ReAct follow-up.** `--repo DIR --diff-base REF` not only maps `git diff REF...HEAD` to changed operations, it also runs native Tree-sitter AST source/sink/guard analysis (`src/agent/whitebox.rs`, `src/code_audit.rs`) to target hidden handlers and annotate live defects with exact source locations (`file:line handler symbol`), followed by bounded adaptive ReAct exploration (`src/agent/react.rs`) under the run budget. An optional context retriever adds advisory notes.
 - **Lead agent and area sub-agents.** The plan is split into `auth`, `contract`, `state` and `ui` areas; each area runs on its own worker (`READYHAI_AGENT_WORKERS`, default 4) with a slice of the run budget, then one deterministic wave 2 follows up. Results merge by case id, so one worker and eight give the same plan, defects and ledger. One per-host rate limit and one cancel flag are shared.
 - **Independent verifier.** Every FAIL is replayed `READYHAI_VERIFY_K` times (default 2, max 5, `0` off) through the same oracle before it becomes a defect: reproduced = confirmed, partly = flaky, never = INCONCLUSIVE. The ledger reports pass^k.
 - **Memory across runs.** The agent remembers each target (known defects by fingerprint, flaky cases, coverage) in `<data>/memory/`, tests the reproduction of known defects first, and reports "Since last run": new, still open, fixed, regressed, not re-tested, known flaky, accepted. Deterministic, never written from LLM text, and it only reorders the plan. `readyhai agent-memory accept ... --expires` lets a known defect through the gate until a date, listed in every report.
@@ -479,7 +481,7 @@ jobs:
 
 ## Testing
 
-ReadyHai has a large automated test suite: 639 Rust `#[test]` functions in `src/` (2 are `#[ignore]`d: the NuHire printing test and the live eval), 86 frontend test cases (vitest), and 15 Python tests for the context retriever. The counts come from the source, not from a run. They cover golden fixtures, snapshotting, policy evaluation, redaction, the scope guard, the oracle, verifier, lead and memory, contract testing, and tool parsers. On top of unit tests, `readyhai eval` scores detection against seeded defects.
+ReadyHai has a large automated test suite: 814 Rust `#[test]` functions in `src/` (3 are `#[ignore]`d), 127 frontend test cases (vitest), and 18 Python tests for the context retriever (`1` skipped if `numpy` is absent). On top of unit tests, `readyhai eval` scores detection against seeded defects across 10 suites (`agent-*`, `qa-*`, `security-deep`, `whitebox-exploit`). They cover golden fixtures, snapshotting, AST taint/auth auditing, OAST & browser security, policy evaluation, redaction, the scope guard, the oracle, verifier, lead and memory, contract testing, and tool parsers.
 
 ```bash
 export PATH=$PATH:$HOME/.cargo/bin
@@ -501,8 +503,8 @@ CI (`.github/workflows/ci.yml`) runs version sync, `cargo fmt --check`, `cargo c
 
 The full status is in [docs/roadmap.md](docs/roadmap.md). In short:
 
-- **Done:** scan engine, senior-QA engine, offline bundle, agent with verifier, lead and sub-agents, code-aware planning, per-target memory, eval harness and CI gate, Agent Studio and Network Lab, MCP swarm tools, signed multi-arch images.
-- **Next:** a browser-UI agent area driven by Playwright; LLM-guided exploration that runs under the verifier and the same deterministic oracle; multi-target dashboards (trends and comparisons across targets).
+- **Done:** scan engine (45 built-in checks incl. Tree-sitter cross-file AST audit, Opengrep, Nuclei, active ZAP), senior-QA engine, offline bundle, deep-security agent (modular attacks, in-process OAST, Playwright `BrowserSecurity`, white-box AST bridge, ReAct adaptive waves, independent verifier, lead and sub-agents, per-target memory), 10-suite eval harness and CI gate, Agent Studio and Network Lab, MCP swarm tools, signed multi-arch images.
+- **Next:** multi-target trend dashboards, cross-service distributed taint/auth correlation, and verified PR patch synthesis.
 - **Not implemented, and documented as such:**
   - A GitHub App / PR status check: `POST /api/github/pr-comment` only renders PR-comment markdown from data you supply; ReadyHai does not post to GitHub. Upload SARIF with the `upload-sarif` action instead.
   - Remote probe nodes for multi-region probing: `/api/network/multi-region` measures a single vantage point ("This host") and says so.

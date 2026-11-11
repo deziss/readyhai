@@ -20,13 +20,16 @@ use super::budget::RunBudget;
 use super::change;
 use super::discover::{discover, harvest_ids};
 use super::exec::{
-    Auth, Bearer, Clients, Credentials, DeleteCheck, ExecOptions, auth_for, confirm_deleted_as,
-    curl_auth_arg, evidence_rel_path, execute_cases_with,
+    Auth, Clients, Credentials, DeleteCheck, ExecOptions, OutReq, auth_for,
+    confirm_deleted_resolved, curl_auth_arg, evidence_rel_path, execute_cases_with, resolve_auth,
 };
 use super::lead;
 use super::ledger::{self, LedgerInput};
 use super::memory::{self, PlanHints, RunFacts, SinceLastRun};
-use super::plan::{plan_cases_remembered, plan_cases_seeded, plans_from_spec, seed_from_run_id};
+use super::plan::{
+    Depth, plan_cases_remembered, plan_cases_remembered_with_whitebox, plan_cases_seeded,
+    plans_from_spec, seed_from_run_id,
+};
 use super::store::{
     agent_runs_dir, checkpoint_agent_run_in, now_iso, save_agent_run_in, save_cleanup_in,
 };
@@ -589,32 +592,45 @@ pub(crate) fn teardown(
             continue;
         }
         let url = format!("{origin}{}", r.teardown_path());
-        let token = r
+        let auth_role = r
             .role
             .as_deref()
-            .and_then(|role| creds.token(role))
-            .or_else(|| creds.token("admin"))
-            .or_else(|| creds.token("user"));
-        let mut rq = client.delete(&url);
-        if let Some(t) = token {
-            rq = rq.bearer_auth(t);
-        }
+            .filter(|role| creds.has_role(role))
+            .or_else(|| creds.has_role("admin").then_some("admin"))
+            .or_else(|| creds.has_role("user").then_some("user"));
+        let resolved = auth_role
+            .map(|role| resolve_auth(&Auth::Role(role.to_string()), creds))
+            .unwrap_or_else(|| resolve_auth(&Auth::None, creds));
         rep.attempted += 1;
-        match rq.send() {
-            Ok(resp) => {
-                let c = resp.status().as_u16();
+        let del_res = if let Some(cl) = readback.as_ref() {
+            cl.send_resolved(
+                &OutReq {
+                    method: "DELETE",
+                    url: &url,
+                    body: None,
+                    headers: &[],
+                    bearer: resolved.bearer.as_ref(),
+                },
+                &resolved,
+            )
+            .map(|seen| seen.status)
+        } else {
+            client
+                .delete(&url)
+                .send()
+                .map(|resp| resp.status().as_u16())
+                .map_err(|e| e.to_string())
+        };
+        match del_res {
+            Ok(c) => {
                 if c == 404 || c == 410 {
                     rep.deleted += 1;
                     rep.confirmed_gone += 1;
                 } else if (200..300).contains(&c) {
-                    let bearer = token.map(|t| Bearer {
-                        header: format!("Bearer {t}"),
-                        real: true,
-                    });
                     let check = readback
                         .as_ref()
                         .map(|cl| {
-                            confirm_deleted_as(cl, target, &r.teardown_path(), bearer.as_ref())
+                            confirm_deleted_resolved(cl, target, &r.teardown_path(), &resolved)
                         })
                         .unwrap_or(DeleteCheck::Unknown);
                     match check {
@@ -1030,7 +1046,7 @@ fn agent_stages(
 ) -> Result<()> {
     let RunOptions {
         mut budget,
-        credentials,
+        mut credentials,
         llm,
         reruns,
         verify_k,
@@ -1109,6 +1125,16 @@ fn agent_stages(
     }
     checkpoint(base, rep, &budget, &llm_budget);
 
+    if credentials.has_pending_logins()
+        && !req.dry_run
+        && let Ok(u) = reqwest::Url::parse(&req.target)
+        && let Ok(cl) = Clients::new(request_timeout, &u)
+    {
+        for note in credentials.bootstrap_pending(&cl) {
+            rep.notes.push(note);
+        }
+    }
+
     // 1. discovery
     log(
         &mut rep.steps,
@@ -1154,6 +1180,38 @@ fn agent_stages(
     // 1b. what did the code change? (only when the caller gave a checkout and a base ref)
     let change = analyze_change(req, disc.spec.as_ref(), rep);
     let change_ops = change.as_ref().is_some_and(|a| !a.set.is_empty());
+    // 1b-wb. white-box AST bridge when `--repo` is supplied (works even without `--diff-base` or `--spec`)
+    let depth = Depth::from_profile(&req.profile);
+    let whitebox = req.repo.as_deref().and_then(|repo| {
+        if depth == Depth::Quick {
+            return None;
+        }
+        match super::whitebox::analyze_and_enrich(repo, &mut disc, depth) {
+            Ok(wb) => {
+                if !wb.hypotheses.is_empty() || wb.routes_injected > 0 || wb.findings_count > 0 {
+                    log(
+                        &mut rep.steps,
+                        "Discovery",
+                        "White-Box Code Audit",
+                        &format!(
+                            "{} endpoint(s) analyzed in repo; {} hidden route(s) injected; {} targeted sink/guard hypothesis(es)",
+                            wb.endpoints_analyzed,
+                            wb.routes_injected,
+                            wb.hypotheses.len()
+                        ),
+                        "completed",
+                        Some("deterministic"),
+                    );
+                }
+                Some(wb)
+            }
+            Err(why) => {
+                rep.notes
+                    .push(format!("white-box repo audit skipped: {why}"));
+                None
+            }
+        }
+    });
     // a changed read of one record (`GET /orders/{id}`) is planned against real ids, even at quick
     let change_needs_ids = change
         .as_ref()
@@ -1200,7 +1258,7 @@ fn agent_stages(
         None,
     );
     let planner_llm = llm_cfg.as_ref().filter(|_| !budget.is_cancelled());
-    let mut plan = plan_cases_remembered(
+    let mut plan = plan_cases_remembered_with_whitebox(
         planner_llm.map(|c| (c, &mut llm_budget)),
         &req.target,
         &req.profile,
@@ -1210,6 +1268,7 @@ fn agent_stages(
         seed_from_run_id(&rep.id),
         change.as_ref().map(|a| &a.set),
         hints.as_ref(),
+        whitebox.as_ref(),
     );
     take_llm_notes(rep, &mut llm_budget);
     // Never plan more than the allowance, and make sure what is cut is not what matters most
@@ -1359,6 +1418,98 @@ fn agent_stages(
         rep.agents = Some(out.agents);
         out.results
     };
+    let all_non_probe_walled = !disc.routes.is_empty()
+        && disc
+            .routes
+            .iter()
+            .filter(|r| !r.catch_all && r.source != "probe")
+            .all(|r| r.auth_wall);
+    if !req.dry_run && depth != Depth::Quick && !budget.is_cancelled() && !all_non_probe_walled {
+        let react_llm = llm_cfg.as_ref().filter(|_| !budget.is_cancelled());
+        let rout = super::react::run_adaptive_waves(
+            &req.target,
+            depth,
+            &disc,
+            &exec_opts,
+            &created,
+            react_llm.map(|c| (c, &mut llm_budget)),
+            &mut budget,
+            &plan.cases,
+            &executed,
+        );
+        take_llm_notes(rep, &mut llm_budget);
+        if rout.waves_run > 0 || !rout.added_cases.is_empty() {
+            let added_n = rout.added_cases.len();
+            plan.cases.extend(rout.added_cases.iter().cloned());
+            rep.planned_cases.extend(rout.added_cases);
+            executed.extend(rout.added_results);
+            if let Some(a) = rep.agents.as_mut() {
+                a.waves += rout.waves_run as u32;
+                super::lead::recount(a, &executed, &[]);
+            }
+            rep.stage_sources.insert(
+                "react_lead".into(),
+                if rout.llm_used {
+                    "llm+deterministic"
+                } else {
+                    "deterministic"
+                }
+                .into(),
+            );
+            log(
+                &mut rep.steps,
+                "Lead",
+                "ReAct Adaptive Loop",
+                &format!(
+                    "{} adaptive wave(s) synthesized and executed {} follow-up case(s)",
+                    rout.waves_run, added_n
+                ),
+                "completed",
+                Some(if rout.llm_used {
+                    "llm+deterministic"
+                } else {
+                    "deterministic"
+                }),
+            );
+        }
+        rep.notes.extend(rout.notes);
+    }
+    if !req.dry_run && depth != Depth::Quick && !budget.is_cancelled() && !all_non_probe_walled {
+        let allow_browser_writes =
+            !req.dry_run && nonprod_pin.unwrap_or_else(|| target_is_nonprod(&req.target));
+        let bout = super::browser_sec::run_browser_security(
+            &req.target,
+            depth,
+            &disc,
+            &exec_opts,
+            &created,
+            &base.join(&rep.id),
+            &rep.id,
+            allow_browser_writes,
+            &mut budget,
+            &executed,
+        );
+        if !bout.added_cases.is_empty() || !bout.added_results.is_empty() {
+            let added_n = bout.added_cases.len();
+            plan.cases.extend(bout.added_cases.iter().cloned());
+            rep.planned_cases.extend(bout.added_cases);
+            executed.extend(bout.added_results);
+            if let Some(a) = rep.agents.as_mut() {
+                super::lead::recount(a, &executed, &[]);
+            }
+            rep.stage_sources
+                .insert("browser_security".into(), bout.source.into());
+            log(
+                &mut rep.steps,
+                "BrowserSecurity",
+                "DOM & Client-Side Security",
+                &format!("Executed {added_n} browser security verification case(s)"),
+                "completed",
+                Some(bout.source),
+            );
+        }
+        rep.notes.extend(bout.notes);
+    }
     let drop_reason = format!(
         "dropped: the plan was truncated to {} case(s) by {limit_why}; not sent",
         limit.unwrap_or(0)
@@ -1705,6 +1856,9 @@ fn agent_stages(
         Some("deterministic"),
     );
     let mut defects = derive_defects_verified(&rep.executed_results, Some(&verified.summary));
+    if let Some(wb) = whitebox.as_ref() {
+        wb.annotate_defects(&mut defects);
+    }
     let mut triage_src = "deterministic".to_string();
     if let (Some(cfg), false) = (
         llm_cfg.as_ref().filter(|_| !budget.is_cancelled()),

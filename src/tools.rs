@@ -978,6 +978,9 @@ pub fn scrub_semgrep(json: &str) -> Option<String> {
                     extra.insert(k.into(), Value::String(String::new()));
                 }
             }
+            if extra.contains_key("dataflow_trace") {
+                extra.insert("dataflow_trace".into(), Value::Null);
+            }
         }
     });
     serde_json::to_string(&v).ok()
@@ -1134,7 +1137,53 @@ pub fn parse_grype(json: &str) -> Result<Vec<Finding>> {
     Ok(out)
 }
 
-pub fn parse_semgrep(json: &str) -> Result<Vec<Finding>> {
+fn trace_loc_label(loc: &Value) -> Option<String> {
+    let p = rel(loc.get("path")?.as_str()?);
+    let line = loc.get("start")?.get("line")?.as_u64()?;
+    Some(format!("{p}:{line}"))
+}
+
+fn format_dataflow_trace(extra: &Value) -> Option<String> {
+    let trace = extra.get("dataflow_trace")?;
+    if !trace.is_object() {
+        return None;
+    }
+    let mut hops: Vec<String> = Vec::new();
+    if let Some(arr) = trace.get("taint_source").and_then(|x| x.as_array())
+        && let Some(loc_info) = arr
+            .get(1)
+            .and_then(|x| x.as_array())
+            .and_then(|a| a.first())
+        && let Some(lbl) = trace_loc_label(loc_info)
+    {
+        hops.push(lbl);
+    }
+    for v in trace
+        .get("intermediate_vars")
+        .and_then(|x| x.as_array())
+        .into_iter()
+        .flatten()
+    {
+        if let Some(lbl) = v.get("location").and_then(trace_loc_label)
+            && hops.last() != Some(&lbl)
+        {
+            hops.push(lbl);
+        }
+    }
+    if let Some(arr) = trace.get("taint_sink").and_then(|x| x.as_array())
+        && let Some(loc_info) = arr
+            .get(1)
+            .and_then(|x| x.as_array())
+            .and_then(|a| a.first())
+        && let Some(lbl) = trace_loc_label(loc_info)
+        && hops.last() != Some(&lbl)
+    {
+        hops.push(lbl);
+    }
+    (!hops.is_empty()).then(|| format!("taint flow: {}", hops.join(" -> ")))
+}
+
+fn parse_grep_findings(json: &str, check_id: &str) -> Result<Vec<Finding>> {
     let v: Value = serde_json::from_str(json)?;
     let mut out = vec![];
     for r in v
@@ -1156,11 +1205,14 @@ pub fn parse_semgrep(json: &str) -> Result<Vec<Finding>> {
             _ => Severity::Low,
         };
         let h = sha256_hex(s(&extra, "lines").trim().as_bytes());
-        // semgrep prefixes ids with the rules-file path (`cache.semgrep.<id>`)
-        let rule = s(&r, "check_id");
-        let rule = rule.strip_prefix("cache.semgrep.").unwrap_or(rule);
-        let f = Finding::new(
-            "tool.semgrep",
+        // scanners prefix rule ids with the rules-file path (`cache.semgrep.<id>`, `cache.opengrep.<id>`)
+        let raw_rule = s(&r, "check_id");
+        let rule = raw_rule
+            .strip_prefix("cache.opengrep.")
+            .or_else(|| raw_rule.strip_prefix("cache.semgrep."))
+            .unwrap_or(raw_rule);
+        let mut f = Finding::new(
+            check_id,
             rule,
             Category::Security,
             sev,
@@ -1168,9 +1220,23 @@ pub fn parse_semgrep(json: &str) -> Result<Vec<Finding>> {
             format!("{path}:{line}"),
         )
         .fp_key(format!("{path}|{}", &h[..16]));
+        if let Some(flow) = format_dataflow_trace(&extra) {
+            f = f.detail(flow);
+        }
         out.push(f);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+pub fn parse_semgrep(json: &str) -> Result<Vec<Finding>> {
+    parse_grep_findings(json, "tool.semgrep")
+}
+
+/// Parse Opengrep JSON output (including optional intra-file taint traces) into `tool.opengrep`.
+#[cfg(test)]
+pub fn parse_opengrep(json: &str) -> Result<Vec<Finding>> {
+    parse_grep_findings(json, "tool.opengrep")
 }
 
 pub fn parse_hadolint(json: &str) -> Result<Vec<Finding>> {
@@ -1518,8 +1584,8 @@ pub fn db_age_days(cache: &Path) -> Option<u64> {
     )
 }
 
-fn has_rules(cache: &Path) -> bool {
-    std::fs::read_dir(cache.join("semgrep"))
+fn has_rules_in(cache: &Path, dir: &str) -> bool {
+    std::fs::read_dir(cache.join(dir))
         .map(|d| {
             d.filter_map(|e| e.ok()).any(|e| {
                 let p = e.path();
@@ -1527,6 +1593,54 @@ fn has_rules(cache: &Path) -> bool {
             })
         })
         .unwrap_or(false)
+}
+
+fn has_rules(cache: &Path) -> bool {
+    has_rules_in(cache, "semgrep")
+}
+
+fn run_rule_scanner(
+    ctx: &Ctx,
+    check_id: &str,
+    tool: &str,
+    entrypoint: Option<&str>,
+    out_file: &str,
+    extra_args: &[&str],
+    rules_dir: &str,
+) -> Result<CheckOutput> {
+    if let Some(o) = gate(ctx) {
+        return Ok(o);
+    }
+    if let Some(o) = missing_image(tool) {
+        return Ok(o);
+    }
+    if !has_rules(&ctx.docker.cache_dir) && !has_rules_in(&ctx.docker.cache_dir, "opengrep") {
+        return Ok(CheckOutput::status(CheckStatus::Skipped(
+            "rules missing: run `readyhai tools update`".into(),
+        )));
+    }
+    let out_arg = format!("/out/{out_file}");
+    let mut args = vec!["scan", "--config", rules_dir];
+    args.extend_from_slice(extra_args);
+    args.extend_from_slice(&[
+        "--metrics=off",
+        "--disable-version-check",
+        "--json",
+        "-o",
+        &out_arg,
+        "/src",
+    ]);
+    let mut spec = ToolSpec::new(tool, &args);
+    spec.entrypoint = entrypoint.map(str::to_string);
+    spec.memory = "3g".into();
+    spec.timeout_secs = 900;
+    let r = ctx.docker.run(ctx, &spec)?;
+    let f = match read_out(ctx, out_file) {
+        Ok(t) => parse_grep_findings(&t, check_id),
+        Err(e) => Err(out_err(e, || tool_failed(tool, &r))),
+    };
+    rewrite_scrubbed(ctx, out_file, scrub_semgrep);
+    Ok(CheckOutput::findings(f?))
 }
 
 fn repo_like() -> Vec<TargetKind> {
@@ -1675,44 +1789,44 @@ pub fn checks() -> Vec<Check> {
             &repo_like(),
             Profile::Quick,
             |ctx| {
-                if let Some(o) = gate(ctx) {
-                    return Ok(o);
-                }
-                if let Some(o) = missing_image("semgrep") {
-                    return Ok(o);
-                }
-                if !has_rules(&ctx.docker.cache_dir) {
-                    return Ok(CheckOutput::status(CheckStatus::Skipped(
-                        "rules missing: run `readyhai tools update`".into(),
-                    )));
-                }
-                let mut spec = ToolSpec::new(
+                run_rule_scanner(
+                    ctx,
+                    "tool.semgrep",
                     "semgrep",
-                    &[
-                        "scan",
-                        "--config",
-                        "/cache/semgrep",
-                        "--metrics=off",
-                        "--disable-version-check",
-                        "--json",
-                        "-o",
-                        "/out/semgrep.json",
-                        "/src",
-                    ],
-                );
-                spec.entrypoint = Some("semgrep".into());
-                spec.memory = "3g".into();
-                spec.timeout_secs = 900;
-                let r = ctx.docker.run(ctx, &spec)?;
-                let f = match read_out(ctx, "semgrep.json") {
-                    Ok(t) => parse_semgrep(&t),
-                    Err(e) => Err(out_err(e, || tool_failed("semgrep", &r))),
-                };
-                rewrite_scrubbed(ctx, "semgrep.json", scrub_semgrep);
-                Ok(CheckOutput::findings(f?))
+                    Some("semgrep"),
+                    "semgrep.json",
+                    &[],
+                    "/cache/semgrep",
+                )
             },
         )
         .tool("semgrep"),
+    );
+
+    v.push(
+        Check::new(
+            "tool.opengrep",
+            "Static taint analysis (opengrep)",
+            &repo_like(),
+            Profile::Standard,
+            |ctx| {
+                let rules = if has_rules_in(&ctx.docker.cache_dir, "opengrep") {
+                    "/cache/opengrep"
+                } else {
+                    "/cache/semgrep"
+                };
+                run_rule_scanner(
+                    ctx,
+                    "tool.opengrep",
+                    "opengrep",
+                    None,
+                    "opengrep.json",
+                    &["--taint-intrafile"],
+                    rules,
+                )
+            },
+        )
+        .tool("opengrep"),
     );
 
     v.push(
@@ -2158,7 +2272,9 @@ pub fn tools_update(docker: &Docker) -> Result<()> {
     mkdir_open(&docker.cache_dir);
     mkdir_open(&docker.cache_dir.join("grype"));
     mkdir_open(&docker.cache_dir.join("semgrep"));
+    mkdir_open(&docker.cache_dir.join("opengrep"));
     mkdir_open(&docker.cache_dir.join("osv-scanner"));
+    mkdir_open(&docker.cache_dir.join("nuclei"));
     if docker.available {
         let mut spec = ToolSpec::new("grype", &["db", "update"]);
         spec.timeout_secs = 3600; // slow links: the DB is a ~100 MB+ download
@@ -2184,6 +2300,12 @@ pub fn tools_update(docker: &Docker) -> Result<()> {
                 "osv-scanner DB update failed (tool.osv_reachability will be skipped): {e:#}"
             ),
         }
+        match nuclei_templates_update(docker) {
+            Ok(()) => eprintln!("nuclei templates updated"),
+            Err(e) => eprintln!(
+                "nuclei templates update failed (tool.nuclei will fall back to runtime download if networked): {e:#}"
+            ),
+        }
     } else {
         eprintln!("docker not available: skipping grype DB update");
     }
@@ -2199,8 +2321,9 @@ pub fn tools_update(docker: &Docker) -> Result<()> {
     if body.trim().is_empty() {
         bail!("empty semgrep ruleset");
     }
-    std::fs::write(docker.cache_dir.join("semgrep").join("default.yml"), body)?;
-    eprintln!("semgrep rules updated");
+    std::fs::write(docker.cache_dir.join("semgrep").join("default.yml"), &body)?;
+    std::fs::write(docker.cache_dir.join("opengrep").join("default.yml"), &body)?;
+    eprintln!("semgrep & opengrep rules updated");
     match crate::host::fetch_lynis(&docker.cache_dir) {
         Ok(()) => eprintln!("lynis tarball cached (checksum recorded, upstream publishes none)"),
         Err(e) => eprintln!("lynis fetch failed (host.lynis will be skipped): {e:#}"),
@@ -2263,6 +2386,32 @@ fn osv_db_update(docker: &Docker) -> Result<()> {
     let r = exec(docker, "update", &mounts, &spec)?;
     // Exit 1 = vulnerabilities found (expected for the seed); anything else is a real failure.
     if r.exit_code > 1 {
+        bail!("{}", r.stderr_tail.trim());
+    }
+    Ok(())
+}
+
+/// Populate `<cache>/nuclei` for offline/fast `tool.nuclei` scans.
+fn nuclei_templates_update(docker: &Docker) -> Result<()> {
+    let mut spec = ToolSpec::new(
+        "nuclei",
+        &["-update-templates", "-ud", "/cache/nuclei", "-silent"],
+    );
+    spec.timeout_secs = 1800;
+    spec.network = true;
+    spec.cache_rw = true;
+    spec.tmpfs = vec![
+        "/tmp:rw,mode=1777".into(),
+        "/home/nuclei:rw,mode=1777".into(),
+    ];
+    spec.env = vec![("HOME".into(), "/home/nuclei".into())];
+    let mounts = [Mount {
+        host: docker.cache_dir.clone(),
+        dst: "/cache",
+        rw: true,
+    }];
+    let r = exec(docker, "update", &mounts, &spec)?;
+    if r.exit_code != 0 {
         bail!("{}", r.stderr_tail.trim());
     }
     Ok(())
@@ -2460,6 +2609,32 @@ mod tests {
         // line-number shift keeps the fingerprint
         let g = fin(parse_semgrep(&SEMGREP.replace("\"line\":42", "\"line\":50")).unwrap());
         assert_eq!(f[0].fingerprint, g[0].fingerprint);
+    }
+
+    #[test]
+    fn opengrep_golden_and_taint_trace() {
+        let (img, pinned) = image_for("opengrep");
+        assert!(img.starts_with("wollomatic/opengrep@sha256:"), "{img}");
+        assert!(pinned);
+        assert!(checks().iter().any(|c| c.id == "tool.opengrep"));
+
+        let j = format!(
+            r#"{{"results":[{{"check_id":"cache.opengrep.python.sqli.tainted-sql","path":"/src/app/routes.py","start":{{"line":27}},"extra":{{"severity":"ERROR","message":"SQL query constructed from user input","lines":"cur.execute(q) # {SECRET}","dataflow_trace":{{"taint_source":["CliLoc",[{{"path":"/src/app/routes.py","start":{{"line":12}}}},"request.args.get"]],"intermediate_vars":[{{"location":{{"path":"/src/app/routes.py","start":{{"line":19}}}},"content":"q"}}],"taint_sink":["CliLoc",[{{"path":"/src/app/routes.py","start":{{"line":27}}}},"cur.execute(q)"]]}}}}}}]}}"#
+        );
+        let f = fin(parse_opengrep(&j).unwrap());
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].check, "tool.opengrep");
+        assert_eq!(f[0].rule, "python.sqli.tainted-sql");
+        assert_eq!(f[0].severity, Severity::High);
+        assert_eq!(f[0].location, "app/routes.py:27");
+        assert!(
+            f[0].detail.contains("12") && f[0].detail.contains("27"),
+            "{}",
+            f[0].detail
+        );
+        assert!(!dump(&f).contains(SECRET));
+        let scrubbed = scrub_semgrep(&j).unwrap();
+        assert!(!scrubbed.contains(SECRET));
     }
 
     #[test]

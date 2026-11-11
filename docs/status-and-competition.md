@@ -1,6 +1,6 @@
-# Where ReadyHai stands (2026-11-05, after 0.4.0)
+# Where ReadyHai stands (2026-11-12, after 0.7.0)
 
-Size: about 78,000 lines of Rust in `src/` (unit tests included; the QA engine is about 16,500, the agent about 32,800 of them), a Next.js Studio in `frontend/`, 639 Rust test functions, 86 frontend and 15 Python tests (counted from source). This replaces the table from increment 2.
+Size: about 101,300 lines of Rust in `src/` (unit tests included; the QA engine is `18,824` lines, the agent `47,960` lines), a Next.js Studio in `frontend/`, 814 Rust `#[test]` functions (3 `#[ignore]`d), 127 frontend and 18 Python tests. This replaces the table from 0.4.0.
 
 ## How to read the evidence column
 
@@ -12,28 +12,28 @@ Size: about 78,000 lines of Rust in `src/` (unit tests included; the QA engine i
 
 | Area | State | Evidence | Gap |
 |---|---|---|---|
-| Repo + image security and readiness | Strong | live, NuHire acceptance passed | NuHire check prints, it does not assert |
+| Repo + image security and readiness | Strong | live, NuHire acceptance passed; `security.code_audit` (Tree-sitter cross-file taint & sibling auth guard audit) + `tool.opengrep` unit & `whitebox-exploit` eval-gated | NuHire check prints, it does not assert |
 | Gate, baseline, suppressions | Solid | unit + live; a required check that errors fails the gate by default | - |
 | Secret safety, sandbox, scope/SSRF | Solid | live secrets-guard test; scope fails closed; one egress guard for every server-initiated request | DNS is resolved at guard time, not pinned |
 | **API QA** (`readyhai qa`, `qa.api.*`) | Strong | **live and eval-gated: 7/7 seeded bugs, 0 false positives; a prod-listed run sent 70 GET requests and no writes** | AI-proposed cases are notes only |
-| **UI QA and PDF** (`qa.ui.*`) | Built | **live (2026-10-30): 6/6 seeded UI bugs, valid PDF**; unit for the parsers | not in the eval suites yet |
+| **UI QA and PDF** (`qa.ui.*`) | Built | **live (2026-10-30): 6/6 seeded UI bugs, valid PDF**; unit for the parsers | UI QA still uses `qa-ui` fixture manually |
 | **Perf (k6)** | Built | live on the fixture; baseline and regression logic unit-tested | fixture scale only |
 | **Resilience** | Built | live against the compose fixture (2026-10-30): pause, detect, unpause, signal-safe | no real application stack |
-| Web (ZAP, Schemathesis) | Built | live against the fixture API (2026-10-30: 2 and 6 findings) | no TLS expiry or protocol check |
+| Web (ZAP, Schemathesis, Nuclei, `web.smoke`) | Built | live against the fixture API (2026-10-30: ZAP & Schemathesis); weak CSP + TLS protocol/expiry/chain checks, Nuclei, and active ZAP (`deep`+`nonprod`) unit-tested in `0.7.0` | Nuclei & active ZAP not run live in CI without containers |
 | Hosts (SSH) | Linux verified live | round 2 | Windows untested, macOS partial |
 | Android | MobSF live | InsecureBankv2 (2026-10-30) | adb runtime check unrun without a device; not in the container image |
-| Supply chain (`tool.osv_reachability`, scorecard, spectral, oasdiff, mutation) | Built | unit on recorded outputs | not exercised live |
+| Supply chain (`tool.osv_reachability`, scorecard, spectral, oasdiff, mutation) | Built | OSV Go call-graph + AST import enrichment (`enrich_osv_with_ast`), unit on recorded outputs | not exercised live against external GitHub API in CI |
 | Offline bundle | Built | **live round trip: core bundle 3.63 GB, export -> import into a fresh data dir** | `full` set not exported end to end; manifest unsigned |
 | Reports: HTML, MD, Jira/GitLab/TestRail/Xray, SARIF, JUnit, dashboard | Built | unit (shape, escaping, no secrets) | tracker imports not tried in real tools |
-| **Agent** (`readyhai agent`) | **Strong on fixtures** | **eval-gated: 7/7 seeded bugs (`agent-api`), the one bug on a PR's changed route (`agent-diff`), memory carries over (`agent-memory`)**; live with a local vLLM model | not yet run against a real application; HTTP only, no browser |
-| Agent verifier and cleanup | Built | unit + eval (pass^k, verdict stability); cleanup reads every 2xx DELETE back | write-method failures on real records stay `unverified` by design |
-| Agent lead, change-aware planning, memory | Built | unit + eval; `agent-diff` needs a spec | context retriever advisory only, unrun in CI |
+| **Agent** (`readyhai agent`) | **Strong on fixtures** | **eval-gated across 10 suites (`security-deep` 12 loopholes, `whitebox-exploit` AST linkage, `agent-api` 7/7, `agent-diff`, `agent-memory`, `agent-spa*`)**; includes Playwright `BrowserSecurity`, in-process OAST collector, white-box AST bridge, and adaptive ReAct waves | opt-in `bench_owasp.{sh,ps1}` harness for live Juice Shop / VAmPI not run in CI |
+| Agent verifier and cleanup | Built | unit + eval (pass^k, verdict stability, timing/OAST/redirect replay); cleanup reads every 2xx DELETE back | write-method failures on real records stay `unverified` by design |
+| Agent lead, change-aware planning, memory | Built | unit + eval; white-box `--repo` works with or without diff | context retriever advisory only, unrun in CI |
 | MCP | Built | scripted-session tests, stdio isolation subprocess test; async swarm | no live Claude Code session |
-| **Eval harness and CI gates** | **Done** | the `eval` job, fmt, clippy `-D warnings`, tests, frontend, Python, PR image builds | five suites; no UI suite |
-| Agent Studio | Built | vitest (86 cases: run status, cancel, composer, stepper, API helpers) | no browser end-to-end test in CI |
+| **Eval harness and CI gates** | **Done** | the `eval` job, fmt, clippy `-D warnings`, tests, frontend, Python, PR image builds | 10 suites gated on every CI run |
+| Agent Studio | Built | vitest (127 cases: run status, cancel, composer, ledger panels, verdict badge, network lab, stepper, API helpers) | no browser end-to-end test in CI |
 | Ops | One scan worker, file store, bearer token, static dashboard | - | no multi-user mode, no persisted queue |
 
-Verdict: a security and readiness scanner with a gate, a senior-QA layer whose API and UI paths are proven live, and an autonomous agent whose detection is measured by an eval harness that gates CI. What is still unproven: behaviour on real, non-fixture applications, the Windows probe, and browser-level testing by the agent.
+Verdict: a security and readiness scanner with a gate, a senior-QA layer whose API and UI paths are proven live, and a deep-security autonomous agent (AST white-box + OAST + Playwright browser checks + modular exploits) whose detection is measured across 10 eval suites gating CI. What is still unproven in CI: large real-world targets (outside opt-in `bench_owasp.*` runs) and the Windows SSH probe.
 
 ## Competitor comparison
 
@@ -49,9 +49,9 @@ Verdict: a security and readiness scanner with a gate, a senior-QA layer whose A
 | QA test summary report (Go/No-Go) | **yes** | no | no | no | no | partial | partial | partial | PDF (security) | scorecards |
 | Licence / cost | open source, free | AGPL-3.0 | from $25/dev/mo | from ~$350/mo | CE free, paid editions | OSS / Pro | paid SaaS | BSL 1.1 | GPL-3.0 | paid |
 
-**Ahead:** the only tool here combining security, readiness and functional QA across repo, image, web, host and Android with one computed verdict; offline and self-hosted with secret-safe sandboxing; evidence-first findings with prompt-injection handling; an agent whose failures must reproduce before they count, which remembers a target between runs, and which is scored against seeded bugs on every CI run.
+**Ahead:** the only tool here combining cross-file static AST + SAST + DAST (Opengrep/Nuclei/ZAP/Schemathesis) + autonomous deep-security agent (modular attacks, OAST, Playwright `BrowserSecurity`, white-box repo linkage) + functional QA across repo, image, web, host and Android with one computed verdict; offline and self-hosted with secret-safe sandboxing; evidence-first findings with prompt-injection handling; an agent whose failures must reproduce before they count, which remembers a target between runs, and which is scored across 10 seeded-bug eval suites on every CI run.
 
-**Behind:** AI-first QA SaaS explore UIs better today (the agent has no browser area yet, see [roadmap.md](roadmap.md)); Aikido/Snyk have reachability, auto-fix PRs and cloud posture; SonarQube has code-quality depth; no multi-user mode; a few paths unrun live (Windows probe, a real application stack for resilience, a real application for the agent).
+**Behind:** AI-first functional QA SaaS platforms still offer richer multi-step visual flow scripting; Aikido/Snyk offer managed cloud CSPM and auto-fix PR bots; SonarQube has deeper language-specific code-quality rules; no multi-user mode; live runs against large production-scale apps and the Windows probe remain unverified in CI.
 
 Pricing and capability figures come from the third-party pages below (several vendor-authored, hence biased); re-check before quoting.
 

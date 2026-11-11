@@ -22,20 +22,31 @@ pub(crate) fn path_of(component: &str) -> &str {
 pub fn severity_for(code: &str, tech: Technique) -> Severity {
     match code {
         // access to data or files the caller must not see
-        "authz" | "sensitive_exposure" | "path_traversal" => Severity::Critical,
+        "authz"
+        | "sensitive_exposure"
+        | "path_traversal"
+        | "oast_callback"
+        | "blind_boolean_injection"
+        | "blind_time_injection"
+        | "ssti" => Severity::Critical,
         // exploitable behaviour, but needs a precondition or a second step
         "race_condition"
         | "mass_assignment"
+        | "business_logic"
         | "error_disclosure"
         | "injection_reflection"
-        | "cors_credentialed" => Severity::High,
+        | "cors_credentialed"
+        | "open_redirect"
+        | "excessive_data_exposure" => Severity::High,
         "server_error" => match tech {
             Technique::Injection | Technique::Authz => Severity::High,
             _ => Severity::Medium,
         },
         // spec / hygiene deviations
         "expected_redirect" | "content_type" => Severity::Low,
-        "cors" | "expected_status" | "contract_fields" => Severity::Medium,
+        "cors" | "expected_status" | "contract_fields" | "graphql_introspection" => {
+            Severity::Medium
+        }
         // the QA engine's own ratings (qa.api.slow_response P3, qa.api.undocumented_status P4)
         "slow_response" | "undocumented_status" => Severity::Low,
         // a DELETE that answers 2xx and leaves the resource in place: functional, not a security issue
@@ -86,6 +97,76 @@ fn class_meta(code: &str, technique: &str) -> (&'static str, &'static str, &'sta
             "Injected markup reflected unescaped",
             "OWASP A03:2021 Injection (XSS)",
             "Contextually HTML-encode untrusted input on output and add a Content-Security-Policy.",
+        ),
+        "dom_xss" => (
+            "DOM-based Cross-Site Scripting (DOM XSS)",
+            "OWASP A03:2021 Injection (DOM XSS)",
+            "Use safe DOM text APIs (textContent/innerText) or a strict HTML sanitizer (e.g., DOMPurify) instead of sinking location, URLSearchParams, or postMessage data into innerHTML/document.write/eval.",
+        ),
+        "stored_xss" => (
+            "Stored Cross-Site Scripting (Stored XSS)",
+            "OWASP A03:2021 Injection (Stored XSS)",
+            "Contextually HTML-encode all user-supplied persisted content on render and enforce a restrictive Content-Security-Policy.",
+        ),
+        "client_secret_leak" => (
+            "Client-side token or secret exposed in browser storage",
+            "OWASP A02:2021 Cryptographic Failures / A04:2021 Insecure Design",
+            "Store session tokens only in HttpOnly, Secure, SameSite cookies and never serialize secrets into localStorage, sessionStorage, or SSR state.",
+        ),
+        "sourcemap_exposure" => (
+            "JavaScript source map publicly accessible",
+            "OWASP A05:2021 Security Misconfiguration",
+            "Remove *.js.map files from public web roots or restrict access to internal symbol servers.",
+        ),
+        "clickjacking" => (
+            "Clickjacking via missing anti-framing protections",
+            "OWASP A05:2021 Security Misconfiguration",
+            "Set Content-Security-Policy frame-ancestors 'none' (or explicit allow-listed origins) and X-Frame-Options.",
+        ),
+        "cookie_hygiene" => (
+            "Session cookie missing HttpOnly or Secure attributes",
+            "OWASP A05:2021 Security Misconfiguration",
+            "Set HttpOnly, Secure, and SameSite=Lax/Strict on every authentication/session cookie.",
+        ),
+        "oast_callback" => (
+            "Out-of-band server-side callback (SSRF / blind RCE)",
+            "OWASP A10:2021 Server-Side Request Forgery (SSRF) / API7:2023",
+            "Validate user-supplied URLs/hosts against an explicit domain/IP allow-list, block loopback and link-local metadata ranges, and never invoke shell commands or external fetchers from untrusted input.",
+        ),
+        "blind_boolean_injection" => (
+            "Blind injection via boolean differential response",
+            "OWASP A03:2021 Injection",
+            "Use parameterized queries / prepared statements for every dynamic parameter and reject malformed filter expressions.",
+        ),
+        "blind_time_injection" => (
+            "Blind injection via measurable execution delay",
+            "OWASP A03:2021 Injection",
+            "Use parameterized queries / prepared statements and strict allow-listed APIs instead of dynamic SQL or OS command execution.",
+        ),
+        "ssti" => (
+            "Server-Side Template Injection (SSTI)",
+            "OWASP A03:2021 Injection",
+            "Never pass untrusted input into a template source string; pass user data strictly as template context variables with auto-escaping enabled.",
+        ),
+        "open_redirect" => (
+            "Open redirect to untrusted external origin",
+            "OWASP A01:2021 Broken Access Control (CWE-601)",
+            "Restrict redirect targets to relative paths starting with `/` (and not `//` or `/\\`) or an explicit allow-list of trusted hostnames.",
+        ),
+        "excessive_data_exposure" => (
+            "Sensitive credentials or PII exposed in API response",
+            "OWASP API3:2023 Broken Object Property Level Authorization",
+            "Return explicit response DTOs that exclude password hashes, salts, private keys, TOTP secrets, and payment/PII attributes.",
+        ),
+        "business_logic" => (
+            "Business-logic or workflow validation bypass",
+            "OWASP A04:2021 Insecure Design / API6:2023",
+            "Enforce server-side state transitions, workflow prerequisites, and positive/bounded business quantities at the transactional domain layer.",
+        ),
+        "graphql_introspection" => (
+            "GraphQL schema introspection enabled",
+            "OWASP API8:2023 Security Misconfiguration / API9:2023",
+            "Disable GraphQL __schema and __type introspection queries in non-local/production deployments.",
         ),
         "server_error" if technique == "injection" => (
             "Server error after injection-style input",

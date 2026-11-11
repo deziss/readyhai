@@ -151,7 +151,7 @@ impl SeededRng {
 // ---------------------------------------------------------------- helpers
 
 #[allow(clippy::too_many_arguments)]
-fn mk(
+pub(crate) fn mk(
     technique: &str,
     title: String,
     method: &str,
@@ -175,6 +175,9 @@ fn mk(
         technique: technique.to_string(),
         input_hint: hint.to_string(),
         payload,
+        headers: vec![],
+        content_type: None,
+        probe_oracle: None,
         expected_behavior: behavior.to_string(),
         expected_status: status,
         risk_level: risk.to_string(),
@@ -196,18 +199,37 @@ fn mk(
 
 /// The role ordinary authenticated cases run as: the acting credential (`Credentials::actor`), or
 /// `anon` when there is none.
-fn user_or_anon(creds: &Credentials) -> String {
+pub(crate) fn user_or_anon(creds: &Credentials) -> String {
     creds.actor().unwrap_or_else(|| "anon".to_string())
 }
 
-fn key_of(c: &PlannedCase) -> String {
+pub(crate) fn key_of(c: &PlannedCase) -> String {
+    let mut hdrs: Vec<(String, &str)> = c
+        .headers
+        .iter()
+        .map(|(k, v)| (k.to_ascii_lowercase(), v.as_str()))
+        .collect();
+    hdrs.sort();
+    let hdr_key = hdrs
+        .into_iter()
+        .map(|(k, v)| format!("{k}:{v}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    let probe_key = c
+        .probe_oracle
+        .as_ref()
+        .map(|p| format!("{p:?}"))
+        .unwrap_or_default();
     format!(
-        "{}|{}|{}|{}|{}",
+        "{}|{}|{}|{}|{}|{}|{}|{}",
         c.method,
         c.component,
         c.technique,
         c.payload.as_deref().unwrap_or(""),
-        c.role.as_deref().unwrap_or("")
+        c.role.as_deref().unwrap_or(""),
+        c.content_type.as_deref().unwrap_or(""),
+        hdr_key,
+        probe_key
     )
 }
 
@@ -1356,6 +1378,15 @@ fn spec_cases(
                         format!("{label} answers 2xx and honours its contract"),
                     )],
                 };
+                let contract_role = if op.secured {
+                    if super::oracle::is_privileged_api_path(&op.path) {
+                        creds.admin_role().unwrap_or_else(|| user.to_string())
+                    } else {
+                        user.to_string()
+                    }
+                } else {
+                    "anon".to_string()
+                };
                 for (read_comp, title) in reads {
                     let mut c = mk(
                         "state_transition",
@@ -1367,7 +1398,7 @@ fn spec_cases(
                         "HTTP 2xx with the documented required fields",
                         Some(200),
                         "medium",
-                        if op.secured { user } else { "anon" },
+                        &contract_role,
                         "openapi",
                     );
                     c.secured = Some(op.secured);
@@ -1604,42 +1635,46 @@ unexpected encodings, boundary limits, and complex state attacks. \
 Components MUST be copied exactly from the known_endpoints list; never invent routes. \
 Allowed methods: GET, HEAD, OPTIONS, POST, PUT, PATCH, DELETE. \
 Format: {\"cases\": [{\"title\": string, \"component\": string, \"method\": string, \"technique\": \"authz\"|\"boundary\"|\"injection\"|\"negative\"|\"state_transition\", \
-\"input_hint\": string, \"payload\": string|null, \"expected_behavior\": string, \"expected_status\": int|null, \"risk_level\": \"critical\"|\"high\"|\"medium\"|\"low\"}]}. \
+\"input_hint\": string, \"payload\": string|null, \"headers\": {string: string}|null, \"content_type\": string|null, \"expected_behavior\": string, \"expected_status\": int|null, \"risk_level\": \"critical\"|\"high\"|\"medium\"|\"low\"}]}. \
 For GET/HEAD/OPTIONS the payload becomes the query string (use k=v&k2=v2); for other methods it is the request body. \
 Ensure high diversity across attack archetypes: BOPLA/Mass Assignment, SSRF, Unicode/Homoglyph normalization, NoSQL/Filter tampering, \
 Prototype Pollution, Header injection/IP spoofing, XML/MIME confusion, Exponential boundaries, and Business logic bypasses.";
 
 #[derive(Debug, Deserialize)]
-struct PlannerOutput {
-    cases: Vec<RawCase>,
+pub(crate) struct PlannerOutput {
+    pub(crate) cases: Vec<RawCase>,
 }
 
 #[derive(Debug, Deserialize)]
-struct RawCase {
-    title: String,
-    component: String,
+pub(crate) struct RawCase {
+    pub(crate) title: String,
+    pub(crate) component: String,
     #[serde(default)]
-    method: Option<String>,
-    technique: String,
+    pub(crate) method: Option<String>,
+    pub(crate) technique: String,
     #[serde(default)]
-    input_hint: Option<String>,
+    pub(crate) input_hint: Option<String>,
     #[serde(default)]
-    payload: Option<Value>,
+    pub(crate) payload: Option<Value>,
     #[serde(default)]
-    expected_behavior: Option<String>,
+    pub(crate) headers: Option<Value>,
     #[serde(default)]
-    expected_status: Option<i64>,
+    pub(crate) content_type: Option<String>,
     #[serde(default)]
-    risk_level: Option<String>,
+    pub(crate) expected_behavior: Option<String>,
+    #[serde(default)]
+    pub(crate) expected_status: Option<i64>,
+    #[serde(default)]
+    pub(crate) risk_level: Option<String>,
 }
 
-struct Known<'a> {
+pub(crate) struct Known<'a> {
     exact: HashMap<&'a str, &'a DiscoveredRoute>,
     templates: Vec<(regex::Regex, &'a DiscoveredRoute)>,
 }
 
 impl<'a> Known<'a> {
-    fn new(routes: &'a [DiscoveredRoute]) -> Self {
+    pub(crate) fn new(routes: &'a [DiscoveredRoute]) -> Self {
         let mut exact = HashMap::new();
         let mut templates = vec![];
         for r in routes.iter().filter(|r| !r.catch_all) {
@@ -1653,7 +1688,7 @@ impl<'a> Known<'a> {
         }
         Known { exact, templates }
     }
-    fn find(&self, component: &str) -> Option<&'a DiscoveredRoute> {
+    pub(crate) fn find(&self, component: &str) -> Option<&'a DiscoveredRoute> {
         self.exact.get(component).copied().or_else(|| {
             self.templates
                 .iter()
@@ -1663,7 +1698,11 @@ impl<'a> Known<'a> {
     }
 }
 
-fn validate_raw(raw: &RawCase, known: &Known, creds: &Credentials) -> Result<PlannedCase, String> {
+pub(crate) fn validate_raw(
+    raw: &RawCase,
+    known: &Known,
+    creds: &Credentials,
+) -> Result<PlannedCase, String> {
     let method = normalize_method(raw.method.as_deref().unwrap_or("GET")).ok_or_else(|| {
         format!(
             "method '{}' not allowed",
@@ -1713,6 +1752,32 @@ fn validate_raw(raw: &RawCase, known: &Known, creds: &Credentials) -> Result<Pla
     if payload.as_ref().is_some_and(|p| p.len() > 4096) {
         return Err("payload longer than 4096 bytes".into());
     }
+    let raw_headers = match &raw.headers {
+        None | Some(Value::Null) => vec![],
+        Some(Value::Object(map)) => {
+            let mut pairs = Vec::with_capacity(map.len());
+            for (k, v) in map {
+                let s = match v {
+                    Value::String(s) => s.clone(),
+                    Value::Number(_) | Value::Bool(_) => v.to_string(),
+                    _ => return Err(format!("header '{k}' value must be a string or scalar")),
+                };
+                pairs.push((k.clone(), s));
+            }
+            pairs
+        }
+        Some(_) => return Err("headers must be a JSON object".into()),
+    };
+    let headers = super::exec::sanitize_custom_headers(&raw_headers, false)?;
+    let content_type = match raw
+        .content_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(ct) => Some(super::exec::validate_content_type(ct)?),
+        None => None,
+    };
     let risk = match raw.risk_level.as_deref().map(|s| s.to_ascii_lowercase()) {
         Some(r) if ["critical", "high", "medium", "low"].contains(&r.as_str()) => r,
         _ => "medium".into(),
@@ -1745,6 +1810,8 @@ fn validate_raw(raw: &RawCase, known: &Known, creds: &Credentials) -> Result<Pla
         role,
         "llm",
     );
+    c.headers = headers;
+    c.content_type = content_type;
     c.secured = route.secured;
     c.route_status = Some(route.status_code).filter(|s| *s != 0);
     Ok(c)
@@ -1920,6 +1987,33 @@ pub fn plan_cases_remembered(
     change: Option<&ChangeSet>,
     memory: Option<&PlanHints>,
 ) -> PlanOutcome {
+    plan_cases_remembered_with_whitebox(
+        llm,
+        target,
+        profile,
+        d,
+        instructions,
+        creds,
+        seed,
+        change,
+        memory,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn plan_cases_remembered_with_whitebox(
+    llm: Option<(&LlmConfig, &mut Budget)>,
+    target: &str,
+    profile: &str,
+    d: &Discovery,
+    instructions: Option<&str>,
+    creds: &Credentials,
+    seed: u64,
+    change: Option<&ChangeSet>,
+    memory: Option<&PlanHints>,
+    whitebox: Option<&super::whitebox::WhiteboxAnalysis>,
+) -> PlanOutcome {
     let focus = change.filter(|c| !c.is_empty());
     let depth = Depth::from_profile(profile);
     let mut notes = vec![format!("plan synthesis seed: {seed:016x}")];
@@ -1946,6 +2040,17 @@ pub fn plan_cases_remembered(
         cases.extend(sc);
         if spec.ops.iter().any(|o| o.secured) && creds.actor().is_none() {
             notes.push(format!("no {} credential: authenticated positive/contract checks were not planned; secured operations are probed without credentials only", Credentials::env_var("user")));
+        }
+    }
+    if focus.is_none() || depth != Depth::Quick {
+        cases.extend(super::attacks::auth::plan_auth_attacks(d, creds, depth));
+        cases.extend(super::attacks::injection::plan_injection_attacks(
+            d, creds, depth,
+        ));
+        cases.extend(super::attacks::bopla::plan_bopla_attacks(d, creds, depth));
+        cases.extend(super::attacks::logic::plan_logic_attacks(d, creds, depth));
+        if let Some(wb) = whitebox {
+            cases.extend(super::whitebox::plan_whitebox_cases(wb, creds, depth));
         }
     }
     // dedupe, cap
@@ -2240,6 +2345,8 @@ mod tests {
             expected_behavior: None,
             input_hint: None,
             payload: None,
+            headers: None,
+            content_type: None,
         };
         let res = validate_raw(&raw_patch, &known, &creds);
         assert!(res.is_err());
@@ -4238,6 +4345,45 @@ mod tests {
             out.cases
                 .iter()
                 .any(|c| c.technique == "injection" && c.component == "/search")
+        );
+    }
+
+    #[test]
+    fn raw_cases_validate_headers_and_content_type_and_dedupe_distinctly() {
+        let routes = vec![route("/admin", 403), route("/xml", 200)];
+        let known = Known::new(&routes);
+        let creds = Credentials::none().with("user", "tok");
+        let parse = |j: &str| {
+            let raw: RawCase = serde_json::from_str(j).unwrap();
+            validate_raw(&raw, &known, &creds)
+        };
+        let c1 = parse(
+            r#"{"title":"Bypass via X-Original-URL","component":"/admin","method":"GET","technique":"authz","headers":{"X-Original-URL":"/admin","X-Forwarded-For":"127.0.0.1"}}"#,
+        )
+        .unwrap();
+        let c2 = parse(
+            r#"{"title":"Bypass via X-Rewrite-URL","component":"/admin","method":"GET","technique":"authz","headers":{"X-Rewrite-URL":"/admin"}}"#,
+        )
+        .unwrap();
+        assert_ne!(key_of(&c1), key_of(&c2));
+        assert!(
+            c1.headers
+                .iter()
+                .any(|(k, v)| k == "X-Original-URL" && v == "/admin")
+        );
+
+        let xml = parse(
+            r#"{"title":"XXE probe","component":"/xml","method":"POST","technique":"injection","payload":"<a/>","content_type":"application/xml"}"#,
+        )
+        .unwrap();
+        assert_eq!(xml.content_type.as_deref(), Some("application/xml"));
+
+        // LLM cannot inject Authorization/Cookie/CRLF headers
+        assert!(
+            parse(r#"{"title":"bad","component":"/admin","technique":"authz","headers":{"Authorization":"Bearer steal"}}"#).is_err()
+        );
+        assert!(
+            parse(r#"{"title":"bad","component":"/admin","technique":"authz","headers":{"X-Test":"a\r\nb"}}"#).is_err()
         );
     }
 }

@@ -2,6 +2,32 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] - 2026-11-12
+
+Deep security vulnerability scanning across static AST, pinned active scanners, and the autonomous adversarial agent.
+
+### Added
+
+- **Native Tree-sitter AST & cross-file code audit (`security.code_audit`, `src/code_audit.rs`):** Intra-file and cross-file (up to 3 hops) taint tracking across Python, JavaScript/TypeScript/TSX, Go, and PHP for SQL injection (`security.taint.sql_injection`), OS command execution (`security.taint.command_exec`), SSRF (`security.taint.ssrf`), path traversal (`security.taint.path_traversal`), and SSTI (`security.taint.ssti`), plus sibling endpoint auth middleware inconsistency detection (`security.auth.missing_guard`). Also powers AST import reachability enrichment (`enrich_osv_with_ast`) for `tool.osv_reachability` when call-graph reachability is `unknown`.
+- **Deep static & DAST scanner integrations:**
+  - `tool.opengrep` (`Standard`, `tools.lock.toml`): intra-file taint analysis (`--taint-intrafile`).
+  - `tool.nuclei` (`Standard`, `tools.lock.toml`): CVE, misconfiguration, exposure, and takeover templates with cached `/cache/nuclei` support and non-DoS/non-fuzz exclusions.
+  - `tool.zap_active` (`Deep`, `[intrusive]`, `tools.lock.toml`): full active ZAP scan (`zap-full-scan.py`) strictly gated on `Deep` profile + `nonprod` target.
+- **Expanded `web.smoke` header & TLS checks (`src/web.rs`):** Weak CSP detection (`web.weak_csp` for `'unsafe-inline'`, `'unsafe-eval'`, wildcard `*`, `http:` script sources) and TLS certificate/protocol checks (`web.tls_weak_protocol`, `web.tls_expiring`, `web.tls_untrusted`).
+- **Modular adversarial attack generators (`src/agent/attacks/`):**
+  - `auth.rs`: JWT tampering (`alg:none`, stripped signature, escalated claims with bogus signature, `kid` traversal), BFLA role cross-calls, and reverse-proxy path normalization / header-override ACL bypasses (`/.`, `..;/`, `X-Forwarded-For`, `X-Original-URL`, `X-Rewrite-URL`).
+  - `bopla.rs`: Excessive Data Exposure (`ProbeOracle::ExcessiveDataExposure`) and stateful mass assignment (`role=admin` / `is_admin=true` read-back checks).
+  - `injection.rs`: Parameter-name/schema-guided Open Redirect (`ProbeOracle::OpenRedirect`), SSRF (`ProbeOracle::OastCallback`), multi-encoding path traversal, SSTI (`{{1337*79}}` / `${1337*79}`), boolean-differential and time-delay SQLi, and time-delay OS command injection.
+  - `logic.rs`: TOCTOU concurrency / single-use replay races, workflow step-skipping, negative quantities/amounts, HTTP Parameter Pollution (HPP), and GraphQL introspection/depth probes.
+- **In-process OAST callback collector (`src/agent/oast.rs`):** Zero-dependency loopback HTTP listener (`READYHAI_OAST_BIND` default `127.0.0.1:0`, `READYHAI_OAST_URL`) correlating `__OAST_URL__` blind SSRF/callback probes in `exec` and `verify` (`oast_callback`).
+- **Interactive Playwright `BrowserSecurity` (`src/agent/browser_sec.rs`, `runners/playwright/agent_browser.mjs`):** Browser DOM XSS, DOM sink inspection, client storage leak checks (strictly masked previews — never stores raw tokens/JWTs), cookie flags, exposed source maps, and clickjacking verification (`READYHAI_AGENT_BROWSER=off` disables; write probes gated on `nonprod`).
+- **White-box AST bridge & ReAct adaptive waves (`src/agent/whitebox.rs`, `src/agent/react.rs`):** Links live agent endpoints and findings back to source handlers, sinks, and missing auth guards when `--repo` is supplied, and runs adaptive ReAct follow-up waves (`react_lead`) under `Budget`.
+- **Two new deterministic eval suites & OWASP benchmark harness:** Added `security-deep` and `whitebox-exploit` under `tests/eval/` and `tests/fixtures/` (bringing `readyhai eval --suite all` to 10 suites), plus `scripts/bench_owasp.sh` and `scripts/bench_owasp.ps1`.
+
+### Fixed
+
+- **Toolchain & script fixes:** Scoped test-only parsers (`parse_semgrep`, `parse_opengrep`, `parse_zap`) under `#[cfg(test)]`, fixed `clippy::needless_borrows_for_generic_args` in `src/llm.rs`, and aligned `scripts/bench_owasp.{sh,ps1}` `--target` flags with `readyhai agent` CLI syntax.
+
 ## [0.6.2] - 2026-11-07
 
 ### Changed

@@ -131,13 +131,13 @@ digest = ""            # sha256:... once pinned
 version = "latest"
 ```
 
-Keys under `[tools]` (17): `syft`, `grype`, `gitleaks`, `semgrep`, `hadolint`, `checkov`, `dockle`, `zap`, `schemathesis`, `git`, `mobsf`, `k6`, `osv-scanner`, `scorecard`, `spectral`, `oasdiff`, `playwright`. 16 carry a `sha256` digest; `playwright` is built locally as `readyhai/playwright-runner:local` (or pulled from `ghcr.io/deziss/readyhai-playwright-runner`), so no registry digest exists. `git` is listed but not used by the code (git clones run on the host).
+Keys under `[tools]` (19): `syft`, `grype`, `gitleaks`, `semgrep`, `opengrep`, `hadolint`, `checkov`, `dockle`, `zap`, `nuclei`, `schemathesis`, `git`, `mobsf`, `k6`, `osv-scanner`, `scorecard`, `spectral`, `oasdiff`, `playwright`. 18 carry a `sha256` digest; `playwright` is built locally as `readyhai/playwright-runner:local` (or pulled from `ghcr.io/deziss/readyhai-playwright-runner`), so no registry digest exists. `git` is listed but not used by the code (git clones run on the host).
 
 Resolution (`tools::image_for`): if `digest` starts with `sha256:` the image runs as `repo@sha256:...` (tag dropped), else as the tag. Unpinned images run, and the run adds a note per image: `tool image X unpinned (...) - run readyhai tools pull --lock`.
 
 `readyhai tools pull --lock tools.lock.toml` runs `docker pull <image>` for every entry (pull failures, e.g. the `:local` playwright image, are printed and skipped), reads `RepoDigests[0]`, and rewrites the file with digests. This is trust-on-first-use: it pins whatever the registry served at that moment, so verify signatures yourself where the vendor publishes them, and review the diff. Commit the resulting file and set `READYHAI_TOOLS_LOCK` to it; otherwise the binary uses the lock embedded at its build time.
 
-`readyhai tools update` is the only step that uses the network: `grype db update` in a network-enabled container into `<data>/cache/grype`; semgrep rules from `https://semgrep.dev/c/p/default` into `<data>/cache/semgrep/default.yml`; the Lynis 3.1.6 tarball from `downloads.cisofy.com` into `<data>/cache/lynis/` (checked against a published `.sha256` if one exists, else the hash is recorded as unverified).
+`readyhai tools update` is the only step that uses the network: `grype db update` into `<data>/cache/grype`; OSV-Scanner offline ecosystem databases into `<data>/cache/osv-scanner`; Nuclei templates into `<data>/cache/nuclei`; rules from `https://semgrep.dev/c/p/default` into `<data>/cache/semgrep/default.yml` and `<data>/cache/opengrep/default.yml`; and the Lynis 3.1.6 tarball from `downloads.cisofy.com` into `<data>/cache/lynis/` (checked against a published `.sha256` if one exists, else the hash is recorded as unverified).
 
 ## Plugins
 
@@ -198,6 +198,10 @@ Plugins cannot be marked intrusive.
 | Variable | Used by | Meaning |
 |---|---|---|
 | `READYHAI_VERIFY_K` | `agent`, REST, MCP, `eval` | Replays of every failed case before it becomes a defect. Default 2, at most 5, `0` turns the verifier off (failures then count as found; the ledger says so). |
+| `READYHAI_OAST_BIND` | `agent` (`oast.rs`) | Loopback address:port for the in-process OAST callback collector (default `127.0.0.1:0`). |
+| `READYHAI_OAST_URL` | `agent` (`oast.rs`) | Optional external callback base URL advertised in `__OAST_URL__` probes when the target runs in another network namespace (for example `http://host.docker.internal:<port>`). |
+| `READYHAI_AGENT_BROWSER` | `agent` (`browser_sec.rs`) | Set to `off` (also `0`, `false`, `no`, `none`) to disable Playwright `BrowserSecurity` DOM/client-side checks in `standard`/`deep` runs. |
+| `READYHAI_AGENT_XHR` | `agent` (`discover/xhr.rs`) | Set to `off` to disable headless Playwright XHR discovery on SPAs. |
 | `READYHAI_AGENT_WORKERS` | `agent`, REST, MCP | Area worker threads of the lead (`auth`, `contract`, `state`, `ui`). Default 4, at most 8, `1` runs the areas one after another with the same results. The per-host rate is shared by all workers. See [architecture.md](architecture.md#lead-and-area-workers-srcagentleadrs). |
 | `READYHAI_AGENT_MEMORY` | `agent`, REST, MCP | `off` (also `0`, `false`, `no`, `none`) turns the per-target memory off for the process: runs plan from the profile alone, read no memory and write none, and the report has no "Since last run". Anything else: on. `readyhai agent-memory ...` and `/api/agent/memory` work either way. See [architecture.md](architecture.md#per-target-memory-srcagentmemoryrs). |
 | `READYHAI_AGENT_MAX_STEPS`, `_MAX_REQUESTS`, `_MAX_SECONDS`, `_RATE_PER_HOST`, `_MAX_LLM_CALLS` | `agent`, REST, MCP | Run budget defaults, see "Agent run budget" below. `--max-steps` and the request's `max_steps` override the first. |

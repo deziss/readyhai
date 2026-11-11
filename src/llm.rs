@@ -411,7 +411,7 @@ impl LlmConfig {
         let models = val(ENV_MODEL).or_else(|| val(ENV_MODELS));
         let allow_cloud = matches!(get(ENV_ALLOW_CLOUD).as_deref(), Some("1") | Some("true"));
         let mut cfg = Self::resolve(Some(&provider_id), models.as_deref(), allow_cloud)?;
-        let url = val(ENV_URL).or_else(|| cfg.provider.legacy_url_env.and_then(&val));
+        let url = val(ENV_URL).or_else(|| cfg.provider.legacy_url_env.and_then(val));
         if let Some(u) = url {
             let u = if matches!(get("READYHAI_IN_CONTAINER").as_deref(), Some("1")) {
                 container_loopback_to_host(&u)

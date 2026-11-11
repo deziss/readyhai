@@ -1,0 +1,222 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "ReadyHai Deep Security Evaluation API",
+    "version": "1.0.0"
+  },
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "CouponRedeemInput": {
+        "type": "object",
+        "required": ["code"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 }
+        }
+      },
+      "UserCreateInput": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1 }
+        }
+      },
+      "WebhookTestInput": {
+        "type": "object",
+        "required": ["webhook_url"],
+        "properties": {
+          "webhook_url": { "type": "string", "minLength": 1 }
+        }
+      },
+      "CheckoutInput": {
+        "type": "object",
+        "required": ["item_id", "qty"],
+        "properties": {
+          "item_id": { "type": "integer", "minimum": 1, "maximum": 100 },
+          "qty": { "type": "integer", "minimum": 0, "maximum": 100 }
+        }
+      }
+    }
+  },
+  "security": [{ "bearer": [] }],
+  "paths": {
+    "/api/coupons/redeem": {
+      "post": {
+        "summary": "Redeem single-use coupon (TOCTOU race target)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CouponRedeemInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Redeemed" },
+          "400": { "description": "Invalid input" },
+          "401": { "description": "Unauthorized" },
+          "409": { "description": "Already redeemed" }
+        }
+      }
+    },
+    "/api/admin/audit": {
+      "get": {
+        "summary": "Admin audit trail (JWT alg=none bypass)",
+        "responses": {
+          "200": { "description": "Audit records" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden" }
+        }
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "summary": "Admin users directory (BFLA broken role check)",
+        "responses": {
+          "200": { "description": "Admin user list" },
+          "401": { "description": "Unauthorized" },
+          "403": { "description": "Forbidden" }
+        }
+      }
+    },
+    "/api/profile": {
+      "get": {
+        "summary": "Authenticated user profile (strict JWT validation negative control)",
+        "responses": {
+          "200": { "description": "User profile" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/users": {
+      "get": {
+        "summary": "List users",
+        "responses": { "200": { "description": "Users" }, "401": { "description": "Unauthorized" } }
+      },
+      "post": {
+        "summary": "Create user profile (mass assignment target)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/UserCreateInput" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Created" },
+          "400": { "description": "Bad request" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/users/{id}": {
+      "parameters": [
+        { "name": "id", "in": "path", "required": true, "schema": { "type": "integer", "minimum": 1 } }
+      ],
+      "get": {
+        "summary": "Get user record",
+        "responses": {
+          "200": { "description": "User record" },
+          "401": { "description": "Unauthorized" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/webhooks/test": {
+      "post": {
+        "summary": "Trigger outbound webhook verification (blind SSRF target)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/WebhookTestInput" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Delivered" },
+          "400": { "description": "Invalid payload" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/checkout": {
+      "post": {
+        "summary": "Checkout order (accepts negative qty business-logic bug)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CheckoutInput" }
+            }
+          }
+        },
+        "responses": {
+          "201": { "description": "Checked out" },
+          "400": { "description": "Validation error" },
+          "401": { "description": "Unauthorized" }
+        }
+      }
+    },
+    "/api/users/lookup": {
+      "get": {
+        "summary": "Filter users (blind boolean SQLi differential)",
+        "security": [],
+        "parameters": [
+          { "name": "filter", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Matches" } }
+      }
+    },
+    "/api/reports/export": {
+      "get": {
+        "summary": "Export report query (blind time-based SQLi)",
+        "security": [],
+        "parameters": [
+          { "name": "search", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Rows" } }
+      }
+    },
+    "/api/render": {
+      "get": {
+        "summary": "Render greeting template (SSTI target)",
+        "security": [],
+        "parameters": [
+          { "name": "tpl", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Rendered text" } }
+      }
+    },
+    "/api/redirect": {
+      "get": {
+        "summary": "Redirect target (open redirect)",
+        "security": [],
+        "parameters": [
+          { "name": "next", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": {
+          "200": { "description": "Safe fallback" },
+          "302": { "description": "Redirect" }
+        }
+      }
+    },
+    "/api/safe/search": {
+      "get": {
+        "summary": "Parameterized escaped search (clean negative control)",
+        "security": [],
+        "parameters": [
+          { "name": "q", "in": "query", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Escaped search results" } }
+      }
+    }
+  }
+}
+

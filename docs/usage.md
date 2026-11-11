@@ -65,12 +65,12 @@ readyhai agent https://staging.example.com --spec https://staging.example.com/op
 ```
 
 ### The pipeline
-1. **Discovery:** crawls the target (same-host redirects only), classifies routes (API vs SPA shell), reads the OpenAPI spec when given, and reads the ids of existing records from collection endpoints.
-2. **Planner:** boundary, negative, authorization, injection and state cases from the crawl and the spec (the QA engine's case generator, validator and leak catalog). Depth follows the run request's `profile` (`quick` baseline only, `standard` top 15 operations, `deep` top 30); the CLI always runs `standard`, REST and MCP accept all three. Changed operations and known defects go first.
-3. **Explorer (lead agent):** the plan is split into the areas `auth`, `contract`, `state` and `ui`; each runs on its own worker with a slice of the budget (`READYHAI_AGENT_WORKERS`, default 4). One per-host rate limit (`READYHAI_AGENT_RATE_PER_HOST`, default 10/s) is shared; writes run in a fixed order.
-4. **Verifier:** every failure is replayed `READYHAI_VERIFY_K` times (default 2, max 5, `0` off). Reproduced failures are defects; failures that do not reproduce are INCONCLUSIVE.
+1. **Discovery:** crawls the target (same-host redirects only), classifies routes (API vs SPA shell), discovers XHR calls via Playwright when enabled (`READYHAI_AGENT_XHR`), reads the OpenAPI spec when given, harvests existing resource ids, and—when `--repo` is supplied—runs Tree-sitter AST source/sink/guard discovery (`whitebox.rs`) to surface hidden routes and handlers.
+2. **Planner:** boundary, negative, authorization, injection and state cases from the crawl and spec (reusing `qa::api`), plus modular deep-security attack suites (`attacks/auth.rs` JWT tampering/BFLA/proxy ACL bypass, `attacks/bopla.rs` excessive data exposure & mass assignment, `attacks/injection.rs` open redirect, OAST SSRF, multi-encoding path traversal, SSTI, boolean/time blind SQLi, time-delay CMDi, and `attacks/logic.rs` TOCTOU races, workflow step-skip, HPP, GraphQL) and white-box AST probes. Depth follows the run request's `profile` (`quick` baseline only, `standard` top 15 operations, `deep` top 30); the CLI always runs `standard`, REST and MCP accept all three. Changed operations and known defects go first.
+3. **Explorer (lead agent), OAST, ReAct & BrowserSecurity:** the plan is split into `auth`, `contract`, `state` and `ui`; each runs on its own worker with a slice of the budget (`READYHAI_AGENT_WORKERS`, default 4) and an in-process loopback OAST collector (`oast.rs`). One per-host rate limit (`READYHAI_AGENT_RATE_PER_HOST`, default 10/s) is shared; writes run in a fixed order. Deterministic wave 2 follow-ups (`lead.rs`), bounded adaptive ReAct exploration (`react.rs`), and interactive Playwright DOM/storage/cookie checks (`browser_sec.rs`, `standard`/`deep`, disable with `READYHAI_AGENT_BROWSER=off`) follow under the remaining budget.
+4. **Verifier:** every failure is replayed `READYHAI_VERIFY_K` times (default 2, max 5, `0` off) including blind timing/OAST/redirect probes. Reproduced failures are defects; failures that do not reproduce are INCONCLUSIVE.
 5. **Cleanup:** what the run created is deleted newest first on a nonprod target and read back; leftovers are listed in the report and `cleanup.json`.
-6. **Triager:** clusters failures into defects with OWASP labels and severities.
+6. **Triager:** clusters failures into defects with OWASP labels, severities, and white-box `file:line handler` source linkage when `--repo` is present.
 7. **Readiness gate:** four-pillar **Evidence Ledger** (`Value` 30, `Authority` 30, `Safety` 25, `Evidence` 15) and the verdict `GO`, `CONDITIONAL_GO`, `NO_GO`, or `NOT_EVALUATED` when nothing conclusive ran.
 
 ### Flags
@@ -132,9 +132,9 @@ A check runs when its target kind matches and `profile >= check.min_profile` (`q
 
 | Profile | Adds |
 |---|---|
-| `quick` | Native readiness rules, gitleaks, SBOM+CVE, semgrep, hadolint, checkov, dockle, image inspect, `web.smoke`, `host.probe`, `host.cve`, `android.mobsf` |
-| `standard` | `tests.own`, Schemathesis, ZAP baseline, Playwright crawl, `host.lynis`, `android.runtime` |
-| `deep` | Intrusive checks, which run only on a nonprod host (a public host not listed `prod` in `scope.toml`, or an entry with `env = "nonprod"`). The one built-in intrusive check is `qa.resilience` (compose fault injection, `readyhai qa` only, needs a `[hosts.resilience]` allow-list). `deep` also enables a monkey stress run on Android emulators and any plugin with `profile = "deep"`. |
+| `quick` | Native readiness rules, native Tree-sitter AST audit (`security.code_audit`), gitleaks, SBOM+CVE, semgrep, hadolint, checkov, dockle, image inspect, `web.smoke` (headers, weak CSP, TLS cert/protocol), `host.probe`, `host.cve`, `android.mobsf` |
+| `standard` | `tests.own`, `tool.opengrep`, `tool.osv_reachability`, `tool.scorecard`, Schemathesis, ZAP baseline, `tool.nuclei`, Playwright crawl, `host.lynis`, `android.runtime` |
+| `deep` | Intrusive checks, which run only on a nonprod host (a public host not listed `prod` in `scope.toml`, or an entry with `env = "nonprod"`): `tool.zap_active` and `qa.resilience` (`readyhai qa` only, needs a `[hosts.resilience]` allow-list). `deep` also enables a monkey stress run on Android emulators and any plugin with `profile = "deep"`. |
 
 The MCP server refuses `deep` unless `READYHAI_MCP_ALLOW_DEEP=1`.
 
@@ -208,6 +208,10 @@ readyhai scan . --plugins ./plugins
 
 # 9. Autonomous Agentic AI QA with Evidence Ledger (localhost is internal: list it in scope.toml)
 readyhai agent http://localhost:3000 --scope scope.toml --max-steps 5
+
+# 9b. Local OWASP benchmark harness (deterministic suites, or live nonprod OWASP Juice Shop / VAmPI)
+./scripts/bench_owasp.sh --suite
+READYHAI_ALLOW_NONPROD=1 ./scripts/bench_owasp.sh --target http://127.0.0.1:3000 --profile deep
 
 # 10. Web Studio UI (SPA) + REST API
 # Start ReadyHai Backend API Engine (default port 8080)
