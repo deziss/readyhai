@@ -1,6 +1,6 @@
 [package]
 name = "readyhai"
-version = "0.6.2"
+version = "0.7.0"
 edition = "2024"
 description = "Self-hosted QA tester and production-readiness gate"
 authors = ["Anshu Kushawaha <kushawahaanshu8858@gmail.com>"]
@@ -29,6 +29,12 @@ rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 axum = "0.8"
+tree-sitter = "0.25"
+tree-sitter-python = "0.25.0"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-go = "0.25.0"
+tree-sitter-php = "0.25.1"
 
 [profile.dev]
 debug = 0

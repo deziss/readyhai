@@ -336,7 +336,40 @@ fn osv_reachability(ctx: &Ctx) -> Result<CheckOutput> {
         Err(_) if r.exit_code != 0 => return Err(tool_failed("osv-scanner", &r)),
         Err(_) => "{}".into(),
     };
-    Ok(CheckOutput::findings(parse_osv(&txt)?))
+    let mut findings = parse_osv(&txt)?;
+    if let Some(snap) = &ctx.snapshot {
+        enrich_osv_with_ast(&mut findings, &snap.root);
+    }
+    Ok(CheckOutput::findings(findings))
+}
+
+/// Annotate OSV findings whose call-graph reachability is `unknown` using Tree-sitter AST
+/// import analysis across Python/JS/TS/Go/PHP source files. Severity is preserved (never lowered).
+pub fn enrich_osv_with_ast(findings: &mut [Finding], root: &std::path::Path) {
+    let has_unknown = findings
+        .iter()
+        .any(|f| f.package.is_some() && f.detail.starts_with("Reachability: unknown"));
+    if !has_unknown {
+        return;
+    }
+    let imported = crate::code_audit::called_packages(root);
+    if imported.is_empty() {
+        return;
+    }
+    for f in findings.iter_mut() {
+        if !f.detail.starts_with("Reachability: unknown") {
+            continue;
+        }
+        if let Some(pkg) = f.package.as_deref()
+            && crate::code_audit::package_is_imported(&imported, pkg)
+        {
+            if !f.detail.ends_with('.') {
+                f.detail.push('.');
+            }
+            f.detail
+                .push_str(" AST import check: package is imported in source code.");
+        }
+    }
 }
 
 // ================================================================= 2. OpenSSF Scorecard
@@ -1176,5 +1209,48 @@ mod tests {
         for t in ["osv-scanner", "scorecard", "spectral", "oasdiff"] {
             assert!(e[t].digest.starts_with("sha256:"), "{t}");
         }
+    }
+
+    #[test]
+    fn osv_ast_import_enrichment_preserves_unknown_severity() {
+        let dir = std::env::temp_dir().join(format!(
+            "rh-osv-ast-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("main.go"),
+            "package main\nimport \"golang.org/x/text/language\"\nfunc main() { _ = language.English }\n",
+        )
+        .unwrap();
+
+        let mut findings = fin(parse_osv(OSV_NOCALL).unwrap());
+        let before_sev = findings
+            .iter()
+            .find(|x| x.rule == "CVE-2022-32149")
+            .unwrap()
+            .severity;
+        enrich_osv_with_ast(&mut findings, &dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let a = findings
+            .iter()
+            .find(|x| x.rule == "CVE-2022-32149")
+            .unwrap();
+        assert_eq!(a.severity, before_sev);
+        assert!(
+            a.detail.starts_with("Reachability: unknown"),
+            "{}",
+            a.detail
+        );
+        assert!(
+            a.detail
+                .contains("AST import check: package is imported in source code."),
+            "{}",
+            a.detail
+        );
     }
 }

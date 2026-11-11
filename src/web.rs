@@ -1,6 +1,4 @@
-//! Web/API checks: native smoke check, Schemathesis, ZAP baseline (passive).
-//! TLS certificate expiry is intentionally not checked here (needs a TLS
-//! handshake library beyond reqwest); it is a documented gap.
+//! Web/API checks: native smoke check (incl. CSP weakness & openssl TLS audit), Schemathesis, ZAP baseline.
 use crate::checks::Check;
 use crate::ctx::Ctx;
 use crate::model::*;
@@ -36,6 +34,23 @@ pub fn checks() -> Vec<Check> {
             zap,
         )
         .tool("zap"),
+        Check::new(
+            "tool.nuclei",
+            "Nuclei template scanner (CVE, misconfig, exposure, takeover)",
+            w,
+            Profile::Standard,
+            nuclei,
+        )
+        .tool("nuclei"),
+        Check::new(
+            "tool.zap_active",
+            "ZAP full active scan (intrusive)",
+            w,
+            Profile::Deep,
+            zap_active,
+        )
+        .tool("zap")
+        .intrusive(),
         Check::new(
             "tool.playwright",
             "Browser crawl: JS errors, failed requests, broken links (Playwright)",
@@ -164,6 +179,133 @@ pub fn discover_openapi(base: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn csp_findings(csp: &str, url: &str, out: &mut Vec<Finding>) {
+    let mut issues: Vec<&'static str> = Vec::new();
+    for raw_dir in csp.split(';') {
+        let mut toks = raw_dir.split_whitespace();
+        let Some(name) = toks.next().map(|s| s.to_ascii_lowercase()) else {
+            continue;
+        };
+        let vals: Vec<String> = toks.map(|t| t.to_ascii_lowercase()).collect();
+        if matches!(
+            name.as_str(),
+            "default-src" | "script-src" | "script-src-elem"
+        ) {
+            if vals.iter().any(|v| v == "'unsafe-inline'") && !issues.contains(&"unsafe-inline") {
+                issues.push("unsafe-inline");
+            }
+            if vals.iter().any(|v| v == "'unsafe-eval'") && !issues.contains(&"unsafe-eval") {
+                issues.push("unsafe-eval");
+            }
+            if vals.iter().any(|v| v == "*") && !issues.contains(&"wildcard *") {
+                issues.push("wildcard *");
+            }
+            if vals.iter().any(|v| v.starts_with("http:")) && !issues.contains(&"http: source") {
+                issues.push("http: source");
+            }
+        }
+    }
+    if !issues.is_empty() {
+        let mut f = Finding::new(
+            "web.smoke",
+            "web.weak_csp",
+            Category::Security,
+            Severity::Medium,
+            format!("Weak Content-Security-Policy ({})", issues.join(", ")),
+            url,
+        )
+        .detail(format!(
+            "CSP permits risky script directives: {}.",
+            issues.join(", ")
+        ))
+        .remediation("Remove 'unsafe-inline', 'unsafe-eval', wildcards, and http: sources; enforce nonces or strict-dynamic.")
+        .fp_key(format!("{url}#weak_csp"));
+        f.finalize();
+        out.push(f);
+    }
+}
+
+fn tls_findings(
+    audit: &crate::network::TlsChainAudit,
+    url: &str,
+    local: bool,
+    out: &mut Vec<Finding>,
+) {
+    if !audit.is_https || !audit.measured {
+        return;
+    }
+    let tv = audit.tls_version.to_ascii_lowercase();
+    if tv.contains("tlsv1.0") || tv.contains("tlsv1.1") || tv == "tlsv1" || tv.contains("sslv") {
+        let mut f = Finding::new(
+            "web.smoke",
+            "web.tls_weak_protocol",
+            Category::Security,
+            Severity::High,
+            format!("Deprecated TLS protocol negotiated ({})", audit.tls_version),
+            url,
+        )
+        .detail(format!(
+            "Server negotiated {} with cipher {}.",
+            audit.tls_version, audit.cipher
+        ))
+        .remediation("Disable SSLv3, TLS 1.0, and TLS 1.1; require TLS 1.2 or TLS 1.3.")
+        .fp_key(format!("{url}#tls_proto"));
+        f.finalize();
+        out.push(f);
+    }
+    if let Some(days) = audit.days_remaining
+        && days <= 14
+    {
+        let sev = if days <= 0 {
+            Severity::High
+        } else {
+            Severity::Medium
+        };
+        let msg = if days <= 0 {
+            "TLS certificate expired".to_string()
+        } else {
+            format!("TLS certificate expires in {days} day(s)")
+        };
+        let mut f = Finding::new(
+            "web.smoke",
+            "web.tls_expiring",
+            Category::Security,
+            sev,
+            msg,
+            url,
+        )
+        .detail(format!(
+            "Certificate notAfter: {} ({days} days remaining).",
+            audit.not_after.as_deref().unwrap_or("unknown")
+        ))
+        .remediation("Renew and deploy a valid TLS certificate with automated rotation.")
+        .fp_key(format!("{url}#tls_expiry"));
+        f.finalize();
+        out.push(f);
+    }
+    let untrusted = audit.is_intermediate_missing
+        || audit.is_self_signed
+        || audit
+            .verify_result
+            .as_deref()
+            .is_some_and(|v| !v.starts_with("0 "));
+    if !local && untrusted {
+        let mut f = Finding::new(
+            "web.smoke",
+            "web.tls_untrusted",
+            Category::Security,
+            Severity::Medium,
+            "TLS certificate chain fails trust validation",
+            url,
+        )
+        .detail(audit.diagnosis.clone())
+        .remediation("Install the full intermediate certificate chain issued by a trusted CA.")
+        .fp_key(format!("{url}#tls_trust"));
+        f.finalize();
+        out.push(f);
+    }
 }
 
 fn hdr(h: &HeaderMap, name: &str) -> Option<String> {
@@ -308,9 +450,20 @@ fn smoke(ctx: &Ctx) -> Result<CheckOutput> {
     if https && hdr(&headers, "strict-transport-security").is_none() {
         missing.push("Strict-Transport-Security");
     }
+    let mut sec_extra = vec![];
     let csp = hdr(&headers, "content-security-policy");
-    if csp.is_none() {
+    if let Some(ref policy) = csp {
+        csp_findings(policy, &url, &mut sec_extra);
+    } else {
         missing.push("Content-Security-Policy");
+    }
+    if https && let Ok(parsed_u) = reqwest::Url::parse(&url) {
+        let port = parsed_u.port_or_known_default().unwrap_or(443);
+        let audit = crate::network::audit_tls_chain(&parsed_u, &host, port, 5000);
+        tls_findings(&audit, &url, is_local(&host), &mut sec_extra);
+    }
+    for f in sec_extra {
+        add(f);
     }
     if hdr(&headers, "x-content-type-options").is_none() {
         missing.push("X-Content-Type-Options");
@@ -804,29 +957,265 @@ pub fn parse_playwright(text: &str) -> Result<(Vec<Finding>, Vec<String>)> {
             f.finalize();
             out.push(f);
         }
+        for lk in pg["storage_leaks"].as_array().into_iter().flatten() {
+            let store = lk["store"].as_str().unwrap_or("storage");
+            let key = lk["key"].as_str().unwrap_or("");
+            if key.is_empty() {
+                continue;
+            }
+            let kind = lk["kind"].as_str().unwrap_or("sensitive_key");
+            let mut f = Finding::new(
+                "tool.playwright",
+                "web.storage_secret",
+                Category::Security,
+                Severity::High,
+                format!("Sensitive credential ({kind}) stored in {store}"),
+                &url,
+            )
+            .detail(format!(
+                "Key '{key}' in {store} exposes sensitive material to client-side JS / XSS."
+            ))
+            .remediation("Move tokens and secrets to HttpOnly, Secure, SameSite session cookies.")
+            .fp_key(format!("{url}#storage#{store}#{key}"));
+            f.finalize();
+            out.push(f);
+        }
+        for ck in pg["cookie_issues"].as_array().into_iter().flatten() {
+            let name = ck["name"].as_str().unwrap_or("");
+            if name.is_empty() {
+                continue;
+            }
+            let mut f = Finding::new(
+                "tool.playwright",
+                "web.cookie_httponly",
+                Category::Security,
+                Severity::Medium,
+                format!("Sensitive cookie '{name}' missing HttpOnly/Secure flags"),
+                &url,
+            )
+            .detail(format!(
+                "httpOnly={}, secure={}",
+                ck["httpOnly"].as_bool().unwrap_or(false),
+                ck["secure"].as_bool().unwrap_or(false)
+            ))
+            .remediation("Mark authentication/session cookies with HttpOnly, Secure, and SameSite attributes.")
+            .fp_key(format!("{url}#cookie#{name}"));
+            f.finalize();
+            out.push(f);
+        }
+        for map_url in strs(&pg["sourcemaps"]) {
+            let mut f = Finding::new(
+                "tool.playwright",
+                "web.sourcemap_exposed",
+                Category::Security,
+                Severity::Medium,
+                "Production JavaScript source map exposed",
+                &map_url,
+            )
+            .detail(format!("Source map publicly fetched while crawling {url}."))
+            .remediation("Disable public serving of .js.map files in production.")
+            .fp_key(format!("{map_url}#sourcemap"));
+            f.finalize();
+            out.push(f);
+        }
+        let pm = strs(&pg["postmessage_issues"]);
+        if !pm.is_empty() {
+            let mut f = Finding::new(
+                "tool.playwright",
+                "web.postmessage_no_origin",
+                Category::Security,
+                Severity::Medium,
+                format!("{} postMessage handler(s) without origin validation", pm.len()),
+                &url,
+            )
+            .detail(pm[0].chars().take(180).collect::<String>())
+            .remediation("Verify event.origin against an explicit allow-list inside window 'message' listeners.")
+            .fp_key(format!("{url}#postmessage"));
+            f.finalize();
+            out.push(f);
+        }
     }
     Ok((out, lines))
 }
 
-fn zap(ctx: &Ctx) -> Result<CheckOutput> {
-    let url = ctx.target.url.clone().context("no target url")?;
-    if let Some(o) = gate(ctx) {
-        return Ok(o);
-    }
-    if url.chars().any(|c| {
+fn has_shell_unsafe_chars(url: &str) -> bool {
+    url.chars().any(|c| {
         c.is_whitespace()
             || matches!(
                 c,
                 '\'' | '"' | '`' | ';' | '$' | '\\' | '&' | '|' | '<' | '>' | '(' | ')'
             )
-    }) {
+    })
+}
+
+fn dir_has_entries(dir: &std::path::Path) -> bool {
+    std::fs::read_dir(dir)
+        .ok()
+        .and_then(|mut it| it.next())
+        .is_some()
+}
+
+fn nuclei(ctx: &Ctx) -> Result<CheckOutput> {
+    let url = ctx.target.url.clone().context("no target url")?;
+    if let Some(o) = gate(ctx) {
+        return Ok(o);
+    }
+    if has_shell_unsafe_chars(&url) {
+        return Ok(CheckOutput::status(CheckStatus::Skipped(
+            "target URL contains characters unsafe for container invocation".into(),
+        )));
+    }
+    let templates_dir = ctx.docker.cache_dir.join("nuclei");
+    let has_cached_templates = dir_has_entries(&templates_dir);
+    if crate::bundle::offline() && !has_cached_templates {
+        return Ok(CheckOutput::status(CheckStatus::Skipped(
+            "offline mode: run `readyhai tools update` to cache nuclei templates".into(),
+        )));
+    }
+
+    let (u, gw) = container_url(&url);
+    let mut args = vec![
+        "-u".to_string(),
+        u,
+        "-tags".to_string(),
+        "cve,misconfig,exposure,takeover".to_string(),
+        "-etags".to_string(),
+        "dos,fuzz".to_string(),
+        "-rl".to_string(),
+        "20".to_string(),
+        "-silent".to_string(),
+        "-duc".to_string(),
+        "-jsonl".to_string(),
+        "-o".to_string(),
+        "/out/nuclei.jsonl".to_string(),
+    ];
+    if has_cached_templates {
+        args.push("-t".into());
+        args.push("/cache/nuclei".into());
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut ts = ToolSpec::new("nuclei", &arg_refs);
+    ts.tmpfs = vec![
+        "/tmp:rw,mode=1777".into(),
+        "/home/nuclei:rw,mode=1777".into(),
+    ];
+    ts.env = vec![("HOME".into(), "/home/nuclei".into())];
+    ts.network = true;
+    ts.host_gateway = gw;
+    ts.timeout_secs = 900;
+    let run = ctx.docker.run(ctx, &ts)?;
+    let path = ctx.out_dir().join("nuclei.jsonl");
+    let text = match crate::tools::read_text_capped(&path, crate::tools::MAX_OUT_BYTES) {
+        Ok(t) => Some(t),
+        Err(e) if crate::tools::is_oversize(&e) => return Err(e),
+        Err(_) => None,
+    };
+    if let Some(text) = text {
+        return Ok(CheckOutput::findings(parse_nuclei(&text)?));
+    }
+    if run.exit_code != 0 {
+        return Ok(CheckOutput::status(CheckStatus::Errored(format!(
+            "nuclei produced no report (exit {}): {}",
+            run.exit_code,
+            run.stderr_tail.chars().take(300).collect::<String>()
+        ))));
+    }
+    Ok(CheckOutput::findings(vec![]))
+}
+
+/// Parse Nuclei JSONL output into `Finding` entries under `tool.nuclei`.
+pub fn parse_nuclei(text: &str) -> Result<Vec<Finding>> {
+    let mut out = vec![];
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value =
+            serde_json::from_str(trimmed).with_context(|| "invalid nuclei JSONL line")?;
+        let tid = v["template-id"]
+            .as_str()
+            .or_else(|| v["template"].as_str())
+            .unwrap_or("unknown");
+        let info = &v["info"];
+        let sev = match info["severity"]
+            .as_str()
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "critical" => Severity::Critical,
+            "high" => Severity::High,
+            "medium" => Severity::Medium,
+            "low" => Severity::Low,
+            _ => Severity::Info,
+        };
+        let title = info["name"].as_str().unwrap_or(tid);
+        let loc = v["matched-at"]
+            .as_str()
+            .or_else(|| v["host"].as_str())
+            .unwrap_or("");
+        let mut detail = info["description"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        if let Some(matcher) = v["matcher-name"].as_str() {
+            if !detail.is_empty() {
+                detail.push(' ');
+            }
+            detail.push_str(&format!("[matcher: {matcher}]"));
+        }
+        let mut ids = Vec::new();
+        for key in ["cve-id", "cwe-id"] {
+            if let Some(arr) = info["classification"][key].as_array() {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        ids.push(s.to_string());
+                    }
+                }
+            } else if let Some(s) = info["classification"][key].as_str() {
+                ids.push(s.to_string());
+            }
+        }
+        let mut f = Finding::new(
+            "tool.nuclei",
+            &format!("nuclei.{tid}"),
+            Category::Security,
+            sev,
+            title.to_string(),
+            loc.to_string(),
+        )
+        .detail(detail)
+        .remediation(info["remediation"].as_str().unwrap_or("").trim())
+        .fp_key(format!("{tid}#{loc}"));
+        if !ids.is_empty() {
+            f = f.ids(ids);
+        }
+        f.finalize();
+        out.push(f);
+    }
+    Ok(out)
+}
+
+fn run_zap_scan(
+    ctx: &Ctx,
+    check_id: &str,
+    script: &str,
+    out_file: &str,
+    timeout_secs: u64,
+) -> Result<CheckOutput> {
+    let url = ctx.target.url.clone().context("no target url")?;
+    if let Some(o) = gate(ctx) {
+        return Ok(o);
+    }
+    if has_shell_unsafe_chars(&url) {
         return Ok(CheckOutput::status(CheckStatus::Skipped(
             "target URL contains characters unsafe for the ZAP command line".into(),
         )));
     }
     let (u, gw) = container_url(&url);
-    let cmd =
-        format!("zap-baseline.py -t '{u}' -J zap.json -I; cp /zap/wrk/zap.json /out/zap.json");
+    let cmd = format!("{script} -t '{u}' -J {out_file} -I; cp /zap/wrk/{out_file} /out/{out_file}");
     let mut ts = ToolSpec::new("zap", &["-c", &cmd]);
     ts.entrypoint = Some("sh".into());
     ts.workdir = Some("/zap/wrk".into());
@@ -837,9 +1226,9 @@ fn zap(ctx: &Ctx) -> Result<CheckOutput> {
     ts.env = vec![("JAVA_TOOL_OPTIONS".into(), "-Duser.home=/home/zap".into())];
     ts.network = true;
     ts.host_gateway = gw;
-    ts.timeout_secs = 900;
+    ts.timeout_secs = timeout_secs;
     let run = ctx.docker.run(ctx, &ts)?;
-    let path = ctx.out_dir().join("zap.json");
+    let path = ctx.out_dir().join(out_file);
     let text = match crate::tools::read_text_capped(&path, crate::tools::MAX_OUT_BYTES) {
         Ok(t) => Some(t),
         Err(e) if crate::tools::is_oversize(&e) => return Err(e),
@@ -852,10 +1241,67 @@ fn zap(ctx: &Ctx) -> Result<CheckOutput> {
             run.stderr_tail.chars().take(300).collect::<String>()
         ))));
     };
-    Ok(CheckOutput::findings(parse_zap(&text)?))
+    Ok(CheckOutput::findings(parse_zap_report(&text, check_id)?))
 }
 
+fn zap(ctx: &Ctx) -> Result<CheckOutput> {
+    run_zap_scan(ctx, "tool.zap_baseline", "zap-baseline.py", "zap.json", 900)
+}
+
+fn zap_active(ctx: &Ctx) -> Result<CheckOutput> {
+    if !ctx.nonprod || !matches!(ctx.profile, Profile::Deep) {
+        return Ok(CheckOutput::status(CheckStatus::Skipped(
+            "intrusive: tool.zap_active requires --profile deep on a nonprod target".into(),
+        )));
+    }
+    run_zap_scan(
+        ctx,
+        "tool.zap_active",
+        "zap-full-scan.py",
+        "zap-active.json",
+        1800,
+    )
+}
+
+fn strip_zap_html(s: &str) -> String {
+    let mut dec = String::with_capacity(s.len());
+    let rest = s
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"");
+    let mut in_tag = false;
+    for ch in rest.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            c if !in_tag => dec.push(c),
+            _ => {}
+        }
+    }
+    dec.trim().to_string()
+}
+
+fn zap_severity(risk: &str) -> Severity {
+    match risk.trim() {
+        "3" => Severity::High,
+        "2" => Severity::Medium,
+        "1" => Severity::Low,
+        _ => Severity::Info,
+    }
+}
+
+/// Parse ZAP baseline (`tool.zap_baseline`) JSON report.
+#[cfg(test)]
 pub fn parse_zap(text: &str) -> Result<Vec<Finding>> {
+    parse_zap_report(text, "tool.zap_baseline")
+}
+
+/// Parse ZAP JSON or XML report under the specified `check_id`.
+pub fn parse_zap_report(text: &str, check_id: &str) -> Result<Vec<Finding>> {
+    if text.trim_start().starts_with('<') {
+        return parse_zap_xml(text, check_id);
+    }
     let v: serde_json::Value = serde_json::from_str(text)?;
     let mut out = vec![];
     for site in v["site"].as_array().into_iter().flatten() {
@@ -865,12 +1311,6 @@ pub fn parse_zap(text: &str) -> Result<Vec<Finding>> {
                 .map(|s| s.to_string())
                 .or_else(|| a["riskcode"].as_i64().map(|n| n.to_string()))
                 .unwrap_or_default();
-            let sev = match risk.as_str() {
-                "3" => Severity::High,
-                "2" => Severity::Medium,
-                "1" => Severity::Low,
-                _ => Severity::Info,
-            };
             let pid = a["pluginid"]
                 .as_str()
                 .map(|s| s.to_string())
@@ -887,36 +1327,84 @@ pub fn parse_zap(text: &str) -> Result<Vec<Finding>> {
                 .unwrap_or("")
                 .to_string();
             let n = inst.map(|i| i.len()).unwrap_or(0);
-            let strip = |s: &str| {
-                let mut o = String::new();
-                let mut in_tag = false;
-                for ch in s.chars() {
-                    match ch {
-                        '<' => in_tag = true,
-                        '>' => in_tag = false,
-                        c if !in_tag => o.push(c),
-                        _ => {}
-                    }
-                }
-                o.trim().to_string()
-            };
             let mut f = Finding::new(
-                "tool.zap_baseline",
+                check_id,
                 &format!("zap.{pid}"),
                 Category::Security,
-                sev,
+                zap_severity(&risk),
                 name.to_string(),
                 loc,
             )
             .detail(format!(
                 "{} ({} instance(s))",
-                strip(a["desc"].as_str().unwrap_or("")),
+                strip_zap_html(a["desc"].as_str().unwrap_or("")),
                 n
             ))
-            .remediation(strip(a["solution"].as_str().unwrap_or("")));
+            .remediation(strip_zap_html(a["solution"].as_str().unwrap_or("")));
             f.finalize();
             out.push(f);
         }
+    }
+    Ok(out)
+}
+
+fn xml_tag_text<'a>(block: &'a str, tag: &str) -> &'a str {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let Some(start) = block.find(&open) else {
+        return "";
+    };
+    let after = &block[start + open.len()..];
+    let Some(end) = after.find(&close) else {
+        return "";
+    };
+    after[..end].trim()
+}
+
+fn parse_zap_xml(text: &str, check_id: &str) -> Result<Vec<Finding>> {
+    let mut out = vec![];
+    let mut rest = text;
+    while let Some(start) = rest.find("<alertitem>") {
+        let after = &rest[start + "<alertitem>".len()..];
+        let Some(end) = after.find("</alertitem>") else {
+            break;
+        };
+        let block = &after[..end];
+        rest = &after[end + "</alertitem>".len()..];
+        let pid = {
+            let p = xml_tag_text(block, "pluginid");
+            if p.is_empty() { "0" } else { p }
+        };
+        let name = {
+            let a = xml_tag_text(block, "alert");
+            if a.is_empty() {
+                xml_tag_text(block, "name")
+            } else {
+                a
+            }
+        };
+        let risk = xml_tag_text(block, "riskcode");
+        let loc = xml_tag_text(block, "uri").to_string();
+        let inst_count = block
+            .matches("<instance>")
+            .count()
+            .max(usize::from(!loc.is_empty()));
+        let mut f = Finding::new(
+            check_id,
+            &format!("zap.{pid}"),
+            Category::Security,
+            zap_severity(risk),
+            if name.is_empty() { "ZAP alert" } else { name }.to_string(),
+            loc,
+        )
+        .detail(format!(
+            "{} ({} instance(s))",
+            strip_zap_html(xml_tag_text(block, "desc")),
+            inst_count
+        ))
+        .remediation(strip_zap_html(xml_tag_text(block, "solution")));
+        f.finalize();
+        out.push(f);
     }
     Ok(out)
 }
@@ -942,7 +1430,12 @@ mod tests {
     fn playwright_parse() {
         let j = r#"{"pages":[{"url":"http://a/","status":200,"console_errors":["x 1","y"],"page_errors":["TypeError: z"],
           "failed_requests":[{"url":"http://a/api","status":503,"failure":""},{"url":"http://a/api","status":503,"failure":""},{"url":"http://a/n","status":404,"failure":""},{"url":"http://a/f","status":0,"failure":"net::ERR"}],
-          "broken_links":["http://a/dead (404)"],"screenshot":"page-0.png"}]}"#;
+          "broken_links":["http://a/dead (404)"],
+          "storage_leaks":[{"store":"localStorage","key":"auth_token","kind":"jwt"}],
+          "cookie_issues":[{"name":"session_id","httpOnly":false,"secure":true}],
+          "sourcemaps":["http://a/app.js.map"],
+          "postmessage_issues":["e => eval(e.data)"],
+          "screenshot":"page-0.png"}]}"#;
         let (f, lines) = parse_playwright(j).unwrap();
         let rules: Vec<&str> = f.iter().map(|x| x.rule.as_str()).collect();
         assert_eq!(rules.iter().filter(|r| **r == "web.5xx").count(), 1);
@@ -951,6 +1444,10 @@ mod tests {
                 && rules.contains(&"web.console_error")
                 && rules.contains(&"web.broken_link")
                 && rules.contains(&"web.4xx")
+                && rules.contains(&"web.storage_secret")
+                && rules.contains(&"web.cookie_httponly")
+                && rules.contains(&"web.sourcemap_exposed")
+                && rules.contains(&"web.postmessage_no_origin")
         );
         assert_eq!(
             f.iter()
@@ -979,5 +1476,151 @@ Reproduce with: curl</failure></testcase></testsuite>"#;
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].rule, "zap.10038");
         assert_eq!(f[0].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn nuclei_parse_and_lock_pin() {
+        let (img, pinned) = crate::tools::image_for("nuclei");
+        assert!(img.starts_with("projectdiscovery/nuclei@sha256:"), "{img}");
+        assert!(pinned);
+        assert!(
+            checks()
+                .iter()
+                .any(|c| c.id == "tool.nuclei" && !c.intrusive)
+        );
+
+        let jsonl = concat!(
+            r#"{"template-id":"CVE-2023-22515","info":{"name":"Atlassian Confluence Broken Access Control","severity":"critical","description":"Privilege escalation.","remediation":"Upgrade Confluence.","classification":{"cve-id":["CVE-2023-22515"],"cwe-id":["CWE-284"]}},"matched-at":"https://app.example/setup/setupadministrator.action"}"#,
+            "\n",
+            r#"{"template-id":"git-config-exposure","info":{"name":"Git Config Exposed","severity":"medium"},"matched-at":"https://app.example/.git/config"}"#,
+            "\n"
+        );
+        let findings = parse_nuclei(jsonl).unwrap();
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].check, "tool.nuclei");
+        assert_eq!(findings[0].rule, "nuclei.CVE-2023-22515");
+        assert_eq!(findings[0].severity, Severity::Critical);
+        assert_eq!(
+            findings[0].location,
+            "https://app.example/setup/setupadministrator.action"
+        );
+        assert!(findings[0].ids.contains(&"CVE-2023-22515".to_string()));
+        assert_eq!(findings[1].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn zap_active_parses_xml_and_json_and_requires_deep_nonprod() {
+        let act = checks()
+            .into_iter()
+            .find(|c| c.id == "tool.zap_active")
+            .expect("tool.zap_active check registered");
+        assert!(act.intrusive);
+        assert_eq!(act.min_profile, Profile::Deep);
+
+        let xml = r#"<?xml version="1.0"?>
+<OWASPZAPReport version="2.15.0">
+  <site name="https://app.example">
+    <alerts>
+      <alertitem>
+        <pluginid>40018</pluginid>
+        <alert>SQL Injection</alert>
+        <riskcode>3</riskcode>
+        <desc>&lt;p&gt;SQLi possible.&lt;/p&gt;</desc>
+        <solution>&lt;p&gt;Use prepared statements.&lt;/p&gt;</solution>
+        <instances>
+          <instance><uri>https://app.example/search?q=1</uri></instance>
+        </instances>
+      </alertitem>
+    </alerts>
+  </site>
+</OWASPZAPReport>"#;
+        let xml_f = parse_zap_report(xml, "tool.zap_active").unwrap();
+        assert_eq!(xml_f.len(), 1);
+        assert_eq!(xml_f[0].check, "tool.zap_active");
+        assert_eq!(xml_f[0].rule, "zap.40018");
+        assert_eq!(xml_f[0].severity, Severity::High);
+        assert_eq!(xml_f[0].location, "https://app.example/search?q=1");
+
+        let mk_ctx = |profile: Profile, nonprod: bool| Ctx {
+            run_id: "r1".into(),
+            target: Target {
+                kind: TargetKind::Web,
+                raw: "https://app.example".into(),
+                path: None,
+                image: None,
+                url: Some("https://app.example".into()),
+                openapi: None,
+                host: None,
+                apk: None,
+                device: None,
+            },
+            profile,
+            run_dir: std::env::temp_dir(),
+            snapshot: None,
+            facts: crate::facts::Facts::default(),
+            docker: crate::tools::Docker {
+                available: true,
+                mode: crate::tools::MountMode::Bind,
+                cache_dir: std::env::temp_dir(),
+            },
+            cfg: crate::config::TargetConfig::default(),
+            error_lines: std::sync::Mutex::new(vec![]),
+            nonprod,
+            qa: None,
+        };
+        let out_std = zap_active(&mk_ctx(Profile::Standard, true)).unwrap();
+        assert!(matches!(out_std.status, Some(CheckStatus::Skipped(_))));
+        let out_prod = zap_active(&mk_ctx(Profile::Deep, false)).unwrap();
+        assert!(matches!(out_prod.status, Some(CheckStatus::Skipped(_))));
+    }
+
+    #[test]
+    fn weak_csp_and_tls_findings_are_emitted() {
+        let mut out = vec![];
+        csp_findings(
+            "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://cdn.example",
+            "https://example.com/",
+            &mut out,
+        );
+        assert!(out.iter().any(|f| f.rule == "web.weak_csp"));
+        let d = &out
+            .iter()
+            .find(|f| f.rule == "web.weak_csp")
+            .unwrap()
+            .detail;
+        assert!(d.contains("unsafe-inline") && d.contains("unsafe-eval") && d.contains("http:"));
+
+        let mut clean = vec![];
+        csp_findings(
+            "default-src 'self'; script-src 'self' 'nonce-abc123'; object-src 'none'",
+            "https://example.com/",
+            &mut clean,
+        );
+        assert!(clean.is_empty(), "{clean:?}");
+
+        let expiring = crate::network::TlsChainAudit {
+            is_https: true,
+            measured: true,
+            tls_version: "TLSv1.1".into(),
+            cipher: "TLS_RSA_WITH_AES_128_CBC_SHA".into(),
+            cert_issuer: "Let's Encrypt".into(),
+            cert_subject: "example.com".into(),
+            cert_sans: vec![],
+            not_after: Some("Jan 01 00:00:00 2026 GMT".into()),
+            days_remaining: Some(5),
+            is_self_signed: false,
+            is_intermediate_missing: true,
+            ocsp_stapled: Some(false),
+            chain_length: Some(1),
+            verify_result: Some("21 (unable to verify)".into()),
+            not_measured: vec![],
+            diagnosis: String::new(),
+        };
+        let mut tls_out = vec![];
+        tls_findings(&expiring, "https://example.com/", false, &mut tls_out);
+        let rules: Vec<&str> = tls_out.iter().map(|f| f.rule.as_str()).collect();
+        assert!(rules.contains(&"web.tls_weak_protocol"), "{rules:?}");
+        assert!(rules.contains(&"web.tls_expiring"), "{rules:?}");
+        assert!(rules.contains(&"web.tls_untrusted"), "{rules:?}");
     }
 }

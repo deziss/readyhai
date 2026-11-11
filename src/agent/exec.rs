@@ -19,7 +19,7 @@
 //! (`<id>-M1`, `<id>-B`) with their own curl and evidence; they never overwrite the base verdict.
 use regex::Regex;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -30,8 +30,8 @@ use super::oracle::{
     is_cors_case,
 };
 use super::types::{
-    AttemptRecord, BlockReason, CaseExecutionResult, PlannedCase, RedirectHop, SRC_AUTH_WALL,
-    SRC_NOT_APPLICABLE, record_creation_response,
+    AttemptRecord, BlockReason, CaseExecutionResult, PlannedCase, ProbeOracle, RedirectHop,
+    SRC_AUTH_WALL, SRC_NOT_APPLICABLE, record_creation_response,
 };
 use crate::llm::{is_sensitive_key, redact_for_llm};
 
@@ -68,17 +68,82 @@ pub fn is_safe_method(method: &str) -> bool {
 
 // ---------------------------------------------------------------- credentials
 
-/// Test credentials per role. Sources: `RH_<ROLE>_TOKEN` environment variables or the caller
-/// (`with`). The server's own tokens are never used, and tokens never appear in reports.
+/// Mode used by [`LoginBootstrap`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LoginMode {
+    #[default]
+    Form,
+    Json,
+}
+
+/// Optional login-endpoint bootstrap to obtain session cookies and/or a bearer token.
+/// Never serialized into reports or prompts; credentials travel only to the validated target origin.
+#[derive(Clone)]
+pub struct LoginBootstrap {
+    pub login_url: String,
+    pub method: String,
+    pub mode: LoginMode,
+    pub username: String,
+    pub password: String,
+    pub user_field: String,
+    pub pass_field: String,
+    pub csrf_page_url: Option<String>,
+    pub csrf_field: Option<String>,
+    pub token_json_path: Option<String>,
+}
+
+impl Default for LoginBootstrap {
+    fn default() -> Self {
+        LoginBootstrap {
+            login_url: String::new(),
+            method: "POST".into(),
+            mode: LoginMode::Form,
+            username: String::new(),
+            password: String::new(),
+            user_field: "username".into(),
+            pass_field: "password".into(),
+            csrf_page_url: None,
+            csrf_field: None,
+            token_json_path: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for LoginBootstrap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginBootstrap")
+            .field("login_url", &self.login_url)
+            .field("mode", &self.mode)
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug)]
+enum HeaderEnvKind {
+    FullVar(String),
+    ValueVar { name: String, var: String },
+}
+
+/// Test credentials per role. Sources: `RH_<ROLE>_TOKEN`, `RH_<ROLE>_COOKIE`, `RH_<ROLE>_HEADER`
+/// environment variables, `roles.toml`, login bootstrap, or programmatic builders. The server's
+/// own tokens are never used, and secret values never appear in reports or Debug output.
 #[derive(Clone, Default)]
 pub struct Credentials {
     tokens: BTreeMap<String, String>,
+    cookies: BTreeMap<String, String>,
+    headers: BTreeMap<String, (String, String)>,
+    token_envs: BTreeMap<String, String>,
+    header_envs: BTreeMap<String, HeaderEnvKind>,
+    pending_logins: BTreeMap<String, LoginBootstrap>,
 }
 
 impl std::fmt::Debug for Credentials {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut roles: BTreeSet<&str> = self.tokens.keys().map(String::as_str).collect();
+        roles.extend(self.cookies.keys().map(String::as_str));
+        roles.extend(self.headers.keys().map(String::as_str));
         f.debug_struct("Credentials")
-            .field("roles", &self.tokens.keys().collect::<Vec<_>>())
+            .field("roles", &roles.into_iter().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -96,28 +161,281 @@ fn role_key(role: &str) -> String {
         .collect()
 }
 
+fn strip_ctl(s: &str) -> String {
+    s.trim()
+        .chars()
+        .filter(|c| !matches!(c, '\r' | '\n' | '\0'))
+        .collect()
+}
+
+fn extract_set_cookies(headers: &[(String, String)], jar: &mut BTreeMap<String, String>) {
+    for (k, v) in headers {
+        if k.eq_ignore_ascii_case("set-cookie")
+            && let Some(nv) = v.split(';').next()
+            && let Some((name, val)) = nv.split_once('=')
+        {
+            let n = strip_ctl(name);
+            let val = strip_ctl(val);
+            if !n.is_empty() {
+                jar.insert(n, val);
+            }
+        }
+    }
+}
+
+fn format_cookie_jar(jar: &BTreeMap<String, String>) -> String {
+    jar.iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn extract_csrf_from_html(html: &str, custom_field: Option<&str>) -> Option<(String, String)> {
+    // Match hidden inputs or meta csrf-token without allocating huge captures.
+    let input_re = regex::Regex::new(r#"(?is)<input\b[^>]*>"#).ok()?;
+    let attr_name = regex::Regex::new(r#"(?i)\bname\s*=\s*["']([^"']+)["']"#).ok()?;
+    let attr_val = regex::Regex::new(r#"(?i)\bvalue\s*=\s*["']([^"']*)["']"#).ok()?;
+    let candidates: Vec<&str> = match custom_field {
+        Some(f) => vec![f],
+        None => vec![
+            "_csrf",
+            "csrf_token",
+            "csrftoken",
+            "csrfmiddlewaretoken",
+            "authenticity_token",
+            "__requestverificationtoken",
+            "_token",
+        ],
+    };
+    for m in input_re.find_iter(html) {
+        let tag = m.as_str();
+        let Some(n) = attr_name
+            .captures(tag)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str())
+        else {
+            continue;
+        };
+        if candidates.iter().any(|c| n.eq_ignore_ascii_case(c))
+            && let Some(v) = attr_val
+                .captures(tag)
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str())
+            && !v.is_empty()
+        {
+            return Some((n.to_string(), v.to_string()));
+        }
+    }
+    let meta_re = regex::Regex::new(
+        r#"(?is)<meta\b[^>]*\bname\s*=\s*["']csrf-token["'][^>]*\bcontent\s*=\s*["']([^"']+)["']"#,
+    )
+    .ok()?;
+    if let Some(v) = meta_re
+        .captures(html)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+        .filter(|s| !s.is_empty())
+    {
+        let field = custom_field.unwrap_or("_csrf").to_string();
+        return Some((field, v.to_string()));
+    }
+    None
+}
+
+fn extract_json_path(v: &serde_json::Value, path: &str) -> Option<String> {
+    let mut cur = v;
+    for seg in path.split('.').filter(|s| !s.is_empty()) {
+        cur = cur.get(seg)?;
+    }
+    cur.as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
 impl Credentials {
     pub fn none() -> Self {
         Credentials::default()
     }
 
     pub fn from_env() -> Self {
+        let mut c = Self::from_env_pairs(std::env::vars());
+        if let Ok(path) = std::env::var("RH_ROLES_FILE")
+            && !path.trim().is_empty()
+            && let Ok(roles) = crate::qa::roles::Roles::load(std::path::Path::new(path.trim()))
+        {
+            c = c.with_roles(&roles);
+        }
+        c
+    }
+
+    /// Deterministic builder from arbitrary `(key, value)` environment pairs (used by tests and `from_env`).
+    pub fn from_env_pairs<I, K, V>(vars: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let map: BTreeMap<String, String> = vars
+            .into_iter()
+            .map(|(k, v)| (k.into(), v.into()))
+            .collect();
         let mut c = Credentials::default();
-        for (k, v) in std::env::vars() {
+        for (k, v) in &map {
+            let trimmed = v.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
             if let Some(role) = k.strip_prefix("RH_").and_then(|r| r.strip_suffix("_TOKEN"))
                 && !role.is_empty()
-                && !v.trim().is_empty()
             {
-                c.tokens
-                    .insert(role.to_ascii_uppercase(), v.trim().to_string());
+                c = c.with(role, trimmed);
+            } else if let Some(role) = k
+                .strip_prefix("RH_")
+                .and_then(|r| r.strip_suffix("_COOKIE"))
+                && !role.is_empty()
+            {
+                c = c.with_cookie(role, trimmed);
+            } else if let Some(role) = k
+                .strip_prefix("RH_")
+                .and_then(|r| r.strip_suffix("_HEADER"))
+                && !role.is_empty()
+            {
+                if let Some((hname, hval)) = trimmed.split_once(':') {
+                    let hn = hname.trim();
+                    let hv = hval.trim();
+                    if !hn.is_empty() && !hv.is_empty() {
+                        c = c.with_header(role, hn, hv);
+                        c.header_envs
+                            .insert(role_key(role), HeaderEnvKind::FullVar(k.clone()));
+                    }
+                } else {
+                    let name_var = format!("RH_{}_HEADER_NAME", role_key(role));
+                    let hname = map
+                        .get(&name_var)
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("X-API-Key");
+                    c = c.with_header(role, hname, trimmed);
+                    c.header_envs.insert(
+                        role_key(role),
+                        HeaderEnvKind::ValueVar {
+                            name: hname.to_string(),
+                            var: k.clone(),
+                        },
+                    );
+                }
+            } else if let Some(role) = k
+                .strip_prefix("RH_")
+                .and_then(|r| r.strip_suffix("_LOGIN_URL"))
+                && !role.is_empty()
+            {
+                let rk = role_key(role);
+                let user = map
+                    .get(&format!("RH_{rk}_USER"))
+                    .map(|s| s.trim())
+                    .unwrap_or("");
+                let pass = map
+                    .get(&format!("RH_{rk}_PASS"))
+                    .map(|s| s.trim())
+                    .unwrap_or("");
+                if !user.is_empty() && !pass.is_empty() {
+                    let mode = match map
+                        .get(&format!("RH_{rk}_LOGIN_MODE"))
+                        .map(|s| s.trim().to_ascii_lowercase())
+                        .as_deref()
+                    {
+                        Some("json") => LoginMode::Json,
+                        _ => LoginMode::Form,
+                    };
+                    let csrf_page_url = map
+                        .get(&format!("RH_{rk}_CSRF_URL"))
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty());
+                    c.pending_logins.insert(
+                        rk,
+                        LoginBootstrap {
+                            login_url: trimmed.to_string(),
+                            mode,
+                            username: user.to_string(),
+                            password: pass.to_string(),
+                            csrf_page_url,
+                            ..LoginBootstrap::default()
+                        },
+                    );
+                }
             }
         }
         c
     }
 
     pub fn with(mut self, role: &str, token: &str) -> Self {
-        if !token.trim().is_empty() {
-            self.tokens.insert(role_key(role), token.trim().to_string());
+        let cleaned = strip_ctl(token);
+        if !cleaned.is_empty() {
+            self.tokens.insert(role_key(role), cleaned);
+        }
+        self
+    }
+
+    pub fn with_cookie(mut self, role: &str, cookie: &str) -> Self {
+        let cleaned = strip_ctl(cookie);
+        if !cleaned.is_empty() {
+            self.cookies.insert(role_key(role), cleaned);
+        }
+        self
+    }
+
+    pub fn with_header(mut self, role: &str, header_name: &str, value: &str) -> Self {
+        let pair = (header_name.trim().to_string(), value.trim().to_string());
+        if sanitize_custom_headers(std::slice::from_ref(&pair), true).is_ok() && !pair.1.is_empty()
+        {
+            self.headers.insert(role_key(role), pair);
+        }
+        self
+    }
+
+    /// Merge role credentials from [`crate::qa::roles::Roles`]. Secret values remain read from env
+    /// or `storageState` on disk and are excluded from Debug/reports.
+    pub fn with_roles(mut self, roles: &crate::qa::roles::Roles) -> Self {
+        use crate::qa::roles::AuthKind;
+        for role in &roles.roles {
+            let rk = role_key(&role.name);
+            match role.auth {
+                AuthKind::Bearer => {
+                    if let Some((_, val)) = role.credential() {
+                        let tok = val.strip_prefix("Bearer ").unwrap_or(&val).trim();
+                        self = self.with(&role.name, tok);
+                        if let Some(ev) = &role.token_env {
+                            self.token_envs.insert(rk, ev.clone());
+                        }
+                    }
+                }
+                AuthKind::Header => {
+                    if let Some((hname, hval)) = role.credential() {
+                        self = self.with_header(&role.name, &hname, &hval);
+                        if let Some(ev) = &role.token_env {
+                            self.header_envs.insert(
+                                rk,
+                                HeaderEnvKind::ValueVar {
+                                    name: hname,
+                                    var: ev.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+                AuthKind::Basic => {
+                    if let Some((hname, hval)) = role.credential() {
+                        self = self.with_header(&role.name, &hname, &hval);
+                    }
+                }
+                AuthKind::Cookie => {
+                    if let Some(ck) = role.cookie_header(&roles.dir) {
+                        self = self.with_cookie(&role.name, &ck);
+                    }
+                }
+                AuthKind::None => {}
+            }
         }
         self
     }
@@ -126,13 +444,175 @@ impl Credentials {
         self.tokens.get(&role_key(role)).map(|s| s.as_str())
     }
 
-    /// Name of the environment variable that supplies `role`'s token.
+    pub fn cookie(&self, role: &str) -> Option<&str> {
+        self.cookies.get(&role_key(role)).map(|s| s.as_str())
+    }
+
+    pub fn header(&self, role: &str) -> Option<(&str, &str)> {
+        self.headers
+            .get(&role_key(role))
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+
+    /// Name of the environment variable that supplies `role`'s bearer token.
     pub fn env_var(role: &str) -> String {
         format!("RH_{}_TOKEN", role_key(role))
     }
 
+    pub fn cookie_env_var(role: &str) -> String {
+        format!("RH_{}_COOKIE", role_key(role))
+    }
+
+    pub fn header_env_var(role: &str) -> String {
+        format!("RH_{}_HEADER", role_key(role))
+    }
+
     pub fn has_role(&self, role: &str) -> bool {
-        self.token(role).is_some()
+        self.token(role).is_some() || self.cookie(role).is_some() || self.header(role).is_some()
+    }
+
+    pub fn has_pending_logins(&self) -> bool {
+        !self.pending_logins.is_empty()
+    }
+
+    /// Authenticate via a login page/endpoint on the validated target origin and capture resulting
+    /// `Set-Cookie` and/or JSON token credentials for `role`.
+    pub fn bootstrap_login(
+        &mut self,
+        clients: &Clients,
+        role: &str,
+        cfg: &LoginBootstrap,
+    ) -> Result<(), String> {
+        if !clients.is_target_url(&cfg.login_url) {
+            return Err("credentials withheld: login_url is outside the target origin".into());
+        }
+        let mut jar = BTreeMap::new();
+        let mut csrf_pair: Option<(String, String)> = None;
+        if let Some(csrf_url) = &cfg.csrf_page_url {
+            if !clients.is_target_url(csrf_url) {
+                return Err(
+                    "credentials withheld: csrf_page_url is outside the target origin".into(),
+                );
+            }
+            let seen = clients.send_with_auth(
+                &OutReq {
+                    method: "GET",
+                    url: csrf_url,
+                    body: None,
+                    headers: &[],
+                    bearer: None,
+                },
+                &[],
+                true,
+            )?;
+            extract_set_cookies(&seen.headers, &mut jar);
+            csrf_pair = extract_csrf_from_html(&seen.body, cfg.csrf_field.as_deref());
+        }
+        let body = match cfg.mode {
+            LoginMode::Form => {
+                let mut dummy =
+                    reqwest::Url::parse("http://localhost/").map_err(|e| e.to_string())?;
+                {
+                    let mut qp = dummy.query_pairs_mut();
+                    qp.append_pair(&cfg.user_field, &cfg.username);
+                    qp.append_pair(&cfg.pass_field, &cfg.password);
+                    if let Some((ck, cv)) = &csrf_pair {
+                        qp.append_pair(ck, cv);
+                    }
+                }
+                (
+                    "application/x-www-form-urlencoded".to_string(),
+                    dummy.query().unwrap_or("").to_string(),
+                )
+            }
+            LoginMode::Json => {
+                let mut obj = serde_json::Map::new();
+                obj.insert(cfg.user_field.clone(), Value::String(cfg.username.clone()));
+                obj.insert(cfg.pass_field.clone(), Value::String(cfg.password.clone()));
+                if let Some((ck, cv)) = &csrf_pair {
+                    obj.insert(ck.clone(), Value::String(cv.clone()));
+                }
+                (
+                    "application/json".to_string(),
+                    Value::Object(obj).to_string(),
+                )
+            }
+        };
+        let mut login_auth_hdrs = Vec::new();
+        if !jar.is_empty() {
+            login_auth_hdrs.push(("Cookie".to_string(), format_cookie_jar(&jar)));
+        }
+        let seen = clients.send_with_auth(
+            &OutReq {
+                method: cfg.method.trim(),
+                url: &cfg.login_url,
+                body: Some(&body),
+                headers: &[],
+                bearer: None,
+            },
+            &login_auth_hdrs,
+            true,
+        )?;
+        if !(200..400).contains(&seen.status) {
+            return Err(format!(
+                "login bootstrap for role '{role}' returned HTTP {}",
+                seen.status
+            ));
+        }
+        extract_set_cookies(&seen.headers, &mut jar);
+        let mut got_any = false;
+        if !jar.is_empty() {
+            let ck = format_cookie_jar(&jar);
+            self.cookies.insert(role_key(role), ck);
+            got_any = true;
+        }
+        if let Ok(json_val) = serde_json::from_str::<Value>(seen.body.trim()) {
+            let token = cfg
+                .token_json_path
+                .as_deref()
+                .and_then(|p| extract_json_path(&json_val, p))
+                .or_else(|| {
+                    ["access_token", "token", "jwt", "id_token"]
+                        .into_iter()
+                        .find_map(|p| extract_json_path(&json_val, p))
+                });
+            if let Some(tok) = token {
+                let cleaned = strip_ctl(&tok);
+                if !cleaned.is_empty() {
+                    self.tokens.insert(role_key(role), cleaned);
+                    got_any = true;
+                }
+            }
+        }
+        if !got_any {
+            return Err(format!(
+                "login bootstrap for role '{role}' yielded neither Set-Cookie nor token"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Execute any env-configured `RH_<ROLE>_LOGIN_URL` bootstraps, returning status notes.
+    pub fn bootstrap_pending(&mut self, clients: &Clients) -> Vec<String> {
+        let pending: Vec<(String, LoginBootstrap)> = self
+            .pending_logins
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        self.pending_logins.clear();
+        let mut notes = Vec::new();
+        for (rk, cfg) in pending {
+            let role_lower = rk.to_ascii_lowercase();
+            match self.bootstrap_login(clients, &role_lower, &cfg) {
+                Ok(()) => notes.push(format!(
+                    "login bootstrap obtained credentials for role '{role_lower}'"
+                )),
+                Err(why) => {
+                    notes.push(format!("login bootstrap for '{role_lower}' skipped: {why}"))
+                }
+            }
+        }
+        notes
     }
 
     /// The role the planner acts as in ordinary authenticated cases: `user`, else `alice` (the
@@ -145,8 +625,10 @@ impl Credentials {
             .find(|r| self.has_role(r))
             .map(String::from)
             .or_else(|| {
-                self.tokens
-                    .keys()
+                let mut keys: BTreeSet<&str> = self.tokens.keys().map(String::as_str).collect();
+                keys.extend(self.cookies.keys().map(String::as_str));
+                keys.extend(self.headers.keys().map(String::as_str));
+                keys.into_iter()
                     .find(|k| {
                         !["ADMIN", "ROOT", "SUPER", "SYSTEM"]
                             .iter()
@@ -154,6 +636,70 @@ impl Credentials {
                     })
                     .map(|k| k.to_ascii_lowercase())
             })
+    }
+
+    /// Return the first configured Bearer token that parses as a 3-part JWT, preferring a
+    /// non-privileged role so privilege-escalation tampering starts from ordinary claims.
+    pub fn jwt_sample(&self) -> Option<(String, &str)> {
+        let is_priv = |k: &str| {
+            ["ADMIN", "ROOT", "SUPER", "SYSTEM", "STAFF"]
+                .iter()
+                .any(|p| k.to_ascii_uppercase().contains(p))
+        };
+        let mut sorted: Vec<(&String, &String)> = self.tokens.iter().collect();
+        sorted.sort_by_key(|(k, _)| is_priv(k));
+        sorted
+            .into_iter()
+            .find(|(_, v)| v.split('.').count() == 3)
+            .map(|(k, v)| (k.to_ascii_lowercase(), v.as_str()))
+    }
+
+    /// Return all configured non-admin role names in deterministic order.
+    pub fn non_admin_roles(&self) -> Vec<String> {
+        let mut keys: BTreeSet<String> = self
+            .tokens
+            .keys()
+            .chain(self.cookies.keys())
+            .chain(self.headers.keys())
+            .filter(|k| {
+                !["ADMIN", "ROOT", "SUPER", "SYSTEM", "STAFF"]
+                    .iter()
+                    .any(|p| k.contains(p))
+            })
+            .map(|k| k.to_ascii_lowercase())
+            .collect();
+        let mut out = Vec::new();
+        for pref in ["user", "alice", "bob"] {
+            if keys.remove(pref) {
+                out.push(pref.to_string());
+            }
+        }
+        out.extend(keys);
+        out
+    }
+
+    /// Return the first configured privileged/admin role (`admin`, `superadmin`, `root`, `staff`),
+    /// used strictly for positive baseline contract reads on privileged endpoints.
+    pub fn admin_role(&self) -> Option<String> {
+        let mut keys: BTreeSet<String> = self
+            .tokens
+            .keys()
+            .chain(self.cookies.keys())
+            .chain(self.headers.keys())
+            .filter(|k| {
+                let up = k.to_ascii_uppercase();
+                ["ADMIN", "ROOT", "SUPER", "SYSTEM", "STAFF"]
+                    .iter()
+                    .any(|p| up.contains(p))
+            })
+            .map(|k| k.to_ascii_lowercase())
+            .collect();
+        for pref in ["admin", "superadmin", "superuser", "staff", "root"] {
+            if keys.remove(pref) {
+                return Some(pref.to_string());
+            }
+        }
+        keys.into_iter().next()
     }
 }
 
@@ -173,7 +719,7 @@ pub fn auth_for(case: &PlannedCase) -> Auth {
         .filter(|r| !r.is_empty())
     {
         return match r.to_ascii_lowercase().as_str() {
-            "anon" | "anonymous" | "none" | "unauthenticated" => Auth::None,
+            "anon" | "anonymous" | "none" | "unauthenticated" | "raw_jwt" => Auth::None,
             "forged" => Auth::Forged,
             _ => Auth::Role(r.to_string()),
         };
@@ -214,7 +760,9 @@ impl std::fmt::Debug for Bearer {
 
 pub struct ResolvedAuth {
     pub bearer: Option<Bearer>,
+    pub extra_headers: Vec<(String, String)>,
     pub authenticated: bool,
+    pub real: bool,
     pub note: Option<String>,
 }
 
@@ -222,7 +770,9 @@ pub fn resolve_auth(auth: &Auth, creds: &Credentials) -> ResolvedAuth {
     match auth {
         Auth::None => ResolvedAuth {
             bearer: None,
+            extra_headers: vec![],
             authenticated: false,
+            real: false,
             note: None,
         },
         Auth::Forged => ResolvedAuth {
@@ -230,27 +780,45 @@ pub fn resolve_auth(auth: &Auth, creds: &Credentials) -> ResolvedAuth {
                 header: format!("Bearer {FORGED_TOKEN}"),
                 real: false,
             }),
+            extra_headers: vec![],
             authenticated: true,
+            real: false,
             note: None,
         },
-        Auth::Role(r) => match creds.token(r) {
-            Some(t) => ResolvedAuth {
-                bearer: Some(Bearer {
-                    header: format!("Bearer {t}"),
+        Auth::Role(r) => {
+            let bearer = creds.token(r).map(|t| Bearer {
+                header: format!("Bearer {t}"),
+                real: true,
+            });
+            let mut extra_headers = Vec::new();
+            if let Some(ck) = creds.cookie(r) {
+                extra_headers.push(("Cookie".into(), ck.to_string()));
+            }
+            if let Some((hk, hv)) = creds.header(r) {
+                extra_headers.push((hk.to_string(), hv.to_string()));
+            }
+            let authenticated = bearer.is_some() || !extra_headers.is_empty();
+            if authenticated {
+                ResolvedAuth {
+                    bearer,
+                    extra_headers,
+                    authenticated: true,
                     real: true,
-                }),
-                authenticated: true,
-                note: None,
-            },
-            None => ResolvedAuth {
-                bearer: None,
-                authenticated: false,
-                note: Some(format!(
-                    "no credential for role '{r}': request sent without Authorization (set {})",
-                    Credentials::env_var(r)
-                )),
-            },
-        },
+                    note: None,
+                }
+            } else {
+                ResolvedAuth {
+                    bearer: None,
+                    extra_headers: vec![],
+                    authenticated: false,
+                    real: false,
+                    note: Some(format!(
+                        "no credential for role '{r}': request sent without Authorization (set {})",
+                        Credentials::env_var(r)
+                    )),
+                }
+            }
+        }
     }
 }
 
@@ -364,6 +932,90 @@ fn string_leaves(v: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// Safe, bounded validation of custom request headers. Rejects control/CRLF/NUL bytes,
+/// invalid token names, and hop-by-hop smuggling headers. `allow_auth_header` is only enabled
+/// for internal deterministic token-tampering probes (`role = "raw_jwt"`), never for LLM cases.
+pub fn sanitize_custom_headers(
+    headers: &[(String, String)],
+    allow_auth_header: bool,
+) -> Result<Vec<(String, String)>, String> {
+    if headers.len() > 16 {
+        return Err("too many custom headers (max 16)".into());
+    }
+    let mut out = Vec::with_capacity(headers.len());
+    for (k, v) in headers {
+        let name = k.trim();
+        if name.is_empty() || name.len() > 64 {
+            return Err("invalid custom header name length".into());
+        }
+        if !name.bytes().all(|b| {
+            b.is_ascii_graphic()
+                && !matches!(
+                    b,
+                    b'(' | b')'
+                        | b'<'
+                        | b'>'
+                        | b'@'
+                        | b','
+                        | b';'
+                        | b':'
+                        | b'\\'
+                        | b'"'
+                        | b'/'
+                        | b'['
+                        | b']'
+                        | b'?'
+                        | b'='
+                        | b'{'
+                        | b'}'
+                )
+        }) {
+            return Err(format!("invalid character in header name '{name}'"));
+        }
+        if v.len() > 1024
+            || v.chars()
+                .any(|c| c == '\r' || c == '\n' || c == '\0' || (c.is_control() && c != '\t'))
+        {
+            return Err(format!("control or oversized value in header '{name}'"));
+        }
+        let lower = name.to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "content-length"
+                | "transfer-encoding"
+                | "connection"
+                | "keep-alive"
+                | "te"
+                | "trailer"
+                | "upgrade"
+                | "proxy-connection"
+        ) {
+            return Err(format!("hop-by-hop header '{name}' is not allowed"));
+        }
+        if matches!(
+            lower.as_str(),
+            "authorization" | "proxy-authorization" | "cookie"
+        ) && (!allow_auth_header || lower != "authorization")
+        {
+            return Err(format!("credential header '{name}' cannot be overridden"));
+        }
+        out.push((name.to_string(), v.to_string()));
+    }
+    Ok(out)
+}
+
+/// Validate an explicit `Content-Type` header override against control/CRLF injection.
+pub fn validate_content_type(ct: &str) -> Result<String, String> {
+    let t = ct.trim();
+    if t.is_empty() || t.len() > 128 {
+        return Err("content_type must be 1..=128 characters".into());
+    }
+    if t.chars().any(|c| c.is_control()) || !t.contains('/') {
+        return Err("invalid content_type".into());
+    }
+    Ok(t.to_string())
+}
+
 /// Validate and build the request for a case. Errors mean "this case must not be sent".
 pub fn build_request(case: &PlannedCase, target: &str) -> Result<RequestSpec, String> {
     let method = normalize_method(&case.method).ok_or_else(|| {
@@ -385,6 +1037,16 @@ pub fn build_request(case: &PlannedCase, target: &str) -> Result<RequestSpec, St
     {
         return Err("request would leave the target origin".into());
     }
+    let allow_auth_hdr = case
+        .role
+        .as_deref()
+        .is_some_and(|r| r.trim().eq_ignore_ascii_case("raw_jwt"))
+        && case.source.as_deref() != Some("llm");
+    let custom_headers = sanitize_custom_headers(&case.headers, allow_auth_hdr)?;
+    let explicit_ct = match case.content_type.as_deref() {
+        Some(ct) => Some(validate_content_type(ct)?),
+        None => None,
+    };
     let mut sent_values: Vec<String> = url.query_pairs().map(|(_, v)| v.into_owned()).collect();
     let mut body = None;
     if let Some(p) = case.payload.as_deref().filter(|p| !p.is_empty()) {
@@ -395,9 +1057,10 @@ pub fn build_request(case: &PlannedCase, target: &str) -> Result<RequestSpec, St
                 .extend_pairs(pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())));
             sent_values.extend(pairs.into_iter().map(|(_, v)| v));
         } else {
-            let (ct, b) = body_and_type(p);
+            let (inferred_ct, b) = body_and_type(p);
+            let ct = explicit_ct.clone().unwrap_or(inferred_ct);
             match serde_json::from_str::<Value>(&b) {
-                Ok(v) if ct == "application/json" => string_leaves(&v, &mut sent_values),
+                Ok(v) if ct.starts_with("application/json") => string_leaves(&v, &mut sent_values),
                 _ => sent_values.extend(payload_pairs(p).into_iter().map(|(_, v)| v)),
             }
             sent_values.push(p.to_string());
@@ -405,7 +1068,25 @@ pub fn build_request(case: &PlannedCase, target: &str) -> Result<RequestSpec, St
         }
     }
     let mut extra_headers = vec![];
-    if is_cors_case(case) {
+    for (k, v) in custom_headers {
+        if k.eq_ignore_ascii_case("content-type") && body.is_some() {
+            continue;
+        }
+        extra_headers.push((k, v));
+    }
+    if body.is_none()
+        && let Some(ct) = explicit_ct
+        && !extra_headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("content-type"))
+    {
+        extra_headers.push(("Content-Type".to_string(), ct));
+    }
+    if is_cors_case(case)
+        && !extra_headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("origin"))
+    {
         // a CORS probe is only meaningful with a foreign Origin
         extra_headers.push(("Origin".to_string(), CORS_PROBE_ORIGIN.to_string()));
         extra_headers.push((
@@ -413,12 +1094,17 @@ pub fn build_request(case: &PlannedCase, target: &str) -> Result<RequestSpec, St
             "GET".to_string(),
         ));
     }
+    let auth = if allow_auth_hdr {
+        Auth::None
+    } else {
+        auth_for(case)
+    };
     Ok(RequestSpec {
         method,
         path: path.clone(),
         url: url.to_string(),
         body,
-        auth: auth_for(case),
+        auth,
         sent_values,
         extra_headers,
     })
@@ -426,6 +1112,59 @@ pub fn build_request(case: &PlannedCase, target: &str) -> Result<RequestSpec, St
 
 fn sq(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Secret-safe curl auth arguments for `auth` given configured `creds`.
+/// Uses shell placeholders (`${RH_<ROLE>_TOKEN}`, `${RH_<ROLE>_COOKIE}`, `${RH_<ROLE>_HEADER}`)
+/// and never writes raw secret values into repro strings.
+pub fn curl_auth_args_for(auth: &Auth, creds: &Credentials) -> Vec<String> {
+    match auth {
+        Auth::None => vec![],
+        Auth::Forged => vec![format!(
+            "-H {}",
+            sq(&format!("Authorization: Bearer {FORGED_TOKEN}"))
+        )],
+        Auth::Role(r) => {
+            let rk = role_key(r);
+            let mut args = Vec::new();
+            let has_token = creds.token(r).is_some();
+            let has_cookie = creds.cookie(r).is_some();
+            let has_header = creds.header(r).is_some();
+            if has_token || (!has_cookie && !has_header) {
+                let var = creds
+                    .token_envs
+                    .get(&rk)
+                    .cloned()
+                    .unwrap_or_else(|| Credentials::env_var(r));
+                args.push(format!("-H \"Authorization: Bearer ${{{var}}}\""));
+            }
+            if has_cookie {
+                args.push(format!(
+                    "-H \"Cookie: ${{{}}}\"",
+                    Credentials::cookie_env_var(r)
+                ));
+            }
+            if has_header {
+                match creds.header_envs.get(&rk) {
+                    Some(HeaderEnvKind::ValueVar { name, var }) => {
+                        args.push(format!("-H \"{name}: ${{{var}}}\""));
+                    }
+                    Some(HeaderEnvKind::FullVar(var)) => {
+                        args.push(format!("-H \"${{{var}}}\""));
+                    }
+                    None => {
+                        if let Some((name, _)) = creds.header(r) {
+                            args.push(format!(
+                                "-H \"{name}: ${{{}}}\"",
+                                Credentials::header_env_var(r)
+                            ));
+                        }
+                    }
+                }
+            }
+            args
+        }
+    }
 }
 
 /// The curl `-H` argument for an actor. Tokens are never written: a real role becomes the
@@ -442,6 +1181,27 @@ pub fn curl_auth_arg(auth: &Auth) -> Option<String> {
         )),
         Auth::None => None,
     }
+}
+
+/// Reproduction command using configured multi-modal credentials (`Token`, `Cookie`, `Header`),
+/// with secret placeholders instead of raw values.
+pub fn curl_for_auth(spec: &RequestSpec, creds: &Credentials) -> String {
+    let mut p: Vec<String> = vec!["curl -sS".into()];
+    if spec.method == "HEAD" {
+        p.push("-I -X HEAD".into());
+    } else {
+        p.push(format!("-i -X {}", spec.method));
+    }
+    p.extend(curl_auth_args_for(&spec.auth, creds));
+    for (k, v) in &spec.extra_headers {
+        p.push(format!("-H {}", sq(&format!("{k}: {v}"))));
+    }
+    if let Some((ct, body)) = &spec.body {
+        p.push(format!("-H {}", sq(&format!("Content-Type: {ct}"))));
+        p.push(format!("--data-raw {}", sq(body)));
+    }
+    p.push(sq(&spec.url));
+    p.join(" ")
 }
 
 /// Reproduction command: same method, same URL (incl. query), same body, every dynamic string
@@ -542,16 +1302,27 @@ impl Clients {
     }
 
     pub fn send(&self, r: &OutReq) -> Result<Seen, String> {
-        if let Some(b) = r.bearer
-            && !self.is_target_url(r.url)
-        {
-            let _ = b;
+        self.send_with_auth(r, &[], false)
+    }
+
+    pub fn send_resolved(&self, r: &OutReq, auth: &ResolvedAuth) -> Result<Seen, String> {
+        self.send_with_auth(r, &auth.extra_headers, auth.real)
+    }
+
+    pub fn send_with_auth(
+        &self,
+        r: &OutReq,
+        extra_auth: &[(String, String)],
+        extra_real: bool,
+    ) -> Result<Seen, String> {
+        let has_creds = r.bearer.is_some() || !extra_auth.is_empty();
+        if has_creds && !self.is_target_url(r.url) {
             return Err(format!(
                 "credentials withheld: the request host is not the run's target host ({})",
                 self.target.host_str().unwrap_or("?")
             ));
         }
-        let real = needs_validated_tls(r.bearer);
+        let real = needs_validated_tls(r.bearer) || extra_real;
         let client = if real {
             self.strict.as_ref().ok_or_else(|| {
                 "credentials withheld: a certificate-validating HTTP client is unavailable"
@@ -565,6 +1336,9 @@ impl Clients {
         let mut rb = client.request(method, r.url);
         if let Some(b) = r.bearer {
             rb = rb.header("Authorization", b.header.as_str());
+        }
+        for (k, v) in extra_auth {
+            rb = rb.header(k.as_str(), v.as_str());
         }
         for (k, v) in r.headers {
             rb = rb.header(k.as_str(), v.as_str());
@@ -632,7 +1406,28 @@ impl Clients {
         max_hops: usize,
         on_hop: &mut dyn FnMut() -> Result<(), String>,
     ) -> Result<Followed, String> {
-        let mut seen = self.send(r)?;
+        self.send_following_with_auth(r, &[], false, max_hops, on_hop)
+    }
+
+    pub fn send_following_resolved(
+        &self,
+        r: &OutReq,
+        auth: &ResolvedAuth,
+        max_hops: usize,
+        on_hop: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<Followed, String> {
+        self.send_following_with_auth(r, &auth.extra_headers, auth.real, max_hops, on_hop)
+    }
+
+    pub fn send_following_with_auth(
+        &self,
+        r: &OutReq,
+        extra_auth: &[(String, String)],
+        extra_real: bool,
+        max_hops: usize,
+        on_hop: &mut dyn FnMut() -> Result<(), String>,
+    ) -> Result<Followed, String> {
+        let mut seen = self.send_with_auth(r, extra_auth, extra_real)?;
         let mut chain: Vec<RedirectHop> = vec![];
         let mut url = r.url.to_string();
         let mut visited = vec![url.clone()];
@@ -673,12 +1468,14 @@ impl Clients {
                 headers: r.headers,
                 bearer: r.bearer,
             };
-            seen = self.send(&hop).map_err(|e| {
-                format!(
-                    "following the redirect to {} failed: {e}",
-                    crate::llm::untrusted::redact_then_truncate(next.path(), 80)
-                )
-            })?;
+            seen = self
+                .send_with_auth(&hop, extra_auth, extra_real)
+                .map_err(|e| {
+                    format!(
+                        "following the redirect to {} failed: {e}",
+                        crate::llm::untrusted::redact_then_truncate(next.path(), 80)
+                    )
+                })?;
             total_ms += seen.latency_ms;
             url = next.to_string();
             visited.push(url.clone());
@@ -702,6 +1499,7 @@ pub fn follows_redirects(c: &PlannedCase) -> bool {
         "GET" | "HEAD"
     ) && Technique::parse(&c.technique) != Technique::Authz
         && auth_for(c) != Auth::Forged
+        && !matches!(c.probe_oracle, Some(ProbeOracle::OpenRedirect { .. }))
         && !oracle::is_sensitive_path(&c.component)
         && !oracle::expects_redirect(c)
         && !oracle::expects_denial(c)
@@ -752,6 +1550,23 @@ pub fn confirm_deleted_as(
     path: &str,
     bearer: Option<&Bearer>,
 ) -> DeleteCheck {
+    let auth = ResolvedAuth {
+        bearer: bearer.cloned(),
+        extra_headers: vec![],
+        authenticated: bearer.is_some(),
+        real: needs_validated_tls(bearer),
+        note: None,
+    };
+    confirm_deleted_resolved(clients, base, path, &auth)
+}
+
+/// [`confirm_deleted_as`] supporting full multi-modal credentials (`Bearer`, `Cookie`, custom headers).
+pub fn confirm_deleted_resolved(
+    clients: &Clients,
+    base: &str,
+    path: &str,
+    auth: &ResolvedAuth,
+) -> DeleteCheck {
     let Ok(path) = normalize_component(path) else {
         return DeleteCheck::Unknown;
     };
@@ -771,9 +1586,9 @@ pub fn confirm_deleted_as(
         url: &url,
         body: None,
         headers: &[],
-        bearer,
+        bearer: auth.bearer.as_ref(),
     };
-    match clients.send(&req) {
+    match clients.send_resolved(&req, auth) {
         Ok(seen) => match seen.status {
             404 | 410 => DeleteCheck::Gone,
             200..=299 => DeleteCheck::StillPresent(seen.status),
@@ -1030,6 +1845,145 @@ struct Ctx<'a> {
     /// `host:port`, the budget's rate-limit key.
     host: &'a str,
     opts: &'a ExecOptions,
+    oast: Option<&'a super::oast::OastCollector>,
+}
+
+/// Output of sending one primary case along with any companion baseline/control/OAST probes.
+pub struct ProbeOutcome {
+    pub seen: Seen,
+    pub chain: Vec<RedirectHop>,
+    pub final_url: String,
+    pub evidence: oracle::ProbeEvidence,
+}
+
+fn send_companion(
+    clients: &Clients,
+    target: &str,
+    host: &str,
+    budget: &mut RunBudget,
+    template: &PlannedCase,
+    payload: &str,
+    auth: &ResolvedAuth,
+) -> Result<oracle::ProbeSnapshot, String> {
+    budget.take_request(host)?;
+    let mut comp = template.clone();
+    comp.payload = Some(payload.to_string());
+    comp.probe_oracle = None;
+    let spec = build_request(&comp, target)?;
+    let req = out_req(&spec, auth.bearer.as_ref());
+    let seen = clients.send_resolved(&req, auth)?;
+    note_creation(&template.id, &spec, &seen);
+    Ok(oracle::ProbeSnapshot {
+        status: seen.status,
+        body: seen.body,
+        latency_ms: seen.latency_ms,
+    })
+}
+
+fn substitute_oast_spec(spec: &RequestSpec, placeholder: &str, cb_url: &str) -> RequestSpec {
+    let mut s = spec.clone();
+    if !placeholder.is_empty() {
+        let mut encoded = reqwest::Url::parse("http://localhost/").ok();
+        let cb_enc = if let Some(ref mut u) = encoded {
+            u.query_pairs_mut().append_pair("u", cb_url);
+            u.query()
+                .and_then(|q| q.strip_prefix("u="))
+                .unwrap_or(cb_url)
+                .to_string()
+        } else {
+            cb_url.to_string()
+        };
+        s.url = s.url.replace(placeholder, &cb_enc);
+        if let Some((_, ref mut b)) = s.body {
+            *b = b.replace(placeholder, cb_url);
+        }
+        for (_, v) in &mut s.extra_headers {
+            *v = v.replace(placeholder, cb_url);
+        }
+    }
+    s
+}
+
+/// Send the primary request for `case` plus any companion baseline, control, or OAST wait required
+/// by `case.probe_oracle`. Assumes the caller already budgeted the primary request.
+pub fn send_with_probe_oracle(
+    clients: &Clients,
+    target: &str,
+    host: &str,
+    budget: &mut RunBudget,
+    case: &PlannedCase,
+    spec: &RequestSpec,
+    auth: &ResolvedAuth,
+    follow_redirects: bool,
+    oast: Option<&super::oast::OastCollector>,
+) -> Result<ProbeOutcome, String> {
+    let mut evidence = oracle::ProbeEvidence::default();
+    let mut active_spec_owned: Option<RequestSpec> = None;
+    let mut oast_token: Option<(String, u64)> = None;
+
+    match &case.probe_oracle {
+        Some(ProbeOracle::BooleanDiff {
+            baseline_payload, ..
+        })
+        | Some(ProbeOracle::TimeDelay {
+            baseline_payload, ..
+        }) => {
+            if let Ok(snap) =
+                send_companion(clients, target, host, budget, case, baseline_payload, auth)
+            {
+                evidence.baseline = Some(snap);
+            }
+        }
+        Some(ProbeOracle::OastCallback {
+            placeholder,
+            wait_ms,
+        }) => {
+            if let Some(col) = oast {
+                let (tok, cb_url) = col.issue_token();
+                active_spec_owned = Some(substitute_oast_spec(spec, placeholder, &cb_url));
+                oast_token = Some((tok, (*wait_ms).min(2000)));
+            } else {
+                evidence.oast_unavailable = true;
+            }
+        }
+        _ => {}
+    }
+
+    let send_spec = active_spec_owned.as_ref().unwrap_or(spec);
+    let req = out_req(send_spec, auth.bearer.as_ref());
+    let Followed {
+        seen,
+        chain,
+        final_url,
+    } = if follow_redirects {
+        clients
+            .send_following_resolved(&req, auth, MAX_REDIRECTS, &mut || budget.take_request(host))?
+    } else {
+        clients.send_resolved(&req, auth).map(|seen| Followed {
+            seen,
+            chain: vec![],
+            final_url: send_spec.url.clone(),
+        })?
+    };
+
+    if let Some(ProbeOracle::BooleanDiff { false_payload, .. }) = &case.probe_oracle
+        && let Ok(snap) = send_companion(clients, target, host, budget, case, false_payload, auth)
+    {
+        evidence.control = Some(snap);
+    }
+    if let (Some((tok, wait_ms)), Some(col)) = (oast_token, oast)
+        && let Some(hit) = col.wait_for_hit(&tok, Duration::from_millis(wait_ms))
+    {
+        evidence.oast_hit = true;
+        evidence.oast_detail = Some(hit.summary());
+    }
+
+    Ok(ProbeOutcome {
+        seen,
+        chain,
+        final_url,
+        evidence,
+    })
 }
 
 /// Hooks around every case an execution starts. The lead's area workers use them to take turns for
@@ -1094,11 +2048,17 @@ pub fn execute_cases_gated(
         parsed.host_str().unwrap_or(""),
         parsed.port_or_known_default().unwrap_or(0)
     );
+    let oast = cases
+        .iter()
+        .any(|c| matches!(c.probe_oracle, Some(ProbeOracle::OastCallback { .. })))
+        .then(super::oast::OastCollector::start)
+        .and_then(Result::ok);
     let ctx = Ctx {
         clients: &clients,
         target,
         host: &host,
         opts,
+        oast: oast.as_ref(),
     };
     cases
         .iter()
@@ -1203,7 +2163,7 @@ fn run_case(ctx: &Ctx, c: &PlannedCase, budget: &mut RunBudget) -> Vec<CaseExecu
             )];
         }
     };
-    let curl = curl_for(&spec);
+    let curl = curl_for_auth(&spec, &ctx.opts.credentials);
     if ctx.opts.dry_run && is_mutating(spec.method) {
         return vec![skipped(
             c,
@@ -1294,22 +2254,23 @@ fn exec_http(
             attempts.push((None, None, Some(format!("re-run not sent: {m}"))));
             break;
         }
-        let req = out_req(spec, auth.bearer.as_ref());
-        let sent = if follow {
-            ctx.clients
-                .send_following(&req, MAX_REDIRECTS, &mut || budget.take_request(ctx.host))
-        } else {
-            ctx.clients.send(&req).map(|seen| Followed {
-                seen,
-                chain: vec![],
-                final_url: spec.url.clone(),
-            })
-        };
+        let sent = send_with_probe_oracle(
+            ctx.clients,
+            ctx.target,
+            ctx.host,
+            budget,
+            c,
+            spec,
+            auth,
+            follow,
+            ctx.oast,
+        );
         match sent {
-            Ok(Followed {
+            Ok(ProbeOutcome {
                 seen,
                 chain,
                 final_url,
+                evidence,
             }) => {
                 if attempt == 0 {
                     first_chain = chain;
@@ -1331,6 +2292,7 @@ fn exec_http(
                         request_body: spec.body.as_ref().map(|(_, b)| b.as_str()),
                         origin: spec.origin(),
                         latency_ms: seen.latency_ms,
+                        probe: Some(&evidence),
                     },
                 );
                 let again = outcome.verdict == Verdict::Fail;
@@ -1515,7 +2477,7 @@ fn run_mutation(
     // its own question is a server error; the base case already judged the response contract
     m.contract = None;
     let spec = build_request(&m, ctx.target).ok()?;
-    let curl = curl_for(&spec);
+    let curl = curl_for_auth(&spec, &ctx.opts.credentials);
     let out = exec_http(ctx, budget, &m, &spec, auth, curl);
     let (sub, mut_first) = (out.res, out.first);
     mut_first.as_ref()?; // budget stopped it or the transport failed: no sub-case to report
@@ -1552,12 +2514,12 @@ fn run_burst(
     let curl = format!(
         "for i in $(seq 1 {}); do {} & done; wait",
         n.clamp(2, MAX_BURST),
-        curl_for(spec)
+        curl_for_auth(spec, &ctx.opts.credentials)
     );
-    let run = match super::stateful::run_concurrency_burst(
+    let run = match super::stateful::run_concurrency_burst_auth(
         ctx.clients,
         spec,
-        auth.bearer.as_ref(),
+        auth,
         n,
         budget,
         ctx.host,
@@ -1572,13 +2534,16 @@ fn run_burst(
             ));
         }
     };
-    let outcome = oracle::judge_burst(&BurstFacts {
-        method: spec.method,
-        requested: run.requested,
-        responses: &run.responses,
-        pre_read: run.pre_read.as_deref(),
-        post_read: run.post_read.as_deref(),
-    });
+    let outcome = oracle::judge_burst_on_path(
+        &BurstFacts {
+            method: spec.method,
+            requested: run.requested,
+            responses: &run.responses,
+            pre_read: run.pre_read.as_deref(),
+            post_read: run.post_read.as_deref(),
+        },
+        &c.component,
+    );
     let mut res = skeleton(&b, status_of_outcome(&outcome), String::new(), curl.clone());
     res.status_code = run.responses.first().map(|r| r.status);
     res.failure_reason = outcome.reason();
@@ -1610,7 +2575,7 @@ fn run_burst(
 #[cfg(test)]
 pub(crate) mod fixture {
     use serde_json::{Value, json};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1854,6 +2819,9 @@ mod tests {
             technique: "boundary".into(),
             input_hint: String::new(),
             payload: payload.map(String::from),
+            headers: vec![],
+            content_type: None,
+            probe_oracle: None,
             expected_behavior: String::new(),
             expected_status: None,
             risk_level: "low".into(),
@@ -2192,5 +3160,296 @@ mod tests {
             ),
             DeleteCheck::StillPresent(200)
         );
+    }
+}
+
+#[cfg(test)]
+mod custom_header_tests {
+    use super::*;
+
+    fn base_case(method: &str, component: &str) -> PlannedCase {
+        crate::agent::types::fixtures::planned("TC-H1", "injection", method, component)
+    }
+
+    #[test]
+    fn custom_headers_and_content_type_propagate_to_request_and_curl() {
+        let mut c = base_case("POST", "/xml");
+        c.payload = Some("<root>hi</root>".into());
+        c.content_type = Some("application/xml".into());
+        c.headers = vec![
+            ("X-Forwarded-For".into(), "127.0.0.1".into()),
+            ("X-Original-URL".into(), "/admin".into()),
+        ];
+        c.role = Some("user".into());
+        let spec = build_request(&c, "http://127.0.0.1:8080").unwrap();
+        assert_eq!(spec.body.as_ref().unwrap().0, "application/xml");
+        assert!(
+            spec.extra_headers
+                .iter()
+                .any(|(k, v)| k == "X-Forwarded-For" && v == "127.0.0.1")
+        );
+        assert!(
+            spec.extra_headers
+                .iter()
+                .any(|(k, v)| k == "X-Original-URL" && v == "/admin")
+        );
+        let curl = curl_for(&spec);
+        assert!(curl.contains("Content-Type: application/xml"), "{curl}");
+        assert!(curl.contains("X-Forwarded-For: 127.0.0.1"), "{curl}");
+        assert!(curl.contains("X-Original-URL: /admin"), "{curl}");
+    }
+
+    #[test]
+    fn custom_headers_reject_crlf_and_credential_overrides() {
+        let mut crlf = base_case("GET", "/admin");
+        crlf.headers = vec![("X-Test".into(), "1\r\nEvil: true".into())];
+        assert!(build_request(&crlf, "http://127.0.0.1:8080").is_err());
+
+        let mut auth_override = base_case("GET", "/admin");
+        auth_override.role = Some("user".into());
+        auth_override.headers = vec![("Authorization".into(), "Bearer hijack".into())];
+        assert!(build_request(&auth_override, "http://127.0.0.1:8080").is_err());
+
+        let mut cookie_override = base_case("GET", "/admin");
+        cookie_override.role = Some("user".into());
+        cookie_override.headers = vec![("Cookie".into(), "sid=evil".into())];
+        assert!(build_request(&cookie_override, "http://127.0.0.1:8080").is_err());
+
+        let mut bad_ct = base_case("POST", "/xml");
+        bad_ct.payload = Some("x".into());
+        bad_ct.content_type = Some("text/plain\r\nX-Injected: 1".into());
+        assert!(build_request(&bad_ct, "http://127.0.0.1:8080").is_err());
+    }
+}
+
+#[cfg(test)]
+mod multimodal_auth_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    #[test]
+    fn credentials_support_cookie_header_and_env_parsing_without_leaking_secrets() {
+        let creds = Credentials::from_env_pairs([
+            (
+                "RH_USER_COOKIE".to_string(),
+                "session=sec-cookie; csrf=xyz".to_string(),
+            ),
+            (
+                "RH_SVC_HEADER".to_string(),
+                "X-API-Key: sec-apikey".to_string(),
+            ),
+            ("RH_CAROL_HEADER".to_string(), "carol-raw".to_string()),
+            (
+                "RH_CAROL_HEADER_NAME".to_string(),
+                "X-Carol-Auth".to_string(),
+            ),
+            (
+                "RH_ADMIN_COOKIE".to_string(),
+                "session=root-cookie".to_string(),
+            ),
+        ]);
+
+        assert!(creds.has_role("user"));
+        assert!(creds.has_role("svc"));
+        assert!(creds.has_role("carol"));
+        assert!(creds.has_role("admin"));
+        assert_eq!(creds.actor().as_deref(), Some("user"));
+
+        let dbg = format!("{creds:?}");
+        assert!(!dbg.contains("sec-cookie"), "{dbg}");
+        assert!(!dbg.contains("sec-apikey"), "{dbg}");
+        assert!(!dbg.contains("carol-raw"), "{dbg}");
+
+        let auth_u = resolve_auth(&Auth::Role("user".into()), &creds);
+        assert!(auth_u.authenticated);
+        assert!(auth_u.real);
+        assert!(
+            auth_u
+                .extra_headers
+                .iter()
+                .any(|(k, v)| k.eq_ignore_ascii_case("Cookie")
+                    && v == "session=sec-cookie; csrf=xyz")
+        );
+
+        let auth_s = resolve_auth(&Auth::Role("svc".into()), &creds);
+        assert!(auth_s.authenticated);
+        assert!(auth_s.real);
+        assert!(
+            auth_s
+                .extra_headers
+                .iter()
+                .any(|(k, v)| k == "X-API-Key" && v == "sec-apikey")
+        );
+
+        let auth_c = resolve_auth(&Auth::Role("carol".into()), &creds);
+        assert!(auth_c.authenticated);
+        assert!(
+            auth_c
+                .extra_headers
+                .iter()
+                .any(|(k, v)| k == "X-Carol-Auth" && v == "carol-raw")
+        );
+
+        let mut case = crate::agent::types::fixtures::planned("TC-MA1", "authz", "GET", "/me");
+        case.role = Some("user".into());
+        let spec = build_request(&case, "http://127.0.0.1:8080").unwrap();
+        let curl = curl_for_auth(&spec, &creds);
+        assert!(curl.contains("${RH_USER_COOKIE}"), "{curl}");
+        assert!(!curl.contains("sec-cookie"), "{curl}");
+
+        let mut svc_case = crate::agent::types::fixtures::planned("TC-MA2", "authz", "GET", "/svc");
+        svc_case.role = Some("svc".into());
+        let svc_spec = build_request(&svc_case, "http://127.0.0.1:8080").unwrap();
+        let svc_curl = curl_for_auth(&svc_spec, &creds);
+        assert!(svc_curl.contains("${RH_SVC_HEADER}"), "{svc_curl}");
+        assert!(!svc_curl.contains("sec-apikey"), "{svc_curl}");
+    }
+
+    #[test]
+    fn cookie_and_header_credentials_are_withheld_off_origin() {
+        let target = fixture::start(false);
+        let other = fixture::start(false);
+        let target_u = reqwest::Url::parse(&target.base).unwrap();
+        let clients = Clients::new(Duration::from_secs(2), &target_u).unwrap();
+        let creds = Credentials::none().with_cookie("user", "sid=secret");
+        let auth = resolve_auth(&Auth::Role("user".into()), &creds);
+
+        let err = clients
+            .send_resolved(
+                &OutReq {
+                    method: "GET",
+                    url: &format!("{}/orders", other.base),
+                    body: None,
+                    headers: &[],
+                    bearer: auth.bearer.as_ref(),
+                },
+                &auth,
+            )
+            .err()
+            .expect("must refuse sending cookies to off-origin host");
+        assert!(err.contains("credentials withheld"), "{err}");
+    }
+
+    #[test]
+    fn login_bootstrap_handles_csrf_cookies_and_json_token() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        let base = format!("http://127.0.0.1:{}", addr.port());
+        let h = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = l.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let first = req.lines().next().unwrap_or("");
+                let resp = if first.starts_with("GET /login ") {
+                    "HTTP/1.1 200 OK\r\nSet-Cookie: pre=p1; Path=/\r\nContent-Type: text/html\r\nContent-Length: 55\r\nConnection: close\r\n\r\n<form><input type=\"hidden\" name=\"_csrf\" value=\"tok99\"/></form>"
+                } else if first.starts_with("POST /login ") {
+                    let has_pre = req.to_ascii_lowercase().contains("cookie: pre=p1");
+                    let has_csrf = req.contains("_csrf=tok99");
+                    if has_pre
+                        && has_csrf
+                        && req.contains("username=alice")
+                        && req.contains("password=pw")
+                    {
+                        "HTTP/1.1 200 OK\r\nSet-Cookie: sid=sess42; HttpOnly\r\nContent-Type: application/json\r\nContent-Length: 24\r\nConnection: close\r\n\r\n{\"access_token\":\"jwt42\"}"
+                    } else {
+                        "HTTP/1.1 403 Forbidden\r\nContent-Length: 3\r\nConnection: close\r\n\r\nbad"
+                    }
+                } else if first.starts_with("GET /me ") {
+                    if req.to_ascii_lowercase().contains("sid=sess42")
+                        && req
+                            .to_ascii_lowercase()
+                            .contains("authorization: bearer jwt42")
+                    {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                    } else {
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Length: 2\r\nConnection: close\r\n\r\nno"
+                    }
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                };
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+
+        let base_u = reqwest::Url::parse(&base).unwrap();
+        let clients = Clients::new(Duration::from_secs(2), &base_u).unwrap();
+        let mut creds = Credentials::none();
+        creds
+            .bootstrap_login(
+                &clients,
+                "user",
+                &LoginBootstrap {
+                    login_url: format!("{base}/login"),
+                    csrf_page_url: Some(format!("{base}/login")),
+                    mode: LoginMode::Form,
+                    username: "alice".into(),
+                    password: "pw".into(),
+                    ..LoginBootstrap::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(creds.token("user"), Some("jwt42"));
+        assert!(creds.cookie("user").unwrap().contains("sid=sess42"));
+
+        let auth = resolve_auth(&Auth::Role("user".into()), &creds);
+        let seen = clients
+            .send_resolved(
+                &OutReq {
+                    method: "GET",
+                    url: &format!("{base}/me"),
+                    body: None,
+                    headers: &[],
+                    bearer: auth.bearer.as_ref(),
+                },
+                &auth,
+            )
+            .unwrap();
+        assert_eq!(seen.status, 200);
+        let _ = h.join();
+    }
+
+    #[test]
+    fn roles_toml_cookie_and_header_integration() {
+        let dir = std::env::temp_dir().join(format!(
+            "readyhai_roles_test_{}_{}",
+            std::process::id(),
+            rand::random::<u32>()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let storage_path = dir.join("user_state.json");
+        std::fs::write(
+            &storage_path,
+            r#"{"cookies":[{"name":"sid","value":"cookie-from-state"},{"name":"pref","value":"1"}]}"#,
+        )
+        .unwrap();
+        let roles_path = dir.join("roles.toml");
+        std::fs::write(
+            &roles_path,
+            r#"
+[[role]]
+name = "viewer"
+auth = "cookie"
+storage_state = "user_state.json"
+
+[[role]]
+name = "svc_ext"
+auth = "header"
+header_name = "X-Service-Key"
+token_env = "PATH"
+"#,
+        )
+        .unwrap();
+        let roles = crate::qa::roles::Roles::load(&roles_path).unwrap();
+        let creds = Credentials::none().with_roles(&roles);
+        assert!(creds.has_role("viewer"));
+        assert_eq!(
+            creds.cookie("viewer"),
+            Some("sid=cookie-from-state; pref=1")
+        );
+        assert!(creds.has_role("svc_ext"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

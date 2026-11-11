@@ -2,7 +2,7 @@
 
 ReadyHai ("Ready hai?" = "is it ready?") is a self-hosted QA tester and production-readiness gate written in Rust. You point it at a repo, a container image, a web app/API, a host (SSH) or an Android app. It runs native readiness rules plus pinned scanners in hardened throwaway containers, a senior-QA engine and an autonomous testing agent, and returns one verdict with reasons: `PASS` / `WARN` / `FAIL` for scans, Go / Conditional Go / No-Go / Inconclusive for `qa`, `GO` / `CONDITIONAL_GO` / `NO_GO` for the agent.
 
-These docs describe what the code in `src/`, `frontend/`, `tests/eval/` and `.github/workflows/` does as of 2026-11-05 (changelog: [../CHANGELOG.md](../CHANGELOG.md); the version files still read 0.1.0). Where the code differs from the original plan, the docs say so. If you find a mismatch, trust the code and check [build-log.md](build-log.md) for the latest round.
+These docs describe what the code in `src/`, `frontend/`, `tests/eval/` and `.github/workflows/` does (current version: `VERSION` / `0.7.0`; changelog: [../CHANGELOG.md](../CHANGELOG.md)). Where the code differs from the original plan, the docs say so. If you find a mismatch, trust the code and check [build-log.md](build-log.md) for older context.
 
 ## Index
 
@@ -15,7 +15,7 @@ These docs describe what the code in `src/`, `frontend/`, `tests/eval/` and `.gi
 | [security-model.md](security-model.md) | Threat model, controls with code locations, known residual risks |
 | [qa.md](qa.md) | Senior-QA guide: `readyhai qa`, API/UI/perf/resilience/suite checks, roles.toml, safety model, recommendation logic, reports |
 | [eval.md](eval.md) | `readyhai eval`: scores the QA engine and agent against seeded-defect fixtures (recall, false positives, pass^k), suite file format, how to add a suite, CI job |
-| [checks.md](checks.md) | Full check catalog (41 built-in checks), every rule id, severities, hard-fail rules, status semantics |
+| [checks.md](checks.md) | Full check catalog (45 built-in checks), every rule id, severities, hard-fail rules, status semantics |
 | [offline.md](offline.md) | Air-gapped bundle, `READYHAI_OFFLINE`, `doctor`, LAN-LLM mode |
 | [deployment.md](deployment.md) | Docker compose, networks, published images, offline operation, sizing |
 | [ci.md](ci.md) | ReadyHai's own workflows and the recipes for Jenkins, GitHub Actions, GitLab CI, ArgoCD PostSync, SARIF, baseline in CI |
@@ -76,7 +76,7 @@ Or without Docker: `export READYHAI_TOKEN=$(openssl rand -hex 24); $R serve --bi
 
 ## Status at a glance
 
-- Repo, image, web, host and Android scans: implemented and unit-tested; the web, UI, PDF, resilience and MobSF paths were run live on 2026-10-30. The Windows probe is the one path never run on a real host. Details: [status-and-competition.md](status-and-competition.md).
+- Repo, image, web, host and Android scans: 45 built-in checks (including native Tree-sitter AST cross-file taint & auth-guard auditing `security.code_audit`, `tool.opengrep`, `tool.nuclei`, `tool.zap_active`, and OSV AST import enrichment); the web, UI, PDF, resilience and MobSF paths were run live on 2026-10-30. The Windows probe is the one path never run on a real host. Details: [status-and-competition.md](status-and-competition.md).
 - Senior-QA engine (`readyhai qa`): API path live-verified (7/7 seeded bugs, 0 false positives), UI QA found 6/6 seeded UI bugs, see [qa.md](qa.md).
-- Agent (`readyhai agent`): deterministic oracle, independent verifier, lead and four area sub-agents, code-aware planning, per-target memory, four-pillar Evidence Ledger. Gated by the eval harness: 7/7 seeded bugs on `agent-api` ([eval.md](eval.md)).
-- Next: browser-UI agent area (Playwright), LLM-guided exploration under the verifier, multi-target dashboards ([roadmap.md](roadmap.md)).
+- Agent (`readyhai agent`): modular deep-security attack probes (JWT tampering, BFLA, reverse-proxy/ACL bypasses, BOPLA, blind SQLi/CMDi, SSTI, path traversal, open redirect, OAST SSRF, TOCTOU race conditions, GraphQL/HPP), interactive Playwright DOM/storage/cookie security (`BrowserSecurity`), white-box `--repo` AST source-sink linking, adaptive ReAct follow-up waves, independent k-replay verifier, lead and area sub-agents, per-target memory, and four-pillar Evidence Ledger. Gated across 10 eval suites (`readyhai eval`): `agent-api` (7/7), `security-deep`, `whitebox-exploit`, and 7 additional suites ([eval.md](eval.md)).
+- Next: cross-service distributed tracing / multi-target dashboards and PR auto-fix patch synthesis ([roadmap.md](roadmap.md)).

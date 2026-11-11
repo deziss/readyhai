@@ -2179,7 +2179,12 @@ fn unmeasured_tls(is_https: bool, why: &str) -> TlsChainAudit {
     }
 }
 
-fn audit_tls_chain(url: &reqwest::Url, host: &str, port: u16, timeout_ms: u64) -> TlsChainAudit {
+pub(crate) fn audit_tls_chain(
+    url: &reqwest::Url,
+    host: &str,
+    port: u16,
+    timeout_ms: u64,
+) -> TlsChainAudit {
     if url.scheme() != "https" {
         return TlsChainAudit {
             is_https: false,

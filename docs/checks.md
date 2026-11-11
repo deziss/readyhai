@@ -1,6 +1,6 @@
 # Check catalog
 
-List the live registry with `readyhai checks` (columns: id, kinds, min profile, tool or `native`, title, `[intrusive]`). 41 built-in checks; plugins add more. Columns below: **Tool** is the container image key in `tools.lock.toml`, or `native`.
+List the live registry with `readyhai checks` (columns: id, kinds, min profile, tool or `native`, title, `[intrusive]`). 45 built-in checks (2 `[intrusive]`: `tool.zap_active` and `qa.resilience`); plugins add more. Columns below: **Tool** is the container image key in `tools.lock.toml`, or `native`.
 
 ## Check index
 
@@ -12,12 +12,14 @@ List the live registry with `readyhai checks` (columns: id, kinds, min profile, 
 | `readiness.k8s` | repo | quick | native | Plaintext Secret manifests, privileged, host network, missing probes/limits, run-as-root, `:latest` images |
 | `readiness.ci` | repo | quick | native | Missing CI, scanners that can never fail or are skipped, missing SAST/secret/dependency scan stages |
 | `readiness.repo` | repo | quick | native | Tracked secret-bearing files, no README, no tests, no `/health`, no OpenTelemetry |
+| `security.code_audit` | repo | quick | native | Native Tree-sitter AST & cross-file (up to 3 hops) taint tracking (SQLi, CMDi, SSRF, path traversal, SSTI) and sibling auth middleware inconsistencies (Python, JS/TS, Go, PHP) |
 | `tool.gitleaks` | repo | quick | gitleaks | Secrets in the snapshot (redacted) |
 | `tool.sbom_cve` | repo, image | quick | syft + grype | SBOM, known CVEs with EPSS and KEV |
 | `tool.semgrep` | repo | quick | semgrep | SAST with the cached rule pack |
+| `tool.opengrep` | repo | standard | opengrep | Intra-file static taint analysis (`--taint-intrafile`) |
 | `tool.hadolint` | repo | quick | hadolint | Dockerfile lint |
 | `tool.checkov` | repo | quick | checkov | IaC misconfiguration (k8s, compose, Dockerfile, terraform) |
-| `tool.osv_reachability` | repo | standard | osv-scanner | Known CVEs annotated reachable / unreachable / unknown (Go call analysis); unreachable lowers severity one level, unknown never lowers |
+| `tool.osv_reachability` | repo | standard | osv-scanner | Known CVEs annotated reachable / unreachable / unknown (Go call analysis + AST import check across Python/JS/TS/Go/PHP); unreachable lowers severity one level, unknown never lowers |
 | `tool.scorecard` | repo | standard | scorecard | OpenSSF Scorecard for a github.com `origin` (checks scoring < 5) |
 | `tool.spectral` | repo | quick | spectral | OpenAPI lint (`spectral:oas` ruleset) |
 | `tool.oasdiff` | repo | quick | oasdiff | OpenAPI breaking changes vs the accepted spec baseline |
@@ -25,10 +27,12 @@ List the live registry with `readyhai checks` (columns: id, kinds, min profile, 
 | `tool.dockle` | image | quick | dockle | CIS-style image checks |
 | `image.inspect` | image | quick | docker | Root user, no healthcheck, size, `:latest` tag |
 | `tests.own` | repo | standard | target image | The project's own tests (JUnit) |
-| `web.smoke` | web | quick | native | Status, latency, TLS use, headers, cookies, CORS, health endpoint |
+| `web.smoke` | web | quick | native | Status, latency, TLS use/protocol/expiry/chain trust, headers, weak CSP, cookies, CORS, health endpoint |
 | `tool.schemathesis` | web | standard | schemathesis | API fuzzing against OpenAPI |
 | `tool.zap_baseline` | web | standard | zap | Passive ZAP baseline |
-| `tool.playwright` | web | standard | playwright | Browser crawl: JS errors, failed requests, broken links |
+| `tool.nuclei` | web | standard | nuclei | Nuclei templates (CVE, misconfig, exposure, takeover; excludes DoS/fuzz) |
+| `tool.zap_active` | web | deep | zap | ZAP full active scan `[intrusive]` (requires `--profile deep` and `nonprod` target) |
+| `tool.playwright` | web | standard | playwright | Browser crawl: JS errors, failed requests, broken links, client storage secrets, HttpOnly cookies, source maps, `postMessage` origin checks |
 | `host.probe` | host | quick | native (ssh) | OS/ssh/firewall/updates/accounts/logs |
 | `host.cve` | host | quick | grype | Package CVEs (Linux only) |
 | `host.lynis` | host | standard | native (ssh) | Lynis hardening audit |
@@ -40,7 +44,7 @@ Note: `host.probe` and `host.lynis` have no `tool` set, so `--no-tools` does not
 
 ## Supply-chain and API-contract checks
 
-**`tool.osv_reachability`** runs OSV-Scanner v2 (`scan source --offline-vulnerabilities --call-analysis=go`) with the network off. It reads the DB from `<cache>/osv-scanner`, populated by `readyhai tools update`; without it the check is `skipped(osv vuln DB missing)`. Each finding carries `Reachability: reachable|unreachable|unknown` in the title and detail. `unreachable` (call analysis ran and no path exists) lowers severity one level with a note; `unknown` (no analysis: non-Go ecosystem, or no Go modules available in the sandbox) never lowers. Severity comes from the CVSS score, else the advisory rating. Only Go call analysis is enabled (Rust analysis runs build scripts). Exit 128 (nothing to scan) is `not_applicable`.
+**`tool.osv_reachability`** runs OSV-Scanner v2 (`scan source --offline-vulnerabilities --call-analysis=go`) with the network off. It reads the DB from `<cache>/osv-scanner`, populated by `readyhai tools update`; without it the check is `skipped(osv vuln DB missing)`. Each finding carries `Reachability: reachable|unreachable|unknown` in the title and detail. `unreachable` (call analysis ran and no path exists) lowers severity one level with a note; `unknown` (no analysis: non-Go ecosystem, or no Go modules available in the sandbox) never lowers. When a snapshot is present and call-graph reachability is `unknown`, `enrich_osv_with_ast` inspects Tree-sitter imports across Python, JS/TS, Go, and PHP and notes `"AST import check: package is imported in source code."` without altering severity. Severity comes from the CVSS score, else the advisory rating. Only Go call analysis is enabled (Rust analysis runs build scripts). Exit 128 (nothing to scan) is `not_applicable`.
 
 **`tool.scorecard`** needs a `github.com` remote in `.git/config` (else `not_applicable`) and `READYHAI_GITHUB_TOKEN` (else `skipped`); the token is passed to the container as `GITHUB_AUTH_TOKEN`, so it is visible in the local docker process list while the check runs. It is the only one of the five with network access (`skipped` when `READYHAI_OFFLINE=1`). One finding per Scorecard check scoring 0-4 (inconclusive `-1` is ignored). Severity is Scorecard's risk level one notch down: Dangerous-Workflow High; Binary-Artifacts, Branch-Protection, Code-Review, Dependency-Update-Tool, Maintained, Signed-Releases, Token-Permissions, Vulnerabilities Medium; Pinned-Dependencies, SAST, Security-Policy, Fuzzing, Packaging Low.
 
@@ -162,6 +166,8 @@ Comment lines (`#`, `//`) are ignored. The stage checks are repo-wide (all CI fi
 | `tool.gitleaks` | `secrets.<RuleID>` (e.g. `secrets.aws-access-token`) | high, security. Hard-fail. fp = `file|rule`. Secret value never recorded (`--redact`, plus scrubbed output) |
 | `tool.sbom_cve` | The vulnerability id itself (`CVE-...`, `GHSA-...`); `ids` merges related ids | grype severity (Negligible/Unknown -> info). Category `security` if KEV else `supply_chain`. Carries `epss`, `kev`, `fix_version`. fp = `canonical-id|package|manifest path` |
 | `tool.semgrep` | Semgrep `check_id` (prefix `cache.semgrep.` stripped) | ERROR high, WARNING medium, else low; security. fp = `path|hash(snippet)` |
+| `tool.opengrep` | Opengrep `check_id` | Same mapping as `tool.semgrep` with `--taint-intrafile` enabled (`security`). Reads `/cache/opengrep`, falling back to `/cache/semgrep` |
+| `security.code_audit` | `security.taint.sql_injection`, `security.taint.command_exec`, `security.taint.ssrf`, `security.taint.path_traversal`, `security.taint.ssti`, `security.auth.missing_guard` | High (taint flows: source -> up to 3 cross-file hops -> dangerous sink across Python, JS/TS, Go, PHP) or Medium (`security.auth.missing_guard`: sibling route missing auth decorator/middleware); security. Bounded to `2,500` source files / `1 MiB` per file; denylisted secret files skipped |
 | `tool.hadolint` | `DLnnnn` / `SCnnnn` codes | error high, warning medium, else low. Security for DL3002/DL3004/DL3020, else quality |
 | `tool.checkov` | `CKV_*` ids (secrets framework skipped) | Checkov severity, default medium; security |
 | `tool.dockle` | dockle codes (`CIS-DI-*`, `DKL-*`) | FATAL high, WARN medium, INFO low; PASS/SKIP dropped; security |
@@ -176,10 +182,12 @@ Comment lines (`#`, `//`) are ignored. The stage checks are repo-wide (all CI fi
 
 | Check | Rule ids | Severity / category |
 |---|---|---|
-| `web.smoke` | `web.5xx` (high, reliability; also used for "target unreachable"), `web.4xx` (medium, reliability), `web.slow` (low, performance, over 2 s), `web.no_tls` (medium, security, plain HTTP on a non-local host), `web.missing_headers` (medium, security: HSTS on https, CSP, X-Content-Type-Options, X-Frame-Options or `frame-ancestors`, Referrer-Policy), `web.version_disclosure` (low, security: `Server`/`X-Powered-By` with digits), `web.insecure_cookie` (medium, security: missing Secure/HttpOnly/SameSite), `web.cors_permissive` (medium, security: reflected arbitrary Origin or `*` with credentials), `web.no_health` (low, reliability: none of `/health`, `/healthz`, `/api/health`, `/ready` returns 2xx) | Only the start URL is requested (plus the CORS probe and health paths). Follows up to 5 redirects. **TLS certificate expiry and protocol versions are not checked.** |
+| `web.smoke` | `web.5xx` (high, reliability; also used for "target unreachable"), `web.4xx` (medium, reliability), `web.slow` (low, performance, over 2 s), `web.no_tls` (medium, security, plain HTTP on a non-local host), `web.tls_weak_protocol` (high, security: SSLv*/TLS 1.0/TLS 1.1), `web.tls_expiring` (high if `<=0` days, medium if `<=14` days remaining), `web.tls_untrusted` (medium, security on non-local host when chain validation fails or intermediate is missing/self-signed), `web.missing_headers` (medium, security: HSTS on https, CSP, X-Content-Type-Options, X-Frame-Options or `frame-ancestors`, Referrer-Policy), `web.weak_csp` (medium, security: `'unsafe-inline'`, `'unsafe-eval'`, wildcard `*`, `http:` script sources), `web.version_disclosure` (low, security: `Server`/`X-Powered-By` with digits), `web.insecure_cookie` (medium, security: missing Secure/HttpOnly/SameSite), `web.cors_permissive` (medium, security: reflected arbitrary Origin or `*` with credentials), `web.no_health` (low, reliability: none of `/health`, `/healthz`, `/api/health`, `/ready` returns 2xx) | Requests start URL (plus CORS probe, health paths, and OpenSSL TLS handshake inspection on HTTPS). Follows up to 5 redirects. |
 | `tool.schemathesis` | `api.server_error` (high, reliability, hard-fail), `api.auth_not_enforced` (high, security; ST401/ST203), `api.undeclared_method` (low; ST204, e.g. TRACE -> 501), `api.invalid_input_accepted`, `api.schema`, `api.content_type`, `api.status_code`, `api.check` (medium, quality) | Verified live against Schemathesis v4 (`run --report junit --report-dir /out`, file `junit-<ts>.xml`). The JUnit `message` carries only check codes (`ST101, ST204`); classification uses those codes and the failure body text. `not_applicable` without a spec |
 | `tool.zap_baseline` | `zap.<pluginid>` | ZAP risk: 3 high, 2 medium, 1 low, else info; security. Passive baseline only, `-I` so ZAP warnings do not fail the run |
-| `tool.playwright` | `web.page_error` (high, quality), `web.console_error` (medium, quality), `web.broken_link` (medium, quality), `web.5xx` (high, reliability), `web.4xx` (low, reliability) | Same-origin crawl, up to 20 pages, GET/HEAD only. Needs the locally built runner image |
+| `tool.nuclei` | `nuclei.<template-id>` | Nuclei severity (`critical..info`; `cve-id`/`cwe-id` attached); security. Tags `cve,misconfig,exposure,takeover` (`-etags dos,fuzz`, rate-limit 20). Uses `/cache/nuclei` when cached |
+| `tool.zap_active` | `zap.<pluginid>` | Same severity mapping as `tool.zap_baseline`; security. `[intrusive]`: runs `zap-full-scan.py` only when `--profile deep` and `nonprod` target are both true, else `skipped` |
+| `tool.playwright` | `web.page_error` (high, quality), `web.console_error` (medium, quality), `web.broken_link` (medium, quality), `web.5xx` (high, reliability), `web.4xx` (low, reliability), `web.storage_secret` (high, security), `web.cookie_httponly` (medium, security), `web.sourcemap_exposed` (medium, security), `web.postmessage_no_origin` (medium, security) | Same-origin crawl, up to 20 pages, GET/HEAD only. Needs the locally built runner image |
 
 `web.5xx` from Playwright and `api.server_error` from Schemathesis are hard-fail. Loopback targets (`localhost`, `127.0.0.1`, ...) are rewritten to `host.docker.internal` for containers.
 

@@ -1,0 +1,83 @@
+name = "security-deep"
+kind = "agent"
+description = "Deep security benchmark against 12 seeded loopholes (Blind SQLi, SSTI, Blind SSRF, Open Redirect, JWT alg=none, BFLA, Mass Assignment, Negative Qty, TOCTOU, DOM XSS, Stored XSS) plus clean negative controls"
+expect_verdict = "NO_GO"
+
+[target]
+server = "tests/fixtures/security-deep/server.py"
+spec = "tests/fixtures/security-deep/openapi.json"
+profile = "deep"
+max_steps = 120
+
+[target.tokens]
+alice = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbGljZSIsInJvbGUiOiJ1c2VyIiwiaWF0IjoxNzAwMDAwMDAwfQ.9wDSiw3psX6o_OAqoGddyrQgM_0vJoRLU_7JZTLXJ0Y"
+admin = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiIsImlhdCI6MTcwMDAwMDAwMH0.f5N8pkf6qkGkEnr4lPgLy6Ylr6SwQO1NHXr4BrOje4o"
+
+[thresholds]
+min_recall = 0.85
+max_false_positives = 0
+pass_k = true
+stable_verdict = true
+max_requests = 500
+max_seconds = 180
+
+[[expect]]
+id = "blind-sqli-boolean"
+rule = "blind_boolean_injection"
+component = "/api/users/lookup*"
+
+[[expect]]
+id = "blind-sqli-time"
+rule = "blind_time_injection"
+component = "/api/reports/export*"
+
+[[expect]]
+id = "ssti"
+rule = "ssti"
+component = "/api/render*"
+
+[[expect]]
+id = "ssrf-blind"
+rule = "oast_callback"
+component = "/api/webhooks/test*"
+
+[[expect]]
+id = "open-redirect"
+rule = "open_redirect"
+component = "/api/redirect*"
+
+[[expect]]
+id = "jwt-alg-none"
+rule = "authz"
+component = "/api/admin/audit*"
+
+[[expect]]
+id = "bfla"
+rule = "authz"
+component = "/api/admin/users*"
+
+[[expect]]
+id = "mass-assignment"
+rule = "mass_assignment"
+component = "/api/users*"
+
+[[expect]]
+id = "business-logic-negative-qty"
+rule = "expected_status"
+component = "/api/checkout*"
+
+[[expect]]
+id = "toctou-race"
+rule = "race_condition"
+component = "/api/coupons/redeem*"
+
+[[expect]]
+id = "dom-xss"
+rule = "dom_xss"
+component = "/dom*"
+
+[[expect]]
+id = "stored-xss"
+rule = "stored_xss"
+component = "/comments*"
+

@@ -100,6 +100,12 @@ fn d_two() -> usize {
 #[serde(deny_unknown_fields)]
 pub struct RepoSpec {
     pub commits: Vec<String>,
+    /// Attach commit `base` as `diff_base` (defaults to `true` when multiple commits exist).
+    #[serde(default)]
+    pub diff_base: Option<bool>,
+    /// Require at least one defect to carry `source_context` (`file:line` white-box linkage).
+    #[serde(default)]
+    pub require_source_context: bool,
 }
 
 /// `[change]`: what the run's change impact must show, on top of the expectations.
@@ -912,11 +918,23 @@ fn validate_suite(s: &SuiteSpec) -> Result<()> {
         if s.kind != SuiteKind::Agent {
             bail!("target.repo and [change] are for kind agent");
         }
-        match &s.target.repo {
-            Some(r) if r.commits.len() >= 2 => {}
-            _ => bail!(
-                "[change] needs target.repo with at least two commits (base, then the change)"
-            ),
+        let needs_diff = s.change.is_some()
+            || s.target
+                .repo
+                .as_ref()
+                .is_some_and(|r| r.diff_base == Some(true));
+        if needs_diff {
+            match &s.target.repo {
+                Some(r) if r.commits.len() >= 2 => {}
+                _ => bail!(
+                    "[change] needs target.repo with at least two commits (base, then the change)"
+                ),
+            }
+        } else {
+            match &s.target.repo {
+                Some(r) if !r.commits.is_empty() => {}
+                _ => bail!("target.repo needs at least one commit directory"),
+            }
         }
         if let Some(c) = &s.change {
             if c.operations.is_empty() {
@@ -1327,7 +1345,15 @@ fn agent_run_once(
         "dry_run": false,
         "thinking": false,
         "repo": repo,
-        "diff_base": repo.as_ref().map(|_| "base"),
+        "diff_base": repo
+            .as_ref()
+            .filter(|_| {
+                spec.target
+                    .repo
+                    .as_ref()
+                    .is_some_and(|r| r.diff_base.unwrap_or(r.commits.len() > 1))
+            })
+            .map(|_| "base"),
     }))?;
     let mut budget = RunBudget::default().with_max_steps(max_steps);
     if let Some(r) = limits.max_requests {
@@ -1420,6 +1446,32 @@ fn exec_agent(
         .unwrap_or_default();
     if spec.memory.is_some() {
         checks.extend(memory_checks(spec, &reports));
+    }
+    if spec
+        .target
+        .repo
+        .as_ref()
+        .is_some_and(|r| r.require_source_context)
+    {
+        let linked: Vec<String> = rep
+            .triaged_defects
+            .iter()
+            .filter_map(|d| {
+                d.source_context
+                    .as_deref()
+                    .filter(|s| s.contains(':'))
+                    .map(|s| format!("{} ({s})", d.component))
+            })
+            .collect();
+        checks.push(Check {
+            name: "whitebox source linkage".into(),
+            ok: !linked.is_empty(),
+            detail: if linked.is_empty() {
+                "expected at least one defect with file:line source_context".into()
+            } else {
+                format!("linked {}", linked.join(", "))
+            },
+        });
     }
     Ok(Outcome {
         verdict,
@@ -2840,7 +2892,9 @@ server = "s.py"
                 "agent-spa-noauth",
                 "agent-spa",
                 "qa-api",
-                "qa-repo"
+                "qa-repo",
+                "security-deep",
+                "whitebox-exploit"
             ]
         );
         for s in &suites {

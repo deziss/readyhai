@@ -21,6 +21,11 @@ image = "semgrep/semgrep:1.182.1"
 digest = "sha256:451b3d875c00dac7ed5db5293e584a07de11449a409c10b3c2d2652f429630b6"
 version = "1.182.1"
 
+[tools.opengrep]
+image = "wollomatic/opengrep:latest"
+digest = "sha256:88d4c0ab4128dc8feb65a3a9331851473002e46a4460d504837b11fe6c1642e2"
+version = "latest"
+
 [tools.hadolint]
 image = "hadolint/hadolint:v2.15.1"
 digest = "sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d"
@@ -79,6 +84,11 @@ version = "6.17.0"
 [tools.oasdiff]
 image = "tufin/oasdiff:latest"
 digest = "sha256:75a513546b09466bfcbb192bd1ed117e5a22945306602ba2a7bbebf2665d1076"
+version = "latest"
+
+[tools.nuclei]
+image = "projectdiscovery/nuclei:latest"
+digest = "sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32eb"
 version = "latest"
 
 # Built locally: docker build -t readyhai/playwright-runner:local runners/playwright

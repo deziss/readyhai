@@ -14,6 +14,7 @@ mod android;
 mod baseline;
 mod bundle;
 mod checks;
+mod code_audit;
 mod config;
 mod ctx;
 mod dashboard;

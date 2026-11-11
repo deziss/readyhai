@@ -902,11 +902,28 @@ fn tasks_for(
     let needs: Vec<AreaNeed> = by_area
         .iter()
         .filter(|(_, v)| !v.is_empty())
-        .map(|(a, v)| AreaNeed {
-            area: *a,
-            weight: v.iter().map(case_weight).sum(),
-            cases: v.len(),
-            requests: v.iter().map(|c| request_demand(c, cfg.opts.reruns)).sum(),
+        .map(|(a, v)| {
+            // Burst and stateful-chain cases need ~7-10 requests each; weight them accordingly
+            // in the lead pool so small State slices don't starve TOCTOU bursts.
+            let area_weight: u64 = v
+                .iter()
+                .map(|c| {
+                    let mult = if c.concurrency_burst.is_some_and(|n| n > 1)
+                        || c.stateful_steps.as_ref().is_some_and(|s| !s.is_empty())
+                    {
+                        3
+                    } else {
+                        1
+                    };
+                    case_weight(c) * mult
+                })
+                .sum();
+            AreaNeed {
+                area: *a,
+                weight: area_weight,
+                cases: v.len(),
+                requests: v.iter().map(|c| request_demand(c, cfg.opts.reruns)).sum(),
+            }
         })
         .collect();
     allocate(

@@ -28,8 +28,9 @@ use std::time::Instant;
 use super::budget::RunBudget;
 use super::exec::role_of;
 use super::exec::{
-    Auth, Bearer, Clients, Credentials, OutReq, RequestSpec, Seen, body_and_type, curl_for,
-    is_safe_method, normalize_component, normalize_method, resolve_auth,
+    Auth, Bearer, Clients, Credentials, OutReq, RequestSpec, ResolvedAuth, Seen, body_and_type,
+    curl_for_auth, is_safe_method, needs_validated_tls, normalize_component, normalize_method,
+    resolve_auth,
 };
 use super::oracle::{BurstResponse, OracleOutcome, StatefulFacts, judge_stateful, primary_object};
 use super::types::{StatefulStep, StatefulStepExecution, current_ledger, record_creation_response};
@@ -262,7 +263,95 @@ pub fn evaluate_violation(condition: &str, status: u16, _body: &str) -> bool {
     if part == "status in 200..=299" || part == "2xx" {
         return (200..=299).contains(&status);
     }
+    if let Some(sub) = part.strip_prefix("body_contains:") {
+        let needle = sub.trim();
+        return !needle.is_empty() && _body.to_ascii_lowercase().contains(needle);
+    }
+    if let Some(sub) = part.strip_prefix("unescaped:") {
+        let needle = sub.trim();
+        let trimmed = _body.trim_start();
+        let is_json = trimmed.starts_with('{') || trimmed.starts_with('[');
+        return (200..=299).contains(&status)
+            && !is_json
+            && !needle.is_empty()
+            && _body.to_ascii_lowercase().contains(needle);
+    }
+    if let Some(kv) = part.strip_prefix("json_eq:")
+        && let Some((k, v)) = kv.split_once('=')
+        && let Ok(parsed) = serde_json::from_str::<Value>(_body)
+    {
+        return json_has_key_eq(&parsed, k.trim(), v.trim());
+    }
+    if let Some(kv) = part.strip_prefix("json_lt:")
+        && let Some((k, v)) = kv.split_once('=')
+        && let Ok(limit) = v.trim().parse::<f64>()
+        && let Ok(parsed) = serde_json::from_str::<Value>(_body)
+    {
+        return json_has_key_lt(&parsed, k.trim(), limit);
+    }
     false
+}
+
+fn json_has_key_eq(v: &Value, key: &str, want: &str) -> bool {
+    match v {
+        Value::Object(map) => {
+            for (k, child) in map {
+                if k.eq_ignore_ascii_case(key) {
+                    let matched = match child {
+                        Value::String(s) => s.eq_ignore_ascii_case(want),
+                        Value::Bool(b) => {
+                            want.eq_ignore_ascii_case(if *b { "true" } else { "false" })
+                        }
+                        Value::Number(n) => n.to_string() == want,
+                        _ => false,
+                    };
+                    if matched {
+                        return true;
+                    }
+                }
+                if json_has_key_eq(child, key, want) {
+                    return true;
+                }
+            }
+            false
+        }
+        Value::Array(arr) => arr.iter().any(|x| json_has_key_eq(x, key, want)),
+        _ => false,
+    }
+}
+
+fn json_has_key_lt(v: &Value, key: &str, limit: f64) -> bool {
+    match v {
+        Value::Object(map) => {
+            for (k, child) in map {
+                if k.eq_ignore_ascii_case(key)
+                    && let Some(n) = child.as_f64()
+                    && n < limit
+                {
+                    return true;
+                }
+                if json_has_key_lt(child, key, limit) {
+                    return true;
+                }
+            }
+            false
+        }
+        Value::Array(arr) => arr.iter().any(|x| json_has_key_lt(x, key, limit)),
+        _ => false,
+    }
+}
+
+fn extract_violation_tag(raw: &str) -> (&str, &str) {
+    let t = raw.trim();
+    if let Some(rest) = t.strip_prefix("mass_assignment:") {
+        ("mass_assignment", rest.trim())
+    } else if let Some(rest) = t.strip_prefix("business_logic:") {
+        ("business_logic", rest.trim())
+    } else if let Some(rest) = t.strip_prefix("stored_xss:") {
+        ("stored_xss", rest.trim())
+    } else {
+        ("business_logic", t)
+    }
 }
 
 // ---------------------------------------------------------------- preflight
@@ -293,7 +382,14 @@ fn path_only(path: &str) -> String {
 
 /// Index of the access step: the last step that carries a violation condition.
 fn access_index(steps: &[StatefulStep]) -> Option<usize> {
-    steps.iter().rposition(|s| s.violation_condition.is_some())
+    steps.iter().rposition(|s| {
+        s.violation_condition.as_deref().is_some_and(|c| {
+            let t = c.trim();
+            !t.starts_with("mass_assignment:")
+                && !t.starts_with("business_logic:")
+                && !t.starts_with("stored_xss:")
+        })
+    })
 }
 
 /// Everything that can be decided without sending a request. `Err` = skip the chain, with a note.
@@ -443,15 +539,18 @@ impl Runner<'_> {
             sent_values: vec![],
             extra_headers: vec![],
         };
-        self.curls.push(curl_for(&disp_spec));
+        self.curls.push(curl_for_auth(&disp_spec, self.creds));
         let t0 = Instant::now();
-        let sent = self.clients.send(&OutReq {
-            method: e.method,
-            url: &url,
-            body: body.as_ref(),
-            headers: &[],
-            bearer,
-        });
+        let sent = self.clients.send_resolved(
+            &OutReq {
+                method: e.method,
+                url: &url,
+                body: body.as_ref(),
+                headers: &[],
+                bearer,
+            },
+            &auth,
+        );
         let latency = t0.elapsed().as_millis() as u64;
         self.latency += latency;
         match sent {
@@ -650,6 +749,39 @@ pub fn execute_stateful_scenario(
                     ctx.insert(k, v);
                 }
             }
+            if let Some(cond_raw) = step.violation_condition.as_deref() {
+                let (code, expr) = extract_violation_tag(cond_raw);
+                if evaluate_violation(expr, seen.status, &seen.body) {
+                    let detail = format!(
+                        "{method} {} violated '{cond_raw}' (HTTP {})",
+                        run.log[idx].resolved_path, seen.status
+                    );
+                    run.log[idx].violation_triggered = true;
+                    run.log[idx].passed = false;
+                    run.log[idx].error_detail = Some(detail.clone());
+                    return run.finish(
+                        StatefulFacts::Violation {
+                            step: step.step_number,
+                            code: code.to_string(),
+                            severity: super::oracle::Severity::High,
+                            detail: detail.clone(),
+                        },
+                        detail,
+                    );
+                }
+                // A security probe step with no required exact status that was safely blocked with
+                // 4xx does not fail: the invariant held.
+                if step.expected_status.is_none() && (400..=499).contains(&seen.status) {
+                    let n = steps.len();
+                    return run.finish(
+                        StatefulFacts::Workflow { failed_step: None },
+                        format!(
+                            "stateful chain of {n} step(s) blocked probe cleanly (HTTP {})",
+                            seen.status
+                        ),
+                    );
+                }
+            }
             let ok = match step.expected_status {
                 Some(e) => status_matches(e, seen.status),
                 None => seen.status < 400,
@@ -834,21 +966,45 @@ pub fn run_concurrency_burst(
     host: &str,
     case_id: &str,
 ) -> Result<BurstRun, String> {
+    let auth = ResolvedAuth {
+        bearer: bearer.cloned(),
+        extra_headers: vec![],
+        authenticated: bearer.is_some(),
+        real: needs_validated_tls(bearer),
+        note: None,
+    };
+    run_concurrency_burst_auth(clients, spec, &auth, burst_size, budget, host, case_id)
+}
+
+/// [`run_concurrency_burst`] supporting multi-modal credentials (`Bearer`, `Cookie`, custom headers).
+pub fn run_concurrency_burst_auth(
+    clients: &Clients,
+    spec: &RequestSpec,
+    auth: &ResolvedAuth,
+    burst_size: usize,
+    budget: &mut RunBudget,
+    host: &str,
+    case_id: &str,
+) -> Result<BurstRun, String> {
     let count = burst_size.clamp(2, 10);
     // the run's ledger is thread-local and does not reach the burst threads: hand them a clone, so
     // every 2xx creation a burst request produces is recorded (and torn down) like any other
     let ledger = current_ledger();
     let role = role_of(&spec.auth);
+    let bearer = auth.bearer.as_ref();
     let mut notes = vec![];
     let read = |url: &str| {
         clients
-            .send(&OutReq {
-                method: "GET",
-                url,
-                body: None,
-                headers: &[],
-                bearer,
-            })
+            .send_resolved(
+                &OutReq {
+                    method: "GET",
+                    url,
+                    body: None,
+                    headers: &[],
+                    bearer,
+                },
+                auth,
+            )
             .ok()
             .filter(|s| (200..=299).contains(&s.status))
             .map(|s| s.body)
@@ -887,13 +1043,16 @@ pub fn run_concurrency_burst(
                 let led = ledger.clone();
                 s.spawn(move || {
                     b.wait(); // all threads release at once
-                    let r = clients.send(&OutReq {
-                        method: spec.method,
-                        url: &spec.url,
-                        body: spec.body.as_ref(),
-                        headers: &spec.extra_headers,
-                        bearer,
-                    });
+                    let r = clients.send_resolved(
+                        &OutReq {
+                            method: spec.method,
+                            url: &spec.url,
+                            body: spec.body.as_ref(),
+                            headers: &spec.extra_headers,
+                            bearer,
+                        },
+                        auth,
+                    );
                     if let (Ok(seen), Some(l)) = (&r, led.as_ref()) {
                         record_creation_response(
                             Some(l),
@@ -1095,6 +1254,19 @@ mod tests {
 
         assert!(evaluate_violation("bola", 200, ""));
         assert!(!evaluate_violation("bola", 403, ""));
+
+        let (tag, expr) = extract_violation_tag("stored_xss:unescaped:<img src=x onerror=");
+        assert_eq!(tag, "stored_xss");
+        assert!(evaluate_violation(
+            expr,
+            200,
+            "<ul><li><img src=x onerror=\"alert(1)\"></li></ul>"
+        ));
+        assert!(!evaluate_violation(
+            expr,
+            200,
+            "<ul><li>&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</li></ul>"
+        ));
     }
 
     #[test]

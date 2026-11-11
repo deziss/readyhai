@@ -27,13 +27,15 @@ use std::time::Duration;
 
 use super::budget::RunBudget;
 use super::exec::{
-    Clients, Credentials, MAX_REDIRECTS, OutReq, RequestSpec, ResolvedAuth, build_request,
-    follows_redirects, is_mutating, resolve_auth,
+    Clients, Credentials, ProbeOutcome, RequestSpec, ResolvedAuth, build_request,
+    follows_redirects, is_mutating, resolve_auth, send_with_probe_oracle,
 };
+use super::oast::OastCollector;
 use super::oracle::{self, Observation, OracleOutcome, Severity, Verdict};
 use super::types::{
-    CaseExecutionResult, Leftover, PlannedCase, ReplayRecord, StatefulStep, VerificationRecord,
-    VerificationSummary, VerifyVerdict, current_ledger, is_creation, record_creation_response,
+    CaseExecutionResult, Leftover, PlannedCase, ProbeOracle, ReplayRecord, StatefulStep,
+    VerificationRecord, VerificationSummary, VerifyVerdict, current_ledger, is_creation,
+    record_creation_response,
 };
 use crate::llm::untrusted::redact_then_truncate;
 
@@ -268,10 +270,12 @@ struct Ctx<'a> {
     /// `host:port`, the budget's rate-limit key.
     host: &'a str,
     opts: &'a VerifyOptions<'a>,
+    oast: Option<&'a OastCollector>,
 }
 
 fn replay_http(
     ctx: &Ctx,
+    budget: &mut RunBudget,
     case: &PlannedCase,
     spec: &RequestSpec,
     auth: &ResolvedAuth,
@@ -280,24 +284,21 @@ fn replay_http(
     n: u32,
     unidentified: &mut Vec<Leftover>,
 ) -> Replay {
-    let out = OutReq {
-        method: spec.method,
-        url: &spec.url,
-        body: spec.body.as_ref(),
-        headers: &spec.extra_headers,
-        bearer: auth.bearer.as_ref(),
-    };
     // a replay sees what the executor saw: a case judged on the answer after a same-origin
     // redirect is replayed through the same redirect
-    let sent = if follows_redirects(case) {
-        ctx.clients
-            .send_following(&out, MAX_REDIRECTS, &mut || Ok(()))
-            .map(|f| f.seen)
-    } else {
-        ctx.clients.send(&out)
-    };
-    let seen = match sent {
-        Ok(s) => s,
+    let sent = send_with_probe_oracle(
+        ctx.clients,
+        ctx.target,
+        ctx.host,
+        budget,
+        case,
+        spec,
+        auth,
+        follows_redirects(case),
+        ctx.oast,
+    );
+    let ProbeOutcome { seen, evidence, .. } = match sent {
+        Ok(p) => p,
         Err(e) => {
             return Replay::errored(
                 n,
@@ -344,6 +345,7 @@ fn replay_http(
             request_body: spec.body.as_ref().map(|(_, b)| b.as_str()),
             origin: spec.origin(),
             latency_ms: seen.latency_ms,
+            probe: Some(&evidence),
         },
     );
     let v = vote(orig, &outcome, orig_status == Some(seen.status));
@@ -584,6 +586,11 @@ pub fn verify_failures(
             )
         })
         .unwrap_or_default();
+    let oast = cases
+        .iter()
+        .any(|c| matches!(c.probe_oracle, Some(ProbeOracle::OastCallback { .. })))
+        .then(OastCollector::start)
+        .and_then(Result::ok);
     let mut stop: Option<String> = match (&parsed, &clients) {
         (None, _) => Some("target is not an http(s) URL".into()),
         (_, None) => Some("could not build the HTTP client".into()),
@@ -629,6 +636,7 @@ pub fn verify_failures(
                     target,
                     host: &host,
                     opts,
+                    oast: oast.as_ref(),
                 };
                 match build_request(&case, target) {
                     Err(e) => record_for(
@@ -650,6 +658,7 @@ pub fn verify_failures(
                             }
                             let p = replay_http(
                                 &ctx,
+                                budget,
                                 &case,
                                 &spec,
                                 &auth,
@@ -675,6 +684,7 @@ pub fn verify_failures(
                     target,
                     host: &host,
                     opts,
+                    oast: oast.as_ref(),
                 };
                 match super::stateful::preflight(&steps, opts.credentials) {
                     Err(why) => record_for(
@@ -1950,5 +1960,110 @@ mod tests {
             mk(1, "user", "POST", "/orders"),
             mk(2, "bob", "GET", "/orders/{{id}}"),
         ])
+    }
+
+    #[test]
+    fn verify_replays_blind_timing_open_redirect_and_oast_k_times() {
+        use axum::{
+            Router, extract::Query, http::StatusCode, response::IntoResponse, routing::get,
+        };
+        use std::collections::HashMap;
+        use std::net::SocketAddr;
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (base, _jh) = rt.block_on(async {
+            let app = Router::new()
+                .route(
+                    "/delay",
+                    get(|Query(q): Query<HashMap<String, String>>| async move {
+                        if q.get("id").is_some_and(|v| v.contains("SLEEP")) {
+                            tokio::time::sleep(Duration::from_millis(160)).await;
+                        }
+                        (StatusCode::OK, "ok")
+                    }),
+                )
+                .route(
+                    "/redir",
+                    get(|Query(q): Query<HashMap<String, String>>| async move {
+                        let next = q.get("next").cloned().unwrap_or_else(|| "/".into());
+                        ([(axum::http::header::LOCATION, next)], StatusCode::FOUND).into_response()
+                    }),
+                )
+                .route(
+                    "/fetch",
+                    get(|Query(q): Query<HashMap<String, String>>| async move {
+                        if let Some(u) = q.get("url") {
+                            let _ = tokio::task::spawn_blocking({
+                                let u = u.clone();
+                                move || reqwest::blocking::get(&u)
+                            })
+                            .await;
+                        }
+                        (StatusCode::OK, "fetched")
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr: SocketAddr = listener.local_addr().unwrap();
+            let jh = tokio::spawn(async move {
+                axum::serve(listener, app).await.unwrap();
+            });
+            (format!("http://127.0.0.1:{}", addr.port()), jh)
+        });
+
+        let mut c_delay = case("TC-TD1", "injection", "GET", "/delay");
+        c_delay.payload = Some("id=' OR SLEEP(1)--".into());
+        c_delay.probe_oracle = Some(crate::agent::types::ProbeOracle::TimeDelay {
+            baseline_payload: "id=1".into(),
+            min_delay_ms: 120,
+        });
+
+        let mut c_redir = case("TC-OR1", "negative", "GET", "/redir");
+        c_redir.payload = Some("next=https://readyhai-redirect.invalid/x".into());
+        c_redir.probe_oracle = Some(crate::agent::types::ProbeOracle::OpenRedirect {
+            canary_host: "readyhai-redirect.invalid".into(),
+        });
+
+        let mut c_oast = case("TC-OA1", "injection", "GET", "/fetch");
+        c_oast.payload = Some("url=__OAST_URL__".into());
+        c_oast.probe_oracle = Some(crate::agent::types::ProbeOracle::OastCallback {
+            placeholder: "__OAST_URL__".into(),
+            wait_ms: 500,
+        });
+
+        let mut c_clean = case("TC-TD-SAFE", "injection", "GET", "/delay");
+        c_clean.payload = Some("id=harmless".into());
+        c_clean.probe_oracle = Some(crate::agent::types::ProbeOracle::TimeDelay {
+            baseline_payload: "id=1".into(),
+            min_delay_ms: 120,
+        });
+
+        let cases = vec![c_delay, c_redir, c_oast, c_clean];
+        let mut results =
+            crate::agent::exec::execute_cases_with(&cases, &base, &exec_opts(), &mut budget(100));
+        assert_eq!(results[0].status, "FAIL", "time delay should fail");
+        assert_eq!(results[1].status, "FAIL", "open redirect should fail");
+        assert_eq!(results[2].status, "FAIL", "oast callback should fail");
+        assert_eq!(results[3].status, "PASS", "safe baseline should pass");
+
+        let creds = Credentials::none();
+        let out = verify_failures(
+            &mut results,
+            &cases,
+            &base,
+            &vopts(&creds, 2),
+            &mut budget(100),
+        );
+        assert_eq!(
+            out.summary.record("TC-TD1").unwrap().verdict,
+            VerifyVerdict::Confirmed
+        );
+        assert_eq!(
+            out.summary.record("TC-OR1").unwrap().verdict,
+            VerifyVerdict::Confirmed
+        );
+        assert_eq!(
+            out.summary.record("TC-OA1").unwrap().verdict,
+            VerifyVerdict::Confirmed
+        );
     }
 }

@@ -1,6 +1,6 @@
 {
-  "version": "0.5.0",
-  "started": "2026-11-06T13:45:04.746493748Z",
+  "version": "0.7.0",
+  "started": "2026-11-11T19:27:36.168528268Z",
   "k": 2,
   "suites": [
     {
@@ -49,15 +49,16 @@
             "delete_not_effective @ /orders/{id}",
             "slow_response @ /reports/slow"
           ],
-          "requests": 106,
-          "seconds": 16.23,
+          "requests": 170,
+          "seconds": 22.059,
           "cases": {
-            "FAIL": 15,
+            "FAIL": 22,
             "INCONCLUSIVE": 4,
-            "PASS": 33
+            "PASS": 39,
+            "SKIPPED": 4
           },
-          "inconclusive_rate": 0.077,
-          "confidence": 92
+          "inconclusive_rate": 0.062,
+          "confidence": 93
         },
         {
           "run": 2,
@@ -90,15 +91,16 @@
             "delete_not_effective @ /orders/{id}",
             "slow_response @ /reports/slow"
           ],
-          "requests": 106,
-          "seconds": 16.224,
+          "requests": 170,
+          "seconds": 22.035,
           "cases": {
-            "FAIL": 15,
+            "FAIL": 22,
             "INCONCLUSIVE": 4,
-            "PASS": 33
+            "PASS": 39,
+            "SKIPPED": 4
           },
-          "inconclusive_rate": 0.077,
-          "confidence": 92
+          "inconclusive_rate": 0.062,
+          "confidence": 93
         }
       ],
       "recall": 1.0,
@@ -106,8 +108,8 @@
       "precision": 1.0,
       "precision_min": 1.0,
       "false_positives": 0,
-      "inconclusive_rate": 0.077,
-      "confidence": 92,
+      "inconclusive_rate": 0.062,
+      "confidence": 93,
       "blockers": [],
       "verdict_match": true,
       "pass_k": true,
@@ -118,8 +120,8 @@
       ],
       "known_gaps_open": [],
       "known_gaps_closed": [],
-      "requests": 106,
-      "seconds": 16.23,
+      "requests": 170,
+      "seconds": 22.059,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -163,12 +165,12 @@
         {
           "name": "request budget",
           "ok": true,
-          "detail": "worst run 106 vs <= 250"
+          "detail": "worst run 170 vs <= 250"
         },
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 16.2s vs <= 120s"
+          "detail": "worst run 22.1s vs <= 120s"
         }
       ],
       "passed": true,
@@ -203,7 +205,7 @@
             "server_error @ /search"
           ],
           "requests": 20,
-          "seconds": 2.008,
+          "seconds": 2.036,
           "cases": {
             "FAIL": 1,
             "PASS": 7
@@ -248,7 +250,7 @@
             "server_error @ /search"
           ],
           "requests": 20,
-          "seconds": 2.01,
+          "seconds": 2.038,
           "cases": {
             "FAIL": 1,
             "PASS": 7
@@ -292,7 +294,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 20,
-      "seconds": 2.01,
+      "seconds": 2.038,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 0,
@@ -408,15 +410,16 @@
             "delete_not_effective @ /orders/{id}",
             "slow_response @ /reports/slow"
           ],
-          "requests": 213,
-          "seconds": 32.543,
+          "requests": 340,
+          "seconds": 44.083,
           "cases": {
-            "FAIL": 15,
-            "INCONCLUSIVE": 4,
-            "PASS": 34
+            "FAIL": 22,
+            "INCONCLUSIVE": 3,
+            "PASS": 40,
+            "SKIPPED": 5
           },
-          "inconclusive_rate": 0.075,
-          "confidence": 92,
+          "inconclusive_rate": 0.046,
+          "confidence": 95,
           "checks": [
             {
               "name": "memory: first run remembered",
@@ -431,12 +434,12 @@
             {
               "name": "memory: regression probes lead the plan",
               "ok": true,
-              "detail": "13 probe(s) lead the plan of 42 case(s), none after the first other case; 6 of 6 still-open defect(s) have one"
+              "detail": "17 probe(s) lead the plan of 55 case(s), none after the first other case; 6 of 6 still-open defect(s) have one"
             },
             {
               "name": "memory: no case dropped",
               "ok": true,
-              "detail": "run 1 planned 41 case(s), the last run 42 (1 more)"
+              "detail": "run 1 planned 54 case(s), the last run 55 (1 more)"
             }
           ]
         },
@@ -471,15 +474,16 @@
             "delete_not_effective @ /orders/{id}",
             "slow_response @ /reports/slow"
           ],
-          "requests": 213,
-          "seconds": 32.55,
+          "requests": 340,
+          "seconds": 44.082,
           "cases": {
-            "FAIL": 15,
-            "INCONCLUSIVE": 4,
-            "PASS": 34
+            "FAIL": 22,
+            "INCONCLUSIVE": 3,
+            "PASS": 40,
+            "SKIPPED": 5
           },
-          "inconclusive_rate": 0.075,
-          "confidence": 92,
+          "inconclusive_rate": 0.046,
+          "confidence": 95,
           "checks": [
             {
               "name": "memory: first run remembered",
@@ -494,12 +498,12 @@
             {
               "name": "memory: regression probes lead the plan",
               "ok": true,
-              "detail": "13 probe(s) lead the plan of 42 case(s), none after the first other case; 6 of 6 still-open defect(s) have one"
+              "detail": "17 probe(s) lead the plan of 55 case(s), none after the first other case; 6 of 6 still-open defect(s) have one"
             },
             {
               "name": "memory: no case dropped",
               "ok": true,
-              "detail": "run 1 planned 41 case(s), the last run 42 (1 more)"
+              "detail": "run 1 planned 54 case(s), the last run 55 (1 more)"
             }
           ]
         }
@@ -509,8 +513,8 @@
       "precision": 1.0,
       "precision_min": 1.0,
       "false_positives": 0,
-      "inconclusive_rate": 0.075,
-      "confidence": 92,
+      "inconclusive_rate": 0.046,
+      "confidence": 95,
       "blockers": [],
       "verdict_match": true,
       "pass_k": true,
@@ -521,8 +525,8 @@
       ],
       "known_gaps_open": [],
       "known_gaps_closed": [],
-      "requests": 213,
-      "seconds": 32.55,
+      "requests": 340,
+      "seconds": 44.083,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -566,12 +570,12 @@
         {
           "name": "request budget",
           "ok": true,
-          "detail": "worst run 213 vs <= 500"
+          "detail": "worst run 340 vs <= 500"
         },
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 32.5s vs <= 240s"
+          "detail": "worst run 44.1s vs <= 240s"
         },
         {
           "name": "memory: first run remembered",
@@ -586,12 +590,12 @@
         {
           "name": "memory: regression probes lead the plan",
           "ok": true,
-          "detail": "13 probe(s) lead the plan of 42 case(s), none after the first other case; 6 of 6 still-open defect(s) have one"
+          "detail": "17 probe(s) lead the plan of 55 case(s), none after the first other case; 6 of 6 still-open defect(s) have one"
         },
         {
           "name": "memory: no case dropped",
           "ok": true,
-          "detail": "run 1 planned 41 case(s), the last run 42 (1 more)"
+          "detail": "run 1 planned 54 case(s), the last run 55 (1 more)"
         }
       ],
       "passed": true,
@@ -619,14 +623,14 @@
           "precision": 1.0,
           "allowed_seen": [],
           "observed": [],
-          "requests": 55,
-          "seconds": 5.804,
+          "requests": 81,
+          "seconds": 7.894,
           "cases": {
             "INCONCLUSIVE": 4,
-            "PASS": 12
+            "PASS": 13
           },
-          "inconclusive_rate": 0.25,
-          "confidence": 75
+          "inconclusive_rate": 0.235,
+          "confidence": 76
         },
         {
           "run": 2,
@@ -643,14 +647,14 @@
           "precision": 1.0,
           "allowed_seen": [],
           "observed": [],
-          "requests": 55,
-          "seconds": 5.795,
+          "requests": 81,
+          "seconds": 7.873,
           "cases": {
             "INCONCLUSIVE": 4,
-            "PASS": 12
+            "PASS": 13
           },
-          "inconclusive_rate": 0.25,
-          "confidence": 75
+          "inconclusive_rate": 0.235,
+          "confidence": 76
         }
       ],
       "recall": 1.0,
@@ -658,8 +662,8 @@
       "precision": 1.0,
       "precision_min": 1.0,
       "false_positives": 0,
-      "inconclusive_rate": 0.25,
-      "confidence": 75,
+      "inconclusive_rate": 0.235,
+      "confidence": 76,
       "blockers": [],
       "verdict_match": null,
       "pass_k": true,
@@ -670,8 +674,8 @@
       ],
       "known_gaps_open": [],
       "known_gaps_closed": [],
-      "requests": 55,
-      "seconds": 5.804,
+      "requests": 81,
+      "seconds": 7.894,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 1,
@@ -715,17 +719,17 @@
         {
           "name": "inconclusive rate",
           "ok": true,
-          "detail": "worst run 25% vs <= 25%"
+          "detail": "worst run 24% vs <= 25%"
         },
         {
           "name": "request budget",
           "ok": true,
-          "detail": "worst run 55 vs <= 300"
+          "detail": "worst run 81 vs <= 300"
         },
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 5.8s vs <= 120s"
+          "detail": "worst run 7.9s vs <= 120s"
         }
       ],
       "passed": true,
@@ -753,15 +757,15 @@
           "precision": 1.0,
           "allowed_seen": [],
           "observed": [],
-          "requests": 42,
-          "seconds": 4.685,
+          "requests": 68,
+          "seconds": 6.72,
           "cases": {
             "BLOCKED": 4,
-            "PASS": 5,
+            "PASS": 6,
             "SKIPPED": 1
           },
           "inconclusive_rate": 0.0,
-          "confidence": 55,
+          "confidence": 60,
           "blockers": [
             "auth_wall"
           ]
@@ -781,15 +785,15 @@
           "precision": 1.0,
           "allowed_seen": [],
           "observed": [],
-          "requests": 42,
-          "seconds": 4.69,
+          "requests": 68,
+          "seconds": 6.719,
           "cases": {
             "BLOCKED": 4,
-            "PASS": 5,
+            "PASS": 6,
             "SKIPPED": 1
           },
           "inconclusive_rate": 0.0,
-          "confidence": 55,
+          "confidence": 60,
           "blockers": [
             "auth_wall"
           ]
@@ -801,7 +805,7 @@
       "precision_min": 1.0,
       "false_positives": 0,
       "inconclusive_rate": 0.0,
-      "confidence": 55,
+      "confidence": 60,
       "blockers": [
         "auth_wall"
       ],
@@ -814,8 +818,8 @@
       ],
       "known_gaps_open": [],
       "known_gaps_closed": [],
-      "requests": 42,
-      "seconds": 4.69,
+      "requests": 68,
+      "seconds": 6.72,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 0,
@@ -864,12 +868,12 @@
         {
           "name": "request budget",
           "ok": true,
-          "detail": "worst run 42 vs <= 300"
+          "detail": "worst run 68 vs <= 300"
         },
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 4.7s vs <= 120s"
+          "detail": "worst run 6.7s vs <= 120s"
         }
       ],
       "passed": true,
@@ -909,15 +913,15 @@
             "server_error @ /api/orders",
             "server_error @ /api/orders"
           ],
-          "requests": 79,
-          "seconds": 7.899,
+          "requests": 106,
+          "seconds": 10.063,
           "cases": {
             "FAIL": 3,
             "INCONCLUSIVE": 3,
-            "PASS": 10
+            "PASS": 12
           },
-          "inconclusive_rate": 0.188,
-          "confidence": 81
+          "inconclusive_rate": 0.167,
+          "confidence": 83
         },
         {
           "run": 2,
@@ -942,15 +946,15 @@
             "server_error @ /api/orders",
             "server_error @ /api/orders"
           ],
-          "requests": 79,
-          "seconds": 7.892,
+          "requests": 106,
+          "seconds": 10.073,
           "cases": {
             "FAIL": 3,
             "INCONCLUSIVE": 3,
-            "PASS": 10
+            "PASS": 12
           },
-          "inconclusive_rate": 0.188,
-          "confidence": 81
+          "inconclusive_rate": 0.167,
+          "confidence": 83
         }
       ],
       "recall": 1.0,
@@ -958,8 +962,8 @@
       "precision": 1.0,
       "precision_min": 1.0,
       "false_positives": 0,
-      "inconclusive_rate": 0.188,
-      "confidence": 81,
+      "inconclusive_rate": 0.167,
+      "confidence": 83,
       "blockers": [],
       "verdict_match": true,
       "pass_k": true,
@@ -970,8 +974,8 @@
       ],
       "known_gaps_open": [],
       "known_gaps_closed": [],
-      "requests": 79,
-      "seconds": 7.899,
+      "requests": 106,
+      "seconds": 10.073,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -1015,17 +1019,17 @@
         {
           "name": "inconclusive rate",
           "ok": true,
-          "detail": "worst run 19% vs <= 25%"
+          "detail": "worst run 17% vs <= 25%"
         },
         {
           "name": "request budget",
           "ok": true,
-          "detail": "worst run 79 vs <= 300"
+          "detail": "worst run 106 vs <= 300"
         },
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 7.9s vs <= 120s"
+          "detail": "worst run 10.1s vs <= 120s"
         }
       ],
       "passed": true,
@@ -1083,7 +1087,7 @@
             "qa.api.slow_response @ GET /reports/slow"
           ],
           "requests": 123,
-          "seconds": 31.941,
+          "seconds": 31.835,
           "inconclusive_rate": null,
           "confidence": null
         },
@@ -1124,7 +1128,7 @@
             "qa.api.slow_response @ GET /reports/slow"
           ],
           "requests": 123,
-          "seconds": 31.895,
+          "seconds": 31.832,
           "inconclusive_rate": null,
           "confidence": null
         }
@@ -1147,7 +1151,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 123,
-      "seconds": 31.941,
+      "seconds": 31.835,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -1196,7 +1200,7 @@
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 31.9s vs <= 150s"
+          "detail": "worst run 31.8s vs <= 150s"
         }
       ],
       "passed": true,
@@ -1250,7 +1254,7 @@
             "qa.suite.test_smells @ tests/test_orders.py"
           ],
           "requests": 0,
-          "seconds": 0.103,
+          "seconds": 0.164,
           "inconclusive_rate": null,
           "confidence": null
         },
@@ -1288,7 +1292,7 @@
             "qa.suite.test_smells @ tests/test_orders.py"
           ],
           "requests": 0,
-          "seconds": 0.102,
+          "seconds": 0.15,
           "inconclusive_rate": null,
           "confidence": null
         }
@@ -1311,7 +1315,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 0,
-      "seconds": 0.103,
+      "seconds": 0.164,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -1350,7 +1354,350 @@
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 0.1s vs <= 60s"
+          "detail": "worst run 0.2s vs <= 60s"
+        }
+      ],
+      "passed": true,
+      "error": null
+    },
+    {
+      "name": "security-deep",
+      "kind": "agent",
+      "description": "Deep security benchmark against 12 seeded loopholes (Blind SQLi, SSTI, Blind SSRF, Open Redirect, JWT alg=none, BFLA, Mass Assignment, Negative Qty, TOCTOU, DOM XSS, Stored XSS) plus clean negative controls",
+      "notes": {},
+      "k": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "NO_GO",
+          "recall": 1.0,
+          "found": [
+            "blind-sqli-boolean",
+            "blind-sqli-time",
+            "ssti",
+            "ssrf-blind",
+            "open-redirect",
+            "jwt-alg-none",
+            "bfla",
+            "mass-assignment",
+            "business-logic-negative-qty",
+            "toctou-race",
+            "dom-xss",
+            "stored-xss"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 12,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "authz @ /api/admin/audit",
+            "authz @ /api/admin/users",
+            "ssti @ /api/render",
+            "blind_time_injection @ /api/reports/export",
+            "blind_boolean_injection @ /api/users/lookup",
+            "oast_callback @ /api/webhooks/test",
+            "mass_assignment @ /api/users",
+            "race_condition @ /api/coupons/redeem",
+            "open_redirect @ /api/redirect",
+            "stored_xss @ /comments",
+            "dom_xss @ /dom",
+            "expected_status @ /api/checkout"
+          ],
+          "requests": 258,
+          "seconds": 34.381,
+          "cases": {
+            "FAIL": 13,
+            "INCONCLUSIVE": 11,
+            "PASS": 81,
+            "SKIPPED": 1
+          },
+          "inconclusive_rate": 0.105,
+          "confidence": 89
+        },
+        {
+          "run": 2,
+          "verdict": "NO_GO",
+          "recall": 1.0,
+          "found": [
+            "blind-sqli-boolean",
+            "blind-sqli-time",
+            "ssti",
+            "ssrf-blind",
+            "open-redirect",
+            "jwt-alg-none",
+            "bfla",
+            "mass-assignment",
+            "business-logic-negative-qty",
+            "toctou-race",
+            "dom-xss",
+            "stored-xss"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 12,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "authz @ /api/admin/audit",
+            "authz @ /api/admin/users",
+            "ssti @ /api/render",
+            "blind_time_injection @ /api/reports/export",
+            "blind_boolean_injection @ /api/users/lookup",
+            "oast_callback @ /api/webhooks/test",
+            "mass_assignment @ /api/users",
+            "race_condition @ /api/coupons/redeem",
+            "open_redirect @ /api/redirect",
+            "stored_xss @ /comments",
+            "dom_xss @ /dom",
+            "expected_status @ /api/checkout"
+          ],
+          "requests": 258,
+          "seconds": 34.358,
+          "cases": {
+            "FAIL": 13,
+            "INCONCLUSIVE": 11,
+            "PASS": 81,
+            "SKIPPED": 1
+          },
+          "inconclusive_rate": 0.105,
+          "confidence": 89
+        }
+      ],
+      "recall": 1.0,
+      "recall_min": 1.0,
+      "precision": 1.0,
+      "precision_min": 1.0,
+      "false_positives": 0,
+      "inconclusive_rate": 0.105,
+      "confidence": 89,
+      "blockers": [],
+      "verdict_match": true,
+      "pass_k": true,
+      "verdict_stable": true,
+      "verdicts": [
+        "NO_GO",
+        "NO_GO"
+      ],
+      "known_gaps_open": [],
+      "known_gaps_closed": [],
+      "requests": 258,
+      "seconds": 34.381,
+      "thresholds": {
+        "min_recall": 0.85,
+        "max_false_positives": 0,
+        "pass_k": true,
+        "stable_verdict": true,
+        "max_requests": 500,
+        "max_seconds": 180.0,
+        "max_inconclusive_rate": null
+      },
+      "checks": [
+        {
+          "name": "runs completed",
+          "ok": true,
+          "detail": "2/2 completed"
+        },
+        {
+          "name": "recall",
+          "ok": true,
+          "detail": "mean 1.000 (min run 1.000) vs >= 0.85"
+        },
+        {
+          "name": "false positives",
+          "ok": true,
+          "detail": "worst run 0 vs <= 0"
+        },
+        {
+          "name": "pass^k",
+          "ok": true,
+          "detail": "2/2 runs at recall >= 0.85"
+        },
+        {
+          "name": "verdict stable",
+          "ok": true,
+          "detail": "NO_GO | NO_GO"
+        },
+        {
+          "name": "expected verdict",
+          "ok": true,
+          "detail": "want NO_GO, got NO_GO | NO_GO"
+        },
+        {
+          "name": "request budget",
+          "ok": true,
+          "detail": "worst run 258 vs <= 500"
+        },
+        {
+          "name": "time budget",
+          "ok": true,
+          "detail": "worst run 34.4s vs <= 180s"
+        }
+      ],
+      "passed": true,
+      "error": null
+    },
+    {
+      "name": "whitebox-exploit",
+      "kind": "agent",
+      "description": "White-box repo audit discovers undocumented /internal/debug-export route, exploits its SQLi, and attaches file:line source linkage",
+      "notes": {},
+      "k": 2,
+      "runs": [
+        {
+          "run": 1,
+          "verdict": "NO_GO",
+          "recall": 1.0,
+          "found": [
+            "hidden-export-sqli"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 1,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "blind_boolean_injection @ /internal/debug-export"
+          ],
+          "requests": 55,
+          "seconds": 5.482,
+          "cases": {
+            "FAIL": 1,
+            "PASS": 7,
+            "SKIPPED": 1
+          },
+          "inconclusive_rate": 0.0,
+          "confidence": 100,
+          "checks": [
+            {
+              "name": "whitebox source linkage",
+              "ok": true,
+              "detail": "linked /internal/debug-export (app.py:9 handler `debug_export` for GET /internal/debug-export [sinks: sqli `conn.execute` (app.py:12)])"
+            }
+          ]
+        },
+        {
+          "run": 2,
+          "verdict": "NO_GO",
+          "recall": 1.0,
+          "found": [
+            "hidden-export-sqli"
+          ],
+          "missed": [],
+          "optional_found": [],
+          "optional_missed": [],
+          "gap_found": [],
+          "gap_missed": [],
+          "false_positives": [],
+          "true_positives": 1,
+          "precision": 1.0,
+          "allowed_seen": [],
+          "observed": [
+            "blind_boolean_injection @ /internal/debug-export"
+          ],
+          "requests": 55,
+          "seconds": 5.483,
+          "cases": {
+            "FAIL": 1,
+            "PASS": 7,
+            "SKIPPED": 1
+          },
+          "inconclusive_rate": 0.0,
+          "confidence": 100,
+          "checks": [
+            {
+              "name": "whitebox source linkage",
+              "ok": true,
+              "detail": "linked /internal/debug-export (app.py:9 handler `debug_export` for GET /internal/debug-export [sinks: sqli `conn.execute` (app.py:12)])"
+            }
+          ]
+        }
+      ],
+      "recall": 1.0,
+      "recall_min": 1.0,
+      "precision": 1.0,
+      "precision_min": 1.0,
+      "false_positives": 0,
+      "inconclusive_rate": 0.0,
+      "confidence": 100,
+      "blockers": [],
+      "verdict_match": true,
+      "pass_k": true,
+      "verdict_stable": true,
+      "verdicts": [
+        "NO_GO",
+        "NO_GO"
+      ],
+      "known_gaps_open": [],
+      "known_gaps_closed": [],
+      "requests": 55,
+      "seconds": 5.483,
+      "thresholds": {
+        "min_recall": 1.0,
+        "max_false_positives": 0,
+        "pass_k": true,
+        "stable_verdict": true,
+        "max_requests": 200,
+        "max_seconds": 60.0,
+        "max_inconclusive_rate": null
+      },
+      "checks": [
+        {
+          "name": "runs completed",
+          "ok": true,
+          "detail": "2/2 completed"
+        },
+        {
+          "name": "recall",
+          "ok": true,
+          "detail": "mean 1.000 (min run 1.000) vs >= 1.00"
+        },
+        {
+          "name": "false positives",
+          "ok": true,
+          "detail": "worst run 0 vs <= 0"
+        },
+        {
+          "name": "pass^k",
+          "ok": true,
+          "detail": "2/2 runs at recall >= 1.00"
+        },
+        {
+          "name": "verdict stable",
+          "ok": true,
+          "detail": "NO_GO | NO_GO"
+        },
+        {
+          "name": "expected verdict",
+          "ok": true,
+          "detail": "want NO_GO, got NO_GO | NO_GO"
+        },
+        {
+          "name": "request budget",
+          "ok": true,
+          "detail": "worst run 55 vs <= 200"
+        },
+        {
+          "name": "time budget",
+          "ok": true,
+          "detail": "worst run 5.5s vs <= 60s"
+        },
+        {
+          "name": "whitebox source linkage",
+          "ok": true,
+          "detail": "linked /internal/debug-export (app.py:9 handler `debug_export` for GET /internal/debug-export [sinks: sqli `conn.execute` (app.py:12)])"
         }
       ],
       "passed": true,

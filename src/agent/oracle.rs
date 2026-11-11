@@ -6,8 +6,26 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
 use super::triage::severity_for;
-use super::types::{PlannedCase, RedirectHop, ResponseContract};
+use super::types::{PlannedCase, ProbeOracle, RedirectHop, ResponseContract};
 use crate::qa::api::{contract, latency};
+
+/// Snapshot of a companion request sent by the executor/verifier (`baseline` or `false` control).
+#[derive(Debug, Clone, Default)]
+pub struct ProbeSnapshot {
+    pub status: u16,
+    pub body: String,
+    pub latency_ms: u64,
+}
+
+/// Companion evidence gathered alongside the primary response for specialized verification oracles.
+#[derive(Debug, Clone, Default)]
+pub struct ProbeEvidence {
+    pub baseline: Option<ProbeSnapshot>,
+    pub control: Option<ProbeSnapshot>,
+    pub oast_hit: bool,
+    pub oast_detail: Option<String>,
+    pub oast_unavailable: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
@@ -169,6 +187,8 @@ pub struct Observation<'a> {
     pub origin: Option<&'a str>,
     /// How long the response took, in milliseconds.
     pub latency_ms: u64,
+    /// Optional companion evidence (baseline, differential control, OAST hit) for specialized oracles.
+    pub probe: Option<&'a ProbeEvidence>,
 }
 
 /// Foreign origin sent by the CORS probe. `.invalid` can never be a real site.
@@ -218,6 +238,9 @@ pub fn is_sensitive_path(component: &str) -> bool {
     path.contains("/.")
         || [
             "phpinfo",
+            "info.php",
+            "secrets.json",
+            "secrets.yml",
             "/actuator",
             "server-status",
             "wp-config",
@@ -240,6 +263,7 @@ fn looks_like_secret_or_config(body: &str) -> bool {
     if lower.starts_with("<!") || lower.starts_with("<html") {
         return false;
     }
+    let body_low = body.to_ascii_lowercase();
     static KV: OnceLock<Regex> = OnceLock::new();
     re(
         &KV,
@@ -248,8 +272,17 @@ fn looks_like_secret_or_config(body: &str) -> bool {
     .is_match(body)
         || body.contains("[core]")
         || body.contains("repositoryformatversion")
+        || body.contains("ref: refs/")
         || body.contains("PHP Version")
         || body.contains("<?php")
+        || body.contains("\"propertySources\"")
+        || body.contains("\"cmdline\"")
+        || body.contains("\"memstats\"")
+        || body_low.contains("-- mysql dump")
+        || body_low.contains("postgresql database dump")
+        || body_low.contains("create table ")
+        || body_low.contains("apache server status")
+        || body_low.contains("aws_access_key_id")
         || crate::llm::redact_for_llm(body) != body
 }
 
@@ -273,6 +306,9 @@ fn derive_expectation(case: &PlannedCase, tech: Technique) -> Expect {
             200..=299 => Expect::Success.min_exact(e),
             _ => Expect::Exact(e),
         };
+    }
+    if case.probe_oracle.is_some() && tech != Technique::Authz {
+        return Expect::Unspecified;
     }
     let t = case.expected_behavior.to_ascii_lowercase();
     let has = |ws: &[&str]| ws.iter().any(|w| t.contains(w));
@@ -302,6 +338,9 @@ fn derive_expectation(case: &PlannedCase, tech: Technique) -> Expect {
         "encoded",
         "escaped",
         "sanitiz",
+        "literally",
+        "never evaluated",
+        "not evaluated",
         "handled",
         "graceful",
         "without crash",
@@ -585,6 +624,49 @@ fn not_exercised(code: u16) -> Option<&'static str> {
     }
 }
 
+pub(crate) fn is_privileged_api_path(path: &str) -> bool {
+    let p = path.split('?').next().unwrap_or(path).to_ascii_lowercase();
+    p.split('/')
+        .map(|s| s.trim_matches(|c| c == '{' || c == '}'))
+        .any(|seg| {
+            matches!(
+                seg,
+                "admin"
+                    | "internal"
+                    | "staff"
+                    | "superuser"
+                    | "superadmin"
+                    | "manage"
+                    | "management"
+                    | "roles"
+                    | "permissions"
+                    | "audit"
+                    | "metrics"
+                    | "debug"
+            )
+        })
+}
+
+fn is_rbac_scope_refusal(case: &PlannedCase, o: &Observation) -> bool {
+    if !o.authenticated || o.status != 403 {
+        return false;
+    }
+    let role_is_priv = case.role.as_deref().is_some_and(|r| {
+        let up = r.to_ascii_uppercase();
+        ["ADMIN", "ROOT", "SUPER", "SYSTEM", "STAFF"]
+            .iter()
+            .any(|p| up.contains(p))
+    });
+    if role_is_priv {
+        return false;
+    }
+    is_privileged_api_path(&case.component)
+        || case
+            .contract
+            .as_ref()
+            .is_some_and(|c| c.responses.contains_key("403"))
+}
+
 fn expectation_checks(
     case: &PlannedCase,
     o: &Observation,
@@ -597,6 +679,7 @@ fn expectation_checks(
         return; // reported by server_error
     }
     let unauth_denied = !o.authenticated && matches!(code, 401 | 403);
+    let rbac_denied = is_rbac_scope_refusal(case, o);
     let rate_limited = code == 429;
     match exp {
         Expect::Unspecified | Expect::Denied => {}
@@ -615,6 +698,16 @@ fn expectation_checks(
                     None,
                     format!(
                         "expected HTTP {e} but the request was refused with {code}: no credential for this role (set RH_<ROLE>_TOKEN)"
+                    ),
+                )
+            } else if rbac_denied && (200..=299).contains(&e) {
+                chk(
+                    "expected_status",
+                    Verdict::Inconclusive,
+                    None,
+                    format!(
+                        "expected HTTP {e}, got HTTP 403 Forbidden for non-privileged role `{}` (supply an admin credential to verify privileged contract)",
+                        case.role.as_deref().unwrap_or("user")
                     ),
                 )
             } else if rate_limited {
@@ -649,6 +742,16 @@ fn expectation_checks(
                     None,
                     format!(
                         "expected success but refused with {code}: no credential for this role (set RH_<ROLE>_TOKEN)"
+                    ),
+                )
+            } else if rbac_denied {
+                chk(
+                    "expected_status",
+                    Verdict::Inconclusive,
+                    None,
+                    format!(
+                        "expected 2xx, got HTTP 403 Forbidden for non-privileged role `{}` (supply an admin credential to verify privileged contract)",
+                        case.role.as_deref().unwrap_or("user")
                     ),
                 )
             } else if rate_limited {
@@ -1362,6 +1465,12 @@ pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
         }
     }
 
+    // 7b. Specialized verification oracles (BooleanDiff, TimeDelay, SSTI, OpenRedirect, OAST)
+    probe_oracle_checks(case, o, tech, &mut checks);
+
+    // 7c. Excessive Data Exposure (unmasked secret/hash/PII keys in 2xx JSON responses)
+    excessive_data_exposure_check(case, o, &mut checks);
+
     // 8. an LLM-proposed case brings its own expectation. That is a hypothesis, not evidence:
     //    only deterministic invariant checks (5xx, disclosure, reflection, traversal, mass
     //    assignment, CORS, authz on a route discovery/spec says is protected) may fail it.
@@ -1396,6 +1505,12 @@ pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
                 | "contract_fields"
                 | "content_type"
                 | "cors"
+                | "blind_boolean_injection"
+                | "blind_time_injection"
+                | "ssti"
+                | "open_redirect"
+                | "oast_callback"
+                | "excessive_data_exposure"
         )
     });
     let robustness = matches!(
@@ -1429,6 +1544,502 @@ pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
     }
 }
 
+/// Normalize volatile digits and whitespace so timestamps/request IDs don't masquerade as boolean diffs.
+fn normalize_diff_body(s: &str) -> String {
+    let mut out = String::with_capacity(s.len().min(8192));
+    let mut prev_space = false;
+    for c in s.chars().take(8192) {
+        if c.is_ascii_digit() {
+            out.push('0');
+            prev_space = false;
+        } else if c.is_whitespace() {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(c);
+            prev_space = false;
+        }
+    }
+    out
+}
+
+fn body_meaningfully_differs(status_a: u16, body_a: &str, status_b: u16, body_b: &str) -> bool {
+    if status_a != status_b {
+        return true;
+    }
+    let na = normalize_diff_body(body_a);
+    let nb = normalize_diff_body(body_b);
+    if na == nb {
+        return false;
+    }
+    let max_len = na.len().max(nb.len());
+    let delta = na.len().abs_diff(nb.len());
+    if delta >= 24 && (delta * 100) >= max_len.saturating_mul(15) {
+        return true;
+    }
+    let set_a: std::collections::HashSet<&str> = na
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .collect();
+    let set_b: std::collections::HashSet<&str> = nb
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .collect();
+    let union = set_a.union(&set_b).count();
+    if union == 0 {
+        return na != nb;
+    }
+    let inter = set_a.intersection(&set_b).count();
+    (inter * 100) < (union * 80)
+}
+
+fn redirect_targets_host(location: &str, canary_host: &str) -> bool {
+    let loc = location.trim();
+    let needle = canary_host.to_ascii_lowercase();
+    // Protocol-relative or backslash-prefixed bypasses (e.g. //canary.invalid or /\canary.invalid)
+    let stripped = loc.trim_start_matches('/').trim_start_matches('\\');
+    if let Ok(u) = reqwest::Url::parse(loc)
+        && let Some(h) = u.host_str()
+    {
+        let h = h.to_ascii_lowercase();
+        return h == needle || h.ends_with(&format!(".{needle}"));
+    }
+    if (loc.starts_with("//") || loc.starts_with("/\\"))
+        && let Some(host_part) = stripped.split(['/', '?', '#']).next()
+    {
+        let h = host_part
+            .split(':')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        return h == needle || h.ends_with(&format!(".{needle}"));
+    }
+    false
+}
+
+fn probe_oracle_checks(
+    case: &PlannedCase,
+    o: &Observation,
+    _tech: Technique,
+    checks: &mut Vec<OracleCheck>,
+) {
+    let Some(oracle_kind) = &case.probe_oracle else {
+        return;
+    };
+    match oracle_kind {
+        ProbeOracle::BooleanDiff { .. } => {
+            let Some(ev) = o.probe else {
+                checks.push(chk(
+                    "blind_boolean_injection",
+                    Verdict::Inconclusive,
+                    None,
+                    "boolean differential probe lacked baseline/control responses",
+                ));
+                return;
+            };
+            let (Some(base), Some(ctrl)) = (&ev.baseline, &ev.control) else {
+                checks.push(chk(
+                    "blind_boolean_injection",
+                    Verdict::Inconclusive,
+                    None,
+                    "boolean differential probe lacked baseline or false control",
+                ));
+                return;
+            };
+            let true_vs_false =
+                body_meaningfully_differs(o.status, o.body, ctrl.status, &ctrl.body);
+            let true_matches_base =
+                !body_meaningfully_differs(base.status, &base.body, o.status, o.body);
+            let true_returns_more = (200..300).contains(&o.status)
+                && (o.status != ctrl.status || o.body.len() > ctrl.body.len().saturating_add(20));
+            if true_vs_false && (true_matches_base || true_returns_more) {
+                checks.push(chk(
+                    "blind_boolean_injection",
+                    Verdict::Fail,
+                    Some(severity_for("blind_boolean_injection", Technique::Injection)),
+                    format!(
+                        "true predicate (HTTP {}, {}B) diverged meaningfully from false control (HTTP {}, {}B)",
+                        o.status,
+                        o.body.len(),
+                        ctrl.status,
+                        ctrl.body.len()
+                    ),
+                ));
+            } else {
+                checks.push(chk(
+                    "blind_boolean_injection",
+                    Verdict::Pass,
+                    None,
+                    "true and false predicates did not induce a boolean response divergence",
+                ));
+            }
+        }
+        ProbeOracle::TimeDelay { min_delay_ms, .. } => {
+            let Some(base) = o.probe.and_then(|ev| ev.baseline.as_ref()) else {
+                checks.push(chk(
+                    "blind_time_injection",
+                    Verdict::Inconclusive,
+                    None,
+                    "time-delay probe lacked baseline latency measurement",
+                ));
+                return;
+            };
+            let required_delta = ((*min_delay_ms) * 3) / 4;
+            if o.latency_ms >= *min_delay_ms
+                && o.latency_ms >= base.latency_ms.saturating_add(required_delta)
+            {
+                checks.push(chk(
+                    "blind_time_injection",
+                    Verdict::Fail,
+                    Some(severity_for("blind_time_injection", Technique::Injection)),
+                    format!(
+                        "delayed payload took {}ms vs {}ms baseline (threshold {}ms)",
+                        o.latency_ms, base.latency_ms, min_delay_ms
+                    ),
+                ));
+            } else {
+                checks.push(chk(
+                    "blind_time_injection",
+                    Verdict::Pass,
+                    None,
+                    format!(
+                        "response latency ({}ms) remained within baseline ({}ms + <{}ms)",
+                        o.latency_ms, base.latency_ms, required_delta
+                    ),
+                ));
+            }
+        }
+        ProbeOracle::Ssti { expected_eval } => {
+            let literal_in_payload = case
+                .payload
+                .as_deref()
+                .is_some_and(|p| p.contains(expected_eval.as_str()));
+            let in_baseline = o
+                .probe
+                .and_then(|ev| ev.baseline.as_ref())
+                .is_some_and(|b| b.body.contains(expected_eval.as_str()));
+            if !expected_eval.is_empty()
+                && !literal_in_payload
+                && !in_baseline
+                && o.body.contains(expected_eval.as_str())
+            {
+                checks.push(chk(
+                    "ssti",
+                    Verdict::Fail,
+                    Some(severity_for("ssti", Technique::Injection)),
+                    format!(
+                        "template expression evaluated server-side (rendered '{}')",
+                        expected_eval
+                    ),
+                ));
+            } else {
+                checks.push(chk(
+                    "ssti",
+                    Verdict::Pass,
+                    None,
+                    "template expression was not evaluated server-side",
+                ));
+            }
+        }
+        ProbeOracle::OpenRedirect { canary_host } => {
+            let loc = o
+                .headers
+                .iter()
+                .find(|(k, _)| k == "location")
+                .map(|(_, v)| v.as_str());
+            if (300..=399).contains(&o.status)
+                && let Some(loc_val) = loc
+                && redirect_targets_host(loc_val, canary_host)
+            {
+                checks.push(chk(
+                    "open_redirect",
+                    Verdict::Fail,
+                    Some(severity_for("open_redirect", Technique::Negative)),
+                    format!(
+                        "HTTP {} Location redirects to untrusted host '{canary_host}'",
+                        o.status
+                    ),
+                ));
+            } else {
+                checks.push(chk(
+                    "open_redirect",
+                    Verdict::Pass,
+                    None,
+                    "response does not redirect to attacker-controlled origin",
+                ));
+            }
+        }
+        ProbeOracle::OastCallback { .. } => {
+            let Some(ev) = o.probe else {
+                checks.push(chk(
+                    "oast_callback",
+                    Verdict::Inconclusive,
+                    None,
+                    "OAST callback evidence not collected",
+                ));
+                return;
+            };
+            if ev.oast_unavailable {
+                checks.push(chk(
+                    "oast_callback",
+                    Verdict::Inconclusive,
+                    None,
+                    "OAST callback listener unavailable during execution",
+                ));
+            } else if ev.oast_hit {
+                let detail = ev
+                    .oast_detail
+                    .as_deref()
+                    .unwrap_or("callback received on OAST listener");
+                checks.push(chk(
+                    "oast_callback",
+                    Verdict::Fail,
+                    Some(severity_for("oast_callback", Technique::Injection)),
+                    format!("out-of-band HTTP callback observed: {detail}"),
+                ));
+            } else {
+                checks.push(chk(
+                    "oast_callback",
+                    Verdict::Pass,
+                    None,
+                    "no out-of-band callback received",
+                ));
+            }
+        }
+        ProbeOracle::ExcessiveDataExposure => {}
+        ProbeOracle::GraphqlIntrospection => {
+            if !(200..300).contains(&o.status) {
+                checks.push(chk(
+                    "graphql_introspection",
+                    Verdict::Pass,
+                    None,
+                    format!(
+                        "GraphQL introspection did not expose schema (HTTP {})",
+                        o.status
+                    ),
+                ));
+                return;
+            }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(o.body)
+                && v.pointer("/data/__schema/types").is_some()
+            {
+                checks.push(chk(
+                    "graphql_introspection",
+                    Verdict::Fail,
+                    Some(severity_for("graphql_introspection", Technique::Other)),
+                    "GraphQL endpoint returned full __schema.types to introspection query",
+                ));
+            } else {
+                checks.push(chk(
+                    "graphql_introspection",
+                    Verdict::Pass,
+                    None,
+                    "GraphQL endpoint did not return __schema.types",
+                ));
+            }
+        }
+        ProbeOracle::DomXss { .. } => {
+            if let Some(evidence) = has_dom_xss_sink_flow(o.body) {
+                checks.push(chk(
+                    "dom_xss",
+                    Verdict::Fail,
+                    Some(Severity::High),
+                    format!("untrusted DOM source flows into dangerous sink: {evidence}"),
+                ));
+            } else {
+                checks.push(chk(
+                    "dom_xss",
+                    Verdict::Pass,
+                    None,
+                    "no untrusted DOM source-to-sink flow detected in HTML/script response",
+                ));
+            }
+        }
+    }
+}
+
+/// Detect high-confidence client-side DOM-XSS source-to-sink flows inside executable HTML `<script>`
+/// blocks (ignores `application/json` / `__NEXT_DATA__` data blocks and sanitized DOMPurify calls).
+pub fn has_dom_xss_sink_flow(html: &str) -> Option<String> {
+    static SCRIPT_RE: OnceLock<Regex> = OnceLock::new();
+    static DIRECT_FLOW_RE: OnceLock<Regex> = OnceLock::new();
+    static SRC_VAR_RE: OnceLock<Regex> = OnceLock::new();
+    static SINK_ARG_RE: OnceLock<Regex> = OnceLock::new();
+
+    let script_re = SCRIPT_RE.get_or_init(|| {
+        Regex::new(r#"(?is)<script\b([^>]*)>(.*?)</script>"#).expect("valid script regex")
+    });
+    let direct_re = DIRECT_FLOW_RE.get_or_init(|| {
+        Regex::new(r#"(?is)(?:\.(?:innerHTML|outerHTML)\s*(?:\+=|=)|document\.write(?:ln)?\s*\(|insertAdjacentHTML\s*\([^,]+,|eval\s*\()\s*[^;\n]{0,160}\b(?:location\.(?:hash|search|href)|window\.location(?:\.(?:hash|search|href))?|document\.(?:URL|documentURI|location)|URLSearchParams|window\.name)\b"#).expect("valid direct dom xss regex")
+    });
+    let src_var_re = SRC_VAR_RE.get_or_init(|| {
+        Regex::new(r#"(?is)\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*[^;\n]{0,140}\b(?:location\.(?:hash|search|href)|window\.location(?:\.(?:hash|search|href))?|document\.(?:URL|documentURI|location)|URLSearchParams|window\.name)\b"#).expect("valid src var regex")
+    });
+    let sink_arg_re = SINK_ARG_RE.get_or_init(|| {
+        Regex::new(r#"(?is)(?:\.(?:innerHTML|outerHTML)\s*(?:\+=|=)|document\.write(?:ln)?\s*\(|insertAdjacentHTML\s*\([^,]+,|eval\s*\()\s*([^;\n]{1,120})"#).expect("valid sink arg regex")
+    });
+
+    for cap in script_re.captures_iter(html) {
+        let attrs = cap
+            .get(1)
+            .map(|m| m.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if attrs.contains("application/json") || attrs.contains("application/ld+json") {
+            continue;
+        }
+        let code = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        if code.trim().is_empty()
+            || code.contains("DOMPurify.sanitize")
+            || code.contains("sanitizeHtml")
+        {
+            continue;
+        }
+        if let Some(m) = direct_re.find(code) {
+            return Some(m.as_str().trim().chars().take(120).collect());
+        }
+        let tainted_vars: Vec<&str> = src_var_re
+            .captures_iter(code)
+            .filter_map(|c| c.get(1).map(|v| v.as_str()))
+            .collect();
+        if !tainted_vars.is_empty() {
+            for sc in sink_arg_re.captures_iter(code) {
+                let rhs = sc.get(1).map(|m| m.as_str()).unwrap_or("");
+                if tainted_vars.iter().any(|var| {
+                    rhs.split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '$')
+                        .any(|tok| tok == *var)
+                }) {
+                    return Some(
+                        sc.get(0)
+                            .map(|m| m.as_str())
+                            .unwrap_or("")
+                            .trim()
+                            .chars()
+                            .take(120)
+                            .collect(),
+                    );
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_sensitive_json_keys(
+    v: &serde_json::Value,
+    explicit: bool,
+    depth: usize,
+    nodes: &mut usize,
+    hits: &mut Vec<String>,
+) {
+    if depth > 8 || *nodes > 256 || hits.len() >= 5 {
+        return;
+    }
+    *nodes += 1;
+    match v {
+        serde_json::Value::Object(map) => {
+            for (k, val) in map {
+                let lk = k.to_ascii_lowercase();
+                let is_secret = matches!(
+                    lk.as_str(),
+                    "password_hash"
+                        | "hashed_password"
+                        | "password_digest"
+                        | "pwd_hash"
+                        | "salt"
+                        | "totp_secret"
+                        | "mfa_secret"
+                        | "two_factor_secret"
+                        | "private_key"
+                        | "signing_key"
+                        | "client_secret"
+                        | "secret_key"
+                        | "ssn"
+                        | "credit_card"
+                        | "card_number"
+                        | "cvv"
+                ) || (explicit
+                    && matches!(lk.as_str(), "api_key" | "apikey" | "secret"));
+                if is_secret {
+                    let exposed = match val {
+                        serde_json::Value::Null => false,
+                        serde_json::Value::String(s) => {
+                            let t = s.trim();
+                            !t.is_empty()
+                                && !t.chars().all(|c| c == '*')
+                                && !t.eq_ignore_ascii_case("<redacted>")
+                                && !t.eq_ignore_ascii_case("redacted")
+                        }
+                        _ => true,
+                    };
+                    if exposed && !hits.contains(k) {
+                        hits.push(k.clone());
+                    }
+                }
+                find_sensitive_json_keys(val, explicit, depth + 1, nodes, hits);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter().take(20) {
+                find_sensitive_json_keys(item, explicit, depth + 1, nodes, hits);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn excessive_data_exposure_check(
+    case: &PlannedCase,
+    o: &Observation,
+    checks: &mut Vec<OracleCheck>,
+) {
+    if !(200..300).contains(&o.status) {
+        return;
+    }
+    let explicit = matches!(case.probe_oracle, Some(ProbeOracle::ExcessiveDataExposure));
+    let trimmed = o.body.trim();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        if explicit {
+            checks.push(chk(
+                "excessive_data_exposure",
+                Verdict::Pass,
+                None,
+                "response body is not JSON containing sensitive fields",
+            ));
+        }
+        return;
+    }
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+        return;
+    };
+    let mut hits = Vec::new();
+    let mut nodes = 0usize;
+    find_sensitive_json_keys(&val, explicit, 0, &mut nodes, &mut hits);
+    if !hits.is_empty() {
+        checks.push(chk(
+            "excessive_data_exposure",
+            Verdict::Fail,
+            Some(severity_for(
+                "excessive_data_exposure",
+                Technique::parse(&case.technique),
+            )),
+            format!(
+                "response exposes unmasked sensitive JSON field(s): {}",
+                hits.join(", ")
+            ),
+        ));
+    } else if explicit {
+        checks.push(chk(
+            "excessive_data_exposure",
+            Verdict::Pass,
+            None,
+            "no unmasked sensitive fields exposed in JSON response",
+        ));
+    }
+}
+
 // ---------------------------------------------------------------- typed oracles for sub-checks
 
 /// What a two-actor stateful chain observed. The executor reports facts; the verdict (and its
@@ -1458,6 +2069,13 @@ pub enum StatefulFacts {
         step: u32,
         status: Option<u16>,
         reason: String,
+    },
+    /// A stateful security invariant was triggered (e.g. persisted mass assignment or logic bypass).
+    Violation {
+        step: u32,
+        code: String,
+        severity: Severity,
+        detail: String,
     },
 }
 
@@ -1491,6 +2109,17 @@ pub fn judge_stateful(f: &StatefulFacts) -> OracleOutcome {
                 "prerequisite step {step} not met{}: {reason}",
                 status.map(|s| format!(" (HTTP {s})")).unwrap_or_default()
             ),
+        ),
+        StatefulFacts::Violation {
+            step,
+            code,
+            severity,
+            detail,
+        } => chk(
+            code,
+            Verdict::Fail,
+            Some(*severity),
+            format!("step {step} triggered security invariant violation: {detail}"),
         ),
         StatefulFacts::Workflow { failed_step: None } => chk(
             "expected_status",
@@ -1639,8 +2268,15 @@ fn counters(body: &str) -> Vec<(String, f64)> {
 }
 
 /// Concurrency verdict from invariants only. "Every request answered 2xx" is not a race: FAIL needs
-/// a violated invariant (duplicate created ids, or acknowledged increments missing on re-read).
+/// a violated invariant (duplicate created ids, lost increment, balance/stock underflow, or
+/// concurrent multiple redemption on single-use flows).
 pub fn judge_burst(f: &BurstFacts) -> OracleOutcome {
+    judge_burst_on_path(f, "")
+}
+
+/// [`judge_burst`] with endpoint path context so single-use/redemption endpoints can also detect
+/// missing idempotency / concurrency locking (`409 Conflict`).
+pub fn judge_burst_on_path(f: &BurstFacts, path: &str) -> OracleOutcome {
     let mut checks = vec![];
     let mut warnings = vec![];
     let method = f.method.to_ascii_uppercase();
@@ -1670,6 +2306,7 @@ pub fn judge_burst(f: &BurstFacts) -> OracleOutcome {
         return outcome(checks, warnings);
     }
     let mut evaluated = false;
+    let mut distinct_created_ids = 0usize;
 
     // invariant A: concurrent creations must not hand out the same id twice
     if method == "POST" {
@@ -1687,6 +2324,7 @@ pub fn judge_burst(f: &BurstFacts) -> OracleOutcome {
             evaluated = true;
             let mut seen = std::collections::BTreeSet::new();
             let dup = ids.iter().find(|i| !seen.insert((*i).clone())).cloned();
+            distinct_created_ids = seen.len();
             match dup {
                 Some(d) => checks.push(chk(
                     "race_condition",
@@ -1764,6 +2402,86 @@ pub fn judge_burst(f: &BurstFacts) -> OracleOutcome {
         }
     }
 
+    // invariant C: concurrent state transitions must never drive finite resource counters negative
+    let pre_neg: std::collections::BTreeSet<String> = f
+        .pre_read
+        .map(|p| {
+            counters(p)
+                .into_iter()
+                .filter(|(_, v)| *v < 0.0)
+                .map(|(k, _)| k)
+                .collect()
+        })
+        .unwrap_or_default();
+    let finite_keys = ["balance", "stock", "remaining", "inventory"];
+    let mut neg_hit: Option<(String, f64)> = None;
+    for body_counters in f
+        .post_read
+        .into_iter()
+        .map(counters)
+        .chain(ok.iter().map(|r| counters(&r.body)))
+    {
+        for (k, v) in body_counters {
+            if finite_keys.contains(&k.as_str()) && v < 0.0 && !pre_neg.contains(&k) {
+                neg_hit = Some((k, v));
+                break;
+            }
+        }
+        if neg_hit.is_some() {
+            break;
+        }
+    }
+    if let Some((k, v)) = neg_hit {
+        evaluated = true;
+        checks.push(chk(
+            "race_condition",
+            Verdict::Fail,
+            Some(severity_for("race_condition", Technique::Other)),
+            format!("TOCTOU underflow: concurrent requests drove '{k}' negative ({v})"),
+        ));
+    }
+
+    // invariant D: single-use redemption flows must allow at most one concurrent success
+    // unless each request demonstrably created a distinct object id.
+    let pl = path.to_ascii_lowercase();
+    let is_single_use_flow = [
+        "/redeem",
+        "/coupon",
+        "/voucher",
+        "/claim",
+        "/vote",
+        "/checkout",
+        "/approve",
+    ]
+    .iter()
+    .any(|kw| pl.contains(kw));
+    if !evaluated && is_single_use_flow && distinct_created_ids <= 1 {
+        evaluated = true;
+        if ok.len() >= 2 {
+            checks.push(chk(
+                "race_condition",
+                Verdict::Fail,
+                Some(severity_for("race_condition", Technique::Other)),
+                format!(
+                    "{} of {} concurrent identical requests succeeded on single-use flow '{path}' without conflict rejection",
+                    ok.len(),
+                    f.requested
+                ),
+            ));
+        } else {
+            checks.push(chk(
+                "race_condition",
+                Verdict::Pass,
+                None,
+                format!(
+                    "only {} of {} concurrent requests succeeded on '{path}'; duplicates were safely rejected",
+                    ok.len(),
+                    f.requested
+                ),
+            ));
+        }
+    }
+
     if !evaluated {
         checks.push(chk(
             "race_condition",
@@ -1792,6 +2510,9 @@ mod tests {
             technique: tech.into(),
             input_hint: String::new(),
             payload: None,
+            headers: vec![],
+            content_type: None,
+            probe_oracle: None,
             expected_behavior: String::new(),
             expected_status: None,
             risk_level: "medium".into(),
@@ -1824,6 +2545,7 @@ mod tests {
             request_body: None,
             origin: None,
             latency_ms: 5,
+            probe: None,
         }
     }
 
@@ -2846,6 +3568,234 @@ mod tests {
             let msg = r.reason().unwrap();
             assert!(msg.contains(article), "{msg}");
             assert!(!msg.contains("a injection"), "{msg}");
+        }
+    }
+
+    #[test]
+    fn blind_boolean_diff_flags_when_true_diverges_from_false_and_passes_on_identical() {
+        let mut c = case("injection", "GET", "/items");
+        c.payload = Some("q=' OR '1'='1".into());
+        c.probe_oracle = Some(crate::agent::types::ProbeOracle::BooleanDiff {
+            baseline_payload: "q=widget".into(),
+            false_payload: "q=' AND '1'='2".into(),
+        });
+        // Vulnerable: baseline & true return rich item list; false returns empty
+        let vuln_ev = ProbeEvidence {
+            baseline: Some(ProbeSnapshot {
+                status: 200,
+                body: "{\"items\":[{\"id\":1,\"name\":\"widget\"},{\"id\":2,\"name\":\"gadget\"}]}"
+                    .into(),
+                latency_ms: 4,
+            }),
+            control: Some(ProbeSnapshot {
+                status: 200,
+                body: "{\"items\":[]}".into(),
+                latency_ms: 4,
+            }),
+            ..ProbeEvidence::default()
+        };
+        let mut o = obs(
+            200,
+            "application/json",
+            "{\"items\":[{\"id\":1,\"name\":\"widget\"},{\"id\":2,\"name\":\"gadget\"}]}",
+        );
+        o.probe = Some(&vuln_ev);
+        let out = judge(&c, &o);
+        assert_eq!(out.verdict, Verdict::Fail);
+        assert!(
+            out.checks
+                .iter()
+                .any(|k| k.code == "blind_boolean_injection" && k.verdict == Verdict::Fail),
+            "{:?}",
+            out.checks
+        );
+
+        // Safe: baseline returns normal list while true and false both return empty (treated as literal search term)
+        let safe_ev = ProbeEvidence {
+            baseline: Some(ProbeSnapshot {
+                status: 200,
+                body: "{\"items\":[{\"id\":1,\"name\":\"widget\"}]}".into(),
+                latency_ms: 4,
+            }),
+            control: Some(ProbeSnapshot {
+                status: 200,
+                body: "{\"items\":[]}".into(),
+                latency_ms: 4,
+            }),
+            ..ProbeEvidence::default()
+        };
+        let mut o2 = obs(200, "application/json", "{\"items\":[]}");
+        o2.probe = Some(&safe_ev);
+        assert_eq!(judge(&c, &o2).verdict, Verdict::Pass);
+    }
+
+    #[test]
+    fn blind_time_delay_flags_only_when_delayed_above_baseline() {
+        let mut c = case("injection", "GET", "/search");
+        c.payload = Some("q=' OR SLEEP(1)--".into());
+        c.probe_oracle = Some(crate::agent::types::ProbeOracle::TimeDelay {
+            baseline_payload: "q=test".into(),
+            min_delay_ms: 150,
+        });
+        let slow_ev = ProbeEvidence {
+            baseline: Some(ProbeSnapshot {
+                status: 200,
+                body: "{}".into(),
+                latency_ms: 8,
+            }),
+            ..ProbeEvidence::default()
+        };
+        let mut o = obs(200, "application/json", "{}");
+        o.latency_ms = 210;
+        o.probe = Some(&slow_ev);
+        let out = judge(&c, &o);
+        assert_eq!(out.verdict, Verdict::Fail);
+        assert!(
+            out.checks
+                .iter()
+                .any(|k| k.code == "blind_time_injection" && k.verdict == Verdict::Fail)
+        );
+
+        // Fast probe: PASS
+        o.latency_ms = 12;
+        assert_eq!(judge(&c, &o).verdict, Verdict::Pass);
+    }
+
+    #[test]
+    fn ssti_flags_evaluated_arithmetic_and_ignores_literal_echo() {
+        let mut c = case("injection", "GET", "/greet");
+        c.payload = Some("name={{1337*79}}".into());
+        c.probe_oracle = Some(crate::agent::types::ProbeOracle::Ssti {
+            expected_eval: "105623".into(),
+        });
+        let out_eval = judge(&c, &obs(200, "text/html", "Hello 105623!"));
+        assert_eq!(out_eval.verdict, Verdict::Fail);
+        assert!(out_eval.checks.iter().any(|k| k.code == "ssti"));
+
+        let out_echo = judge(
+            &c,
+            &obs(
+                200,
+                "text/html",
+                "Hello &lbrace;&lbrace;1337*79&rbrace;&rbrace;",
+            ),
+        );
+        assert_eq!(out_echo.verdict, Verdict::Pass);
+    }
+
+    #[test]
+    fn open_redirect_flags_external_canary_location_and_allows_safe_redirect() {
+        let mut c = case(
+            "negative",
+            "GET",
+            "/login?next=https://readyhai-redirect.invalid/",
+        );
+        c.probe_oracle = Some(crate::agent::types::ProbeOracle::OpenRedirect {
+            canary_host: "readyhai-redirect.invalid".into(),
+        });
+        let mut o = obs(302, "text/plain", "");
+        let evil = [(
+            "location".to_string(),
+            "https://readyhai-redirect.invalid/steal".to_string(),
+        )];
+        o.headers = &evil;
+        let out = judge(&c, &o);
+        assert_eq!(out.verdict, Verdict::Fail);
+        assert!(
+            out.checks
+                .iter()
+                .any(|k| k.code == "open_redirect" && k.verdict == Verdict::Fail)
+        );
+
+        let safe = [("location".to_string(), "/dashboard".to_string())];
+        o.headers = &safe;
+        assert_eq!(judge(&c, &o).verdict, Verdict::Pass);
+    }
+
+    #[test]
+    fn oast_callback_flags_confirmed_hit_and_inconclusive_when_unavailable() {
+        let mut c = case("injection", "POST", "/webhook");
+        c.probe_oracle = Some(crate::agent::types::ProbeOracle::OastCallback {
+            placeholder: "__OAST_URL__".into(),
+            wait_ms: 200,
+        });
+        let hit_ev = ProbeEvidence {
+            oast_hit: true,
+            oast_detail: Some("GET /oast/abc from 127.0.0.1".into()),
+            ..ProbeEvidence::default()
+        };
+        let mut o = obs(200, "application/json", "{\"queued\":true}");
+        o.probe = Some(&hit_ev);
+        let out = judge(&c, &o);
+        assert_eq!(out.verdict, Verdict::Fail);
+        assert!(
+            out.checks
+                .iter()
+                .any(|k| k.code == "oast_callback" && k.verdict == Verdict::Fail)
+        );
+
+        let unavail = ProbeEvidence {
+            oast_unavailable: true,
+            ..ProbeEvidence::default()
+        };
+        o.probe = Some(&unavail);
+        assert_eq!(judge(&c, &o).verdict, Verdict::Inconclusive);
+    }
+
+    #[test]
+    fn excessive_data_exposure_flags_unmasked_secret_fields() {
+        let mut c = case("state_transition", "GET", "/api/users/1");
+        c.probe_oracle = Some(crate::agent::types::ProbeOracle::ExcessiveDataExposure);
+        let o = obs(
+            200,
+            "application/json",
+            r#"{"id":1,"email":"a@b.com","password_hash":"$2b$12$abcdef"}"#,
+        );
+        let out = judge(&c, &o);
+        assert_eq!(out.verdict, Verdict::Fail);
+        let chk = out
+            .checks
+            .iter()
+            .find(|k| k.code == "excessive_data_exposure")
+            .unwrap();
+        assert!(
+            !chk.detail.contains("$2b$12$abcdef"),
+            "must not leak raw secret value"
+        );
+
+        let clean = obs(200, "application/json", r#"{"id":1,"email":"a@b.com"}"#);
+        let mut c2 = case("state_transition", "GET", "/api/users/1");
+        c2.expected_status = Some(200);
+        c2.probe_oracle = Some(crate::agent::types::ProbeOracle::ExcessiveDataExposure);
+        assert_eq!(judge(&c2, &clean).verdict, Verdict::Pass);
+    }
+
+    #[test]
+    fn sensitive_path_and_config_body_recognizes_git_head_actuator_sql_and_vars() {
+        for p in [
+            "/.git/HEAD",
+            "/actuator/env",
+            "/backup.sql",
+            "/debug/vars",
+            "/secrets.json",
+        ] {
+            assert!(is_sensitive_path(p), "{p}");
+            let mut c = case("authz", "GET", p);
+            c.expected_status = Some(404);
+            let body = match p {
+                "/.git/HEAD" => "ref: refs/heads/main\n",
+                "/actuator/env" => {
+                    r#"{"activeProfiles":["prod"],"propertySources":[{"name":"env"}]}"#
+                }
+                "/backup.sql" => "-- MySQL dump 10.13\nCREATE TABLE users (id int);",
+                "/debug/vars" => r#"{"cmdline":["/usr/local/bin/app"],"memstats":{}}"#,
+                _ => "STRIPE_SECRET=sk_live_test_51234567890abcdef",
+            };
+            assert_eq!(
+                judge(&c, &obs(200, "text/plain", body)).verdict,
+                Verdict::Fail,
+                "{p}"
+            );
         }
     }
 }

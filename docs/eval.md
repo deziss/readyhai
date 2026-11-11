@@ -64,9 +64,11 @@ silently and cannot turn the job red for something that is not a regression:
 | `agent-spa` | `agent` | the agent against `tests/fixtures/spa-next` (a fake Next.js app behind a login wall: `/` is a 307 to `/login`, every unknown path is the same 200 HTML shell, the API lives only in the JS chunks the shell loads), **no spec**, test accounts `alice` and `bob`, deterministic, no LLM | the 3 bugs listed in `tests/fixtures/spa-next/server.py`: an IDOR on `GET /api/orders/{id}`, a SQL error and stack trace leaked by `?q='` (500), a 500 on out-of-range `limit` / `offset`. Recall >= 0.85, inconclusive rate <= 25%, verdict `NO_GO` |
 | `agent-spa-clean` | `agent` | the same app started with `--clean` (`target.server_args`), the same accounts | none: every bug is fixed. The false-positive guard: the verdict must **not** be `NO_GO`, at most 1 reported defect, inconclusive rate <= 25% |
 | `agent-spa-noauth` | `agent` | the same buggy app with **no credentials** | none can be seen. The agent cannot get past the wall and must say so: verdict `NOT_EVALUATED`, an `auth_wall` blocker in the ledger, no defect reported |
+| `security-deep` | `agent` | the agent (`profile = "deep"`, `max_steps = 120`, `alice` + `admin` JWTs) against `tests/fixtures/security-deep/server.py` + `openapi.json`, deterministic, no LLM | 12 seeded security loopholes (boolean & time-delay blind SQLi, SSTI, blind OAST SSRF, open redirect, JWT `alg:none`, BFLA, mass assignment, negative quantity, TOCTOU race, DOM XSS, stored XSS) plus clean negative controls; `max_false_positives = 0`, `min_recall = 0.85`, verdict `NO_GO` |
+| `whitebox-exploit` | `agent` | the agent (`profile = "standard"`, `max_steps = 40`) with `[target.repo]` (`diff_base = false`, `require_source_context = true`) against `tests/fixtures/whitebox-exploit` | discovers undocumented `/internal/debug-export` via Tree-sitter AST analysis, exploits its SQLi, and attaches `file:line` source linkage (`app.py:9 handler debug_export`); `min_recall = 1.0`, `max_false_positives = 0`, verdict `NO_GO` |
 | `qa-repo` | `repo` | static `engine::scan` (QA checks on) of `tests/fixtures/qa-repo`, findings with the `qa.` prefix | the suite/release defects in `tests/fixtures/qa-repo/EXPECTED.md` |
 
-Expected verdicts (`expect_verdict`, every run must end with it): `qa-api` `NoGo/Fail`, `qa-repo` none, `agent-api`, `agent-memory` and `agent-spa` `NO_GO`, `agent-diff` `CONDITIONAL_GO`, `agent-spa-noauth` `NOT_EVALUATED`. `agent-spa-clean` forbids `NO_GO` instead of naming one.
+Expected verdicts (`expect_verdict`, every run must end with it): `qa-api` `NoGo/Fail`, `qa-repo` none, `agent-api`, `agent-memory`, `agent-spa`, `security-deep` and `whitebox-exploit` `NO_GO`, `agent-diff` `CONDITIONAL_GO`, `agent-spa-noauth` `NOT_EVALUATED`. `agent-spa-clean` forbids `NO_GO` instead of naming one.
 
 The three SPA suites exist because the first real run against a thin, login-walled SPA (NuHire) ended `NO_GO` at 55 with 15 of 18 cases INCONCLUSIVE, none of them a defect of the app: the agent's own blind spots (a 307 it did not follow, input tests aimed at an HTML shell, no route or API call found in the JS). They measure that directly: `agent-spa` that the agent gets through the wall and finds the API and the bugs behind it with few inconclusive cases, `agent-spa-clean` that it does not invent a failing verdict, `agent-spa-noauth` that missing evidence is reported as "not evaluated" with its reason and not as a failure.
 
@@ -156,8 +158,10 @@ profile = "standard"                           # quick | standard | deep
 max_steps = 50                                 # agent only
 [target.tokens]                                # FAKE fixture tokens only
 alice = "alice-token"
-[target.repo]                                  # agent only: a git repo built per run, for change-aware planning
-commits = ["tests/fixtures/qa-api-src/base", "tests/fixtures/qa-api-src/change"]   # copied over each other and committed; the first is tagged `base` = the run's diff_base
+[target.repo]                                  # agent only: a repo copied per run for white-box AST and/or diff planning
+commits = ["tests/fixtures/qa-api-src/base", "tests/fixtures/qa-api-src/change"]   # 1 or more commits copied over each other; when diff_base = true (default), commit 1 is tagged `base` as --diff-base
+diff_base = true                               # set false for pure white-box AST repo analysis without a git diff
+require_source_context = false                 # when true, every matched defect must carry file:line handler source linkage
 
 [memory]                                       # agent only: run the agent N times in the same data directory
 runs = 2                                       # 2..=5; the last run is scored, the series must remember (see above)

@@ -551,8 +551,9 @@ pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
         h.push_str("<div class=\"wrap\"><table><thead><tr><th>Severity</th><th>Defect</th><th>Cases</th><th>Fix</th></tr></thead><tbody>");
         for d in &rep.triaged_defects {
             h.push_str(&format!(
-                "<tr><td><b>{}</b> {}</td><td>{}<div class=\"mut\">{} &middot; {} &middot; verification: {}</div>{}{}</td><td>{}</td><td>{}</td></tr>",
+                "<tr><td><b>{}</b> {}</td><td>{}<div class=\"mut\">{} &middot; {} &middot; verification: {}</div>{}{}{}</td><td>{}</td><td>{}</td></tr>",
                 html_escape(&d.severity.to_uppercase()), html_escape(&d.priority), html_escape(&d.title), html_escape(&d.owasp_category), html_escape(&d.component), html_escape(&defect_verification(d)),
+                d.source_context.as_ref().map(|s| format!("<div class=\"mut\">source: {}</div>", html_escape(s))).unwrap_or_default(),
                 d.accepted.as_ref().map(|a| format!("<div><span class=\"badge badge-cond\">accepted, does not block</span> by {} until {}: {}</div>", html_escape(&a.by), html_escape(&a.expires), html_escape(&a.reason))).unwrap_or_default(),
                 d.ai_note.as_ref().map(|n| format!("<div><span class=\"badge badge-ne\">AI note, advisory</span> {}</div>", html_escape(n))).unwrap_or_default(),
                 cites(&d.case_ids, &d.evidence_files), html_escape(&d.recommended_fix)
@@ -1409,6 +1410,17 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
                 md_text(&d.recommended_fix)
             ));
         }
+        for d in rep
+            .triaged_defects
+            .iter()
+            .filter(|d| d.source_context.is_some())
+        {
+            md.push_str(&format!(
+                "\n> Source location for {}: {}\n",
+                md_text(&d.id),
+                md_text(d.source_context.as_deref().unwrap_or(""))
+            ));
+        }
         for d in rep.triaged_defects.iter().filter(|d| d.ai_note.is_some()) {
             md.push_str(&format!(
                 "\n> AI note on {} (advisory): {}\n",
@@ -1482,6 +1494,9 @@ pub fn generate_agent_sarif_report(rep: &AgentRunReport) -> serde_json::Value {
         });
         if !d.fingerprint.is_empty() {
             result["partialFingerprints"] = serde_json::json!({"readyhai/v1": d.fingerprint});
+        }
+        if let Some(sc) = &d.source_context {
+            result["properties"]["sourceContext"] = serde_json::json!(sc);
         }
         if let Some(a) = &d.accepted {
             // an operator accepted it until `expires`: SARIF's own way to say "listed, not blocking"
