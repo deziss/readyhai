@@ -620,6 +620,31 @@ fn crawl_targets(d: &Discovery, creds: &Credentials, max_routes: usize) -> Vec<I
             });
         }
     }
+    if out.is_empty() {
+        // Fallback for web applications without query-string links: probe the accessible entry page
+        let candidate = d.routes.iter().find(|r| {
+            r.source != "probe"
+                && !r.catch_all
+                && !r.is_spa_shell
+                && !r.auth_wall
+                && (has_role || !matches!(r.status_code, 401 | 403))
+        });
+        if let Some(r) = candidate {
+            let base_path = r.path.split('?').next().unwrap_or(&r.path);
+            out.push(InjectionTarget {
+                method: "GET".into(),
+                component: base_path.to_string(),
+                label: format!("GET {base_path}"),
+                role: acting,
+                secured: matches!(r.status_code, 401 | 403),
+                param_name: "q".into(),
+                sample: "readyhai".into(),
+                base_query: vec![("q".into(), "readyhai".into())],
+                base_json: None,
+                source: "attacks",
+            });
+        }
+    }
     out
 }
 
