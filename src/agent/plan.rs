@@ -442,8 +442,13 @@ fn baseline(d: &Discovery, creds: &Credentials, notes: &mut Vec<String>) -> Vec<
     let has_unwalled_web_page = real
         .iter()
         .any(|r| !r.is_spa_shell && !r.catch_all && !is_walled(r));
-    let entry_walled = !has_role && real.iter().find(|r| r.path == entry).is_some_and(|r| is_walled(r));
-    let fallback_entry = entry_valid_web_page && has_unwalled_web_page && !entry_walled && d.spec.is_none();
+    let entry_walled = !has_role
+        && real
+            .iter()
+            .find(|r| r.path == entry)
+            .is_some_and(|r| is_walled(r));
+    let fallback_entry =
+        entry_valid_web_page && has_unwalled_web_page && !entry_walled && d.spec.is_none();
     let target_path: Option<String> = attack
         .map(|r| r.path.clone())
         .or_else(|| (blind || fallback_entry).then(|| entry.clone()));
@@ -1756,7 +1761,9 @@ pub(crate) fn validate_raw(
             known
                 .exact
                 .iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case(&norm_comp) || k.eq_ignore_ascii_case(&trimmed))
+                .find(|(k, _)| {
+                    k.eq_ignore_ascii_case(&norm_comp) || k.eq_ignore_ascii_case(&trimmed)
+                })
                 .map(|(_, r)| *r)
         })
         .ok_or_else(|| {
@@ -1874,7 +1881,10 @@ fn llm_extras(
     let mut effective_routes = d.routes.clone();
 
     // Always ensure root endpoint '/' is available in known routes
-    if !effective_routes.iter().any(|r| r.path == "/" && !r.catch_all) {
+    if !effective_routes
+        .iter()
+        .any(|r| r.path == "/" && !r.catch_all)
+    {
         effective_routes.push(DiscoveredRoute {
             path: "/".to_string(),
             method: "GET".to_string(),
@@ -1888,10 +1898,16 @@ fn llm_extras(
 
     // Extract any explicit URL paths from operator instructions (e.g. '/api/auth/session')
     if let Some(instr) = instructions {
-        if let Ok(path_re) = regex::Regex::new(r"(/[a-zA-Z0-9_\-\.\{\}]+(?:/[a-zA-Z0-9_\-\.\{\}]+)*)") {
+        if let Ok(path_re) =
+            regex::Regex::new(r"(/[a-zA-Z0-9_\-\.\{\}]+(?:/[a-zA-Z0-9_\-\.\{\}]+)*)")
+        {
             for cap in path_re.captures_iter(instr) {
-                let p = cap[1].trim_end_matches(&['.', ',', ';', ':', ')', ']', '"', '\'', ' '][..]);
-                if p.starts_with('/') && p.len() > 1 && !effective_routes.iter().any(|r| r.path == p) {
+                let p =
+                    cap[1].trim_end_matches(&['.', ',', ';', ':', ')', ']', '"', '\'', ' '][..]);
+                if p.starts_with('/')
+                    && p.len() > 1
+                    && !effective_routes.iter().any(|r| r.path == p)
+                {
                     effective_routes.push(DiscoveredRoute {
                         path: p.to_string(),
                         method: "GET".to_string(),
@@ -1908,7 +1924,9 @@ fn llm_extras(
             }
         }
         let lower = instr.to_ascii_lowercase();
-        let feature_words = ["chat", "prompt", "message", "query", "search", "comment", "feedback"];
+        let feature_words = [
+            "chat", "prompt", "message", "query", "search", "comment", "feedback",
+        ];
         for word in feature_words {
             if lower.contains(word) {
                 for candidate in [format!("/{word}"), format!("/api/{word}")] {
@@ -2114,7 +2132,10 @@ fn plan_directives(instructions: &str, d: &Discovery, creds: &Credentials) -> Ve
     let acting = user_or_anon(creds);
 
     // 1. Prompt override canary on chat / prompt injection
-    if lower.contains("canary") || lower.contains("prompt override") || lower.contains("prompt injection") {
+    if lower.contains("canary")
+        || lower.contains("prompt override")
+        || lower.contains("prompt injection")
+    {
         let chat_target = d
             .routes
             .iter()
@@ -2147,7 +2168,10 @@ fn plan_directives(instructions: &str, d: &Discovery, creds: &Credentials) -> Ve
     }
 
     // 2. Auth session check / unauthenticated access to /api/auth/session
-    if lower.contains("/api/auth/session") || lower.contains("unauthenticated access") || lower.contains("auth session check") {
+    if lower.contains("/api/auth/session")
+        || lower.contains("unauthenticated access")
+        || lower.contains("auth session check")
+    {
         let target = if lower.contains("/api/auth/session") {
             "/api/auth/session".to_string()
         } else {
@@ -2175,7 +2199,10 @@ fn plan_directives(instructions: &str, d: &Discovery, creds: &Credentials) -> Ve
     }
 
     // 3. 100KB boundary size on chat input
-    if lower.contains("100kb") || lower.contains("boundary size") || (lower.contains("boundary") && lower.contains("chat")) {
+    if lower.contains("100kb")
+        || lower.contains("boundary size")
+        || (lower.contains("boundary") && lower.contains("chat"))
+    {
         let chat_target = d
             .routes
             .iter()
@@ -4630,7 +4657,8 @@ mod tests {
             });
         }
         let instr = "Check unauthenticated access to /api/auth/session; Probe 100KB boundary size on chat input";
-        let path_re = regex::Regex::new(r"(/[a-zA-Z0-9_\-\.\{\}]+(?:/[a-zA-Z0-9_\-\.\{\}]+)*)").unwrap();
+        let path_re =
+            regex::Regex::new(r"(/[a-zA-Z0-9_\-\.\{\}]+(?:/[a-zA-Z0-9_\-\.\{\}]+)*)").unwrap();
         for cap in path_re.captures_iter(instr) {
             let p = cap[1].trim_end_matches(&['.', ',', ';', ':', ')', ']', '"', '\'', ' '][..]);
             if p.starts_with('/') && p.len() > 1 && !routes.iter().any(|r| r.path == p) {
@@ -4663,21 +4691,24 @@ mod tests {
             expected_status: Some(401),
             risk_level: Some("high".into()),
         };
-        let c = validate_raw(&raw_url, &effective_known, &creds).expect("full URL should resolve to path");
+        let c = validate_raw(&raw_url, &effective_known, &creds)
+            .expect("full URL should resolve to path");
         assert_eq!(c.component, "/api/auth/session");
 
         let raw_slash = RawCase {
             component: "/api/auth/session/".into(),
             ..raw_url.clone()
         };
-        let c2 = validate_raw(&raw_slash, &effective_known, &creds).expect("trailing slash should resolve");
+        let c2 = validate_raw(&raw_slash, &effective_known, &creds)
+            .expect("trailing slash should resolve");
         assert_eq!(c2.component, "/api/auth/session");
 
         let raw_query = RawCase {
             component: "/api/auth/session?token=test".into(),
             ..raw_url
         };
-        let c3 = validate_raw(&raw_query, &effective_known, &creds).expect("query string should resolve to base path");
+        let c3 = validate_raw(&raw_query, &effective_known, &creds)
+            .expect("query string should resolve to base path");
         assert_eq!(c3.component, "/api/auth/session");
     }
 
@@ -4718,12 +4749,22 @@ mod tests {
         );
         // Directives case is present
         assert!(
-            out.cases.iter().any(|c| c.source.as_deref() == Some("directives") && c.technique == "injection"),
+            out.cases
+                .iter()
+                .any(|c| c.source.as_deref() == Some("directives") && c.technique == "injection"),
             "prompt override canary must be planned as a directives injection case"
         );
         // Directive cases have class 0 priority
-        for c in out.cases.iter().filter(|c| c.source.as_deref() == Some("directives")) {
-            assert_eq!(crate::agent::types::case_priority(c).0, 0, "directives cases must have class 0 priority");
+        for c in out
+            .cases
+            .iter()
+            .filter(|c| c.source.as_deref() == Some("directives"))
+        {
+            assert_eq!(
+                crate::agent::types::case_priority(c).0,
+                0,
+                "directives cases must have class 0 priority"
+            );
         }
     }
 }

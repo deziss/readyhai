@@ -1373,7 +1373,10 @@ pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
                 format!("response contains {sig} after a directory-traversal sequence"),
             ));
         } else if is_rejection(code)
-            || (case.expected_behavior.to_ascii_lowercase().contains("sanitized or blocked")
+            || (case
+                .expected_behavior
+                .to_ascii_lowercase()
+                .contains("sanitized or blocked")
                 && (200..=299).contains(&code))
         {
             checks.push(chk(
@@ -1390,21 +1393,27 @@ pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
         let is_db_probe = case.title.to_ascii_lowercase().contains("sql")
             || case.title.to_ascii_lowercase().contains("nosql")
             || case.title.to_ascii_lowercase().contains("injection probe")
-            || case.expected_behavior.to_ascii_lowercase().contains("no sql error")
-            || case.expected_behavior.to_ascii_lowercase().contains("no database or server error");
-        if is_db_probe && ((200..=299).contains(&code) || is_rejection(code)) && code < 500 {
-            if disclosure_signature(o.body).is_none() {
-                checks.push(chk(
-                    "injection_sanitized",
-                    Verdict::Pass,
-                    None,
-                    "injected operators and payloads were sanitized without database error or server crash",
-                ));
-            }
+            || case
+                .expected_behavior
+                .to_ascii_lowercase()
+                .contains("no sql error")
+            || case
+                .expected_behavior
+                .to_ascii_lowercase()
+                .contains("no database or server error");
+        if is_db_probe
+            && ((200..=299).contains(&code) || is_rejection(code))
+            && code < 500
+            && disclosure_signature(o.body).is_none()
+        {
+            checks.push(chk(
+                "injection_sanitized",
+                Verdict::Pass,
+                None,
+                "injected operators and payloads were sanitized without database error or server crash",
+            ));
         }
     }
-
-
 
     // 5c. mass assignment: a privileged attribute we injected is echoed back
     if let Some(detail) = mass_assignment_reflection(o) {

@@ -576,10 +576,12 @@ async fn guard(app: &App, url: &str, intrusive: bool) -> Result<scope::Egress, R
     let eg = match tokio::time::timeout(GUARD_TIMEOUT, job).await {
         Ok(Ok(r)) => r,
         Ok(Err(_)) => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, "scope check failed")),
-        Err(_) => return Err(err(
-            StatusCode::GATEWAY_TIMEOUT,
-            "scope check timed out while resolving the host; refusing",
-        )),
+        Err(_) => {
+            return Err(err(
+                StatusCode::GATEWAY_TIMEOUT,
+                "scope check timed out while resolving the host; refusing",
+            ));
+        }
     }?;
     preflight_host_dns(&eg.host).await?;
     Ok(eg)
@@ -617,13 +619,17 @@ async fn preflight_host_dns(host: &str) -> Result<(), Response> {
                 } else {
                     Err(err(
                         StatusCode::UNPROCESSABLE_ENTITY,
-                        format!("Host unreachable: domain '{host}' does not resolve in DNS (NXDOMAIN). Verify domain spelling or publish DNS records."),
+                        format!(
+                            "Host unreachable: domain '{host}' does not resolve in DNS (NXDOMAIN). Verify domain spelling or publish DNS records."
+                        ),
                     ))
                 }
             }
             Ok(Err(e)) => Err(err(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                format!("Host unreachable: domain '{host}' does not resolve in DNS ({e}). Verify domain spelling or publish DNS records."),
+                format!(
+                    "Host unreachable: domain '{host}' does not resolve in DNS ({e}). Verify domain spelling or publish DNS records."
+                ),
             )),
             Err(_) => Err(err(
                 StatusCode::GATEWAY_TIMEOUT,
