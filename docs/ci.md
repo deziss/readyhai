@@ -34,7 +34,7 @@ The repo root is a composite action, so a workflow only needs:
 permissions: { contents: read, pull-requests: write, security-events: write }
 steps:
   - uses: actions/checkout@v4
-  - uses: deziss/readyhai@v0.7.0
+  - uses: deziss/readyhai@v0.8.0
     with:
       profile: quick      # quick | standard | deep
       fail-on: fail       # fail | warn | never

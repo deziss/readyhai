@@ -6,8 +6,8 @@ Security fixes and container image updates are published for the current minor r
 
 | Version | Supported |
 |---|---|
-| `0.7.x` | Yes |
-| `< 0.7.0` | No (upgrade to latest release) |
+| `0.8.x` | Yes |
+| `< 0.8.0` | No (upgrade to latest release) |
 
 ## Reporting a Vulnerability
 

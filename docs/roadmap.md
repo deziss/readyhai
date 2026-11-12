@@ -105,3 +105,4 @@ Fixed since earlier roadmaps: TLS expiry/protocol checks (`0.7.0`), Playwright `
 | 0.5.0 | 2026-11-05 | Multi-provider LLM, enterprise OpenAPI scaling, RBAC bootstrap, PR bot |
 | 0.6.0–0.6.2 | 2026-11-06–2026-11-07 | SPA/XHR discovery, ledger confidence & blockers, proxy timeout & model tier fixes |
 | 0.7.0 | 2026-11-12 | Deep security scanning (Tree-sitter AST audit, Opengrep/Nuclei/active ZAP, TLS/CSP checks, modular attacks, OAST, `BrowserSecurity`, white-box bridge, ReAct, 10 eval suites) |
+| 0.8.0 | 2026-11-12 | Enterprise reliability & evidence calibration (fast DNS preflight reachability guard, differential injection oracle, boundary query tolerance, plan priority ordering, scaled probe queue, dual-stack binding) |

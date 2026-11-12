@@ -1,4 +1,4 @@
-# Where ReadyHai stands (2026-11-12, after 0.7.0)
+# Where ReadyHai stands (2026-11-12, after 0.8.0)
 
 Size: about 101,300 lines of Rust in `src/` (unit tests included; the QA engine is `18,824` lines, the agent `47,960` lines), a Next.js Studio in `frontend/`, 814 Rust `#[test]` functions (3 `#[ignore]`d), 127 frontend and 18 Python tests. This replaces the table from 0.4.0.
 
