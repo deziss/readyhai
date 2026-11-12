@@ -1331,14 +1331,23 @@ pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
         .sent_values
         .iter()
         .flat_map(|v| v.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')))
-        .find(|w| w.starts_with("CANARY_") && o.body.contains(*w))
+        .find(|w| w.starts_with("CANARY_"))
     {
-        checks.push(chk(
-            "injection_reflection",
-            Verdict::Fail,
-            Some(severity_for("injection_reflection", tech)),
-            format!("canary '{canary}' came back in the response"),
-        ));
+        if o.body.contains(canary) {
+            checks.push(chk(
+                "injection_reflection",
+                Verdict::Fail,
+                Some(severity_for("injection_reflection", tech)),
+                format!("canary '{canary}' came back in the response"),
+            ));
+        } else if code < 500 {
+            checks.push(chk(
+                "injection_reflection",
+                Verdict::Pass,
+                None,
+                format!("canary token '{canary}' was not reflected in the response"),
+            ));
+        }
     }
 
     // 5b. path traversal: file content that only a traversal can have produced
@@ -1352,6 +1361,8 @@ pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
             format!("response contains {sig} after a directory-traversal sequence"),
         ));
     }
+
+
 
     // 5c. mass assignment: a privileged attribute we injected is echoed back
     if let Some(detail) = mass_assignment_reflection(o) {
@@ -1502,6 +1513,7 @@ pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
                 | "authz"
                 | "sensitive_exposure"
                 | "injection_reflection"
+                | "path_traversal"
                 | "contract_fields"
                 | "content_type"
                 | "cors"

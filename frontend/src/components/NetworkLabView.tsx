@@ -83,7 +83,7 @@ function tabClass(active: boolean) {
 }
 
 export function NetworkLabView({
-  initialTarget = "http://readyhai:8080",
+  initialTarget = "https://app-prod.nuhire.in/",
   onRunningChange,
   ledgerScore = null,
 }: NetworkLabViewProps) {
@@ -94,6 +94,13 @@ export function NetworkLabView({
   const [target, setTarget] = useState(initialTarget);
   const targetKey = deepAuditKey(target);
   const [timeoutMs, setTimeoutMs] = useState(5000);
+
+  // Keep target in sync when initialTarget changes from outside (e.g. in Studio or Scans history)
+  useEffect(() => {
+    if (initialTarget && initialTarget.trim() && initialTarget !== target) {
+      setTarget(initialTarget.trim());
+    }
+  }, [initialTarget]);
 
   // Regressive test configuration
   const [method, setMethod] = useState("GET");
