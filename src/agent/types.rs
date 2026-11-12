@@ -907,7 +907,12 @@ pub fn profile_case_cap(profile: &str) -> Option<usize> {
 /// Sort key: lower runs first and is dropped last. Access control (auth), stateful scenarios and
 /// OpenAPI-derived cases outrank generic probes; the root liveness probe is always kept.
 pub fn case_priority(c: &PlannedCase) -> (u8, u8) {
-    let class = if c.component == "/" || c.technique == "authz" || c.is_ledger_row() {
+    let class = if c.technique == "authz"
+        || c.technique == "injection"
+        || c.component == "/"
+        || c.is_ledger_row()
+        || c.source.as_deref() == Some("directives")
+    {
         0
     } else if c.stateful_steps.as_ref().is_some_and(|s| !s.is_empty())
         || c.concurrency_burst.is_some_and(|b| b > 1)
@@ -915,8 +920,6 @@ pub fn case_priority(c: &PlannedCase) -> (u8, u8) {
         1
     } else if c.source.as_deref() == Some("openapi") {
         2
-    } else if c.technique == "injection" {
-        3
     } else if c.source.as_deref() == Some("llm") {
         5
     } else {
@@ -945,7 +948,11 @@ pub fn plan_order(any_priority: bool) -> impl Fn(&PlannedCase) -> (u8, u8, u8) {
         } else if !any_priority
             || !c.changed_ops.is_empty()
             || c.history_priority
+            || c.source.as_deref() == Some("directives")
+            || c.technique == "authz"
+            || c.technique == "injection"
             || c.component == "/"
+            || c.is_ledger_row()
         {
             1
         } else {

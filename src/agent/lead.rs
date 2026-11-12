@@ -113,7 +113,14 @@ impl Area {
             Area::Auth
         } else if chain || burst || (tech == Technique::StateTransition && is_mutating(&c.method)) {
             Area::State
-        } else if c.source.as_deref() == Some("deterministic") {
+        } else if c.source.as_deref() == Some("deterministic")
+            || c.source.as_deref() == Some("directives")
+            || (tech == Technique::Injection
+                && matches!(
+                    c.source.as_deref(),
+                    Some("attacks") | Some("llm") | Some("directives")
+                ))
+        {
             // the baseline the crawl grounds: page liveness and the probes of discovered pages
             Area::Ui
         } else {
