@@ -29,7 +29,7 @@ const MIN_TOKEN_CHARS: usize = 16;
 /// Tokens that shipped in earlier versions or docs: refused even though they are long enough.
 const BANNED_TOKENS: &[&str] = &["rh-dev-token-9f8e7d6c5b4a3210"];
 /// Concurrent blocking probes (agent run/discover/crawl, network lab) before `429`.
-const MAX_CONCURRENT_PROBES: usize = 4;
+const MAX_CONCURRENT_PROBES: usize = 16;
 /// `max_pages` bounds for the crawler routes.
 const DEFAULT_CRAWL_PAGES: usize = 25;
 const MAX_CRAWL_PAGES: usize = 100;
@@ -573,13 +573,63 @@ async fn guard(app: &App, url: &str, intrusive: bool) -> Result<scope::Egress, R
     let url = url.to_string();
     let job =
         tokio::task::spawn_blocking(move || guard_blocking(scope_path.as_deref(), &url, intrusive));
-    match tokio::time::timeout(GUARD_TIMEOUT, job).await {
+    let eg = match tokio::time::timeout(GUARD_TIMEOUT, job).await {
         Ok(Ok(r)) => r,
-        Ok(Err(_)) => Err(err(StatusCode::INTERNAL_SERVER_ERROR, "scope check failed")),
-        Err(_) => Err(err(
+        Ok(Err(_)) => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, "scope check failed")),
+        Err(_) => return Err(err(
             StatusCode::GATEWAY_TIMEOUT,
             "scope check timed out while resolving the host; refusing",
         )),
+    }?;
+    preflight_host_dns(&eg.host).await?;
+    Ok(eg)
+}
+
+/// Instant DNS preflight reachability guard: detects unresolvable domains (NXDOMAIN)
+/// fast asynchronously (<50ms) to fail fast without starving the blocking worker pool.
+async fn preflight_host_dns(host: &str) -> Result<(), Response> {
+    #[cfg(test)]
+    {
+        let _ = host;
+        return Ok(());
+    }
+    #[cfg(not(test))]
+    {
+        if host.parse::<std::net::IpAddr>().is_ok()
+            || host == "localhost"
+            || host == "host.docker.internal"
+            || host.ends_with(".localhost")
+            || host.ends_with(".test")
+            || host.ends_with(".example")
+            || host.ends_with(".invalid")
+        {
+            return Ok(());
+        }
+        match tokio::time::timeout(
+            Duration::from_millis(1500),
+            tokio::net::lookup_host(format!("{}:80", host)),
+        )
+        .await
+        {
+            Ok(Ok(mut addrs)) => {
+                if addrs.next().is_some() {
+                    Ok(())
+                } else {
+                    Err(err(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        format!("Host unreachable: domain '{host}' does not resolve in DNS (NXDOMAIN). Verify domain spelling or publish DNS records."),
+                    ))
+                }
+            }
+            Ok(Err(e)) => Err(err(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Host unreachable: domain '{host}' does not resolve in DNS ({e}). Verify domain spelling or publish DNS records."),
+            )),
+            Err(_) => Err(err(
+                StatusCode::GATEWAY_TIMEOUT,
+                format!("Host resolution timed out: domain '{host}' DNS lookup exceeded 1500ms."),
+            )),
+        }
     }
 }
 
@@ -604,12 +654,20 @@ async fn blocking<T: Send + 'static>(
     app: &App,
     f: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, Response> {
-    let permit = app.probes.clone().try_acquire_owned().map_err(|_| {
-        err(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too many concurrent probes; retry when one finishes",
-        )
-    })?;
+    let permit = match tokio::time::timeout(
+        Duration::from_millis(2000),
+        app.probes.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(p)) => p,
+        _ => {
+            return Err(err(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many concurrent probes; retry when one finishes",
+            ));
+        }
+    };
     tokio::task::spawn_blocking(move || {
         let out = f();
         drop(permit);

@@ -30,7 +30,7 @@ services:
       # Lets scans reach apps running on this machine as host.docker.internal.
       - "host.docker.internal:host-gateway"
     ports:
-      - "127.0.0.1:${READYHAI_PORT:-8080}:8080"
+      - "${READYHAI_PORT:-8080}:8080"
     networks:
       - socket
       - edge
@@ -75,7 +75,7 @@ services:
       # Prevent browser keep-alive socket drops during idle time before the first test
       - KEEP_ALIVE_TIMEOUT=65000
     ports:
-      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     networks:
       - edge
     depends_on:

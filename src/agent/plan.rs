@@ -442,8 +442,8 @@ fn baseline(d: &Discovery, creds: &Credentials, notes: &mut Vec<String>) -> Vec<
     let has_unwalled_web_page = real
         .iter()
         .any(|r| !r.is_spa_shell && !r.catch_all && !is_walled(r));
-    let any_walled = !has_role && real.iter().any(|r| !r.catch_all && is_walled(r));
-    let fallback_entry = entry_valid_web_page && has_unwalled_web_page && !any_walled && d.spec.is_none();
+    let entry_walled = !has_role && real.iter().find(|r| r.path == entry).is_some_and(|r| is_walled(r));
+    let fallback_entry = entry_valid_web_page && has_unwalled_web_page && !entry_walled && d.spec.is_none();
     let target_path: Option<String> = attack
         .map(|r| r.path.clone())
         .or_else(|| (blind || fallback_entry).then(|| entry.clone()));

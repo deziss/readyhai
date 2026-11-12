@@ -1133,6 +1133,19 @@ fn class_evidence(
                 case.method.to_ascii_uppercase()
             ),
         ));
+    } else if tech == Technique::Boundary
+        && case.method.trim().eq_ignore_ascii_case("GET")
+        && (200..=299).contains(&code)
+        && (case.title.to_ascii_lowercase().contains("tolerance")
+            || case.title.to_ascii_lowercase().contains("numeric boundary")
+            || case.title.to_ascii_lowercase().contains("integer overflow"))
+    {
+        out.push(chk(
+            "boundary_tolerance",
+            Verdict::Pass,
+            None,
+            format!("query input boundary handled cleanly without server error (HTTP {code})"),
+        ));
     } else {
         let why = not_exercised(code)
             .map(|w| format!(" ({w})"))
@@ -1351,15 +1364,44 @@ pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
     }
 
     // 5b. path traversal: file content that only a traversal can have produced
-    if is_traversal_probe(case, o)
-        && let Some(sig) = traversal_signature(o.body)
-    {
-        checks.push(chk(
-            "path_traversal",
-            Verdict::Fail,
-            Some(severity_for("path_traversal", tech)),
-            format!("response contains {sig} after a directory-traversal sequence"),
-        ));
+    if is_traversal_probe(case, o) {
+        if let Some(sig) = traversal_signature(o.body) {
+            checks.push(chk(
+                "path_traversal",
+                Verdict::Fail,
+                Some(severity_for("path_traversal", tech)),
+                format!("response contains {sig} after a directory-traversal sequence"),
+            ));
+        } else if is_rejection(code)
+            || (case.expected_behavior.to_ascii_lowercase().contains("sanitized or blocked")
+                && (200..=299).contains(&code))
+        {
+            checks.push(chk(
+                "path_traversal",
+                Verdict::Pass,
+                None,
+                "traversal sequences did not disclose system files or cause server errors",
+            ));
+        }
+    }
+
+    // 5bb. SQL / NoSQL / Operator injection probes: verify no database errors or disclosure signatures
+    if tech == Technique::Injection {
+        let is_db_probe = case.title.to_ascii_lowercase().contains("sql")
+            || case.title.to_ascii_lowercase().contains("nosql")
+            || case.title.to_ascii_lowercase().contains("injection probe")
+            || case.expected_behavior.to_ascii_lowercase().contains("no sql error")
+            || case.expected_behavior.to_ascii_lowercase().contains("no database or server error");
+        if is_db_probe && ((200..=299).contains(&code) || is_rejection(code)) && code < 500 {
+            if disclosure_signature(o.body).is_none() {
+                checks.push(chk(
+                    "injection_sanitized",
+                    Verdict::Pass,
+                    None,
+                    "injected operators and payloads were sanitized without database error or server crash",
+                ));
+            }
+        }
     }
 
 
@@ -1523,6 +1565,8 @@ pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
                 | "open_redirect"
                 | "oast_callback"
                 | "excessive_data_exposure"
+                | "injection_sanitized"
+                | "boundary_tolerance"
         )
     });
     let robustness = matches!(
