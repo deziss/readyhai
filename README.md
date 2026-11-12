@@ -2,7 +2,7 @@
 
 # ReadyHai 🛡️
 
-**Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted QA tester and production-readiness gate.
+**Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate.
 
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![Version](https://img.shields.io/badge/version-0.7.0-brightgreen.svg)](VERSION)
@@ -511,6 +511,13 @@ The full status is in [docs/roadmap.md](docs/roadmap.md). In short:
 
 ---
 
+## Contributing & Security
+
+- **Contributing:** See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, CI verification gates, and pull request requirements.
+- **Security Policy:** See [SECURITY.md](SECURITY.md) for supported versions, private vulnerability disclosure, and authorized testing scope boundaries.
+
+---
+
 ## Author & Maintainer
 
 **Anshu Kushawaha**  
@@ -521,5 +528,7 @@ GitHub: [@AnshuKushwaha](https://github.com/AnshuKushwaha)
 
 ## License
 
-ReadyHai is distributed under the [GNU Affero General Public License v3.0 (AGPL-3.0)](LICENSE).  
-See [`LICENSE`](LICENSE) for full details.
+ReadyHai is licensed under the **GNU Affero General Public License v3.0 only (`AGPL-3.0-only`)**.
+
+- If you modify ReadyHai and run it over a network (including hosted API/SaaS/UI deployments), Section 13 of AGPL-3.0 requires making the Corresponding Source of your modified version available to network users.
+- See [`LICENSE`](LICENSE) (and [`frontend/LICENSE`](frontend/LICENSE)) for the complete license text.

@@ -48,7 +48,7 @@ use std::process::ExitCode;
 #[command(
     name = "readyhai",
     version,
-    about = "Ready hai? Self-hosted QA tester + production-readiness gate"
+    about = "Ready hai? Self-hosted security scanner, QA agent & production-readiness gate"
 )]
 struct Cli {
     #[command(subcommand)]

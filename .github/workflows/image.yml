@@ -92,7 +92,12 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=long
           labels: |
+            org.opencontainers.image.title=ReadyHai
+            org.opencontainers.image.description=Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate
+            org.opencontainers.image.url=https://github.com/${{ github.repository }}
+            org.opencontainers.image.documentation=https://github.com/${{ github.repository }}/blob/main/docs/README.md
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.licenses=AGPL-3.0-only
 
       - name: Build and push (amd64, arm64) with SBOM
         id: push

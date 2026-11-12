@@ -1,17 +1,17 @@
 # ReadyHai eval: PASS
 
-version 0.7.0 · 2026-11-11T19:27:36.168528268Z · k = 2
+version 0.7.0 · 2026-11-12T03:14:18.414246775Z · k = 2
 
 | suite | kind | recall | min run | precision | FP | inconclusive | confidence | pass^k | verdict | requests | time | open gaps | result |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | agent-api | Agent | 1.00 | 1.00 | 1.00 | 0 | 6% | 93% | yes | NO_GO | 170 | 22.1s | 0 | PASS |
 | agent-diff | Agent | 1.00 | 1.00 | 1.00 | 0 | 0% | 100% | yes | CONDITIONAL_GO | 20 | 2.0s | 0 | PASS |
-| agent-memory | Agent | 1.00 | 1.00 | 1.00 | 0 | 5% | 95% | yes | NO_GO | 340 | 44.1s | 0 | PASS |
+| agent-memory | Agent | 1.00 | 1.00 | 1.00 | 0 | 5% | 95% | yes | NO_GO | 340 | 44.0s | 0 | PASS |
 | agent-spa-clean | Agent | 1.00 | 1.00 | 1.00 | 0 | 24% | 76% | yes | CONDITIONAL_GO | 81 | 7.9s | 0 | PASS |
 | agent-spa-noauth | Agent | 1.00 | 1.00 | 1.00 | 0 | 0% | 60% | yes | NOT_EVALUATED | 68 | 6.7s | 0 | PASS |
 | agent-spa | Agent | 1.00 | 1.00 | 1.00 | 0 | 17% | 83% | yes | NO_GO | 106 | 10.1s | 0 | PASS |
 | qa-api | Qa | 1.00 | 1.00 | 1.00 | 0 | - | - | yes | NoGo/Fail | 123 | 31.8s | 0 | PASS |
-| qa-repo | Repo | 1.00 | 1.00 | 1.00 | 0 | - | - | yes | Warn | 0 | 0.2s | 0 | PASS |
+| qa-repo | Repo | 1.00 | 1.00 | 1.00 | 0 | - | - | yes | Warn | 0 | 0.1s | 0 | PASS |
 | security-deep | Agent | 1.00 | 1.00 | 1.00 | 0 | 10% | 89% | yes | NO_GO | 258 | 34.4s | 0 | PASS |
 | whitebox-exploit | Agent | 1.00 | 1.00 | 1.00 | 0 | 0% | 100% | yes | NO_GO | 55 | 5.5s | 0 | PASS |
 
@@ -59,7 +59,7 @@ The agent remembers the 7 seeded bugs between two runs in one data directory: st
 - PASS verdict stable: NO_GO | NO_GO
 - PASS expected verdict: want NO_GO, got NO_GO | NO_GO
 - PASS request budget: worst run 340 vs <= 500
-- PASS time budget: worst run 44.1s vs <= 240s
+- PASS time budget: worst run 44.0s vs <= 240s
 - PASS memory: first run remembered: first_run true, remembered true, 7 new of 7 defect(s)
 - PASS memory: seeded defects still open: 7 of 7 expected defect(s) reported still open (7 defect(s) in all)
 - PASS memory: regression probes lead the plan: 17 probe(s) lead the plan of 55 case(s), none after the first other case; 6 of 6 still-open defect(s) have one
@@ -138,7 +138,7 @@ QA suite and release checks vs the seeded defects of the qa-repo fixture
 - PASS false positives: worst run 0 vs <= 2
 - PASS pass^k: 2/2 runs at recall >= 0.85
 - PASS verdict stable: Warn | Warn
-- PASS time budget: worst run 0.2s vs <= 60s
+- PASS time budget: worst run 0.1s vs <= 60s
 - run 1 optional not found: migration-failure
 - run 2 optional not found: migration-failure
 

@@ -1,6 +1,6 @@
 {
   "version": "0.7.0",
-  "started": "2026-11-11T19:27:36.168528268Z",
+  "started": "2026-11-12T03:14:18.414246775Z",
   "k": 2,
   "suites": [
     {
@@ -50,7 +50,7 @@
             "slow_response @ /reports/slow"
           ],
           "requests": 170,
-          "seconds": 22.059,
+          "seconds": 22.064,
           "cases": {
             "FAIL": 22,
             "INCONCLUSIVE": 4,
@@ -92,7 +92,7 @@
             "slow_response @ /reports/slow"
           ],
           "requests": 170,
-          "seconds": 22.035,
+          "seconds": 22.019,
           "cases": {
             "FAIL": 22,
             "INCONCLUSIVE": 4,
@@ -121,7 +121,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 170,
-      "seconds": 22.059,
+      "seconds": 22.064,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -205,7 +205,7 @@
             "server_error @ /search"
           ],
           "requests": 20,
-          "seconds": 2.036,
+          "seconds": 2.035,
           "cases": {
             "FAIL": 1,
             "PASS": 7
@@ -250,7 +250,7 @@
             "server_error @ /search"
           ],
           "requests": 20,
-          "seconds": 2.038,
+          "seconds": 2.04,
           "cases": {
             "FAIL": 1,
             "PASS": 7
@@ -294,7 +294,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 20,
-      "seconds": 2.038,
+      "seconds": 2.04,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 0,
@@ -411,7 +411,7 @@
             "slow_response @ /reports/slow"
           ],
           "requests": 340,
-          "seconds": 44.083,
+          "seconds": 44.014,
           "cases": {
             "FAIL": 22,
             "INCONCLUSIVE": 3,
@@ -475,7 +475,7 @@
             "slow_response @ /reports/slow"
           ],
           "requests": 340,
-          "seconds": 44.082,
+          "seconds": 44.043,
           "cases": {
             "FAIL": 22,
             "INCONCLUSIVE": 3,
@@ -526,7 +526,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 340,
-      "seconds": 44.083,
+      "seconds": 44.043,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -575,7 +575,7 @@
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 44.1s vs <= 240s"
+          "detail": "worst run 44.0s vs <= 240s"
         },
         {
           "name": "memory: first run remembered",
@@ -624,7 +624,7 @@
           "allowed_seen": [],
           "observed": [],
           "requests": 81,
-          "seconds": 7.894,
+          "seconds": 7.883,
           "cases": {
             "INCONCLUSIVE": 4,
             "PASS": 13
@@ -648,7 +648,7 @@
           "allowed_seen": [],
           "observed": [],
           "requests": 81,
-          "seconds": 7.873,
+          "seconds": 7.872,
           "cases": {
             "INCONCLUSIVE": 4,
             "PASS": 13
@@ -675,7 +675,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 81,
-      "seconds": 7.894,
+      "seconds": 7.883,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 1,
@@ -758,7 +758,7 @@
           "allowed_seen": [],
           "observed": [],
           "requests": 68,
-          "seconds": 6.72,
+          "seconds": 6.717,
           "cases": {
             "BLOCKED": 4,
             "PASS": 6,
@@ -786,7 +786,7 @@
           "allowed_seen": [],
           "observed": [],
           "requests": 68,
-          "seconds": 6.719,
+          "seconds": 6.716,
           "cases": {
             "BLOCKED": 4,
             "PASS": 6,
@@ -819,7 +819,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 68,
-      "seconds": 6.72,
+      "seconds": 6.717,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 0,
@@ -914,7 +914,7 @@
             "server_error @ /api/orders"
           ],
           "requests": 106,
-          "seconds": 10.063,
+          "seconds": 10.061,
           "cases": {
             "FAIL": 3,
             "INCONCLUSIVE": 3,
@@ -947,7 +947,7 @@
             "server_error @ /api/orders"
           ],
           "requests": 106,
-          "seconds": 10.073,
+          "seconds": 10.06,
           "cases": {
             "FAIL": 3,
             "INCONCLUSIVE": 3,
@@ -975,7 +975,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 106,
-      "seconds": 10.073,
+      "seconds": 10.061,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -1087,7 +1087,7 @@
             "qa.api.slow_response @ GET /reports/slow"
           ],
           "requests": 123,
-          "seconds": 31.835,
+          "seconds": 31.828,
           "inconclusive_rate": null,
           "confidence": null
         },
@@ -1128,7 +1128,7 @@
             "qa.api.slow_response @ GET /reports/slow"
           ],
           "requests": 123,
-          "seconds": 31.832,
+          "seconds": 31.826,
           "inconclusive_rate": null,
           "confidence": null
         }
@@ -1151,7 +1151,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 123,
-      "seconds": 31.835,
+      "seconds": 31.828,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -1254,7 +1254,7 @@
             "qa.suite.test_smells @ tests/test_orders.py"
           ],
           "requests": 0,
-          "seconds": 0.164,
+          "seconds": 0.14,
           "inconclusive_rate": null,
           "confidence": null
         },
@@ -1292,7 +1292,7 @@
             "qa.suite.test_smells @ tests/test_orders.py"
           ],
           "requests": 0,
-          "seconds": 0.15,
+          "seconds": 0.137,
           "inconclusive_rate": null,
           "confidence": null
         }
@@ -1315,7 +1315,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 0,
-      "seconds": 0.164,
+      "seconds": 0.14,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -1354,7 +1354,7 @@
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 0.2s vs <= 60s"
+          "detail": "worst run 0.1s vs <= 60s"
         }
       ],
       "passed": true,
@@ -1409,7 +1409,7 @@
             "expected_status @ /api/checkout"
           ],
           "requests": 258,
-          "seconds": 34.381,
+          "seconds": 34.372,
           "cases": {
             "FAIL": 13,
             "INCONCLUSIVE": 11,
@@ -1461,7 +1461,7 @@
             "expected_status @ /api/checkout"
           ],
           "requests": 258,
-          "seconds": 34.358,
+          "seconds": 34.39,
           "cases": {
             "FAIL": 13,
             "INCONCLUSIVE": 11,
@@ -1490,7 +1490,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 258,
-      "seconds": 34.381,
+      "seconds": 34.39,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 0,
@@ -1572,7 +1572,7 @@
             "blind_boolean_injection @ /internal/debug-export"
           ],
           "requests": 55,
-          "seconds": 5.482,
+          "seconds": 5.489,
           "cases": {
             "FAIL": 1,
             "PASS": 7,
@@ -1608,7 +1608,7 @@
             "blind_boolean_injection @ /internal/debug-export"
           ],
           "requests": 55,
-          "seconds": 5.483,
+          "seconds": 5.482,
           "cases": {
             "FAIL": 1,
             "PASS": 7,
@@ -1643,7 +1643,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 55,
-      "seconds": 5.483,
+      "seconds": 5.489,
       "thresholds": {
         "min_recall": 1.0,
         "max_false_positives": 0,

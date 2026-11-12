@@ -92,9 +92,11 @@ Thumbs.db
 *~
 *.bak
 
-# Allow test fixtures to remain tracked
+# Allow test fixtures to remain tracked (except Python bytecode caches)
 !tests/fixtures/**
 !tests/fixtures/**/*.log
+tests/fixtures/**/__pycache__/
+tests/fixtures/**/*.py[cod]
 
 # Local rules of engagement (real hosts/IPs). Use scope.example.toml as the template.
 scope.toml

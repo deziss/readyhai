@@ -1,5 +1,5 @@
 name: ReadyHai readiness gate
-description: Run the ReadyHai production-readiness gate and post (or update) a summary comment on the pull request.
+description: Run the ReadyHai security, QA, and production-readiness gate and post (or update) a PR summary comment.
 author: deziss
 branding:
   icon: check-circle
