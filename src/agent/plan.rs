@@ -1829,14 +1829,53 @@ fn llm_extras(
     max_cases: usize,
     notes: &mut Vec<String>,
 ) -> Vec<PlannedCase> {
-    let known = Known::new(&d.routes);
-    let endpoints: Vec<Value> = d
-        .routes
+    let mut effective_routes = d.routes.clone();
+
+    // If discovery found no non-catch-all routes, always ensure root endpoint '/' is available
+    if effective_routes.iter().all(|r| r.catch_all) {
+        effective_routes.push(DiscoveredRoute {
+            path: "/".to_string(),
+            method: "GET".to_string(),
+            status_code: 200,
+            content_type: "text/html".to_string(),
+            source: "target".to_string(),
+            title: Some("Root Endpoint".to_string()),
+            ..Default::default()
+        });
+    }
+
+    // Extract any explicit URL paths from operator instructions (e.g. '/api/auth/session')
+    if let Some(instr) = instructions {
+        if let Ok(path_re) = regex::Regex::new(r"(/[a-zA-Z0-9_\-\.\{\}]+(?:/[a-zA-Z0-9_\-\.\{\}]+)*)") {
+            for cap in path_re.captures_iter(instr) {
+                let p = cap[1].trim_end_matches(&['.', ',', ';', ':', ')', ']', '"', '\'', ' '][..]);
+                if p.starts_with('/') && p.len() > 1 && !effective_routes.iter().any(|r| r.path == p) {
+                    effective_routes.push(DiscoveredRoute {
+                        path: p.to_string(),
+                        method: "GET".to_string(),
+                        status_code: 200,
+                        content_type: "application/json".to_string(),
+                        source: "operator_instructions".to_string(),
+                        title: Some(format!("Operator instruction endpoint: {p}")),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+    }
+
+    let known = Known::new(&effective_routes);
+    let endpoints: Vec<Value> = effective_routes
         .iter()
         .filter(|r| !r.catch_all)
         .take(60)
         .map(|r| serde_json::json!({"method": r.method, "path": r.path, "status": r.status_code, "secured": r.secured, "title": r.title.as_deref().map(|t| clean(t, 80))}))
         .collect();
+
+    if endpoints.is_empty() {
+        notes.push("no target endpoints available to synthesize adversarial attacks against; skipping LLM extras".into());
+        return vec![];
+    }
     let facts = serde_json::json!({
         "target": target, "profile": profile, "app_architecture": d.tech.app_architecture, "primary_framework": d.tech.primary_framework,
         "known_endpoints": endpoints, "operator_instructions": instructions.map(|i| clean(i, 500)).unwrap_or_default(),
@@ -4385,5 +4424,41 @@ mod tests {
         assert!(
             parse(r#"{"title":"bad","component":"/admin","technique":"authz","headers":{"X-Test":"a\r\nb"}}"#).is_err()
         );
+    }
+
+    #[test]
+    fn empty_discovery_with_operator_instructions_fallbacks_to_root_and_instruction_paths() {
+        let d = Discovery::default();
+        let mut routes = d.routes.clone();
+        if routes.iter().all(|r| r.catch_all) {
+            routes.push(DiscoveredRoute {
+                path: "/".to_string(),
+                method: "GET".to_string(),
+                status_code: 200,
+                content_type: "text/html".to_string(),
+                source: "target".to_string(),
+                title: Some("Root Endpoint".to_string()),
+                ..Default::default()
+            });
+        }
+        let instr = "Check unauthenticated access to /api/auth/session; Probe 100KB boundary size on chat input";
+        let path_re = regex::Regex::new(r"(/[a-zA-Z0-9_\-\.\{\}]+(?:/[a-zA-Z0-9_\-\.\{\}]+)*)").unwrap();
+        for cap in path_re.captures_iter(instr) {
+            let p = cap[1].trim_end_matches(&['.', ',', ';', ':', ')', ']', '"', '\'', ' '][..]);
+            if p.starts_with('/') && p.len() > 1 && !routes.iter().any(|r| r.path == p) {
+                routes.push(DiscoveredRoute {
+                    path: p.to_string(),
+                    method: "GET".to_string(),
+                    status_code: 200,
+                    content_type: "application/json".to_string(),
+                    source: "operator_instructions".to_string(),
+                    title: Some(format!("Operator instruction endpoint: {p}")),
+                    ..Default::default()
+                });
+            }
+        }
+        let effective_known = Known::new(&routes);
+        assert!(effective_known.find("/").is_some());
+        assert!(effective_known.find("/api/auth/session").is_some());
     }
 }
