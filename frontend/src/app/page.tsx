@@ -42,7 +42,7 @@ export default function Home() {
   const [agentRunsCount, setAgentRunsCount] = useState<number>(0);
 
   // Studio Form state
-  const [target, setTarget] = useState("http://readyhai:8080");
+  const [target, setTarget] = useState("https://app-prod.nuhire.in/");
   const [specUrl, setSpecUrl] = useState("");
   const [directives, setDirectives] = useState("Strict QA and verify resilience, contracts, and authz");
   const [profile, setProfile] = useState("standard");

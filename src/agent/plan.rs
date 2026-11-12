@@ -2118,7 +2118,15 @@ fn plan_directives(instructions: &str, d: &Discovery, creds: &Credentials) -> Ve
         let chat_target = d
             .routes
             .iter()
-            .find(|r| r.path.contains("chat") || r.path.contains("message") || r.path.contains("ai"))
+            .find(|r| {
+                let p = r.path.to_ascii_lowercase();
+                p.contains("chat")
+                    || p.contains("message")
+                    || p.contains("/ai")
+                    || p.contains("prompt")
+                    || p.contains("assistant")
+                    || p.ends_with("/ai")
+            })
             .map(|r| r.path.clone())
             .unwrap_or_else(|| "/chat".to_string());
         let mut c = mk(
@@ -2171,7 +2179,15 @@ fn plan_directives(instructions: &str, d: &Discovery, creds: &Credentials) -> Ve
         let chat_target = d
             .routes
             .iter()
-            .find(|r| r.path.contains("chat") || r.path.contains("message") || r.path.contains("ai"))
+            .find(|r| {
+                let p = r.path.to_ascii_lowercase();
+                p.contains("chat")
+                    || p.contains("message")
+                    || p.contains("/ai")
+                    || p.contains("prompt")
+                    || p.contains("assistant")
+                    || p.ends_with("/ai")
+            })
             .map(|r| r.path.clone())
             .unwrap_or_else(|| "/chat".to_string());
         let payload = format!(r#"{{"message":"{}"}}"#, "A".repeat(100_000));
