@@ -1,6 +1,6 @@
 # ReadyHai documentation
 
-ReadyHai ("Ready hai?" = "is it ready?") is a self-hosted QA tester and production-readiness gate written in Rust. You point it at a repo, a container image, a web app/API, a host (SSH) or an Android app. It runs native readiness rules plus pinned scanners in hardened throwaway containers, a senior-QA engine and an autonomous testing agent, and returns one verdict with reasons: `PASS` / `WARN` / `FAIL` for scans, Go / Conditional Go / No-Go / Inconclusive for `qa`, `GO` / `CONDITIONAL_GO` / `NO_GO` for the agent.
+ReadyHai ("Ready hai?" = "is it ready?") is a self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate written in Rust. You point it at a repo, a container image, a web app/API, a host (SSH) or an Android app. It runs native readiness rules plus pinned scanners in hardened throwaway containers, a senior-QA engine and an autonomous testing agent, and returns one verdict with reasons: `PASS` / `WARN` / `FAIL` for scans, Go / Conditional Go / No-Go / Inconclusive for `qa`, `GO` / `CONDITIONAL_GO` / `NO_GO` for the agent.
 
 These docs describe what the code in `src/`, `frontend/`, `tests/eval/` and `.github/workflows/` does (current version: `VERSION` / `0.7.0`; changelog: [../CHANGELOG.md](../CHANGELOG.md)). Where the code differs from the original plan, the docs say so. If you find a mismatch, trust the code and check [build-log.md](build-log.md) for older context.
 
@@ -27,12 +27,15 @@ These docs describe what the code in `src/`, `frontend/`, `tests/eval/` and `.gi
 | [build-log.md](build-log.md) | What was done in this build, in order, round by round |
 | [../frontend/README.md](../frontend/README.md) | The Next.js Agent Studio: design system, scripts, token handling, node version |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release notes (Keep a Changelog) |
+| [../CONTRIBUTING.md](../CONTRIBUTING.md) | Contributor setup, CI verification gates, PR guidelines, AGPL-3.0 licensing |
+| [../SECURITY.md](../SECURITY.md) | Supported versions, vulnerability disclosure policy, authorized testing scope |
 
 ## 60-second quick start
 
 ```bash
-cd ~/95095/Backup/Desktop/learn/readyhai
-export PATH=$PATH:$HOME/.cargo/bin          # cargo is not on PATH by default here
+git clone https://github.com/deziss/readyhai.git
+cd readyhai
+export PATH=$PATH:$HOME/.cargo/bin          # if cargo is not yet on PATH
 cargo build                                 # dev build; binary at target/debug/readyhai
 R=target/debug/readyhai
 
