@@ -1,6 +1,6 @@
 {
   "version": "0.8.0",
-  "started": "2026-11-12T03:14:18.414246775Z",
+  "started": "2026-11-12T18:06:29.203482277Z",
   "k": 2,
   "suites": [
     {
@@ -50,7 +50,7 @@
             "slow_response @ /reports/slow"
           ],
           "requests": 170,
-          "seconds": 22.064,
+          "seconds": 22.032,
           "cases": {
             "FAIL": 22,
             "INCONCLUSIVE": 4,
@@ -92,7 +92,7 @@
             "slow_response @ /reports/slow"
           ],
           "requests": 170,
-          "seconds": 22.019,
+          "seconds": 22.041,
           "cases": {
             "FAIL": 22,
             "INCONCLUSIVE": 4,
@@ -121,7 +121,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 170,
-      "seconds": 22.064,
+      "seconds": 22.041,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -170,7 +170,7 @@
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 22.1s vs <= 120s"
+          "detail": "worst run 22.0s vs <= 120s"
         }
       ],
       "passed": true,
@@ -205,7 +205,7 @@
             "server_error @ /search"
           ],
           "requests": 20,
-          "seconds": 2.035,
+          "seconds": 2.037,
           "cases": {
             "FAIL": 1,
             "PASS": 7
@@ -250,7 +250,7 @@
             "server_error @ /search"
           ],
           "requests": 20,
-          "seconds": 2.04,
+          "seconds": 2.035,
           "cases": {
             "FAIL": 1,
             "PASS": 7
@@ -294,7 +294,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 20,
-      "seconds": 2.04,
+      "seconds": 2.037,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 0,
@@ -411,7 +411,7 @@
             "slow_response @ /reports/slow"
           ],
           "requests": 340,
-          "seconds": 44.014,
+          "seconds": 44.05,
           "cases": {
             "FAIL": 22,
             "INCONCLUSIVE": 3,
@@ -475,7 +475,7 @@
             "slow_response @ /reports/slow"
           ],
           "requests": 340,
-          "seconds": 44.043,
+          "seconds": 44.081,
           "cases": {
             "FAIL": 22,
             "INCONCLUSIVE": 3,
@@ -526,7 +526,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 340,
-      "seconds": 44.043,
+      "seconds": 44.081,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -575,7 +575,7 @@
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 44.0s vs <= 240s"
+          "detail": "worst run 44.1s vs <= 240s"
         },
         {
           "name": "memory: first run remembered",
@@ -610,7 +610,7 @@
       "runs": [
         {
           "run": 1,
-          "verdict": "CONDITIONAL_GO",
+          "verdict": "GO",
           "recall": 1.0,
           "found": [],
           "missed": [],
@@ -624,17 +624,16 @@
           "allowed_seen": [],
           "observed": [],
           "requests": 81,
-          "seconds": 7.883,
+          "seconds": 7.899,
           "cases": {
-            "INCONCLUSIVE": 4,
-            "PASS": 13
+            "PASS": 17
           },
-          "inconclusive_rate": 0.235,
-          "confidence": 76
+          "inconclusive_rate": 0.0,
+          "confidence": 100
         },
         {
           "run": 2,
-          "verdict": "CONDITIONAL_GO",
+          "verdict": "GO",
           "recall": 1.0,
           "found": [],
           "missed": [],
@@ -648,13 +647,12 @@
           "allowed_seen": [],
           "observed": [],
           "requests": 81,
-          "seconds": 7.872,
+          "seconds": 7.879,
           "cases": {
-            "INCONCLUSIVE": 4,
-            "PASS": 13
+            "PASS": 17
           },
-          "inconclusive_rate": 0.235,
-          "confidence": 76
+          "inconclusive_rate": 0.0,
+          "confidence": 100
         }
       ],
       "recall": 1.0,
@@ -662,20 +660,20 @@
       "precision": 1.0,
       "precision_min": 1.0,
       "false_positives": 0,
-      "inconclusive_rate": 0.235,
-      "confidence": 76,
+      "inconclusive_rate": 0.0,
+      "confidence": 100,
       "blockers": [],
       "verdict_match": null,
       "pass_k": true,
       "verdict_stable": true,
       "verdicts": [
-        "CONDITIONAL_GO",
-        "CONDITIONAL_GO"
+        "GO",
+        "GO"
       ],
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 81,
-      "seconds": 7.883,
+      "seconds": 7.899,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 1,
@@ -709,17 +707,17 @@
         {
           "name": "verdict stable",
           "ok": true,
-          "detail": "CONDITIONAL_GO | CONDITIONAL_GO"
+          "detail": "GO | GO"
         },
         {
           "name": "forbidden verdict",
           "ok": true,
-          "detail": "must not be NO_GO, got CONDITIONAL_GO | CONDITIONAL_GO"
+          "detail": "must not be NO_GO, got GO | GO"
         },
         {
           "name": "inconclusive rate",
           "ok": true,
-          "detail": "worst run 24% vs <= 25%"
+          "detail": "worst run 0% vs <= 25%"
         },
         {
           "name": "request budget",
@@ -758,7 +756,7 @@
           "allowed_seen": [],
           "observed": [],
           "requests": 68,
-          "seconds": 6.717,
+          "seconds": 6.723,
           "cases": {
             "BLOCKED": 4,
             "PASS": 6,
@@ -786,7 +784,7 @@
           "allowed_seen": [],
           "observed": [],
           "requests": 68,
-          "seconds": 6.716,
+          "seconds": 6.722,
           "cases": {
             "BLOCKED": 4,
             "PASS": 6,
@@ -819,7 +817,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 68,
-      "seconds": 6.717,
+      "seconds": 6.723,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 0,
@@ -914,14 +912,13 @@
             "server_error @ /api/orders"
           ],
           "requests": 106,
-          "seconds": 10.061,
+          "seconds": 10.074,
           "cases": {
             "FAIL": 3,
-            "INCONCLUSIVE": 3,
-            "PASS": 12
+            "PASS": 15
           },
-          "inconclusive_rate": 0.167,
-          "confidence": 83
+          "inconclusive_rate": 0.0,
+          "confidence": 100
         },
         {
           "run": 2,
@@ -947,14 +944,13 @@
             "server_error @ /api/orders"
           ],
           "requests": 106,
-          "seconds": 10.06,
+          "seconds": 10.062,
           "cases": {
             "FAIL": 3,
-            "INCONCLUSIVE": 3,
-            "PASS": 12
+            "PASS": 15
           },
-          "inconclusive_rate": 0.167,
-          "confidence": 83
+          "inconclusive_rate": 0.0,
+          "confidence": 100
         }
       ],
       "recall": 1.0,
@@ -962,8 +958,8 @@
       "precision": 1.0,
       "precision_min": 1.0,
       "false_positives": 0,
-      "inconclusive_rate": 0.167,
-      "confidence": 83,
+      "inconclusive_rate": 0.0,
+      "confidence": 100,
       "blockers": [],
       "verdict_match": true,
       "pass_k": true,
@@ -975,7 +971,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 106,
-      "seconds": 10.061,
+      "seconds": 10.074,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -1019,7 +1015,7 @@
         {
           "name": "inconclusive rate",
           "ok": true,
-          "detail": "worst run 17% vs <= 25%"
+          "detail": "worst run 0% vs <= 25%"
         },
         {
           "name": "request budget",
@@ -1087,7 +1083,7 @@
             "qa.api.slow_response @ GET /reports/slow"
           ],
           "requests": 123,
-          "seconds": 31.828,
+          "seconds": 31.83,
           "inconclusive_rate": null,
           "confidence": null
         },
@@ -1128,7 +1124,7 @@
             "qa.api.slow_response @ GET /reports/slow"
           ],
           "requests": 123,
-          "seconds": 31.826,
+          "seconds": 31.83,
           "inconclusive_rate": null,
           "confidence": null
         }
@@ -1151,7 +1147,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 123,
-      "seconds": 31.828,
+      "seconds": 31.83,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -1254,7 +1250,7 @@
             "qa.suite.test_smells @ tests/test_orders.py"
           ],
           "requests": 0,
-          "seconds": 0.14,
+          "seconds": 0.149,
           "inconclusive_rate": null,
           "confidence": null
         },
@@ -1292,7 +1288,7 @@
             "qa.suite.test_smells @ tests/test_orders.py"
           ],
           "requests": 0,
-          "seconds": 0.137,
+          "seconds": 0.145,
           "inconclusive_rate": null,
           "confidence": null
         }
@@ -1315,7 +1311,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 0,
-      "seconds": 0.14,
+      "seconds": 0.149,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 2,
@@ -1401,23 +1397,23 @@
             "blind_time_injection @ /api/reports/export",
             "blind_boolean_injection @ /api/users/lookup",
             "oast_callback @ /api/webhooks/test",
+            "open_redirect @ /api/redirect",
             "mass_assignment @ /api/users",
             "race_condition @ /api/coupons/redeem",
-            "open_redirect @ /api/redirect",
             "stored_xss @ /comments",
             "dom_xss @ /dom",
             "expected_status @ /api/checkout"
           ],
           "requests": 258,
-          "seconds": 34.372,
+          "seconds": 34.084,
           "cases": {
             "FAIL": 13,
-            "INCONCLUSIVE": 11,
-            "PASS": 81,
+            "INCONCLUSIVE": 7,
+            "PASS": 85,
             "SKIPPED": 1
           },
-          "inconclusive_rate": 0.105,
-          "confidence": 89
+          "inconclusive_rate": 0.067,
+          "confidence": 93
         },
         {
           "run": 2,
@@ -1453,23 +1449,23 @@
             "blind_time_injection @ /api/reports/export",
             "blind_boolean_injection @ /api/users/lookup",
             "oast_callback @ /api/webhooks/test",
+            "open_redirect @ /api/redirect",
             "mass_assignment @ /api/users",
             "race_condition @ /api/coupons/redeem",
-            "open_redirect @ /api/redirect",
             "stored_xss @ /comments",
             "dom_xss @ /dom",
             "expected_status @ /api/checkout"
           ],
           "requests": 258,
-          "seconds": 34.39,
+          "seconds": 34.044,
           "cases": {
             "FAIL": 13,
-            "INCONCLUSIVE": 11,
-            "PASS": 81,
+            "INCONCLUSIVE": 7,
+            "PASS": 85,
             "SKIPPED": 1
           },
-          "inconclusive_rate": 0.105,
-          "confidence": 89
+          "inconclusive_rate": 0.067,
+          "confidence": 93
         }
       ],
       "recall": 1.0,
@@ -1477,8 +1473,8 @@
       "precision": 1.0,
       "precision_min": 1.0,
       "false_positives": 0,
-      "inconclusive_rate": 0.105,
-      "confidence": 89,
+      "inconclusive_rate": 0.067,
+      "confidence": 93,
       "blockers": [],
       "verdict_match": true,
       "pass_k": true,
@@ -1490,7 +1486,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 258,
-      "seconds": 34.39,
+      "seconds": 34.084,
       "thresholds": {
         "min_recall": 0.85,
         "max_false_positives": 0,
@@ -1539,7 +1535,7 @@
         {
           "name": "time budget",
           "ok": true,
-          "detail": "worst run 34.4s vs <= 180s"
+          "detail": "worst run 34.1s vs <= 180s"
         }
       ],
       "passed": true,
@@ -1572,7 +1568,7 @@
             "blind_boolean_injection @ /internal/debug-export"
           ],
           "requests": 55,
-          "seconds": 5.489,
+          "seconds": 5.49,
           "cases": {
             "FAIL": 1,
             "PASS": 7,
@@ -1608,7 +1604,7 @@
             "blind_boolean_injection @ /internal/debug-export"
           ],
           "requests": 55,
-          "seconds": 5.482,
+          "seconds": 5.484,
           "cases": {
             "FAIL": 1,
             "PASS": 7,
@@ -1643,7 +1639,7 @@
       "known_gaps_open": [],
       "known_gaps_closed": [],
       "requests": 55,
-      "seconds": 5.489,
+      "seconds": 5.49,
       "thresholds": {
         "min_recall": 1.0,
         "max_false_positives": 0,

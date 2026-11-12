@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#020617"/>
+    </linearGradient>
+
+    <!-- Shield Primary Cyan Gradient -->
+    <linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="50%" stop-color="#00F0FF"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+
+    <!-- Checkmark & Core Glow Gradient -->
+    <linearGradient id="checkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#E0F2FE"/>
+    </linearGradient>
+
+    <!-- Subtle Glow Filter -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+  </defs>
+
+  <!-- Squircle Base -->
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#bgGrad)" stroke="#1E293B" stroke-width="2"/>
+
+  <!-- Outer Protective Halo / Circuit Pulse -->
+  <path d="M64 20 L96 34 V64 C96 84 82 101 64 107 C46 101 32 84 32 64 V34 Z" 
+        fill="none" stroke="#00F0FF" stroke-width="2" stroke-opacity="0.3" stroke-dasharray="4 4"/>
+
+  <!-- Main Shield Body -->
+  <path d="M64 25 L92 37 V64 C92 81.5 80 96.5 64 102 C48 96.5 36 81.5 36 64 V37 Z" 
+        fill="#090D16" stroke="url(#cyanGrad)" stroke-width="3.5" stroke-linejoin="round"/>
+
+  <!-- Inner Dynamic Tesseract / Facet Lines -->
+  <path d="M64 27 V101" stroke="#00F0FF" stroke-width="1.5" stroke-opacity="0.35"/>
+  <path d="M37 64 H91" stroke="#00F0FF" stroke-width="1.5" stroke-opacity="0.25"/>
+
+  <!-- Verification Checkmark (Symbol of Ready / Go Gate) -->
+  <path d="M49 63 L60 74 L81 49" 
+        fill="none" stroke="url(#checkGrad)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+
+  <!-- Cyber Node Accents -->
+  <circle cx="64" cy="25" r="3" fill="#00F0FF"/>
+  <circle cx="92" cy="37" r="2.5" fill="#38BDF8"/>
+  <circle cx="36" cy="37" r="2.5" fill="#38BDF8"/>
+  <circle cx="64" cy="102" r="3" fill="#0284C7"/>
+</svg>

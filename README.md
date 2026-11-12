@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="docs/assets/icon.svg" alt="ReadyHai Logo" width="100" height="100" />
+
 # ReadyHai 🛡️
 
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate.

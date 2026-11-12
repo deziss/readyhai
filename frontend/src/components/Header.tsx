@@ -64,10 +64,10 @@ export function Header({
       {/* Brand */}
       <div className="flex shrink-0 items-center gap-2.5">
         <span
-          className="flex h-8 w-8 items-center justify-center rounded-sm border border-rh-line bg-rh-raised text-rh-primary"
+          className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-md border border-rh-line bg-rh-raised"
           aria-hidden="true"
         >
-          <ShieldCheck className="h-4 w-4" />
+          <img src="/icon.svg" alt="ReadyHai Logo" className="h-7 w-7 object-contain" />
         </span>
         <div className="leading-tight">
           <span className="block text-base font-semibold text-rh-text">ReadyHai</span>
