@@ -15,13 +15,13 @@ readyhai/
   probe/                   linux.sh  macos.sh  windows.ps1   (embedded with include_str!, piped over ssh)
   runners/playwright/      Dockerfile  package.json  crawl.mjs qa.mjs pdf.mjs agent_browser.mjs   (UI QA, PDF, and agent DOM security; image published to GHCR)
   runners/context_retriever/  Python (LangGraph, BGE-M3) retriever the agent can query for change notes
-  frontend/                the Next.js Agent Studio (own README, own package.json)
+  frontend/                the Next.js Agent Studio (own README, own package.json, public/ brand assets & webmanifest)
   ci/                      Jenkinsfile.stage  github-action.yml  gitlab-ci.yml  argocd-postsync-job.yaml
   .github/workflows/       ci.yml  image.yml  release.yml  scorecard.yml
   scripts/                 version.sh (single-source versioning), bench_owasp.{sh,ps1} (opt-in OWASP benchmark harness)
   tests/eval/              eval suites (*.toml)
   tests/fixtures/          vuln-app, qa-api, qa-api-src, qa-repo, qa-ui, qa-perf, resilience, host-probe, android, logs, tool-outputs, mcp, spa-next, security-deep, whitebox-exploit
-  docs/                    this documentation
+  docs/                    this documentation (includes docs/assets/ brand icons & logos)
 ```
 
 ## Module ownership map
