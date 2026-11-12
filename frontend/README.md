@@ -38,6 +38,20 @@ Defined once in `src/app/globals.css` (Tailwind v4 `@theme static`, so every var
 - **Accessibility.** A global, unlayered `:focus-visible` ring (2px `rh-primary`; `--rh-focus-offset` pulls it inward on clipped edges), `prefers-reduced-motion` disables animation, tabs and steppers are keyboard operable.
 - Dark only (`<html class="dark">`, `color-scheme: dark`).
 
+## Brand assets & icons
+
+The studio includes high-resolution SVG and multi-resolution PNG/ICO branding assets located in `public/` and mirrored in `../docs/assets/`:
+
+- `public/icon.svg`: Scalable vector emblem (geometric shield with verification mark and circuit node in electric cyan `#00F0FF`, cyber blue `#0284C7`, and white on slate navy `#0B0F19`).
+- `public/logo.svg`: Horizontal logo lockup combining the emblem and "ReadyHai" typography.
+- `public/favicon.ico`: Multi-resolution favicon bundle (16x16, 32x32, 48x48, 64x64).
+- `public/favicon-16x16.png`, `public/favicon-32x32.png`: Crisp PNG browser tab icons.
+- `public/apple-touch-icon.png`: 180x180 iOS and iPadOS home-screen touch icon.
+- `public/icon-192.png`, `public/icon-512.png`: PWA app icons.
+- `public/site.webmanifest`: Web Application Manifest defining name, theme color (`#0F172A`), background color, and standalone display mode.
+
+These assets are wired into Next.js App Router metadata in `src/app/layout.tsx` (`icons` and `manifest: "/site.webmanifest"`), and rendered natively in `src/components/Header.tsx`.
+
 ## Development
 
 Node 24 is required for the lint and test tools (CI uses node 24). On a machine whose default `node` is older (v18, for example), vitest and eslint fail with misleading errors such as `File is not defined`: put node 24 first on `PATH` before running them, for example `nvm use 24`.

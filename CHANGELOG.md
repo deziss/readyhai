@@ -8,6 +8,7 @@ Enterprise reliability, fast DNS preflight guards, differential injection and bo
 
 ### Added
 
+- **Brand Identity & Web Assets:** Added official ReadyHai geometric vector logo mark and horizontal lockup (`frontend/public/icon.svg`, `frontend/public/logo.svg`), multi-resolution favicons (`favicon.ico`, `favicon-16x16.png`, `favicon-32x32.png`), mobile touch icon (`apple-touch-icon.png`), PWA icons (`icon-192.png`, `icon-512.png`), PWA `site.webmanifest`, Next.js App Router metadata wiring, Studio header branding (`frontend/src/components/Header.tsx`), standalone documentation assets (`docs/assets/`), and inline CSP-safe SVG emblems in HTML scan, QA, and dashboard reports.
 - **Fast DNS Pre-flight Reachability Guard (`preflight_host_dns` in `src/serve.rs`):** Asynchronous DNS resolution check (<1500ms timeout) that immediately returns HTTP 422 NXDOMAIN in <100ms when a domain does not resolve, preventing dead or mistyped domains from blocking worker threads.
 - **Differential Injection & Query Tolerance Oracle (`src/agent/oracle.rs`):**
   - Added `boundary_tolerance` decisive check: safe HTTP 200..=299 responses to GET boundary and numeric tolerance tests are recognized as clean passes instead of falling into inconclusive.
