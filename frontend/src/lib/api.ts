@@ -183,7 +183,18 @@ export async function apiRequest<T = unknown>(
   try {
     res = await apiFetch(path, { ...rest, headers, body });
   } catch (e) {
-    return { ok: false, status: 0, unauthorized: false, error: `${what} failed: ${errorText(e)}` };
+    // Retry once: handles recycled/stale keep-alive connections closed by the server
+    try {
+      res = await apiFetch(path, { ...rest, headers, body });
+    } catch (retryErr) {
+      const msg = errorText(retryErr || e);
+      return {
+        ok: false,
+        status: 0,
+        unauthorized: false,
+        error: `${what} failed: ${msg === "Failed to fetch" ? "Network connection failed (Failed to fetch). Ensure the ReadyHai server is running." : msg}`,
+      };
+    }
   }
 
   if (res.status === 401) {

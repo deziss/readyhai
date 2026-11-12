@@ -126,6 +126,22 @@ describe("apiRequest", () => {
     const r = await apiRequest("/api/x");
     expect(r).toMatchObject({ ok: false, status: 0 });
   });
+
+  it("retries once on initial network failure", async () => {
+    let attempts = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        attempts++;
+        if (attempts === 1) throw new TypeError("Failed to fetch");
+        return new Response(JSON.stringify({ recovered: true }), { status: 200 });
+      })
+    );
+    const r = await apiRequest<{ recovered: boolean }>("/api/x");
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data.recovered).toBe(true);
+    expect(attempts).toBe(2);
+  });
 });
 
 describe("report hardening", () => {
