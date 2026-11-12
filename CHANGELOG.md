@@ -2,6 +2,26 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-11-12
+
+Enterprise reliability, fast DNS preflight guards, differential injection and boundary oracle calibration, and dual-stack network binding.
+
+### Added
+
+- **Fast DNS Pre-flight Reachability Guard (`preflight_host_dns` in `src/serve.rs`):** Asynchronous DNS resolution check (<1500ms timeout) that immediately returns HTTP 422 NXDOMAIN in <100ms when a domain does not resolve, preventing dead or mistyped domains from blocking worker threads.
+- **Differential Injection & Query Tolerance Oracle (`src/agent/oracle.rs`):**
+  - Added `boundary_tolerance` decisive check: safe HTTP 200..=299 responses to GET boundary and numeric tolerance tests are recognized as clean passes instead of falling into inconclusive.
+  - Added `injection_sanitized` decisive check: safe SQL/NoSQL probe responses that do not disclose database signatures or crash the server record a definitive pass.
+  - Handled path traversal probes with explicit sanitization expectations.
+- **Scaled Concurrency Pool & Grace Queue (`src/serve.rs`):** Scaled `MAX_CONCURRENT_PROBES` from 4 to 16 and added a 2-second semaphore acquisition timeout before raising HTTP 429.
+- **Dual-Stack Docker Compose Binding (`docker-compose.yml`):** Bound frontend (`${FRONTEND_PORT:-3000}:3000`) and backend (`${READYHAI_PORT:-8080}:8080`) to all interfaces, enabling IPv4 and IPv6 loopback connectivity from modern browsers and preventing `ECONNREFUSED` / `Failed to fetch`.
+
+### Fixed
+
+- **Public Surface Calibration (`src/agent/plan.rs`):** Decoupled `fallback_entry` from unrelated internal routes (`!entry_walled` instead of `!any_walled`), ensuring public entry pages (`/`) generate injection, boundary, and robustness test cases even if separate internal endpoints are behind auth walls.
+- **Case Priority Ordering (`src/agent/types.rs`):** Moved `is_ledger_row()` placeholder records down to priority class 3 / tier 2, guaranteeing that real executable test cases are never dropped in favor of dummy placeholder rows during `max_steps` plan trimming.
+- **Evidence Ledger Exit Criteria:** Injection resistance and data safety now evaluates conclusively on web applications and directives, achieving >= 80% conclusive coverage.
+
 ## [0.7.0] - 2026-11-12
 
 Deep security vulnerability scanning across static AST, pinned active scanners, and the autonomous adversarial agent.

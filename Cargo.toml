@@ -1,6 +1,6 @@
 [package]
 name = "readyhai"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 description = "Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate"
 authors = ["Anshu Kushawaha <kushawahaanshu8858@gmail.com>"]
