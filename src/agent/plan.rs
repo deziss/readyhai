@@ -1655,7 +1655,7 @@ pub(crate) struct PlannerOutput {
     pub(crate) cases: Vec<RawCase>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub(crate) struct RawCase {
     pub(crate) title: String,
     pub(crate) component: String,
@@ -1732,14 +1732,33 @@ pub(crate) fn validate_raw(
         ));
     }
     let raw_comp = raw.component.trim();
-    let norm_comp = if !raw_comp.starts_with('/') {
-        format!("/{raw_comp}")
+    let path_part = if let Ok(u) = reqwest::Url::parse(raw_comp) {
+        u.path().to_string()
     } else {
         raw_comp.to_string()
     };
+    let base_part = path_part.split('?').next().unwrap_or(&path_part).trim();
+    let norm_comp = if !base_part.starts_with('/') {
+        format!("/{base_part}")
+    } else {
+        base_part.to_string()
+    };
+    let trimmed = if norm_comp.len() > 1 && norm_comp.ends_with('/') {
+        norm_comp.trim_end_matches('/').to_string()
+    } else {
+        norm_comp.clone()
+    };
     let route = known
         .find(&norm_comp)
+        .or_else(|| known.find(&trimmed))
         .or_else(|| known.find(raw_comp))
+        .or_else(|| {
+            known
+                .exact
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(&norm_comp) || k.eq_ignore_ascii_case(&trimmed))
+                .map(|(_, r)| *r)
+        })
         .ok_or_else(|| {
             format!(
                 "component '{}' is not a discovered route",
@@ -1854,8 +1873,8 @@ fn llm_extras(
 ) -> Vec<PlannedCase> {
     let mut effective_routes = d.routes.clone();
 
-    // If discovery found no non-catch-all routes, always ensure root endpoint '/' is available
-    if effective_routes.iter().all(|r| r.catch_all) {
+    // Always ensure root endpoint '/' is available in known routes
+    if !effective_routes.iter().any(|r| r.path == "/" && !r.catch_all) {
         effective_routes.push(DiscoveredRoute {
             path: "/".to_string(),
             method: "GET".to_string(),
@@ -1952,6 +1971,7 @@ Random Exploration Seed: {}\n\
 Synthesize up to {} unique, randomized adversarial test cases. Focus on high-entropy edge cases and modern attack archetypes:\n- {}\n\
 Important rules:\n\
 - Components must be copied EXACTLY from known_endpoints; never invent routes.\n\
+- You can and should synthesize multiple unique test cases for the same endpoint using diverse parameters, payloads, encodings, and techniques.\n\
 - Do not propose mutating HTTP methods (POST, PUT, PATCH, DELETE) on static files or sensitive file probes (e.g. /.env, /.git/config).\n\
 - Strive for novel, unique vectors (vary parameter names, boundaries, encodings, and payloads across cases).\n\
 - Allowed techniques: authz, boundary, injection, negative, state_transition.",
@@ -4612,6 +4632,37 @@ mod tests {
         let effective_known = Known::new(&routes);
         assert!(effective_known.find("/").is_some());
         assert!(effective_known.find("/api/auth/session").is_some());
+
+        let creds = Credentials::none();
+        let raw_url = RawCase {
+            title: "Test Full URL".into(),
+            component: "https://myvapi.com/api/auth/session".into(),
+            method: Some("GET".into()),
+            technique: "authz".into(),
+            input_hint: None,
+            payload: None,
+            headers: None,
+            content_type: None,
+            expected_behavior: None,
+            expected_status: Some(401),
+            risk_level: Some("high".into()),
+        };
+        let c = validate_raw(&raw_url, &effective_known, &creds).expect("full URL should resolve to path");
+        assert_eq!(c.component, "/api/auth/session");
+
+        let raw_slash = RawCase {
+            component: "/api/auth/session/".into(),
+            ..raw_url.clone()
+        };
+        let c2 = validate_raw(&raw_slash, &effective_known, &creds).expect("trailing slash should resolve");
+        assert_eq!(c2.component, "/api/auth/session");
+
+        let raw_query = RawCase {
+            component: "/api/auth/session?token=test".into(),
+            ..raw_url
+        };
+        let c3 = validate_raw(&raw_query, &effective_known, &creds).expect("query string should resolve to base path");
+        assert_eq!(c3.component, "/api/auth/session");
     }
 
     #[test]
