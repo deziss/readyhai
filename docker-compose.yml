@@ -72,6 +72,8 @@ services:
       - READYHAI_BACKEND_URL=http://readyhai:8080
       # The UI proxy attaches this server-side; the browser never sees the token.
       - READYHAI_TOKEN=${READYHAI_TOKEN}
+      # Prevent browser keep-alive socket drops during idle time before the first test
+      - KEEP_ALIVE_TIMEOUT=65000
     ports:
       - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
     networks:

@@ -14,7 +14,8 @@ const runTimeoutMs =
 const backendAgent = new Agent({
   headersTimeout: runTimeoutMs,
   bodyTimeout: runTimeoutMs,
-  keepAliveTimeout: 10_000,
+  keepAliveTimeout: 60_000,
+  keepAliveMaxTimeout: 60_000,
 });
 
 export async function proxy(
@@ -27,7 +28,13 @@ export async function proxy(
   targetUrl.search = request.nextUrl.search;
 
   const reqHeaders = new Headers(request.headers);
+  // Strip hop-by-hop and client transport headers to avoid undici socket conflicts
   reqHeaders.delete("host");
+  reqHeaders.delete("connection");
+  reqHeaders.delete("keep-alive");
+  reqHeaders.delete("transfer-encoding");
+  reqHeaders.delete("content-length"); // Let undici accurately set Content-Length from the body buffer
+
   // Server-side auth: when the UI container has READYHAI_TOKEN, attach it here so the
   // token never has to be pasted into (or stored by) the browser. A token the user
   // set in Settings still takes precedence.
@@ -48,10 +55,25 @@ export async function proxy(
     });
 
     const resHeaders = new Headers();
-    res.headers.forEach((value, key) => resHeaders.append(key, value));
-    resHeaders.delete("content-encoding");
+    res.headers.forEach((value, key) => {
+      const lower = key.toLowerCase();
+      // Drop hop-by-hop headers, content-encoding, and content-length.
+      // Next.js will set Content-Length automatically for the returned buffer,
+      // avoiding ERR_CONTENT_LENGTH_MISMATCH or chunked encoding conflicts in Chrome.
+      if (
+        lower !== "content-encoding" &&
+        lower !== "content-length" &&
+        lower !== "transfer-encoding" &&
+        lower !== "connection" &&
+        lower !== "keep-alive"
+      ) {
+        resHeaders.append(key, value);
+      }
+    });
 
-    return new NextResponse(res.body as ReadableStream<Uint8Array> | null, {
+    const resBuffer = await res.arrayBuffer();
+
+    return new NextResponse(resBuffer, {
       status: res.status,
       statusText: res.statusText,
       headers: resHeaders,
