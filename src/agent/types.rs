@@ -910,7 +910,6 @@ pub fn case_priority(c: &PlannedCase) -> (u8, u8) {
     let class = if c.technique == "authz"
         || c.technique == "injection"
         || c.component == "/"
-        || c.is_ledger_row()
         || c.source.as_deref() == Some("directives")
     {
         0
@@ -920,6 +919,8 @@ pub fn case_priority(c: &PlannedCase) -> (u8, u8) {
         1
     } else if c.source.as_deref() == Some("openapi") {
         2
+    } else if c.is_ledger_row() {
+        3
     } else if c.source.as_deref() == Some("llm") {
         5
     } else {
@@ -952,7 +953,6 @@ pub fn plan_order(any_priority: bool) -> impl Fn(&PlannedCase) -> (u8, u8, u8) {
             || c.technique == "authz"
             || c.technique == "injection"
             || c.component == "/"
-            || c.is_ledger_row()
         {
             1
         } else {
