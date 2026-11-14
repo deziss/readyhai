@@ -22,6 +22,7 @@ mod engine;
 mod eval;
 mod eval_ai;
 mod facts;
+mod fix;
 mod host;
 mod llm;
 mod logs;
@@ -197,6 +198,8 @@ enum Cmd {
     },
     /// Universal GenAI & Agent Evaluator (RAG Triad, Multi-Model Consensus Jury, Tool-Call Schemas)
     EvalAi(eval_ai::EvalAiOpts),
+    /// Agentic Fixer: AST-grounded patch synthesis, test verification sandbox, and automated PR authoring
+    Fix(fix::FixOpts),
     /// REST API + job worker
     Serve {
         #[arg(long, default_value = "127.0.0.1:8080")]
@@ -712,6 +715,10 @@ fn run() -> anyhow::Result<u8> {
         }
         Cmd::EvalAi(opts) => {
             let code = eval_ai::run(opts)?;
+            Ok(code)
+        }
+        Cmd::Fix(opts) => {
+            let code = fix::run(opts.clone())?;
             Ok(code)
         }
         Cmd::Serve { bind } => {

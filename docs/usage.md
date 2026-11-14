@@ -15,6 +15,7 @@ Binary: `readyhai` (dev build: `target/debug/readyhai`; `cargo` lives in `~/.car
 | `readyhai agent-memory forget <target>` | Delete the memory of a target |
 | `readyhai eval [--suite a,b] [--k N] [--out DIR] [--dir DIR]` | Score the QA engine and the agent against seeded-defect fixtures. Exit 0 every threshold met, 1 a threshold missed, 3 harness error. See [eval.md](eval.md) |
 | `readyhai eval-ai [--query Q --context C --response R \| --dataset FILE] [--red-team] [--format table\|json\|markdown]` | Universal GenAI & Agent Evaluator: RAG Quality Triad (Context Relevance, Faithfulness/Hallucinations, Answer Relevance), tool trajectory loops, and prompt injection red-teaming |
+| `readyhai fix [--repo DIR] [--defect ID\|RULE] [--run ID] [--dry-run] [--verify] [--branch NAME] [--format text\|json\|markdown]` | The Agentic Fixer: AST-grounded code remediation, sibling guard mining, test-before-PR verification sandbox (`cargo test`, `npm test`, `pytest`, `go test`), and automated Pull Request generation |
 | `readyhai baseline accept <run> [--out FILE]` | Accept a run's findings as the baseline |
 | `readyhai checks` | List registered checks (reads `READYHAI_PLUGINS` for plugins) |
 | `readyhai tools pull [--lock FILE]` | `docker pull` every image in `tools.lock.toml`; optionally write resolved digests |
