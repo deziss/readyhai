@@ -68,9 +68,27 @@ Each defect carries steps to reproduce as a curl command; tokens appear only as 
 
 Note on AI execution: In `readyhai qa`, AI-proposed cases are recorded as advisory report notes. For fully autonomous end-to-end synthesis, execution, triage, and Evidence Ledger gating of AI test scenarios, use `readyhai agent <target>` (see [usage.md](usage.md)). Schemathesis remains an optional separate fuzzer (see [checks.md](checks.md)).
 
+## GraphQL testing (`src/qa/graphql.rs`, native Rust over reqwest)
+
+Discovers active GraphQL endpoints (`/graphql`, `/api/graphql`, `/query`, `/v1/graphql`) or tests explicit GraphQL target URLs.
+
+| Check | What is tested | Rule (severity) |
+|---|---|---|
+| Introspection | Standard `__schema` introspection probe. Checks if full schema enumeration is enabled in production | `qa.graphql.introspection_enabled` (Low P4) |
+| Query depth DoS | 10-level circular/nested alias queries. Server must enforce query depth / complexity limit instead of 5xx or timeout | `qa.graphql.deep_nesting_dos` (High P2) |
+| Field authorization (FLA) | Queries sensitive fields (`admin`, `users`, `token`, `secret`, `audit`, `billing`) without token | `qa.graphql.authz_missing` (High P1) |
+| Robustness & syntax | Malformed query syntax (`query { broken (`). Must return sanitized 400 without stack trace leaks | `qa.graphql.server_error` (High P2), `qa.graphql.error_leak` (Medium P2) |
+
 ## UI testing (`src/qa/ui.rs` + `runners/playwright/qa.mjs`)
 
 Needs the runner image: `READYHAI_PLAYWRIGHT_IMAGE`, else a local `readyhai/playwright-runner:local` (`docker build -t readyhai/playwright-runner:local runners/playwright`; CI builds it on pull requests without pushing), else `ghcr.io/deziss/readyhai-playwright-runner:latest`. Without Docker the check is skipped with a hint. Live verification (2026-10-30): all 6 seeded UI bugs found and a valid PDF produced.
+
+**Resilient Self-Healing Locators:** Journeys employ a 4-tier fallback locator tree:
+1. Primary target selector (`page.locator(sel).first()`).
+2. QA test attributes (`[data-testid]`, `[data-qa]`, `[data-cy]`, `[data-test]`).
+3. Semantic accessibility roles (`getByRole('button')`, `getByRole('textbox')`, `getByLabel()`, `getByPlaceholder()`).
+4. Exact and substring text matching (`text="..."`, `[aria-label]`).
+When an element's selector changes, the engine self-heals, completes the action, and logs a diagnostic healing event rather than failing the journey.
 
 | Mode | Profile | Behaviour | Rule |
 |---|---|---|---|

@@ -2,6 +2,7 @@
 //! QA checks only run under `readyhai qa` (Check::qa flag).
 pub mod ai;
 pub mod api;
+pub mod graphql;
 pub mod model;
 pub mod perf;
 pub mod plan;
@@ -105,6 +106,7 @@ impl QaCtx {
 pub fn checks() -> Vec<Check> {
     let mut v = plan::checks();
     v.extend(api::checks());
+    v.extend(graphql::checks());
     v.extend(ui::checks());
     v.extend(perf::checks());
     v.extend(resilience::checks());

@@ -152,6 +152,19 @@ pub struct UiJourney {
     pub trace: Option<String>,
     #[serde(default)]
     pub screenshot: Option<String>,
+    #[serde(default)]
+    pub healed_locators: Vec<UiHealedLocator>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct UiHealedLocator {
+    #[serde(default)]
+    pub original: String,
+    #[serde(default)]
+    pub healed_by: String,
+    #[serde(default)]
+    pub healed_selector: String,
 }
 
 // ---------------------------------------------------------------- report -> QA model
@@ -729,8 +742,28 @@ pub fn build(rep: &UiReport, env: &str, unmap: &dyn Fn(&str) -> String) -> Built
         );
         match j.status.as_str() {
             "pass" => {
-                b.result(&id, None, "all steps passed".into(), vec![]);
+                let note = if j.healed_locators.is_empty() {
+                    "all steps passed".to_string()
+                } else {
+                    format!("all steps passed ({} locator(s) self-healed)", j.healed_locators.len())
+                };
+                b.result(&id, None, note, vec![]);
                 m.set(&j.name, &j.role, Cell::Pass);
+                if !j.healed_locators.is_empty() {
+                    let details: Vec<String> = j
+                        .healed_locators
+                        .iter()
+                        .take(3)
+                        .map(|h| format!("'{}' via {}", h.original, h.healed_by))
+                        .collect();
+                    b.out.notes.push(format!(
+                        "journey `{}` ({}): self-healed {} selector(s) using resilient locator tree ({})",
+                        j.name,
+                        j.role,
+                        j.healed_locators.len(),
+                        details.join(", ")
+                    ));
+                }
             }
             "fail" => {
                 let mut evid = vec![];
@@ -1356,5 +1389,43 @@ mod tests {
         assert_eq!(cell("/err"), Cell::Untested);
         assert_eq!(cell("/good"), Cell::Pass);
         assert!(b.defects.is_empty());
+    }
+
+    #[test]
+    fn test_journey_self_healing_locators() {
+        let json = r##"{
+            "pages": [],
+            "forms": [],
+            "journeys": [
+                {
+                    "name": "checkout-resilient",
+                    "role": "alice",
+                    "status": "pass",
+                    "steps": 4,
+                    "healed_locators": [
+                        {
+                            "original": "#submit-btn-legacy",
+                            "healed_by": "role button",
+                            "healed_selector": "getByRole('button', { name: /submit/i })"
+                        }
+                    ]
+                }
+            ],
+            "notes": []
+        }"##;
+        let rep: UiReport = serde_json::from_str(json).expect("valid UiReport JSON");
+        let b = build(&rep, "nonprod", &|s| s.to_string());
+        let res = b
+            .results
+            .iter()
+            .find(|r| r.case_id == "ui.journey.checkout-resilient.alice")
+            .expect("journey result exists");
+        assert_eq!(res.status, ResultStatus::Pass);
+        assert!(res.actual.contains("1 locator(s) self-healed"));
+        assert!(
+            b.notes
+                .iter()
+                .any(|n| n.contains("self-healed 1 selector(s)") && n.contains("role button"))
+        );
     }
 }

@@ -443,9 +443,83 @@ async function formsMode() {
   await c.close();
 }
 
-// ---------------------------------------------------------------- journeys
+// ---------------------------------------------------------------- journeys & self-healing locators
 const READONLY = new Set(['goto', 'expect_text', 'expect_url', 'wait']);
-async function runStep(page, s) {
+
+async function resolveResilient(page, targetSelector, actionKind, healedLog) {
+  if (!targetSelector) return null;
+  // 1. Direct primary attempt with short timeout
+  try {
+    const loc = page.locator(targetSelector).first();
+    await loc.waitFor({ state: 'attached', timeout: 2500 });
+    return loc;
+  } catch {
+    // Primary selector missed or timed out. Begin resilient self-healing fallback tree.
+  }
+
+  const cleanToken = targetSelector
+    .replace(/^[#.]/, '')
+    .replace(/\[.*?\]/g, '')
+    .replace(/[_-]/g, ' ')
+    .trim();
+
+  const candidates = [];
+
+  // Strategy A: data-testid / data-qa / data-cy / data-test
+  if (cleanToken) {
+    const idToken = targetSelector.replace(/^[#.]/, '').replace(/\[.*?\]/g, '').trim();
+    candidates.push({
+      desc: 'test-id attribute',
+      loc: page.locator(`[data-testid="${idToken}"], [data-qa="${idToken}"], [data-cy="${idToken}"], [data-test="${idToken}"]`).first(),
+    });
+  }
+
+  // Strategy B: Accessibility role + name
+  if (cleanToken && cleanToken.length >= 2) {
+    const rx = new RegExp(cleanToken.split(/\s+/)[0], 'i');
+    if (actionKind === 'click') {
+      candidates.push({ desc: 'role button', loc: page.getByRole('button', { name: rx }).first() });
+      candidates.push({ desc: 'role link', loc: page.getByRole('link', { name: rx }).first() });
+    } else if (actionKind === 'fill') {
+      candidates.push({ desc: 'role textbox', loc: page.getByRole('textbox', { name: rx }).first() });
+      candidates.push({ desc: 'placeholder', loc: page.getByPlaceholder(rx).first() });
+      candidates.push({ desc: 'label', loc: page.getByLabel(rx).first() });
+    }
+  }
+
+  // Strategy C: Exact or substring text content
+  if (cleanToken && cleanToken.length >= 2) {
+    candidates.push({ desc: 'text content', loc: page.locator(`text="${cleanToken}"`).first() });
+    candidates.push({ desc: 'aria-label', loc: page.locator(`[aria-label*="${cleanToken}" i]`).first() });
+  }
+
+  // Strategy D: name attribute
+  if (cleanToken) {
+    const nameToken = targetSelector.replace(/^[#.]/, '').trim();
+    candidates.push({ desc: 'name attribute', loc: page.locator(`[name="${nameToken}"]`).first() });
+  }
+
+  for (const cand of candidates) {
+    try {
+      await cand.loc.waitFor({ state: 'attached', timeout: 1200 });
+      if (healedLog) {
+        healedLog.push({
+          original: targetSelector,
+          healed_by: cand.desc,
+          healed_selector: cand.loc.toString(),
+        });
+      }
+      return cand.loc;
+    } catch {
+      // try next candidate
+    }
+  }
+
+  // Fallback to original locator to let standard Playwright assertion or error handle it
+  return page.locator(targetSelector).first();
+}
+
+async function runStep(page, s, healedLog = []) {
   const key = Object.keys(s).find((k) => ['goto', 'click', 'fill', 'select', 'press', 'expect_text', 'expect_url', 'wait'].includes(k));
   const val = s.value ?? '';
   switch (key) {
@@ -454,14 +528,31 @@ async function runStep(page, s) {
       if (u.origin !== origin) throw new Error(`cross-origin goto refused: ${u.origin}`);
       await page.goto(u.href, { waitUntil: 'load' }); break;
     }
-    case 'click': await page.locator(s.selector || s.click).first().click(); break;
-    case 'fill': await page.locator(s.selector || s.fill).first().fill(String(val)); break;
-    case 'select': await page.locator(s.selector || s.select).first().selectOption(String(val)); break;
+    case 'click': {
+      const sel = s.selector || s.click;
+      const loc = await resolveResilient(page, sel, 'click', healedLog);
+      await loc.click();
+      break;
+    }
+    case 'fill': {
+      const sel = s.selector || s.fill;
+      const loc = await resolveResilient(page, sel, 'fill', healedLog);
+      await loc.fill(String(val));
+      break;
+    }
+    case 'select': {
+      const sel = s.selector || s.select;
+      const loc = await resolveResilient(page, sel, 'select', healedLog);
+      await loc.selectOption(String(val));
+      break;
+    }
     case 'press': await page.keyboard.press(s.press || String(val)); break;
     case 'expect_text': {
       const t = s.expect_text || val;
-      await page.locator(s.selector || 'body').first().waitFor({ state: 'visible' });
-      const txt = await page.locator(s.selector || 'body').first().innerText();
+      const sel = s.selector || 'body';
+      const loc = await resolveResilient(page, sel, 'text', healedLog);
+      await loc.waitFor({ state: 'visible', timeout: 5000 });
+      const txt = await loc.innerText();
       if (!txt.includes(t)) throw new Error(`expected text "${trunc(t, 60)}" not found`);
       break;
     }
@@ -483,7 +574,7 @@ async function journeysMode() {
     for (const role of roles) {
       if (expired()) return;
       if (only && !only.includes(role.name)) continue;
-      const rec = { name: jname, role: role.name, status: 'pass', steps: (j.steps || []).length };
+      const rec = { name: jname, role: role.name, status: 'pass', steps: (j.steps || []).length, healed_locators: [] };
       const ro = (j.steps || []).every((s) => READONLY.has(Object.keys(s).find((k) => READONLY.has(k) || ['click', 'fill', 'select', 'press'].includes(k))));
       if (!ro && !nonprod) { rec.status = 'skipped'; rec.message = 'journey mutates UI state; target is not tagged nonprod'; result.journeys.push(rec); continue; }
       const opts = {};
@@ -494,7 +585,7 @@ async function journeysMode() {
       const page = await c.newPage();
       let idx = 0;
       try {
-        for (; idx < (j.steps || []).length; idx++) await runStep(page, j.steps[idx]);
+        for (; idx < (j.steps || []).length; idx++) await runStep(page, j.steps[idx], rec.healed_locators);
       } catch (e) {
         rec.status = 'fail'; rec.failed_step = idx; rec.message = trunc(String(e?.message ?? e).split('\n')[0], 300);
         const base_ = `${jname}-${role.name}`.replace(/[^A-Za-z0-9_-]+/g, '_');
