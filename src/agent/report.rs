@@ -311,12 +311,18 @@ fn html_ledger(l: &EvidenceLedger) -> String {
         ));
     }
     for e in &l.exit_criteria_checklist {
+        let (st_class, label) = match e.status.as_deref() {
+            Some("met") => ("st-PASS", "met"),
+            Some("warning") => ("st-WARN", "warning"),
+            Some("unmet") => ("st-FAIL", "not met"),
+            _ => if e.met { ("st-PASS", "met") } else { ("st-FAIL", "not met") },
+        };
         h.push_str(&format!(
             "<tr><td>{} <span class=\"mut\">{}</span></td><td class=\"{}\">{}</td><td>{}</td></tr>",
             html_escape(&e.criterion),
             html_escape(&e.details),
-            if e.met { "st-PASS" } else { "st-FAIL" },
-            if e.met { "met" } else { "not met" },
+            st_class,
+            label,
             cites(&e.case_ids, &e.evidence_files)
         ));
     }
@@ -1284,9 +1290,13 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
         }
         md.push_str("\n### Exit criteria\n\n");
         for e in &l.exit_criteria_checklist {
+            let mark = match e.status.as_deref() {
+                Some("met") => "x",
+                Some("warning") => "!",
+                _ => if e.met { "x" } else { " " },
+            };
             md.push_str(&format!(
-                "- [{}] {} - {}\n",
-                if e.met { "x" } else { " " },
+                "- [{mark}] {} - {}\n",
                 md_text(&e.criterion),
                 md_text(&e.details)
             ));

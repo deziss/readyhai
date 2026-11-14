@@ -43,7 +43,7 @@ Every target the guard refuses returns `403 {"error": ...}`: an unlisted interna
 
 | Status | When |
 |---|---|
-| 400 | Invalid input: a bad run id, a path outside allowed roots, an over-limit field such as `custom_instructions` > 4 KB, `repo` without `diff_base`, an unknown profile or format; a target that does not parse, but only on `POST /runs`, `POST /api/scans` and the memory routes (the egress-guarded routes answer 403 for it) |
+| 400 | Invalid input: a bad run id, a path outside allowed roots, an over-limit field such as `custom_instructions` > 32 KB, `repo` without `diff_base`, an unknown profile or format; a target that does not parse, but only on `POST /runs`, `POST /api/scans` and the memory routes (the egress-guarded routes answer 403 for it) |
 | 401 | Missing or wrong bearer token (every route except `/health`) |
 | 403 | Egress guard refused the target on an agent or network-lab route: unparseable URL or a scheme other than http/https, an unlisted internal host, an intrusive action on an `env = "prod"` host, or an unresolvable name for an intrusive action |
 | 404 | Unknown run id (also for `POST /api/agent/runs/{id}/cancel`) |

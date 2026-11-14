@@ -248,6 +248,12 @@ export default function Home() {
     };
 
     try {
+      const directivesBytes = typeof TextEncoder !== "undefined" ? new TextEncoder().encode(directives).length : directives.length;
+      if (directivesBytes > 32768) {
+        failLaunch(`Agent directives are ${directivesBytes.toLocaleString()} bytes, which exceeds the 32,768 bytes limit. Please shorten your directives.`);
+        return;
+      }
+
       const payload = {
         target,
         spec_url: specUrl || null,

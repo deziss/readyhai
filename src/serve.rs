@@ -35,7 +35,17 @@ const DEFAULT_CRAWL_PAGES: usize = 25;
 const MAX_CRAWL_PAGES: usize = 100;
 const MAX_NOTES_CHARS: usize = 2000;
 /// REST agent runs: the same bounds the MCP tool enforces on its inputs.
-const MAX_CUSTOM_INSTRUCTIONS_BYTES: usize = 4096;
+pub const DEFAULT_MAX_CUSTOM_INSTRUCTIONS_BYTES: usize = 32_768;
+#[allow(dead_code)]
+pub const MAX_CUSTOM_INSTRUCTIONS_BYTES: usize = DEFAULT_MAX_CUSTOM_INSTRUCTIONS_BYTES;
+
+pub fn max_custom_instructions_bytes() -> usize {
+    std::env::var("READYHAI_MAX_CUSTOM_INSTRUCTIONS_BYTES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_CUSTOM_INSTRUCTIONS_BYTES)
+        .clamp(4096, 131_072)
+}
 const PROFILES: &[&str] = &["quick", "standard", "deep"];
 const MODEL_TIERS: &[&str] = &["low", "medium", "high", "max", "max_pro"];
 /// Run listings return at most this many runs (newest first).
@@ -807,9 +817,10 @@ fn clamp_agent_request(req: &mut crate::agent::AgentRunRequest) -> Result<(), St
     req.thinking_budget_tokens = crate::llm::clamp_thinking_budget(req.thinking_budget_tokens);
     if let Some(ci) = &req.custom_instructions {
         // Refuse rather than cut: instructions silently truncated mid-sentence change their meaning.
-        if ci.len() > MAX_CUSTOM_INSTRUCTIONS_BYTES {
+        let max_bytes = max_custom_instructions_bytes();
+        if ci.len() > max_bytes {
             return Err(format!(
-                "custom_instructions is {} bytes; the limit is {MAX_CUSTOM_INSTRUCTIONS_BYTES}",
+                "custom_instructions is {} bytes; the limit is {max_bytes} (configure via READYHAI_MAX_CUSTOM_INSTRUCTIONS_BYTES)",
                 ci.len()
             ));
         }
@@ -3037,18 +3048,19 @@ mod tests {
         );
         clamp_agent_request(&mut r).unwrap();
         assert_eq!(r.thinking_budget_tokens, crate::llm::MAX_THINKING_BUDGET);
-        // custom instructions: 4 KB is fine, more is refused (never silently cut)
+        // custom instructions: configured limit (default 32 KB) is fine, more is refused (never silently cut)
+        let max_ci = max_custom_instructions_bytes();
         let mut r = agent_req(
-            json!({"target": "https://a.example/", "custom_instructions": "x".repeat(MAX_CUSTOM_INSTRUCTIONS_BYTES)}),
+            json!({"target": "https://a.example/", "custom_instructions": "x".repeat(max_ci)}),
         );
         assert!(clamp_agent_request(&mut r).is_ok());
         let mut r = agent_req(
-            json!({"target": "https://a.example/", "directives": "x".repeat(MAX_CUSTOM_INSTRUCTIONS_BYTES + 1)}),
+            json!({"target": "https://a.example/", "directives": "x".repeat(max_ci + 1)}),
         );
         assert!(
             clamp_agent_request(&mut r)
                 .unwrap_err()
-                .contains("custom_instructions")
+                .contains(&format!("the limit is {max_ci}"))
         );
         // blank target / blank instructions
         let mut r = agent_req(json!({"target": "  "}));

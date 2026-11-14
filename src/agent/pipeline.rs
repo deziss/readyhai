@@ -2294,6 +2294,7 @@ pub(crate) fn run_discovery_in(
             ExitCheckItem {
                 criterion: "Attack surface discovered".into(),
                 met: !disc.routes.is_empty(),
+                status: Some(if !disc.routes.is_empty() { "met".into() } else { "unmet".into() }),
                 details: format!(
                     "{} route(s), {} ({})",
                     disc.routes.len(),
@@ -2306,6 +2307,7 @@ pub(crate) fn run_discovery_in(
             ExitCheckItem {
                 criterion: "Test scenarios synthesized".into(),
                 met: !plan.cases.is_empty(),
+                status: Some(if !plan.cases.is_empty() { "met".into() } else { "unmet".into() }),
                 details: format!("{} planned scenario(s)", plan.cases.len()),
                 case_ids: plan.cases.iter().map(|c| c.id.clone()).collect(),
                 evidence_files: vec![],

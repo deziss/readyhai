@@ -47,11 +47,15 @@ export function PillarCard({ pillar, index, surface = "bg" }: PillarCardProps) {
               confidence {pillar.confidence}%
             </span>
           )}
-          {!pillar.notEvaluated && pillar.status && (
+          {pillar.notEvaluated ? (
+            <span className="text-xs px-1.5 py-0.5 rounded-[6px] font-semibold bg-rh-cond/15 text-rh-cond">
+              Warning
+            </span>
+          ) : pillar.status ? (
             <span className={`text-xs px-1.5 py-0.5 rounded-[6px] font-semibold ${statusTone(pillar.status)}`}>
               {humanize(pillar.status)}
             </span>
-          )}
+          ) : null}
         </span>
       </div>
 

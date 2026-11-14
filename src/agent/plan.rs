@@ -1963,7 +1963,7 @@ fn llm_extras(
     }
     let facts = serde_json::json!({
         "target": target, "profile": profile, "app_architecture": d.tech.app_architecture, "primary_framework": d.tech.primary_framework,
-        "known_endpoints": endpoints, "operator_instructions": instructions.map(|i| clean(i, 500)).unwrap_or_default(),
+        "known_endpoints": endpoints, "operator_instructions": instructions.map(|i| clean(i, 8000)).unwrap_or_default(),
     });
     // The exploration seed picks and orders the attack archetypes. It comes from the run id, never
     // from the clock, so the same run (id) asks the model the same question.

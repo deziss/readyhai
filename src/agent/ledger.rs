@@ -829,10 +829,12 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
     let item =
         |criterion: &str,
          met: bool,
+         status: &str,
          details: String,
          (case_ids, evidence_files): (Vec<String>, Vec<String>)| ExitCheckItem {
             criterion: criterion.into(),
             met,
+            status: Some(status.into()),
             details,
             case_ids,
             evidence_files,
@@ -844,10 +846,37 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
     } else {
         100.0 * pass as f64 / conclusive_n as f64
     };
+    let authz_fails = cell("authz").map_or(0, |c| c.fail);
+    let authz_met = pillar("authority").is_some_and(|p| p.score.is_some()) && authz_fails == 0;
+    let authz_status = if authz_met {
+        "met"
+    } else if authz_fails > 0 {
+        "unmet"
+    } else {
+        "warning"
+    };
+
+    let inj_fails = cell("injection").map_or(0, |c| c.fail);
+    let inj_met = pillar("safety").is_some_and(|p| p.score.is_some()) && inj_fails == 0;
+    let inj_status = if inj_met {
+        "met"
+    } else if inj_fails > 0 {
+        "unmet"
+    } else {
+        "warning"
+    };
+
     let checklist = vec![
         item(
             "Zero critical defects",
             evaluated && critical == 0,
+            if evaluated && critical == 0 {
+                "met"
+            } else if critical > 0 {
+                "unmet"
+            } else {
+                "warning"
+            },
             if evaluated {
                 format!("{critical} critical defect(s)")
             } else {
@@ -862,6 +891,13 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
         item(
             "No high-severity defects",
             evaluated && high == 0,
+            if evaluated && high == 0 {
+                "met"
+            } else if high > 0 {
+                "unmet"
+            } else {
+                "warning"
+            },
             if evaluated {
                 format!("{high} high-severity defect(s)")
             } else {
@@ -875,12 +911,24 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
         item(
             "Pass rate >= 85% of conclusive applicable cases",
             conclusive_n > 0 && pass_rate >= 85.0,
+            if conclusive_n > 0 && pass_rate >= 85.0 {
+                "met"
+            } else if conclusive_n > 0 {
+                "unmet"
+            } else {
+                "warning"
+            },
             format!("{pass} of {conclusive_n} conclusive case(s) passed ({pass_rate:.0}%)"),
             ids(&|r| r.status == "PASS"),
         ),
         item(
             "Conclusive coverage >= 80% of applicable cases",
             confidence.is_some_and(|c| c >= FULL_CONFIDENCE),
+            if confidence.is_some_and(|c| c >= FULL_CONFIDENCE) {
+                "met"
+            } else {
+                "warning"
+            },
             format!(
                 "{conclusive_n} of {applicable_n} applicable case(s) were conclusive ({conf_text})"
             ),
@@ -888,8 +936,8 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
         ),
         item(
             "Authorization boundary exercised and held",
-            pillar("authority").is_some_and(|p| p.score.is_some())
-                && cell("authz").is_some_and(|c| c.fail == 0),
+            authz_met,
+            authz_status,
             pillar("authority")
                 .map(|p| p.claim.clone())
                 .unwrap_or_default(),
@@ -897,8 +945,8 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
         ),
         item(
             "Injection resistance exercised and held",
-            pillar("safety").is_some_and(|p| p.score.is_some())
-                && cell("injection").is_some_and(|c| c.fail == 0),
+            inj_met,
+            inj_status,
             pillar("safety")
                 .map(|p| p.claim.clone())
                 .unwrap_or_default(),
@@ -907,12 +955,22 @@ fn compute_scored(inp: &LedgerInput) -> EvidenceLedger {
         item(
             "No blocked or flaky cases",
             blocked == 0 && flaky == 0,
+            if blocked == 0 && flaky == 0 {
+                "met"
+            } else {
+                "warning"
+            },
             format!("{blocked} blocked, {flaky} flaky"),
             ids(&|r| r.status == "BLOCKED" || r.flaky),
         ),
         item(
             "Every executed case has stored request/response evidence",
             !executed.is_empty() && repro_ok == executed.len(),
+            if !executed.is_empty() && repro_ok == executed.len() {
+                "met"
+            } else {
+                "warning"
+            },
             format!("{repro_ok} of {} executed", executed.len()),
             ids(&|r| r.was_sent()),
         ),
@@ -1378,6 +1436,13 @@ mod tests {
         assert_eq!(l.safety_score, None);
         assert_eq!(l.gate_verdict, "CONDITIONAL_GO");
         assert!(l.verdict_basis.contains("not evaluated: safety"));
+        let inj_crit = l
+            .exit_criteria_checklist
+            .iter()
+            .find(|c| c.criterion.contains("Injection resistance"))
+            .unwrap();
+        assert!(!inj_crit.met);
+        assert_eq!(inj_crit.status.as_deref(), Some("warning"));
         // the claim cites the not applicable rows
         assert!(
             l.claims

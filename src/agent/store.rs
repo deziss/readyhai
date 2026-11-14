@@ -402,7 +402,7 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
     let ledger = EvidenceLedger { confidence: None, blockers: vec![],
         value_score: None, authority_score: None, safety_score: None, evidence_score: None, overall_readiness: overall, gate_verdict: verdict.into(),
         executive_summary: format!("Core engine executed {} checks: {pass} passed, {fail} failed, {warn} partial, {errored} errored.", r.checks.len()),
-        exit_criteria_checklist: vec![ExitCheckItem { criterion: "Engine verdict is PASS".into(), met: matches!(r.verdict, Verdict::Pass), details: r.reasons.join("; "), case_ids: vec![], evidence_files: vec![] }],
+        exit_criteria_checklist: vec![ExitCheckItem { criterion: "Engine verdict is PASS".into(), met: matches!(r.verdict, Verdict::Pass), status: Some(if matches!(r.verdict, Verdict::Pass) { "met".into() } else if matches!(r.verdict, Verdict::Warn) { "warning".into() } else { "unmet".into() }), details: r.reasons.join("; "), case_ids: vec![], evidence_files: vec![] }],
         composite_score: Some(overall), verdict: Some(verdict.into()), evaluated: conclusive > 0, computed_verdict: verdict.into(),
         verdict_basis: "engine verdict of a readyhai scan; this is not an agent run, so there are no pillar scores".into(), pillars: vec![], coverage: vec![], claims: vec![], llm_advisory: None, ai_summary: None, verification: None,
     };

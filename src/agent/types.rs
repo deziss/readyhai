@@ -443,6 +443,8 @@ pub struct TriagedDefect {
 pub struct ExitCheckItem {
     pub criterion: String,
     pub met: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
     pub details: String,
     #[serde(default)]
     pub case_ids: Vec<String>,

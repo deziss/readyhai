@@ -241,6 +241,7 @@ export interface CoverageCell {
 export interface ExitCriterion {
   criterion: string;
   met: boolean;
+  status?: "met" | "warning" | "unmet" | "not_evaluated" | string;
   details?: string;
 }
 
