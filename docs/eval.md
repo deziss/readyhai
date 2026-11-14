@@ -237,6 +237,69 @@ matches an `[[allow]]`, and otherwise counts as a false positive.
 A new suite *kind* means a new executor in `src/eval.rs` (`exec_*`): return the verdict string and
 the list of `Observed { rules, component, title }`, and add the kind to `SuiteKind` and `run_once`.
 
+## GenAI & Agent Application Evaluation (`readyhai eval-ai`)
+
+`readyhai eval-ai` evaluates GenAI applications, LLM pipelines, RAG systems, and AI agents. It operates completely offline (`READYHAI_OFFLINE=1`) without external cloud LLM dependencies, using deterministic semantic tokenization, atomic proposition decomposition, entity graph comparison, and adversarial signature scanning.
+
+```bash
+# Evaluate a single RAG query-context-response exchange
+readyhai eval-ai \
+  --query "What is the capital of France?" \
+  --context "Paris is the capital and largest city of France." \
+  --response "Paris is the capital of France." \
+  --threshold 0.70
+
+# Evaluate a JSON/JSONL dataset of test cases with red-teaming enabled
+readyhai eval-ai --dataset dataset.json --red-team --format table
+```
+
+### Metrics Evaluated
+
+1. **RAG Quality Triad:**
+   - **Context Relevance:** Lexical and semantic token coverage of user query terms within the retrieved context chunks.
+   - **Faithfulness / Hallucination Detection:** Atomic proposition extraction verifying whether every entity, proper noun, and numeric claim in the generated answer exists in the retrieved context. Hallucinated entities and figures are itemized with exact explanations.
+   - **Answer Relevance:** Evaluates query intent fulfillment and penalizes evasive responses (*"I don't know"*, *"As an AI..."*).
+2. **Agent Trajectory & Tool Execution:**
+   - **JSON Schema Conformance:** Validates tool input parameters against declared tool definitions.
+   - **Cyclic Loop Detection:** Detects repeated, oscillating tool calls with identical arguments.
+   - **Trajectory Efficiency:** Ratio of minimal required steps to total steps executed.
+3. **Adversarial AI Red-Teaming Scanner:**
+   - **Prompt Injection:** Identifies jailbreak signatures, DAN jailbreaks, instruction overrides.
+   - **Sensitive Credential Leakage:** Scans outputs for leaked API keys (`sk-`, `ghp_`, `rh_`, `AKIA`) and private keys.
+   - **Canary Exfiltration:** Detects canary token leakage in responses.
+
+---
+
+## Mutation Testing & Test Oracle Calibration (`readyhai mutate`)
+
+`readyhai mutate` evaluates the effectiveness of your repository's test suite ("testing the tests") by injecting targeted semantic defects (mutants) into your source code and executing the test harness.
+
+```bash
+# Run mutation testing across the repository (evaluating up to 20 mutants)
+readyhai mutate --repo . --max-mutants 20 --timeout-secs 30
+
+# Target a specific module or package
+readyhai mutate --repo . --target "src/auth" --format markdown
+```
+
+### Mutation Operators
+
+- **Comparison Inversion:** Inverts relational operators (`==` <-> `!=`, `<` <-> `>=`, `>` <-> `<=`).
+- **Boolean Literal Flip:** Inverts boolean constants (`true` <-> `false`).
+- **Auth Guard Bypass:** Mutates security conditions (`is_admin` -> `true`, `is_authorized` -> `true`).
+- **Return Value Inversion:** Replaces `return Ok(...)` with `return Err(...)`, or `return true` with `return false`.
+- **Arithmetic Inversion:** Swaps binary arithmetic operators (`+` <-> `-`, `*` <-> `/`).
+
+### Test Oracle Calibration & Verdicts
+
+- **Killed (Pass):** The test suite fails when the mutant is active (proves the test suite actively catches the bug).
+- **Survived (Gap):** The test suite passes despite the injected bug (proves assertions are missing or superficial).
+- **Timed Out (Pass):** The mutant causes a timeout or infinite loop (counted as killed).
+- **Mutation Score:** $\frac{\text{Killed} + \text{TimedOut}}{\text{Total Mutants}} \times 100\%$.
+- **Negative Test Generation:** For every survived mutant, ReadyHai synthesizes the exact assertion needed to kill the mutant and eliminate the coverage blind spot.
+
+---
+
 ## CI
 
 The `eval` job in `.github/workflows/ci.yml` runs after `test`: `cargo run -- eval --suite all --k 2

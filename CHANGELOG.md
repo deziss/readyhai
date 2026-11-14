@@ -2,6 +2,83 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [2.5.0] - 2026-11-14
+
+Autonomous Source Code Mutation Testing (`readyhai mutate`), test oracle calibration, negative test synthesis, and multi-region probe mesh.
+
+### Added
+
+- **Autonomous Mutation Testing Engine (`src/mutate.rs`):**
+  - CLI command `readyhai mutate [--repo DIR] [--target PATH] [--max-mutants N] [--timeout-secs N]` and REST endpoint `POST /api/mutate`.
+  - Injects targeted semantic defects into customer source code across comparison operators, boolean flips, auth guard bypasses, return values, and arithmetic operators.
+  - Automatically runs detected repository test harness (`cargo test`, `npm test`, `pytest`, `go test`) against each mutant to evaluate test oracle sensitivity.
+  - Computes Mutation Score ($\frac{\text{Killed} + \text{TimedOut}}{\text{Total}} \times 100\%$) and classifies test oracle quality (`EXCELLENT`, `ADEQUATE`, `WEAK`).
+  - Synthesizes actionable recommended negative test assertions for every survived mutant to eliminate blind spots.
+- **Multi-Region Probe Mesh Coordination:**
+  - Route `POST /api/network/multi-region` for geographically distributed vantage latency, SSL certificate propagation, and CDN edge consistency testing.
+
+## [2.0.0] - 2026-11-14
+
+The Agentic Fixer (`readyhai fix`): AST-grounded code remediation, test-before-PR verification loop, and automated Pull Request bot.
+
+### Added
+
+- **The Agentic Fixer Engine (`src/fix.rs`):**
+  - CLI command `readyhai fix [--repo DIR] [--defect ID|RULE] [--run ID] [--dry-run] [--verify] [--branch NAME] [--format text|json|markdown]` and REST endpoint `POST /api/fix`.
+  - AST-grounded remediation patch synthesis:
+    - **Missing Auth Guards:** Injects route middleware based on mined sibling endpoint security conventions across Express, FastAPI, Flask, and Chi.
+    - **SQL Injection:** Parameterizes string concatenations and f-strings into bound SQL placeholders (`%s`, `$1`, `?`).
+    - **Path Traversal:** Injects safe `basename` and normalization validation before file I/O sinks.
+    - **Command Execution:** Eliminates `shell=True` and replaces raw string shell executions with safe argument vectors.
+    - **Wildcard CORS:** Replaces wildcard `*` with configurable allowed origins.
+    - **Hardcoded Secrets:** Extracts plaintext credentials into environment variable lookups.
+  - Sibling Guard Mining: scans existing codebase routes to discover and match standard authentication middleware tokens.
+  - Deterministic Test-Before-PR Verification Sandbox: executes project test runner (`cargo test`, `npm test`, `pytest`, `go test`) on candidate patches, rolling back automatically on failure to guarantee zero regressions.
+  - Automated PR Bot: creates local git branches, authors structured commits, and synthesizes markdown PR descriptions with unified diffs and Evidence Ledger curl proofs.
+
+## [1.5.0] - 2026-11-14
+
+Universal GenAI & Agent Evaluator (`readyhai eval-ai`): RAG Quality Triad, deterministic hallucination extraction, trajectory efficiency, and adversarial prompt injection red-teaming.
+
+### Added
+
+- **Universal GenAI Evaluator Engine (`src/eval_ai.rs`):**
+  - CLI command `readyhai eval-ai [--query Q --context C --response R | --dataset FILE] [--red-team] [--threshold F]` and REST endpoint `POST /api/eval-ai`.
+  - **RAG Quality Triad:** Context Relevance, Answer Relevance, and Faithfulness / Groundedness with itemized hallucinated fact and number extraction.
+  - **Agent Trajectory & Tool Execution Evaluation:** JSON schema conformance, cyclic repeat loop detection, and trajectory efficiency scoring.
+  - **Adversarial Red-Teaming Scanner:** Prompt injection signature detection, credential leak scanning (`sk-`, `ghp_`, `AKIA`), and canary exfiltration auditing.
+
+## [1.2.0] - 2026-11-14
+
+W3C OpenTelemetry distributed trace context propagation, autonomous Markov state-graph dead-end explorer, and multi-persona synchronized testing.
+
+### Added
+
+- **W3C Distributed Tracing Injection (`src/qa/api/exec.rs`):**
+  - Injects `traceparent`, `tracestate`, and `baggage` headers into every probe, fuzz payload, and Playwright browser request.
+  - Correlates test failures directly to OpenTelemetry APM spans and SQL trace queries via `READYHAI_APM_URL`.
+- **Autonomous Markov State-Graph Explorer (`runners/playwright/qa.mjs` & `src/qa/ui.rs`):**
+  - Dynamic page state fingerprinting and transition graph construction.
+  - Dead-end view detection defect emission (`qa.ui.dead_end`, P2 Medium).
+- **Multi-Persona Synchronized Testing:**
+  - `sync_personas: [...]` spins up concurrent browser sessions across distinct roles (e.g. admin and regular member) to audit instant session revocation and privilege isolation.
+
+## [1.0.0] - 2026-11-14
+
+Enterprise multi-worker task queue recovery, native GraphQL QA fuzzer, resilient self-healing Playwright locators, and OpenAPI 3.1 polymorphic support.
+
+### Added
+
+- **Native GraphQL QA Fuzzer (`src/qa/graphql.rs`):**
+  - Introspection query parsing, circular query DoS attack fuzzing (`qa.graphql.circular_dos`), and field-level authorization auditing (`qa.graphql.unauthorized_field`).
+- **Resilient Self-Healing Locators (`runners/playwright/qa.mjs`):**
+  - 4-tier fallback selector hierarchy (`data-testid`, semantic role/name, text, and resilient structural CSS) with automatic defect tracking on fallback (`qa.ui.healed_locator`).
+- **OpenAPI 3.1 & JSON Schema Draft 2020-12 Support:**
+  - `prefixItems` tuple array synthesis, type array validations, and polymorphic schema generation.
+- **Persistent Task Queue Recovery (`src/serve.rs` & `src/engine.rs`):**
+  - Persists `opts.json` per scan to resume interrupted queue tasks across server restarts.
+  - Concurrent multi-worker pool scaling via `READYHAI_WORKERS`.
+
 ## [0.9.0] - 2026-11-14
 
 Full-stack library, runner, and container toolchain modernization across Rust, TypeScript, React, Python, and Docker environments.
