@@ -16,7 +16,37 @@ Status key: **Done** (implemented, covered by tests or verification), **Done, li
 | 7 Super agent | Shared QA checks, verifier, code-aware planning, lead and area sub-agents, per-target memory, eval harness | **Done** | Landed in 0.2.0 and 0.3.0 (2026-11-05). Detection is gated by the eval suites (7/7 seeded bugs). Not yet run against a real, non-fixture application. |
 | 8 Studio revamp | Design system, command center, release gate in the workspace, six-stage stepper, cancel, sandboxed reports, token settings | **Done** | `0.4.0`–`0.6.2`. UI behaviour is covered by vitest (127 cases); no browser end-to-end test runs in CI. |
 | 9 Deep security | Native Tree-sitter cross-file taint/auth audit (`security.code_audit`), Opengrep, Nuclei, active ZAP, TLS/CSP checks, modular `attacks/*`, in-process OAST, Playwright `BrowserSecurity`, white-box `--repo` AST bridge, ReAct follow-up waves, `security-deep` + `whitebox-exploit` evals | **Done** | Landed in `0.7.0`. Gated across 10 deterministic CI eval suites with 0 false positives. |
-| 10 Later | See "Next" and "Later" below | **Next** / **Later** | |
+| 10 Modern Toolchain & Dep Upgrade | Node 24 LTS, TypeScript 7, React 19, Next.js 16.4, MiniJinja 3, Sha2 0.11, Rand 0.10, Reqwest 0.13, Playwright 1.65.1 | **Done, live** | Landed in `0.9.0`. Full suite passed: 813 Rust tests, 141 Vitest tests, Docker stack running healthy. |
+| 11 World-Class Evaluator & QA Engine | 7-pillar master plan (Multi-protocol APIs, Autonomous State-Graph Journeys, GenAI Evaluator, OTel trace correlation, Agentic Fixer, Mutation testing, Enterprise mesh) | **In Progress** | Master blueprint: [docs/plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md) |
+
+## Evolutionary Horizons (World-Class Evaluator & QA Engine)
+
+See [plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md) for full architectural specifications.
+
+1. **Horizon 1 (v1.0.0) — Protocol Breadth & Enterprise Queue**:
+   - OpenAPI 3.1 & JSON Schema Draft 2020-12 full support.
+   - GraphQL schema introspection & autonomous query/mutation fuzzer.
+   - Self-healing locator tree in Playwright runner (`qa.mjs`).
+   - SQLite WAL persistent queue with multi-worker execution in `src/serve.rs`.
+2. **Horizon 2 (v1.2.0) — Autonomous Exploration & Deep Observability**:
+   - Dynamic Markov state-graph explorer for single-page web applications.
+   - Multi-persona collaborative browser journeys (Admin vs. Member concurrent sessions).
+   - W3C distributed trace context injection (`traceparent`) & OTel APM correlation.
+   - Structural visual regression 2.0 with dynamic element masking and SSIM diffing.
+3. **Horizon 3 (v1.5.0) — Universal GenAI & Agent Evaluator (`readyhai eval-ai`)**:
+   - Dedicated GenAI evaluation engine: RAG Quality Triad (Context Relevance, Faithfulness/Groundedness, Answer Relevance).
+   - Multi-Model Consensus Jury with calibrated statistical agreement scoring.
+   - Adversarial AI red-teaming (indirect prompt injection, jailbreak fuzzing, token smuggling).
+   - Agent trajectory & tool-calling validation against MCP / OpenAPI schemas.
+4. **Horizon 4 (v2.0.0) — The Agentic Fixer (`readyhai fix`)**:
+   - AST-grounded code remediation across Rust, TypeScript, Python, and Go.
+   - Ephemeral worktree isolation with test-before-PR verification loops.
+   - Automated GitHub/GitLab Pull Request authoring with cryptographic Evidence Ledger attachments.
+5. **Horizon 5 (v2.5.0) — Mutation Testing & Global Fleet Mesh (`readyhai mutate`)**:
+   - Source code mutation engine with mutation score calculation.
+   - Autonomous negative test generator killing survived mutants.
+   - Multi-region distributed probe nodes for global edge latency and geo-fence testing.
+   - Multi-target enterprise fleet dashboard and cross-service drift intelligence.
 
 ## Next
 
