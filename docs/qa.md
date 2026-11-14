@@ -90,14 +90,30 @@ Needs the runner image: `READYHAI_PLAYWRIGHT_IMAGE`, else a local `readyhai/play
 4. Exact and substring text matching (`text="..."`, `[aria-label]`).
 When an element's selector changes, the engine self-heals, completes the action, and logs a diagnostic healing event rather than failing the journey.
 
+**Autonomous Markov State Graph:**
+During crawling and exploration, ReadyHai dynamically models user navigation as a Markov state graph:
+- Computes SHA-256 DOM fingerprints capturing route pathnames, headings, interactive buttons, links, forms, and dialog states.
+- Maps directed transitions across states.
+- Automatically flags **Dead-End Views** (`qa.ui.dead_end`, Medium P2) where a user enters a view or modal dialog that provides no links, buttons, or escape paths back.
+
+**Multi-Persona Synchronized Testing:**
+Journeys support `sync_personas: ["admin", "member"]` with step-level persona routing (`persona: "admin"` vs `persona: "member"`). The engine spins up concurrent browser contexts with independent auth `storageState` files to verify real-time permission revocations, session lockouts, and cross-tenant data isolation.
+
+**W3C Distributed Trace Context & APM Correlation:**
+Every probe, fuzzing payload, and Playwright browser request automatically injects standard W3C distributed tracing headers:
+- `traceparent`: `00-{trace_id}-{span_id}-01` (32-hex trace ID, 16-hex span ID)
+- `tracestate`: `readyhai=origin:tester`
+- `baggage`: `readyhai.client=api_fuzzer|playwright,readyhai.target=...`
+Recorded in exchange artifacts (`artifacts/api/*.json`). When `READYHAI_APM_URL` is set (e.g. `http://jaeger:16686/trace`), ReadyHai directly correlates failing test cases with deep backend APM traces and database execution spans.
+
 | Mode | Profile | Behaviour | Rule |
 |---|---|---|---|
-| crawl | quick | same-origin crawl, max 20 pages | web.* findings |
+| crawl | quick | same-origin crawl, max 20 pages | web.* findings, `qa.ui.dead_end` |
 | responsive | quick | viewports 375x812, 768x1024, 1366x768: horizontal overflow, clipped elements, small tap targets | `qa.ui.responsive_overflow` (Low) |
 | a11y | quick | axe-core bundled in the image (offline). critical/serious -> Medium, others Low | `qa.ui.a11y` |
 | vitals | quick | LCP, CLS, long tasks, page weight, request count. A page that answered an error status (>= 400 or no response) or painted nothing (LCP 0) has no measurable vitals: the case is Blocked and the cell Untested, never a pass | `qa.ui.slow_page` (LCP Medium, CLS Low) |
 | forms | standard + nonprod | fills each field with boundary/invalid values and submits; skips cross-origin and destructive-looking actions (logout, delete, pay, checkout...). Accepting invalid input without a validation message is a gap | `qa.ui.validation_gap` (Medium) |
-| journeys | standard | steps per role using `storageState`; read-only journeys run anywhere, mutating ones are skipped unless nonprod. Trace/video on failure | `qa.ui.journey_failed` (High) |
+| journeys | standard | steps per role (or multi-persona synchronized) using `storageState`; read-only journeys run anywhere, mutating ones are skipped unless nonprod. Trace/video on failure | `qa.ui.journey_failed` (High) |
 | visual | standard | screenshots per page and viewport vs stored PNGs (pixelmatch); > 0.5% pixels changed needs review | `qa.ui.visual_change` (Low) |
 
 Visual baselines live in `<data>/baselines/<target-key>/visual/`. The first run stores the screenshots as the baseline (and records the visual case as Skipped / coverage Untested: nothing was compared); the next run compares. `baseline accept <run>` promotes that run's screenshots (`<run>/artifacts/ui/shots`, diff images excluded) to the new baseline.

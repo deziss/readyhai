@@ -55,7 +55,43 @@ pub struct UiReport {
     #[serde(default)]
     pub journeys: Vec<UiJourney>,
     #[serde(default)]
+    pub state_graph: Option<UiStateGraph>,
+    #[serde(default)]
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct UiStateGraph {
+    #[serde(default)]
+    pub states: Vec<UiStateNode>,
+    #[serde(default)]
+    pub transitions: Vec<UiStateTransition>,
+    #[serde(default)]
+    pub dead_ends: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct UiStateNode {
+    pub id: String,
+    pub route: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub dom_fingerprint: String,
+    #[serde(default)]
+    pub interactive_elements: usize,
+    #[serde(default)]
+    pub dead_end: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default, Deserialize, Clone)]
+pub struct UiStateTransition {
+    pub from: String,
+    pub to: String,
+    pub action: String,
+    pub target: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -823,6 +859,72 @@ pub fn build(rep: &UiReport, env: &str, unmap: &dyn Fn(&str) -> String) -> Built
             }
         }
     }
+
+    // State graph analysis
+    if let Some(sg) = &rep.state_graph {
+        let sg_id = "ui.state_graph".to_string();
+        b.case(
+            sg_id.clone(),
+            Technique::StateTransition,
+            Priority::P2,
+            format!(
+                "Markov State Graph: {} states, {} transitions",
+                sg.states.len(),
+                sg.transitions.len()
+            ),
+            "UI Navigation Graph".into(),
+            None,
+            vec!["Explore SPA views, dialogs, and interactive element transitions".into()],
+            "Continuous navigable state graph with no dead-end traps",
+        );
+        if !sg.dead_ends.is_empty() {
+            let i = b.defect(
+                "qa.ui.dead_end",
+                Category::Quality,
+                Severity::Medium,
+                format!(
+                    "Dead-end UI views discovered ({} view(s) trap user)",
+                    sg.dead_ends.len()
+                ),
+                "UI Navigation".into(),
+                format!("qa.ui.dead_end|{}", sg.dead_ends.join("|")),
+            );
+            let d = &mut b.out.defects[i];
+            d.expected = "Every UI view provides navigation paths forward or back".into();
+            d.actual = format!(
+                "Trapped views with no links, buttons, or actions: {}",
+                sg.dead_ends.join(", ")
+            );
+            d.steps_to_reproduce = sg
+                .dead_ends
+                .iter()
+                .map(|de| format!("Navigate to {de}"))
+                .collect();
+            d.remediation =
+                "Provide clear back/home navigation links or dismissal controls on all error/terminal pages.".into();
+            d.cases.push(sg_id.clone());
+            let dd = d.clone();
+            b.result(&sg_id, Some(&dd), dd.actual.clone(), vec![]);
+        } else {
+            b.result(
+                &sg_id,
+                None,
+                format!(
+                    "Navigable state graph: {} states, {} transitions, 0 dead-ends",
+                    sg.states.len(),
+                    sg.transitions.len()
+                ),
+                vec![],
+            );
+        }
+        b.out.notes.push(format!(
+            "ui state graph: mapped {} distinct UI states with {} transition edges ({} dead ends)",
+            sg.states.len(),
+            sg.transitions.len(),
+            sg.dead_ends.len()
+        ));
+    }
+
     b.out.coverage = m;
     b.out
 }
@@ -1427,5 +1529,77 @@ mod tests {
                 .iter()
                 .any(|n| n.contains("self-healed 1 selector(s)") && n.contains("role button"))
         );
+    }
+
+    #[test]
+    fn test_state_graph_and_dead_ends() {
+        let json = r##"{
+            "pages": [],
+            "forms": [],
+            "journeys": [],
+            "state_graph": {
+                "states": [
+                    { "id": "s1", "route": "/", "title": "Home", "dom_fingerprint": "a1b2", "interactive_elements": 5, "dead_end": false },
+                    { "id": "s2", "route": "/broken-modal", "title": "Error Trap", "dom_fingerprint": "c3d4", "interactive_elements": 0, "dead_end": true }
+                ],
+                "transitions": [
+                    { "from": "s1", "to": "s2", "action": "navigate", "target": "/broken-modal" }
+                ],
+                "dead_ends": ["/broken-modal"]
+            },
+            "notes": []
+        }"##;
+        let rep: UiReport = serde_json::from_str(json).expect("valid UiReport JSON");
+        let b = build(&rep, "nonprod", &|s| s.to_string());
+        let res = b
+            .results
+            .iter()
+            .find(|r| r.case_id == "ui.state_graph")
+            .expect("ui.state_graph case exists");
+        assert_eq!(res.status, ResultStatus::Fail);
+        assert!(res.actual.contains("Trapped views"));
+        assert!(res.actual.contains("/broken-modal"));
+
+        let defect = b
+            .defects
+            .iter()
+            .find(|d| d.rule == "qa.ui.dead_end")
+            .expect("dead_end defect created");
+        assert_eq!(defect.severity, Severity::Medium);
+        assert_eq!(defect.priority, Priority::P2);
+        assert!(defect.title.contains("1 view(s) trap user"));
+
+        assert!(
+            b.notes
+                .iter()
+                .any(|n| n.contains("mapped 2 distinct UI states with 1 transition edges"))
+        );
+    }
+
+    #[test]
+    fn test_multi_persona_journey_reporting() {
+        let json = r##"{
+            "pages": [],
+            "forms": [],
+            "journeys": [
+                {
+                    "name": "rbac-permission-revocation",
+                    "role": "admin+member",
+                    "status": "pass",
+                    "steps": 5,
+                    "healed_locators": []
+                }
+            ],
+            "notes": []
+        }"##;
+        let rep: UiReport = serde_json::from_str(json).expect("valid UiReport JSON");
+        let b = build(&rep, "nonprod", &|s| s.to_string());
+        let res = b
+            .results
+            .iter()
+            .find(|r| r.case_id == "ui.journey.rbac-permission-revocation.admin+member")
+            .expect("multi-persona journey result exists");
+        assert_eq!(res.status, ResultStatus::Pass);
+        assert_eq!(res.actual, "all steps passed");
     }
 }

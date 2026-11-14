@@ -10,7 +10,7 @@
 import { chromium } from 'playwright';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 const OUT = process.env.QA_OUT || '/out';
 const inputPath = process.argv[2] || `${OUT}/qa-ui-input.json`;
@@ -188,8 +188,50 @@ if (modes.has('discover')) {
 mkdirSync(`${OUT}/shots`, { recursive: true });
 mkdirSync(`${OUT}/traces`, { recursive: true });
 
-const result = { base_url: input.base_url, modes: [...modes], pages: [], forms: [], journeys: [], notes: [] };
+const result = {
+  base_url: input.base_url,
+  modes: [...modes],
+  pages: [],
+  forms: [],
+  journeys: [],
+  state_graph: { states: [], transitions: [], dead_ends: [] },
+  notes: [],
+};
 const note = (s) => result.notes.push(s);
+
+const genTraceId = () => randomBytes(16).toString('hex');
+const genSpanId = () => randomBytes(8).toString('hex');
+
+async function extractPageState(page, url) {
+  try {
+    const info = await page.evaluate(() => {
+      const title = document.title || '';
+      const forms = document.forms.length;
+      const buttons = [...document.querySelectorAll('button,[role="button"],input[type="submit"]')].map((b) => (b.innerText || b.value || '').trim()).filter(Boolean).slice(0, 15);
+      const links = [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href') || '').filter((h) => h && !h.startsWith('#') && !h.startsWith('javascript:')).slice(0, 25);
+      const dialogs = document.querySelectorAll('dialog,[role="dialog"]').length;
+      const headings = [...document.querySelectorAll('h1,h2')].map((h) => h.innerText.trim()).filter(Boolean).slice(0, 5);
+      const isDeadEnd = links.length === 0 && buttons.length === 0 && forms === 0;
+      return { title, forms, buttons, links, dialogs, headings, isDeadEnd };
+    });
+    const normUrl = norm(url) || url;
+    let pathname = '/';
+    try { pathname = new URL(normUrl).pathname; } catch {}
+    const summary = `${pathname}|${info.headings.join(',')}|${info.forms}|${info.buttons.join(',')}|${info.dialogs}`;
+    const stateId = createHash('sha256').update(summary).digest('hex').slice(0, 8);
+    const fingerprint = createHash('sha256').update(summary).digest('hex').slice(0, 16);
+    return {
+      id: stateId,
+      route: pathname,
+      title: info.title,
+      dom_fingerprint: fingerprint,
+      interactive_elements: info.buttons.length + info.links.length + info.forms,
+      dead_end: info.isDeadEnd,
+    };
+  } catch {
+    return null;
+  }
+}
 
 const slug = (u) => {
   const x = new URL(u);
@@ -211,6 +253,13 @@ async function newCtx(extra = {}) {
   const c = await browser.newContext({ viewport: { width: 1280, height: 800 }, ...extra });
   c.setDefaultNavigationTimeout(NAV_TIMEOUT);
   c.setDefaultTimeout(NAV_TIMEOUT);
+  const traceId = genTraceId();
+  const spanId = genSpanId();
+  await c.setExtraHTTPHeaders({
+    'traceparent': `00-${traceId}-${spanId}-01`,
+    'tracestate': 'readyhai=runner:playwright',
+    'baggage': `readyhai.client=playwright,readyhai.target=${origin}`,
+  });
   await c.addInitScript(INIT);
   return c;
 }
@@ -291,6 +340,7 @@ const ctx = await newCtx();
 const queue = [norm(input.base_url)];
 const seen = new Set(queue);
 const wantResp = modes.has('responsive'), wantA11y = modes.has('a11y') && axeSource, wantVitals = modes.has('vitals'), wantVisual = modes.has('visual');
+let prevState = null;
 
 while (queue.length && result.pages.length < maxPages && !expired()) {
   const url = queue.shift();
@@ -303,6 +353,28 @@ while (queue.length && result.pages.length < maxPages && !expired()) {
     const resp = await page.goto(url, { waitUntil: 'load' });
     rec.status = resp ? resp.status() : 0;
     await page.waitForTimeout(500);
+
+    const stateNode = await extractPageState(page, url);
+    if (stateNode) {
+      if (!result.state_graph.states.some((s) => s.id === stateNode.id)) {
+        result.state_graph.states.push(stateNode);
+      }
+      if (stateNode.dead_end && !result.state_graph.dead_ends.includes(stateNode.route)) {
+        result.state_graph.dead_ends.push(stateNode.route);
+      }
+      if (prevState && prevState.id !== stateNode.id) {
+        const transKey = `${prevState.id}->${stateNode.id}`;
+        if (!result.state_graph.transitions.some((t) => `${t.from}->${t.to}` === transKey)) {
+          result.state_graph.transitions.push({
+            from: prevState.id,
+            to: stateNode.id,
+            action: 'navigate',
+            target: stateNode.route,
+          });
+        }
+      }
+      prevState = stateNode;
+    }
     for (const h of await page.$$eval('a[href]', (as) => as.map((a) => a.href))) {
       const n = norm(h);
       if (n && /^https?:/.test(n) && new URL(n).origin === origin && !seen.has(n) && seen.size < maxPages * 5) { seen.add(n); queue.push(n); }
@@ -570,6 +642,81 @@ async function journeysMode() {
   const roles = input.roles?.length ? input.roles : [{ name: 'anon' }];
   for (const j of input.journeys || []) {
     const jname = j.name || 'journey';
+
+    // Synchronized multi-persona testing
+    const isMultiPersona = Array.isArray(j.sync_personas) && j.sync_personas.length > 0;
+    if (isMultiPersona) {
+      if (expired()) return;
+      const combinedRole = j.sync_personas.join('+');
+      const rec = { name: jname, role: combinedRole, status: 'pass', steps: (j.steps || []).length, healed_locators: [] };
+      const ro = (j.steps || []).every((s) => READONLY.has(Object.keys(s).find((k) => READONLY.has(k) || ['click', 'fill', 'select', 'press'].includes(k))));
+      if (!ro && !nonprod) {
+        rec.status = 'skipped';
+        rec.message = 'multi-persona journey mutates UI state; target is not tagged nonprod';
+        result.journeys.push(rec);
+        continue;
+      }
+
+      const contexts = new Map();
+      const pages = new Map();
+      let initError = null;
+
+      for (const p of j.sync_personas) {
+        const r = roles.find((x) => x.name === p) || { name: p };
+        const opts = {};
+        if (r.storage_state_path && existsSync(r.storage_state_path)) {
+          opts.storageState = r.storage_state_path;
+        } else if (r.storage_state_path) {
+          initError = `storageState missing for persona '${p}'`;
+          break;
+        }
+        try {
+          const c = await newCtx(opts);
+          const page = await c.newPage();
+          contexts.set(p, c);
+          pages.set(p, page);
+        } catch (e) {
+          initError = trunc(e.message, 120);
+          break;
+        }
+      }
+
+      if (initError) {
+        rec.status = 'blocked';
+        rec.message = initError;
+        for (const c of contexts.values()) await c.close().catch(() => {});
+        result.journeys.push(rec);
+        continue;
+      }
+
+      let idx = 0;
+      try {
+        for (; idx < (j.steps || []).length; idx++) {
+          const s = j.steps[idx];
+          const targetPersona = s.persona || j.sync_personas[0];
+          const page = pages.get(targetPersona);
+          if (!page) throw new Error(`unknown persona '${targetPersona}' in synchronized step`);
+          await runStep(page, s, rec.healed_locators);
+        }
+      } catch (e) {
+        rec.status = 'fail';
+        rec.failed_step = idx;
+        rec.message = trunc(String(e?.message ?? e).split('\n')[0], 300);
+        const base_ = `${jname}-${combinedRole}`.replace(/[^A-Za-z0-9_-]+/g, '_');
+        const activePage = pages.get(j.steps[idx]?.persona || j.sync_personas[0]);
+        if (activePage) {
+          try {
+            await activePage.screenshot({ path: `${OUT}/traces/${base_}.png`, timeout: 8000 });
+            rec.screenshot = `traces/${base_}.png`;
+          } catch {}
+        }
+      }
+
+      for (const c of contexts.values()) await c.close().catch(() => {});
+      result.journeys.push(rec);
+      continue;
+    }
+
     const only = Array.isArray(j.roles) ? j.roles : null;
     for (const role of roles) {
       if (expired()) return;

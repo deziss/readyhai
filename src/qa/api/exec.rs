@@ -34,6 +34,10 @@ pub struct Exchange {
     pub error: Option<String>,
     /// The transport error was a timeout (vs reset / refused).
     pub timed_out: bool,
+    /// W3C distributed trace id (32 lowercase hex characters).
+    pub trace_id: Option<String>,
+    /// W3C distributed span id (16 lowercase hex characters).
+    pub span_id: Option<String>,
 }
 
 impl Exchange {
@@ -160,6 +164,32 @@ pub fn send_cleanup(qa: &QaCtx, role: Option<&Role>, url: &str) -> Result<Exchan
     send_inner(qa, role, "DELETE", url, None, &[])
 }
 
+/// Generate standard W3C Trace Context Level 2 headers (`traceparent`, `tracestate`, `baggage`).
+/// Output tuple: `(trace_id, span_id, traceparent, tracestate, baggage)`.
+pub fn generate_w3c_trace_context(
+    role_name: Option<&str>,
+) -> (String, String, String, String, String) {
+    let mut trace_bytes: [u8; 16] = rand::random();
+    let mut span_bytes: [u8; 8] = rand::random();
+    if trace_bytes == [0u8; 16] {
+        trace_bytes[0] = 1;
+    }
+    if span_bytes == [0u8; 8] {
+        span_bytes[0] = 1;
+    }
+    let trace_id = hex::encode(trace_bytes);
+    let span_id = hex::encode(span_bytes);
+    let traceparent = format!("00-{trace_id}-{span_id}-01");
+    let tracestate = "readyhai=origin:tester".to_string();
+    let baggage = format!(
+        "readyhai.client=api_fuzzer{}",
+        role_name
+            .map(|r| format!(",readyhai.role={r}"))
+            .unwrap_or_default()
+    );
+    (trace_id, span_id, traceparent, tracestate, baggage)
+}
+
 fn send_inner(
     qa: &QaCtx,
     role: Option<&Role>,
@@ -170,9 +200,14 @@ fn send_inner(
 ) -> Result<Exchange> {
     let c = client()?;
     let m = reqwest::Method::from_bytes(method.to_ascii_uppercase().as_bytes())?;
+    let (trace_id, span_id, traceparent, tracestate, baggage) =
+        generate_w3c_trace_context(role.map(|r| r.name.as_str()));
     let mut rb = c
         .request(m, url)
-        .header("Accept", "application/json, text/html;q=0.5");
+        .header("Accept", "application/json, text/html;q=0.5")
+        .header("traceparent", &traceparent)
+        .header("tracestate", &tracestate)
+        .header("baggage", &baggage);
     if let Some(r) = role {
         if let Some((k, v)) = r.credential() {
             rb = rb.header(k, v);
@@ -192,6 +227,8 @@ fn send_inner(
     let mut ex = Exchange {
         method: method.to_ascii_uppercase(),
         url: url.to_string(),
+        trace_id: Some(trace_id),
+        span_id: Some(span_id),
         ..Default::default()
     };
     match rb.send() {
@@ -293,8 +330,16 @@ pub fn save_evidence(
         let t = b.to_string();
         crate::logs::redact(&t.chars().take(MAX_BODY).collect::<String>())
     });
+    let apm_url = ex.trace_id.as_ref().and_then(|tid| {
+        std::env::var("READYHAI_APM_URL")
+            .ok()
+            .map(|base| format!("{}/{}", base.trim_end_matches('/'), tid))
+    });
     let doc = json!({
         "case": case_id,
+        "trace_id": ex.trace_id,
+        "span_id": ex.span_id,
+        "apm_url": apm_url,
         "request": {"method": ex.method, "url": ex.url, "role": role, "body": req},
         "response": {"status": ex.status, "headers": ex.headers, "body": ex.redacted_body(), "ms": ex.ms, "error": ex.error},
     });
@@ -303,10 +348,21 @@ pub fn save_evidence(
         serde_json::to_vec_pretty(&doc).ok()?,
     )
     .ok()?;
+    let note = if let Some(ref tid) = ex.trace_id {
+        format!(
+            "{} {} -> {} [trace:{}]",
+            ex.method,
+            ex.url,
+            ex.status,
+            &tid[..8.min(tid.len())]
+        )
+    } else {
+        format!("{} {} -> {}", ex.method, ex.url, ex.status)
+    };
     Some(Evidence {
         kind: EvidenceKind::HttpExchange,
         path: rel,
-        note: format!("{} {} -> {}", ex.method, ex.url, ex.status),
+        note,
     })
 }
 
@@ -357,5 +413,19 @@ mod tests {
     fn headers_masked() {
         assert_eq!(mask_header("Set-Cookie", "a=b"), "[REDACTED]");
         assert_eq!(mask_header("Content-Type", "x"), "x");
+    }
+
+    #[test]
+    fn w3c_trace_context_spec_compliant() {
+        let (trace_id, span_id, traceparent, tracestate, baggage) =
+            generate_w3c_trace_context(Some("admin"));
+        assert_eq!(trace_id.len(), 32);
+        assert_eq!(span_id.len(), 16);
+        assert!(traceparent.starts_with("00-"));
+        assert!(traceparent.ends_with("-01"));
+        assert_eq!(traceparent, format!("00-{trace_id}-{span_id}-01"));
+        assert_eq!(tracestate, "readyhai=origin:tester");
+        assert!(baggage.contains("readyhai.role=admin"));
+        assert!(baggage.contains("readyhai.client=api_fuzzer"));
     }
 }
