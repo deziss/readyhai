@@ -7,7 +7,7 @@
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate.
 
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.8.0-brightgreen.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-0.8.1-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
 [![Tests](https://img.shields.io/badge/tests-814%20Rust-informational.svg)](#testing)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)

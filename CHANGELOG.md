@@ -2,6 +2,25 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-11-14
+
+Tri-state exit criteria classification, warning status indicators, scaled custom directives capacity (32 KB), and live Composer limit monitoring.
+
+### Added
+
+- **Tri-State Exit Criteria (`status: "met" | "warning" | "unmet"` in `src/agent/types.rs` & `src/agent/ledger.rs`):**
+  - Unexercised or unevaluated test categories with 0 failures (e.g. injection resistance not evaluated due to no input surface or unexecuted cases) now classify as **`warning`** (amber) instead of a harsh red **`not met`**.
+  - Conclusive coverage below the full 80% confidence target but above the 50% conditional threshold (such as 75%) is classified as **`warning`**, aligning with the `Conditional go` release gate verdict.
+  - Non-defect execution friction (blocked or flaky cases, missing request/response evidence files) evaluates as **`warning`**.
+  - Red **`not met`** is strictly reserved for confirmed defects and violations (critical/high severity findings, actual SQLi/prompt injection breaches, authz boundary failures, or pass rates below 85%).
+- **Warning Indicators on Pillar Cards (`frontend/src/components/LedgerPanels.tsx`):** Un-evaluated pillars now render an amber `Warning` badge in Agent Studio instead of hiding status.
+- **HTML & Markdown Report Formatting (`src/agent/report.rs`):** HTML reports style warnings with `st-WARN` class; Markdown reports render `[!]` for advisory/warning exit criteria alongside `[x]` (met) and `[ ]` (not met).
+- **Expanded Custom Directives Capacity (`src/serve.rs` & `src/mcp.rs`):**
+  - Default `custom_instructions` / `directives` limit increased from 4 KB to **32 KB (32,768 bytes)**.
+  - Made configurable between 4 KB and 128 KB via `READYHAI_MAX_CUSTOM_INSTRUCTIONS_BYTES`.
+  - Planner prompt extraction scaled from 500 characters to **8,000 characters** in `src/agent/plan.rs` so detailed instructions feed into LLM attack synthesis.
+- **Frontend Directives Counter & Guard (`frontend/src/components/Composer.tsx` & `frontend/src/app/page.tsx`):** Added live byte counter (`bytes / 32,768 bytes`) with warning colors and client-side limit guard preventing 400 errors.
+
 ## [0.8.0] - 2026-11-12
 
 Enterprise reliability, fast DNS preflight guards, differential injection and boundary oracle calibration, and dual-stack network binding.

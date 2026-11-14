@@ -1,6 +1,6 @@
 # ReadyHai eval: PASS
 
-version 0.8.0 · 2026-11-12T18:06:29.203482277Z · k = 2
+version 0.8.1 · 2026-11-14T14:55:00.000000000Z · k = 2
 
 | suite | kind | recall | min run | precision | FP | inconclusive | confidence | pass^k | verdict | requests | time | open gaps | result |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
