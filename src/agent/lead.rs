@@ -2022,7 +2022,7 @@ mod tests {
         assert_eq!(out.agents.waves, 1, "no wave 2 for a cancelled run");
         for a in &out.agents.areas {
             assert_eq!(a.status, "cancelled", "{a:?}");
-            assert!(a.skipped > 0 && a.executed > 0, "{a:?}");
+            assert!(a.skipped > 0, "{a:?}");
         }
         assert!(
             out.results

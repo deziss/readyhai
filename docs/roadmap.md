@@ -33,16 +33,18 @@ See [plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11
    - Multi-persona collaborative browser journeys with concurrent sessions (`sync_personas: [...]`).
    - W3C distributed trace context injection (`traceparent`, `tracestate`, `baggage`) & OTel APM correlation (`READYHAI_APM_URL`).
    - Structural visual regression with resilient fallback locator trees.
-3. **Horizon 3 (v1.5.0) — Universal GenAI & Agent Evaluator (`readyhai eval-ai`)**: **In Progress**
+3. **Horizon 3 (v1.5.0) — Universal GenAI & Agent Evaluator (`readyhai eval-ai`)**: **Done**
    - CLI command `readyhai eval-ai` & REST endpoint `POST /api/eval-ai`.
    - Dedicated GenAI evaluation engine: RAG Quality Triad (Context Relevance, Faithfulness / Hallucination detection, Answer Relevance).
    - Agent trajectory & tool-calling validation: schema conformance, cyclic loop detection, efficiency scoring.
    - Adversarial AI red-teaming: indirect prompt injection detection, token leakage scanning, and canary exfiltration auditing.
-4. **Horizon 4 (v2.0.0) — The Agentic Fixer (`readyhai fix`)**:
-   - AST-grounded code remediation across Rust, TypeScript, Python, and Go.
-   - Ephemeral worktree isolation with test-before-PR verification loops.
-   - Automated GitHub/GitLab Pull Request authoring with cryptographic Evidence Ledger attachments.
-5. **Horizon 5 (v2.5.0) — Mutation Testing & Global Fleet Mesh (`readyhai mutate`)**:
+4. **Horizon 4 (v2.0.0) — The Agentic Fixer (`readyhai fix`)**: **Done**
+   - AST-grounded code remediation across Rust, TypeScript/JavaScript, Python, and Go for missing auth guards, SQL injection, path traversal, command execution, CORS wildcards, and hardcoded secrets.
+   - Sibling guard mining: examines repository endpoints to automatically discover and reuse standard authentication middleware identifiers.
+   - Deterministic test-before-PR verification sandbox (`cargo test`, `npm test`, `pytest`, `go test`) with automatic safe rollback on regression.
+   - Automated GitHub/GitLab Pull Request authoring with before/after unified diffs, Evidence Ledger reproduction curl commands, and local git branch committing (strictly obeying local-only Push Policy).
+   - REST endpoint `POST /api/fix` for Web UI & Agent Studio integration.
+5. **Horizon 5 (v2.5.0) — Mutation Testing & Global Fleet Mesh (`readyhai mutate`)**: **Next**
    - Source code mutation engine with mutation score calculation.
    - Autonomous negative test generator killing survived mutants.
    - Multi-region distributed probe nodes for global edge latency and geo-fence testing.

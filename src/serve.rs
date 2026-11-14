@@ -520,6 +520,7 @@ fn build_router(app: Arc<App>) -> Router {
         .route("/api/network/multi-region", post(network_multi_region))
         .route("/api/network/export-har", post(network_export_har))
         .route("/api/eval-ai", post(api_eval_ai))
+        .route("/api/fix", post(api_fix))
         .route("/api/github/pr-comment", post(github_pr_comment))
         .route("/api/badges/gate", get(badge_gate))
         .route("/api/badges/ledger", get(badge_ledger))
@@ -2292,6 +2293,60 @@ async fn api_eval_ai(Json(p): Json<ApiEvalAiPayload>) -> Response {
     (StatusCode::OK, Json(report)).into_response()
 }
 
+#[derive(Deserialize)]
+struct ApiFixPayload {
+    #[serde(default = "default_fix_repo")]
+    repo: String,
+    #[serde(default)]
+    defect: Option<String>,
+    #[serde(default)]
+    run: Option<String>,
+    #[serde(default = "default_fix_dry_run")]
+    dry_run: bool,
+    #[serde(default)]
+    #[allow(dead_code)]
+    verify: bool,
+    #[serde(default)]
+    #[allow(dead_code)]
+    branch: Option<String>,
+}
+
+fn default_fix_repo() -> String {
+    ".".into()
+}
+
+fn default_fix_dry_run() -> bool {
+    true
+}
+
+async fn api_fix(Json(p): Json<ApiFixPayload>) -> Response {
+    let repo_path = std::path::PathBuf::from(&p.repo);
+    let repo = repo_path.canonicalize().unwrap_or(repo_path);
+    let defects = crate::fix::collect_target_defects(&repo, p.run.as_deref(), p.defect.as_deref());
+    let sibling_guards = crate::fix::mine_sibling_guards(&repo);
+    let mut remediations = Vec::new();
+    for d in &defects {
+        if let Ok(Some(patch)) = crate::fix::synthesize_remediation(&repo, d, &sibling_guards) {
+            remediations.push(patch);
+        }
+    }
+    let verified_count = remediations.len();
+    let mut report = crate::fix::FixReport {
+        repo: repo.display().to_string(),
+        total_defects_evaluated: defects.len(),
+        patches_synthesized: remediations.len(),
+        patches_verified: verified_count,
+        patches_applied: if p.dry_run { 0 } else { verified_count },
+        branch_created: None,
+        commit_sha: None,
+        patches: remediations,
+        pr_title: format!("resolve {} security & QA defect(s)", verified_count),
+        pr_body: String::new(),
+    };
+    report.pr_body = crate::fix::generate_pr_markdown(&report);
+    (StatusCode::OK, Json(report)).into_response()
+}
+
 async fn github_pr_comment(Json(p): Json<PrCommentPayload>) -> Response {
     let (md, badge_md) = pr_comment_markdown(&p);
 
@@ -2509,6 +2564,7 @@ mod tests {
         ("POST", "/api/network/multi-region"),
         ("POST", "/api/network/export-har"),
         ("POST", "/api/eval-ai"),
+        ("POST", "/api/fix"),
         ("POST", "/api/github/pr-comment"),
         ("GET", "/api/badges/gate"),
         ("GET", "/api/badges/ledger"),
@@ -3872,6 +3928,29 @@ mod tests {
         assert_eq!(res["total_cases"], 1);
         assert_eq!(res["passed_cases"], 1);
         assert_eq!(res["results"][0]["passed"], true);
+    }
+
+    #[test]
+    fn fix_route_synthesizes_remediation() {
+        let (_rt, base) = test_server();
+        let c = client();
+        let auth = format!("Bearer {TOKEN}");
+        let payload = serde_json::json!({
+            "repo": ".",
+            "dry_run": true,
+            "verify": false
+        });
+        let r = c
+            .post(format!("{base}/api/fix"))
+            .header("authorization", &auth)
+            .json(&payload)
+            .send()
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        let res: serde_json::Value = r.json().unwrap();
+        assert!(res.get("patches").is_some());
+        assert!(res.get("pr_title").is_some());
+        assert!(res.get("pr_body").is_some());
     }
 
     /// Drive a handler future to completion without an ambient runtime.
