@@ -521,6 +521,7 @@ fn build_router(app: Arc<App>) -> Router {
         .route("/api/network/export-har", post(network_export_har))
         .route("/api/eval-ai", post(api_eval_ai))
         .route("/api/fix", post(api_fix))
+        .route("/api/mutate", post(api_mutate))
         .route("/api/github/pr-comment", post(github_pr_comment))
         .route("/api/badges/gate", get(badge_gate))
         .route("/api/badges/ledger", get(badge_ledger))
@@ -2347,6 +2348,53 @@ async fn api_fix(Json(p): Json<ApiFixPayload>) -> Response {
     (StatusCode::OK, Json(report)).into_response()
 }
 
+#[derive(Deserialize)]
+struct ApiMutatePayload {
+    #[serde(default = "default_mutate_repo")]
+    repo: String,
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default = "default_max_mutants")]
+    max_mutants: usize,
+}
+
+fn default_mutate_repo() -> String {
+    ".".into()
+}
+
+fn default_max_mutants() -> usize {
+    10
+}
+
+async fn api_mutate(Json(p): Json<ApiMutatePayload>) -> Response {
+    let repo_path = std::path::PathBuf::from(&p.repo);
+    let repo = repo_path.canonicalize().unwrap_or(repo_path);
+    let files = crate::mutate::find_mutable_files(&repo, p.target.as_deref());
+    let mut all_mutants = Vec::new();
+    let max_per_file = (p.max_mutants / files.len().max(1)).max(2);
+    for f in &files {
+        let rel = f.strip_prefix(&repo).unwrap_or(f).to_string_lossy().to_string();
+        let file_mutants = crate::mutate::generate_file_mutants(f, &rel, max_per_file);
+        all_mutants.extend(file_mutants);
+        if all_mutants.len() >= p.max_mutants {
+            all_mutants.truncate(p.max_mutants);
+            break;
+        }
+    }
+    let total = all_mutants.len();
+    let report = crate::mutate::MutationReport {
+        repo: repo.display().to_string(),
+        total_mutants: total,
+        killed_mutants: 0,
+        survived_mutants: total,
+        timed_out_mutants: 0,
+        mutation_score: 0.0,
+        oracle_quality: "PENDING_EXECUTION".into(),
+        mutants: all_mutants,
+    };
+    (StatusCode::OK, Json(report)).into_response()
+}
+
 async fn github_pr_comment(Json(p): Json<PrCommentPayload>) -> Response {
     let (md, badge_md) = pr_comment_markdown(&p);
 
@@ -2565,6 +2613,7 @@ mod tests {
         ("POST", "/api/network/export-har"),
         ("POST", "/api/eval-ai"),
         ("POST", "/api/fix"),
+        ("POST", "/api/mutate"),
         ("POST", "/api/github/pr-comment"),
         ("GET", "/api/badges/gate"),
         ("GET", "/api/badges/ledger"),
@@ -3951,6 +4000,27 @@ mod tests {
         assert!(res.get("patches").is_some());
         assert!(res.get("pr_title").is_some());
         assert!(res.get("pr_body").is_some());
+    }
+
+    #[test]
+    fn mutate_route_generates_semantic_mutants() {
+        let (_rt, base) = test_server();
+        let c = client();
+        let auth = format!("Bearer {TOKEN}");
+        let payload = serde_json::json!({
+            "repo": ".",
+            "max_mutants": 5
+        });
+        let r = c
+            .post(format!("{base}/api/mutate"))
+            .header("authorization", &auth)
+            .json(&payload)
+            .send()
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        let res: serde_json::Value = r.json().unwrap();
+        assert!(res.get("mutants").is_some());
+        assert!(res.get("total_mutants").is_some());
     }
 
     /// Drive a handler future to completion without an ambient runtime.

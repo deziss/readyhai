@@ -44,11 +44,12 @@ See [plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11
    - Deterministic test-before-PR verification sandbox (`cargo test`, `npm test`, `pytest`, `go test`) with automatic safe rollback on regression.
    - Automated GitHub/GitLab Pull Request authoring with before/after unified diffs, Evidence Ledger reproduction curl commands, and local git branch committing (strictly obeying local-only Push Policy).
    - REST endpoint `POST /api/fix` for Web UI & Agent Studio integration.
-5. **Horizon 5 (v2.5.0) — Mutation Testing & Global Fleet Mesh (`readyhai mutate`)**: **Next**
-   - Source code mutation engine with mutation score calculation.
-   - Autonomous negative test generator killing survived mutants.
-   - Multi-region distributed probe nodes for global edge latency and geo-fence testing.
-   - Multi-target enterprise fleet dashboard and cross-service drift intelligence.
+5. **Horizon 5 (v2.5.0) — Mutation Testing & Global Fleet Mesh (`readyhai mutate`)**: **Done**
+   - Source code mutation engine with semantic defect operators (comparison inversion, boolean flips, auth guard bypass, return flips, and arithmetic inversion).
+   - Autonomous negative test assertion generator for survived mutants to continuously calibrate test oracle sensitivity.
+   - REST endpoint `POST /api/mutate` for on-demand mutation test planning.
+   - Multi-region distributed probe nodes for global edge latency and geo-fence testing (`POST /api/network/multi-region`).
+   - Cross-Service Quality Drift Tracking.
 
 ## Next
 

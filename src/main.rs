@@ -28,6 +28,7 @@ mod llm;
 mod logs;
 mod mcp;
 mod model;
+mod mutate;
 pub mod network;
 mod policy;
 mod qa;
@@ -200,6 +201,8 @@ enum Cmd {
     EvalAi(eval_ai::EvalAiOpts),
     /// Agentic Fixer: AST-grounded patch synthesis, test verification sandbox, and automated PR authoring
     Fix(fix::FixOpts),
+    /// Autonomous Mutation Testing: inject targeted semantic mutants, compute mutation score, and calibrate test assertions
+    Mutate(mutate::MutateOpts),
     /// REST API + job worker
     Serve {
         #[arg(long, default_value = "127.0.0.1:8080")]
@@ -719,6 +722,10 @@ fn run() -> anyhow::Result<u8> {
         }
         Cmd::Fix(opts) => {
             let code = fix::run(opts.clone())?;
+            Ok(code)
+        }
+        Cmd::Mutate(opts) => {
+            let code = mutate::run(opts.clone())?;
             Ok(code)
         }
         Cmd::Serve { bind } => {
