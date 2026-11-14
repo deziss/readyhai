@@ -20,6 +20,7 @@ mod ctx;
 mod dashboard;
 mod engine;
 mod eval;
+mod eval_ai;
 mod facts;
 mod host;
 mod llm;
@@ -194,6 +195,8 @@ enum Cmd {
         #[arg(long, default_value = "tests/eval")]
         dir: PathBuf,
     },
+    /// Universal GenAI & Agent Evaluator (RAG Triad, Multi-Model Consensus Jury, Tool-Call Schemas)
+    EvalAi(eval_ai::EvalAiOpts),
     /// REST API + job worker
     Serve {
         #[arg(long, default_value = "127.0.0.1:8080")]
@@ -706,6 +709,10 @@ fn run() -> anyhow::Result<u8> {
                 ..Default::default()
             })?;
             Ok(s.exit_code())
+        }
+        Cmd::EvalAi(opts) => {
+            let code = eval_ai::run(opts)?;
+            Ok(code)
         }
         Cmd::Serve { bind } => {
             serve::serve(&bind)?;

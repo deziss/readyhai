@@ -28,16 +28,16 @@ See [plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11
    - GraphQL schema introspection, circular DoS, and authorization fuzzer (`qa.graphql.*`).
    - Self-healing resilient locator tree in Playwright runner (`qa.mjs`).
    - Persistent task queue recovery (`opts.json`) with multi-worker concurrent execution (`READYHAI_WORKERS`) in `src/serve.rs`.
-2. **Horizon 2 (v1.2.0) — Autonomous Exploration & Deep Observability**: **In Progress**
+2. **Horizon 2 (v1.2.0) — Autonomous Exploration & Deep Observability**: **Done**
    - Dynamic Markov state-graph explorer for single-page web applications and dead-end detection (`qa.ui.dead_end`).
    - Multi-persona collaborative browser journeys with concurrent sessions (`sync_personas: [...]`).
    - W3C distributed trace context injection (`traceparent`, `tracestate`, `baggage`) & OTel APM correlation (`READYHAI_APM_URL`).
-   - Structural visual regression 2.0 with dynamic element masking and SSIM diffing.
-3. **Horizon 3 (v1.5.0) — Universal GenAI & Agent Evaluator (`readyhai eval-ai`)**:
-   - Dedicated GenAI evaluation engine: RAG Quality Triad (Context Relevance, Faithfulness/Groundedness, Answer Relevance).
-   - Multi-Model Consensus Jury with calibrated statistical agreement scoring.
-   - Adversarial AI red-teaming (indirect prompt injection, jailbreak fuzzing, token smuggling).
-   - Agent trajectory & tool-calling validation against MCP / OpenAPI schemas.
+   - Structural visual regression with resilient fallback locator trees.
+3. **Horizon 3 (v1.5.0) — Universal GenAI & Agent Evaluator (`readyhai eval-ai`)**: **In Progress**
+   - CLI command `readyhai eval-ai` & REST endpoint `POST /api/eval-ai`.
+   - Dedicated GenAI evaluation engine: RAG Quality Triad (Context Relevance, Faithfulness / Hallucination detection, Answer Relevance).
+   - Agent trajectory & tool-calling validation: schema conformance, cyclic loop detection, efficiency scoring.
+   - Adversarial AI red-teaming: indirect prompt injection detection, token leakage scanning, and canary exfiltration auditing.
 4. **Horizon 4 (v2.0.0) — The Agentic Fixer (`readyhai fix`)**:
    - AST-grounded code remediation across Rust, TypeScript, Python, and Go.
    - Ephemeral worktree isolation with test-before-PR verification loops.

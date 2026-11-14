@@ -519,6 +519,7 @@ fn build_router(app: Arc<App>) -> Router {
         .route("/api/network/deep-audit", post(network_deep_audit))
         .route("/api/network/multi-region", post(network_multi_region))
         .route("/api/network/export-har", post(network_export_har))
+        .route("/api/eval-ai", post(api_eval_ai))
         .route("/api/github/pr-comment", post(github_pr_comment))
         .route("/api/badges/gate", get(badge_gate))
         .route("/api/badges/ledger", get(badge_ledger))
@@ -2243,6 +2244,54 @@ fn pr_comment_markdown(p: &PrCommentPayload) -> (String, String) {
     (md, badge_md)
 }
 
+#[derive(Deserialize)]
+struct ApiEvalAiPayload {
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    response: Option<String>,
+    #[serde(default)]
+    expected: Option<String>,
+    #[serde(default)]
+    trajectory: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    cases: Option<Vec<crate::eval_ai::AiTestCase>>,
+    #[serde(default = "default_threshold")]
+    threshold: f64,
+    #[serde(default)]
+    red_team: bool,
+}
+
+fn default_threshold() -> f64 {
+    0.70
+}
+
+async fn api_eval_ai(Json(p): Json<ApiEvalAiPayload>) -> Response {
+    let cases = if let Some(cs) = p.cases && !cs.is_empty() {
+        cs
+    } else if let (Some(q), Some(r)) = (p.query, p.response) {
+        vec![crate::eval_ai::AiTestCase {
+            id: "api-case-1".into(),
+            query: q,
+            context: p.context,
+            response: r,
+            expected: p.expected,
+            trajectory: p.trajectory,
+        }]
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Provide either 'cases' array or 'query' and 'response'"})),
+        )
+            .into_response();
+    };
+
+    let report = crate::eval_ai::evaluate_cases(&cases, p.threshold, p.red_team);
+    (StatusCode::OK, Json(report)).into_response()
+}
+
 async fn github_pr_comment(Json(p): Json<PrCommentPayload>) -> Response {
     let (md, badge_md) = pr_comment_markdown(&p);
 
@@ -2459,6 +2508,7 @@ mod tests {
         ("POST", "/api/network/deep-audit"),
         ("POST", "/api/network/multi-region"),
         ("POST", "/api/network/export-har"),
+        ("POST", "/api/eval-ai"),
         ("POST", "/api/github/pr-comment"),
         ("GET", "/api/badges/gate"),
         ("GET", "/api/badges/ledger"),
@@ -3798,6 +3848,30 @@ mod tests {
             "{md}"
         );
         assert!(md.contains("NOT EVALUATED"));
+    }
+
+    #[test]
+    fn eval_ai_route_evaluates_rag_payload() {
+        let (_rt, base) = test_server();
+        let c = client();
+        let auth = format!("Bearer {TOKEN}");
+        let payload = serde_json::json!({
+            "query": "What is the capital of France?",
+            "context": "Paris is the capital and most populous city of France.",
+            "response": "The capital of France is Paris.",
+            "threshold": 0.70
+        });
+        let r = c
+            .post(format!("{base}/api/eval-ai"))
+            .header("authorization", &auth)
+            .json(&payload)
+            .send()
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        let res: serde_json::Value = r.json().unwrap();
+        assert_eq!(res["total_cases"], 1);
+        assert_eq!(res["passed_cases"], 1);
+        assert_eq!(res["results"][0]["passed"], true);
     }
 
     /// Drive a handler future to completion without an ambient runtime.
