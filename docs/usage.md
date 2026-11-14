@@ -14,6 +14,7 @@ Binary: `readyhai` (dev build: `target/debug/readyhai`; `cargo` lives in `~/.car
 | `readyhai agent-memory accept <target> <fingerprint> --reason TEXT --expires YYYY-MM-DD [--by NAME]` | Accept a known open defect until a date: listed in every report, not blocking |
 | `readyhai agent-memory forget <target>` | Delete the memory of a target |
 | `readyhai eval [--suite a,b] [--k N] [--out DIR] [--dir DIR]` | Score the QA engine and the agent against seeded-defect fixtures. Exit 0 every threshold met, 1 a threshold missed, 3 harness error. See [eval.md](eval.md) |
+| `readyhai eval-ai [--query Q --context C --response R \| --dataset FILE] [--red-team] [--format table\|json\|markdown]` | Universal GenAI & Agent Evaluator: RAG Quality Triad (Context Relevance, Faithfulness/Hallucinations, Answer Relevance), tool trajectory loops, and prompt injection red-teaming |
 | `readyhai baseline accept <run> [--out FILE]` | Accept a run's findings as the baseline |
 | `readyhai checks` | List registered checks (reads `READYHAI_PLUGINS` for plugins) |
 | `readyhai tools pull [--lock FILE]` | `docker pull` every image in `tools.lock.toml`; optionally write resolved digests |
@@ -216,6 +217,18 @@ READYHAI_ALLOW_NONPROD=1 ./scripts/bench_owasp.sh --target http://127.0.0.1:3000
 # 10. Web Studio UI (SPA) + REST API
 # Start ReadyHai Backend API Engine (default port 8080)
 readyhai serve --bind 127.0.0.1:8080
+
+# 11. Universal GenAI & Agent Evaluator (RAG Quality Triad, Hallucinations, Trajectory, Red-Teaming)
+# Single query evaluation with RAG context
+readyhai eval-ai --query "What is the capital of France?" \
+                 --context "Paris is the capital and most populous city of France." \
+                 --response "The capital of France is Paris."
+
+# Batch evaluation over JSON or JSONL dataset with adversarial red-teaming checks
+readyhai eval-ai --dataset tests/eval/rag_bench.jsonl --red-team --format markdown --out eval-ai-report.json
+
+# Agent tool trajectory efficiency and cyclic loop evaluation
+readyhai eval-ai --trajectory agent_trace.json --threshold 0.80
 
 # In a separate terminal or service, launch the Next.js 16 Agent Studio (port 3000):
 cd frontend && npm run dev -- -p 3000
