@@ -1,6 +1,7 @@
 //! Offline trend dashboard: one JSON line per run in <data>/index.jsonl, rendered to static HTML.
 use crate::model::*;
 use anyhow::Result;
+use minijinja::value::Serde;
 use minijinja::{AutoEscape, Environment};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -226,9 +227,9 @@ pub fn render(lines: &[IndexLine], data: &Path) -> Result<String> {
     let mut all: Vec<&IndexLine> = lines.iter().collect();
     all.sort_by(|a, b| b.date.cmp(&a.date));
     let overall: Vec<Value> = all.iter().take(200).map(|l| row(l, data)).collect();
-    Ok(env.get_template("dashboard.html.j2")?.render(json!({
+    Ok(env.get_template("dashboard.html.j2")?.render(Serde(json!({
         "targets": targets, "overall": overall, "count": lines.len(), "version": crate::engine::VERSION,
-    }))?)
+    })))?)
 }
 
 pub fn generate(out: &Path) -> Result<PathBuf> {

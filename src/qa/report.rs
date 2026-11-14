@@ -3,6 +3,7 @@
 use crate::model::*;
 use crate::qa::model::*;
 use anyhow::{Result, anyhow};
+use minijinja::value::Serde;
 use minijinja::{AutoEscape, Environment};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -432,7 +433,7 @@ pub fn qa_html(run: &Run, out: Option<&Path>) -> Result<String> {
         "checks": run.checks.iter().map(|c| json!({"id": c.id, "title": c.title, "status": c.status.label(), "reason": c.status.reason().unwrap_or(""), "findings": c.findings})).collect::<Vec<_>>(),
         "notes": q.notes, "verdict": format!("{:?}", run.verdict).to_uppercase(),
     });
-    Ok(env.get_template("qa-report.html.j2")?.render(ctx)?)
+    Ok(env.get_template("qa-report.html.j2")?.render(Serde(&ctx))?)
 }
 
 fn looks_like_code(s: &str) -> bool {

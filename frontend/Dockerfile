@@ -1,17 +1,17 @@
-# Multi-stage Next.js Dockerfile for ReadyHai Studio
-FROM node:20-slim AS deps
+# Multi-stage Next.js Dockerfile for ReadyHai Studio (Node 24 Active LTS)
+FROM node:24-slim AS deps
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-FROM node:20-slim AS builder
+FROM node:24-slim AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NODE_ENV=production
 RUN npm run build
 
-FROM node:20-slim AS runner
+FROM node:24-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000 \
