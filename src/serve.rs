@@ -19,6 +19,7 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::future::IntoFuture;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -46,6 +47,15 @@ pub fn max_custom_instructions_bytes() -> usize {
         .unwrap_or(DEFAULT_MAX_CUSTOM_INSTRUCTIONS_BYTES)
         .clamp(4096, 131_072)
 }
+
+pub fn worker_count() -> usize {
+    std::env::var("READYHAI_WORKERS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1)
+        .clamp(1, 16)
+}
+
 const PROFILES: &[&str] = &["quick", "standard", "deep"];
 const MODEL_TIERS: &[&str] = &["low", "medium", "high", "max", "max_pro"];
 /// Run listings return at most this many runs (newest first).
@@ -74,8 +84,8 @@ struct App {
     allowed_roots: Vec<PathBuf>,
     scope: Option<PathBuf>,
     plugins: Option<PathBuf>,
-    /// Run the worker is executing right now.
-    active: Mutex<Option<String>>,
+    /// Runs workers are executing right now.
+    active: Mutex<HashSet<String>>,
     /// Bounds concurrent blocking probes so a request loop cannot exhaust the blocking pool.
     probes: Arc<Semaphore>,
 }
@@ -170,29 +180,57 @@ fn created_by_this_server(id: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Queue lives in memory: anything queued/running when the server died is lost.
-/// Returns the ids it marked.
-fn mark_stale_runs() -> Vec<String> {
+/// Startup run reconciliation: recovers queued runs if their opts.json is present,
+/// and marks interrupted running runs as errored.
+fn handle_startup_runs(tx: &mpsc::Sender<(String, ScanOpts)>) -> Vec<String> {
     let Ok(rd) = std::fs::read_dir(engine::data_dir().join("runs")) else {
         return vec![];
     };
     let mut stale = vec![];
+    let mut resumed = 0;
     for e in rd.flatten() {
         let id = e.file_name().to_string_lossy().to_string();
         let Ok(t) = std::fs::read_to_string(e.path().join("status.json")) else {
             continue;
         };
         let v: serde_json::Value = serde_json::from_str(&t).unwrap_or_default();
-        if matches!(v["state"].as_str(), Some("queued" | "running")) {
+        if v["state"].as_str() == Some("running") {
             write_status(
                 &id,
                 "error",
                 Some("server restarted before the run finished"),
             );
             stale.push(id);
+        } else if v["state"].as_str() == Some("queued") {
+            let opts_path = e.path().join("opts.json");
+            let mut requeued = false;
+            if let Ok(opts_str) = std::fs::read_to_string(&opts_path)
+                && let Ok(opts) = serde_json::from_str::<ScanOpts>(&opts_str)
+                && tx.try_send((id.clone(), opts)).is_ok()
+            {
+                requeued = true;
+                resumed += 1;
+            }
+            if !requeued {
+                write_status(
+                    &id,
+                    "error",
+                    Some("server restarted before the run started"),
+                );
+                stale.push(id);
+            }
         }
     }
+    if resumed > 0 {
+        eprintln!("resumed {resumed} persistent queued run(s) across server restart");
+    }
     stale
+}
+
+#[allow(dead_code)]
+fn mark_stale_runs() -> Vec<String> {
+    let (tx, _rx) = mpsc::channel(1);
+    handle_startup_runs(&tx)
 }
 
 /// Containers of which runs may startup reaping remove? Only ones this server owns: a run that was
@@ -205,7 +243,7 @@ fn claims_run(stale: &[String], id: &str) -> bool {
 
 /// Is this run queued behind a worker or executing right now?
 fn run_in_progress(app: &App, id: &str) -> bool {
-    if app.active.lock().ok().and_then(|g| g.clone()).as_deref() == Some(id) {
+    if app.active.lock().ok().is_some_and(|g| g.contains(id)) {
         return true;
     }
     read_json(id, "status.json").is_some_and(|s| s["state"].as_str() == Some("running"))
@@ -288,7 +326,9 @@ pub fn serve(bind: &str) -> Result<()> {
     let limit = run_timeout();
     init_server_id()?;
 
-    let stale = mark_stale_runs();
+    // Multi-worker task queue: workers pull jobs concurrently from rx.
+    let (tx, rx) = mpsc::channel::<(String, ScanOpts)>(128);
+    let stale = handle_startup_runs(&tx);
     // Containers of runs that died with the previous server would otherwise live on forever.
     // Only this server's own runs are claimed (see `claims_run`), never a CLI scan's.
     let reaped = crate::tools::reap_dead_runs(&|id| claims_run(&stale, id));
@@ -296,8 +336,6 @@ pub fn serve(bind: &str) -> Result<()> {
         eprintln!("reaped {reaped} orphaned scanner container(s) from dead runs");
     }
 
-    // One worker: scanner containers are memory-heavy; queue the rest.
-    let (tx, rx) = mpsc::channel::<(String, ScanOpts)>(64);
     let app = Arc::new(App {
         token_digest: Sha256::digest(token.as_bytes()).into(),
         principal,
@@ -305,17 +343,21 @@ pub fn serve(bind: &str) -> Result<()> {
         allowed_roots,
         scope,
         plugins,
-        active: Mutex::new(None),
+        active: Mutex::new(HashSet::new()),
         probes: Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES)),
     });
 
     let rt = tokio::runtime::Runtime::new()?;
     let app2 = app.clone();
     let res: Result<()> = rt.block_on(async move {
-        tokio::spawn(worker(app2.clone(), rx, limit));
+        let workers = worker_count();
+        let rx = Arc::new(tokio::sync::Mutex::new(rx));
+        for _ in 0..workers {
+            tokio::spawn(worker(app2.clone(), rx.clone(), limit));
+        }
         let router = build_router(app2);
         let listener = tokio::net::TcpListener::bind(bind).await?;
-        eprintln!("readyhai API on http://{bind}");
+        eprintln!("readyhai API on http://{bind} ({workers} worker(s))");
 
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         tokio::spawn(async move {
@@ -344,14 +386,16 @@ pub fn serve(bind: &str) -> Result<()> {
         Ok(())
     });
 
-    // Shutting down mid-scan: say so in the run's status and stop its containers now.
-    if let Some(id) = app.active.lock().ok().and_then(|mut g| g.take()) {
-        write_status(
-            &id,
-            "error",
-            Some("server shut down before the run finished"),
-        );
-        crate::tools::reap_run_within(&id, SHUTDOWN_REAP_PER_CALL);
+    // Shutting down mid-scan: say so in all active runs' status and stop their containers now.
+    if let Ok(mut g) = app.active.lock() {
+        for id in g.drain() {
+            write_status(
+                &id,
+                "error",
+                Some("server shut down before the run finished"),
+            );
+            crate::tools::reap_run_within(&id, SHUTDOWN_REAP_PER_CALL);
+        }
     }
     rt.shutdown_timeout(Duration::from_secs(2));
     res
@@ -379,14 +423,23 @@ async fn shutdown_signal() {
     }
 }
 
-async fn worker(app: Arc<App>, mut rx: mpsc::Receiver<(String, ScanOpts)>, limit: Duration) {
-    while let Some((id, mut opts)) = rx.recv().await {
+async fn worker(
+    app: Arc<App>,
+    rx: Arc<tokio::sync::Mutex<mpsc::Receiver<(String, ScanOpts)>>>,
+    limit: Duration,
+) {
+    loop {
+        let item = {
+            let mut lock = rx.lock().await;
+            lock.recv().await
+        };
+        let Some((id, mut opts)) = item else { break; };
         // Deleted while it was still queued: nothing to run, nothing to recreate.
         if !engine::run_dir(&id).join("status.json").exists() {
             continue;
         }
         if let Ok(mut a) = app.active.lock() {
-            *a = Some(id.clone());
+            a.insert(id.clone());
         }
         write_status(&id, "running", None);
         opts.deadline = Some(Instant::now() + limit);
@@ -420,7 +473,7 @@ async fn worker(app: Arc<App>, mut rx: mpsc::Receiver<(String, ScanOpts)>, limit
             }
         }
         if let Ok(mut a) = app.active.lock() {
-            *a = None;
+            a.remove(&id);
         }
     }
 }
@@ -723,6 +776,10 @@ fn enqueue(app: &App, opts: ScanOpts) -> Result<String, Response> {
             "cannot create run directory",
         ));
     }
+    // Persist scan options so queued jobs survive server restarts
+    if let Ok(opts_str) = serde_json::to_string_pretty(&opts) {
+        let _ = std::fs::write(engine::run_dir(&id).join("opts.json"), opts_str);
+    }
     if app.tx.try_send((id.clone(), opts)).is_err() {
         write_status(&id, "error", Some("queue full"));
         return Err(err(StatusCode::SERVICE_UNAVAILABLE, "queue full"));
@@ -738,6 +795,7 @@ async fn api_index() -> impl IntoResponse {
         Json(json!({
             "name": "ReadyHai QA Engine & Production Gate API",
             "version": env!("CARGO_PKG_VERSION"),
+            "workers": worker_count(),
             "status": "online",
             "frontend_url": "http://localhost:3000",
             "endpoints": {
@@ -2310,7 +2368,7 @@ mod tests {
             allowed_roots: vec![],
             scope: None,
             plugins: None,
-            active: Mutex::new(None),
+            active: Mutex::new(HashSet::new()),
             probes: Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES)),
         })
     }
@@ -2793,7 +2851,7 @@ mod tests {
         );
 
         // the worker's active run is protected even before status.json says "running"
-        *app.active.lock().unwrap() = Some("20990101-000000-0000000000000003".into());
+        app.active.lock().unwrap().insert("20990101-000000-0000000000000003".into());
         write_queued("20990101-000000-0000000000000003", "/t").unwrap();
         let r = rt.block_on(api_scan_delete(
             State(app.clone()),
@@ -2833,6 +2891,31 @@ mod tests {
         let stale = mark_stale_runs();
         assert!(stale.contains(&id.to_string()));
         assert_eq!(read_json(id, "status.json").unwrap()["state"], "error");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn persistent_queue_resumes_on_startup() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = data_dir("resume");
+        let id = "20990101-000000-000000000000000b";
+        write_queued(id, "http://t/").unwrap();
+        let opts = ScanOpts {
+            target: "http://t/".into(),
+            ..Default::default()
+        };
+        std::fs::write(
+            engine::run_dir(id).join("opts.json"),
+            serde_json::to_string(&opts).unwrap(),
+        )
+        .unwrap();
+
+        let (tx, mut rx) = mpsc::channel(10);
+        let stale = handle_startup_runs(&tx);
+        assert!(!stale.contains(&id.to_string()), "queued run with opts.json was not marked stale");
+        let recvd = rx.try_recv();
+        assert!(recvd.is_ok(), "queued run was resumed into channel");
+        assert_eq!(recvd.unwrap().0, id);
         let _ = std::fs::remove_dir_all(d);
     }
 
@@ -2974,7 +3057,7 @@ mod tests {
             allowed_roots: vec![root.clone()],
             scope: None,
             plugins: None,
-            active: Mutex::new(None),
+            active: Mutex::new(HashSet::new()),
             probes: Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES)),
         };
         let svc = root.join("svc");

@@ -22,7 +22,7 @@ use time::format_description::well_known::Rfc3339;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ScanOpts {
     pub target: String,
     #[serde(default)]

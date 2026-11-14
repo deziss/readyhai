@@ -83,7 +83,18 @@ pub fn validate(schema: &Value, v: &Value, path: &str) -> Option<String> {
             Some(format!("{path}: null not allowed"))
         };
     }
-    if s.get("type").is_some() || s.get("properties").is_some() {
+    if let Some(t) = s.get("type") {
+        if let Some(t_str) = t.as_str() {
+            if !type_ok(t_str, v) {
+                return Some(format!("{path}: expected {t_str}, got {}", kind(v)));
+            }
+        } else if let Some(t_arr) = t.as_array() {
+            let types: Vec<&str> = t_arr.iter().filter_map(|x| x.as_str()).collect();
+            if !types.is_empty() && !types.iter().any(|&one_t| type_ok(one_t, v)) {
+                return Some(format!("{path}: expected one of {:?}, got {}", types, kind(v)));
+            }
+        }
+    } else if s.get("properties").is_some() {
         let t = schema_type(&s);
         if !type_ok(t, v) {
             return Some(format!("{path}: expected {t}, got {}", kind(v)));
@@ -117,10 +128,20 @@ pub fn validate(schema: &Value, v: &Value, path: &str) -> Option<String> {
             }
         }
     }
-    if let (Some(a), Some(items)) = (v.as_array(), s.get("items")) {
-        for (i, x) in a.iter().enumerate().take(20) {
-            if let Some(m) = validate(items, x, &format!("{path}[{i}]")) {
-                return Some(m);
+    if let Some(a) = v.as_array() {
+        if let Some(prefix) = s.get("prefixItems").and_then(|p| p.as_array()) {
+            for (i, (item_schema, item_val)) in prefix.iter().zip(a.iter()).enumerate() {
+                if let Some(m) = validate(item_schema, item_val, &format!("{path}[{i}]")) {
+                    return Some(m);
+                }
+            }
+        }
+        if let Some(items) = s.get("items") {
+            let start = s.get("prefixItems").and_then(|p| p.as_array()).map(|p| p.len()).unwrap_or(0);
+            for (i, x) in a.iter().enumerate().skip(start).take(20) {
+                if let Some(m) = validate(items, x, &format!("{path}[{i}]")) {
+                    return Some(m);
+                }
             }
         }
     }
@@ -569,5 +590,30 @@ mod tests {
             d.iter()
                 .any(|b| b.what.contains("new required request field: body:x"))
         );
+    }
+
+    #[test]
+    fn test_openapi_31_prefix_items_and_multi_type() {
+        // Multi-type validation: type: ["string", "integer"]
+        let multi_type = json!({
+            "type": ["string", "integer"]
+        });
+        assert!(validate(&multi_type, &json!("hello"), "$").is_none());
+        assert!(validate(&multi_type, &json!(42), "$").is_none());
+        assert!(validate(&multi_type, &json!(true), "$").is_some());
+
+        // Tuple validation with prefixItems (OpenAPI 3.1 / JSON Schema 2020-12)
+        let tuple_schema = json!({
+            "type": "array",
+            "prefixItems": [
+                { "type": "string" },
+                { "type": "integer" }
+            ],
+            "items": { "type": "boolean" }
+        });
+        assert!(validate(&tuple_schema, &json!(["first", 100, true, false]), "$").is_none());
+        assert!(validate(&tuple_schema, &json!([123, 100]), "$").unwrap().contains("$[0]"));
+        assert!(validate(&tuple_schema, &json!(["ok", "not_int"]), "$").unwrap().contains("$[1]"));
+        assert!(validate(&tuple_schema, &json!(["ok", 1, "not_bool"]), "$").unwrap().contains("$[2]"));
     }
 }
