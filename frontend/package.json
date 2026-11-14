@@ -1,6 +1,6 @@
 {
   "name": "frontend",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "ReadyHai Studio web UI for security scans, QA verdicts, and adversarial agent runs",
   "license": "AGPL-3.0-only",
   "repository": "https://github.com/deziss/readyhai",
