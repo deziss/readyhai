@@ -7,9 +7,9 @@
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate.
 
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.9.0-brightgreen.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-2.5.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/tests-814%20Rust-informational.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-836%20Rust%20%7C%20141%20Vitest-informational.svg)](#testing)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)
 
 Point ReadyHai at a codebase, a container image, an API/web app, an SSH host, or an Android APK.  
@@ -44,8 +44,11 @@ Modern deployments often rely on dozens of disparate tools (`trivy`, `semgrep`, 
 | **Web & APIs (`web`)** | Smoke status, TLS chain/expiry/protocol inspection, security headers & weak CSP, cookie security, CORS policy, Schemathesis fuzzing, Nuclei template scanner, OWASP ZAP baseline & active nonprod scan, Playwright crawler (including client storage secrets, HttpOnly cookies, source maps, postMessage handlers). |
 | **Host over SSH (`ssh://`)** | OS hardening, Lynis audit, kernel patches, listening ports, failed systemd units, journal errors, package CVEs (Linux, macOS, Windows). |
 | **Android APK (`android:`)** | MobSF static analysis, dangerous permissions, hardcoded secrets, crash and ANR extraction from connected ADB devices/emulators. |
-| **QA Test Suite (`qa`)** | Synthetic OpenAPI test generation, RBAC authorization matrix, k6 load testing, resilience & chaos testing, axe-core a11y, visual diffs, suite and release quality, a computed Go / Conditional Go / No-Go / Inconclusive recommendation. |
+| **QA Test Suite (`qa`)** | Synthetic OpenAPI 3.1 test generation, native GraphQL schema fuzzer, RBAC authorization matrix, k6 load testing, resilience & chaos testing, axe-core a11y, Markov state-graph dead-end detection, self-healing Playwright locators, multi-persona synchronized sessions, W3C trace injection (`traceparent`), visual diffs, suite and release quality, a computed Go / Conditional Go / No-Go / Inconclusive recommendation. |
 | **Super Agent (`agent`)** | Autonomous adversarial security & QA of an HTTP target: shared QA API checks, deep-security attack probes (JWT tampering, BFLA, ACL/path bypass, BOPLA, blind SQLi/CMDi, SSTI, OAST SSRF, TOCTOU, GraphQL/HPP), Playwright `BrowserSecurity` (DOM XSS, sinks, storage leaks), white-box `--repo` AST source-sink correlation, adaptive ReAct follow-up waves, independent verifier, per-target memory, and a deterministic four-pillar Evidence Ledger with a GO / CONDITIONAL_GO / NO_GO gate. |
+| **GenAI Evaluator (`eval-ai`)** | Universal GenAI & Agent Evaluator: offline RAG Quality Triad (Context Relevance, Faithfulness / Hallucination extraction, Answer Relevance), agent tool-call trajectory loop detection, prompt injection and sensitive credential leak red-teaming. |
+| **Agentic Fixer (`fix`)** | AST-grounded vulnerability & defect remediation (sibling auth guard injection, SQL injection parameterization, path traversal sanitization, command execution vectorization, CORS, secrets), local test-before-PR verification sandbox (`cargo test`, `npm test`, `pytest`, `go test`), safe rollback, and automated Pull Request bot. |
+| **Mutation Testing (`mutate`)** | Autonomous source code mutation testing (conditional inversion, boolean flips, auth bypass, return flips, arithmetic): computes test oracle Mutation Score and synthesizes actionable negative test assertions for survived mutants. |
 | **Eval (`eval`)** | Scores the QA engine and the agent across 10 fixtures with seeded defects (`security-deep`, `whitebox-exploit`, `agent-api`, `agent-spa*`, `qa-api`, `qa-repo`, etc.): recall, false positives, pass^k, verdict stability, request and time budgets. |
 
 ---

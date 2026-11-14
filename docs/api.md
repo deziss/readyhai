@@ -82,6 +82,9 @@ All rows except `/health` require the bearer token.
 | GET | `/api/scans/{id}/report/{fmt}` | `html`, `sarif`, `json`, `junit` |
 | DELETE | `/api/scans/{id}` | Delete a scan; queued runs are cancelled, running runs get `409` |
 | POST | `/api/network/regress` `curl` `deep-audit` `multi-region` `export-har` | Network lab (below) |
+| POST | `/api/eval-ai` | Universal GenAI & Agent Evaluator: evaluates RAG triad, hallucination extraction, tool trajectories, and prompt injection red-teaming |
+| POST | `/api/fix` | The Agentic Fixer: synthesizes AST-grounded patches, verifies against test runners, and generates PR descriptions |
+| POST | `/api/mutate` | Autonomous Mutation Testing: injects semantic code mutants to evaluate test oracle sensitivity and negative tests |
 | POST | `/api/github/pr-comment` | PR comment markdown built only from the data supplied |
 | GET | `/api/badges/gate`, `/ledger`, `/network` | SVG badges |
 | GET | `/checks` | Array of `{id,title,kinds,min_profile,tool,intrusive}` (includes `READYHAI_PLUGINS`) |
@@ -213,6 +216,44 @@ ReadyHai has **no remote probe nodes**, so this route measures one vantage point
 
 #### `POST /api/network/export-har`
 Converts a `RegressReport` you already hold into HAR 1.2. Method, HTTP version and server IP come from the report; timings that are not measured are `-1`. No egress.
+
+#### `POST /api/eval-ai`
+Universal GenAI & LLM Application Evaluator: RAG Quality Triad, deterministic hallucination detection, tool-call trajectory efficiency, and adversarial prompt injection red-teaming.
+```bash
+curl -s -H "$H" -X POST http://127.0.0.1:8080/api/eval-ai -H "Content-Type: application/json" \
+  -d '{
+    "query": "What is the capital of France?",
+    "context": "Paris is the capital and most populous city of France.",
+    "response": "The capital of France is Paris with 50 million people.",
+    "threshold": 0.70,
+    "red_team": true
+  }'
+```
+Response: `total_cases`, `passed_cases`, `failed_cases`, `composite_score`, `verdict` (`PASS|WARN|FAIL`), `results[]` (itemized metrics: `context_relevance`, `faithfulness`, `answer_relevance`, `hallucinations[]` extracting unsupported entities/numbers, `trajectory_efficiency`, `prompt_injection_detected`, `sensitive_leak_detected`).
+
+#### `POST /api/fix`
+The Agentic Fixer: AST-grounded vulnerability remediation, sibling guard mining, test-before-PR verification, and automated Pull Request generation.
+```bash
+curl -s -H "$H" -X POST http://127.0.0.1:8080/api/fix -H "Content-Type: application/json" \
+  -d '{
+    "repo": ".",
+    "defect": "security.auth.missing_guard",
+    "dry_run": true,
+    "verify": false
+  }'
+```
+Response: `repo`, `total_defects_evaluated`, `patches_synthesized`, `patches_verified`, `patches_applied`, `branch_created`, `commit_sha`, `patches[]` (file, line, `unified_diff`, `rationale`, `status`), `pr_title`, `pr_body` (complete GitHub/GitLab PR markdown).
+
+#### `POST /api/mutate`
+Autonomous Mutation Testing: semantic code defect injection to evaluate test oracle sensitivity and synthesize negative test assertions.
+```bash
+curl -s -H "$H" -X POST http://127.0.0.1:8080/api/mutate -H "Content-Type: application/json" \
+  -d '{
+    "repo": ".",
+    "max_mutants": 10
+  }'
+```
+Response: `repo`, `total_mutants`, `killed_mutants`, `survived_mutants`, `timed_out_mutants`, `mutation_score` (`(killed + timed_out) / total * 100%`), `oracle_quality`, `mutants[]` (file, line, operator, original, mutated, verdict, `recommended_test_assertion`).
 
 ---
 

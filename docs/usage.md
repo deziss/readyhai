@@ -314,3 +314,56 @@ readyhai roles init --spec openapi.json --out ~/.config/readyhai/secrets/app/rol
 export RH_USER_TOKEN=... RH_USER2_TOKEN=... RH_ADMIN_TOKEN=...     # test accounts, never real users
 readyhai qa https://app.nonprod.example --spec openapi.json --roles ~/.config/readyhai/secrets/app/roles.toml
 ```
+
+---
+
+## The Agentic Fixer (`readyhai fix`)
+
+`readyhai fix` bridges the gap from defect detection to autonomous, verified remediation. It reads verified findings from a run or scans a codebase directly using native Tree-sitter AST parsing, synthesizes idiomatic security patches, verifies them in an isolated test sandbox (`cargo test`, `npm test`, `pytest`, `go test`), and authors Pull Requests.
+
+```bash
+# Preview synthesized patches without modifying disk (Dry Run)
+readyhai fix --repo . --dry-run --format markdown
+
+# Fix a specific defect rule (e.g. SQL injection or missing auth guards)
+readyhai fix --repo . --defect security.taint.sql_injection --verify
+
+# Apply fix, verify zero test regressions, and commit to a new local git branch
+readyhai fix --repo . --defect D-001 --branch readyhai-fix/auth-guard
+```
+
+### Supported Remediation Transforms
+
+| Defect / Vulnerability | Remediation Mechanism |
+|---|---|
+| `security.auth.missing_guard` | Mines sibling route conventions to discover project-specific auth middleware (`requireAuth`, `jwtAuth`, `Depends(get_current_user)`) and injects it into vulnerable endpoint definitions. |
+| `security.taint.sql_injection` | Converts string concatenations and formatted f-strings into parameterized SQL queries with bound parameter tuples (`%s`, `$1`). |
+| `security.taint.path_traversal` | Injects path `basename` and normalization validation before filesystem read/write sinks. |
+| `security.taint.command_exec` | Disables `shell=True` and transforms raw shell string invocations into safe argument vectors (`subprocess.run(["cmd", arg])`). |
+| `security.cors.wildcard` | Replaces wildcard `origin: "*"` with environment-configurable whitelist arrays. |
+| `security.secrets.hardcoded` | Extracts plaintext credentials into environment variable lookups (`process.env.API_KEY`, `std::env::var`). |
+
+---
+
+## Autonomous Mutation Testing (`readyhai mutate`)
+
+`readyhai mutate` injects targeted semantic defects (mutants) into your application's source code to test the sensitivity and coverage of your test suite.
+
+```bash
+# Run mutation testing across repository (evaluating up to 20 mutants)
+readyhai mutate --repo . --max-mutants 20 --timeout-secs 30
+
+# Generate Markdown report for GitHub Action PR summary
+readyhai mutate --repo . --target "src/auth" --format markdown
+```
+
+### Operator Set & Scoring
+
+- **Relational Inversion:** `==` <-> `!=`, `<` <-> `>=`, `>` <-> `<=`.
+- **Boolean Flip:** `true` <-> `false`.
+- **Auth Bypass:** `is_admin` -> `true`, `is_authorized` -> `true`.
+- **Return Flip:** `return Ok(...)` <-> `return Err(...)`, `return true` <-> `return false`.
+- **Arithmetic Inversion:** `+` <-> `-`, `*` <-> `/`.
+- **Mutation Score:** $\frac{\text{Killed} + \text{TimedOut}}{\text{Total Mutants}} \times 100\%$.
+- **Actionable Assertions:** For every survived mutant, outputs the exact test assertion needed to kill the mutant and eliminate the quality blind spot.
+
