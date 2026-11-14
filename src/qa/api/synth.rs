@@ -171,13 +171,21 @@ pub fn synth(schema: &Value, name: &str, tag: &str, depth: usize) -> Value {
         }
         "boolean" => json!(true),
         "array" => {
-            let it = s.get("items").cloned().unwrap_or(json!({}));
-            let n = num(&s, "minItems").unwrap_or(1.0).max(1.0) as usize;
-            Value::Array(
-                (0..n.min(3))
-                    .map(|_| synth(&it, name, tag, depth + 1))
-                    .collect(),
-            )
+            if let Some(prefix) = s.get("prefixItems").and_then(|p| p.as_array()) {
+                let mut arr = Vec::with_capacity(prefix.len());
+                for (i, p) in prefix.iter().enumerate() {
+                    arr.push(synth(p, &format!("{name}_{i}"), tag, depth + 1));
+                }
+                Value::Array(arr)
+            } else {
+                let it = s.get("items").cloned().unwrap_or(json!({}));
+                let n = num(&s, "minItems").unwrap_or(1.0).max(1.0) as usize;
+                Value::Array(
+                    (0..n.min(3))
+                        .map(|_| synth(&it, name, tag, depth + 1))
+                        .collect(),
+                )
+            }
         }
         "object" => {
             let props = s
@@ -664,5 +672,22 @@ mod tests {
         v.insert("id".to_string(), "a b".to_string());
         let u = build_url("http://h/", "/o/{id}", &v, &[("q".into(), "x'y".into())]);
         assert_eq!(u, "http://h/o/a%20b?q=x%27y");
+    }
+
+    #[test]
+    fn synth_prefix_items_tuple() {
+        let s = json!({
+            "type": "array",
+            "prefixItems": [
+                { "type": "string" },
+                { "type": "integer", "minimum": 10 }
+            ]
+        });
+        let val = synth(&s, "pair", "t-", 0);
+        assert!(val.is_array());
+        let arr = val.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert!(arr[0].is_string());
+        assert_eq!(arr[1].as_i64(), Some(10));
     }
 }
