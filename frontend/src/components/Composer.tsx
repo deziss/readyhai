@@ -19,6 +19,9 @@ import type { DiscoveredTarget, ModelTier } from "@/types/agent";
 import { apiRequest, useApiTokenVersion } from "@/lib/api";
 import { copyTextSafely } from "@/lib/clipboard";
 
+export const MAX_DIRECTIVES_BYTES = 32768;
+export const MAX_CUSTOM_INSTRUCTIONS_BYTES = MAX_DIRECTIVES_BYTES;
+
 interface ComposerProps {
   target: string;
   setTarget: (url: string) => void;
@@ -147,7 +150,7 @@ export function Composer({
     }[modelTier] || "High";
   const tierDesc = TIERS.find((t) => t.id === modelTier)?.desc;
 
-  // Keep the custom field in sync when maxSteps changes from outside (adjusting state during render,
+  const directivesBytes = typeof TextEncoder !== "undefined" ? new TextEncoder().encode(directives).length : directives.length;
   // not in an effect, so there is no extra cascading render).
   const [syncedMaxSteps, setSyncedMaxSteps] = useState(maxSteps);
   if (syncedMaxSteps !== maxSteps) {
@@ -392,17 +395,35 @@ export function Composer({
         </div>
 
         <div className="flex flex-col gap-2">
-          <label htmlFor="composer-directives" className={LABEL}>
-            Agent directives
-          </label>
+          <div className="flex items-center justify-between">
+            <label htmlFor="composer-directives" className={LABEL}>
+              Agent directives
+            </label>
+            <span
+              className={`text-[11px] tabular-nums font-mono ${
+                directivesBytes > MAX_DIRECTIVES_BYTES
+                  ? "text-rh-nogo font-semibold"
+                  : directivesBytes > MAX_DIRECTIVES_BYTES * 0.85
+                    ? "text-rh-cond"
+                    : "text-rh-muted"
+              }`}
+            >
+              {directivesBytes.toLocaleString()} / {MAX_DIRECTIVES_BYTES.toLocaleString()} bytes
+            </span>
+          </div>
           <textarea
             id="composer-directives"
             rows={3}
             value={directives}
             onChange={(e) => setDirectives(e.target.value)}
             placeholder="e.g. Focus on unauthenticated session access, IDOR tenant boundaries, and prompt injection canaries"
-            className={`${FIELD} resize-none leading-relaxed`}
+            className={`${FIELD} resize-none leading-relaxed ${directivesBytes > MAX_DIRECTIVES_BYTES ? "border-rh-nogo focus:border-rh-nogo" : ""}`}
           />
+          {directivesBytes > MAX_CUSTOM_INSTRUCTIONS_BYTES && (
+            <p className="text-[11px] text-rh-nogo">
+              Directives exceed {MAX_DIRECTIVES_BYTES.toLocaleString()} bytes limit ({directivesBytes.toLocaleString()} bytes). Please shorten or configure READYHAI_MAX_CUSTOM_INSTRUCTIONS_BYTES.
+            </p>
+          )}
           <div className="flex flex-wrap gap-1.5">
             {DIRECTIVE_HINTS.map((hint) => (
               <button

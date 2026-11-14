@@ -553,11 +553,12 @@ fn swarm_request(args: &Value) -> Result<crate::agent::AgentRunRequest> {
             "dry_run=false is refused over MCP: state-changing requests need the operator to set READYHAI_MCP_ALLOW_WRITES=1 on the server (and the target must be nonprod in scope.toml)"
         );
     }
+    let max_ci_bytes = crate::serve::max_custom_instructions_bytes();
     if a.directives
         .as_deref()
-        .is_some_and(|d| d.chars().count() > 2000)
+        .is_some_and(|d| d.len() > max_ci_bytes)
     {
-        bail!("directives is limited to 2000 characters");
+        bail!("directives is limited to {max_ci_bytes} bytes");
     }
     let budget = a
         .thinking_budget_tokens
@@ -1517,7 +1518,7 @@ mod tests {
         let r =
             swarm_request(&json!({"target": "https://example.com", "directives": "  "})).unwrap();
         assert!(r.custom_instructions.is_none());
-        let long = "x".repeat(2001);
+        let long = "x".repeat(crate::serve::max_custom_instructions_bytes() + 1);
         assert!(
             swarm_request(&json!({"target": "https://example.com", "directives": long})).is_err()
         );

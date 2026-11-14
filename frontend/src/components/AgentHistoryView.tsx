@@ -1125,19 +1125,33 @@ export function AgentHistoryView({ onLoadRunInStudio, onRetestCase, onBackToStud
                   {selectedLedger?.exit_criteria_checklist && selectedLedger.exit_criteria_checklist.length > 0 && (
                     <div className="p-4 rounded-[10px] bg-rh-surface border border-rh-line space-y-2">
                       <span className="text-xs font-semibold text-rh-text">Exit criteria</span>
-                      {selectedLedger.exit_criteria_checklist.map((c, i) => (
-                        <div key={i} className="flex items-start gap-2 text-xs">
-                          <span
-                            className={`px-1.5 py-0.5 rounded-[6px] font-semibold shrink-0 ${
-                              c.met ? "bg-rh-go/15 text-rh-go" : "bg-rh-nogo/15 text-rh-nogo"
-                            }`}
-                          >
-                            {c.met ? "Met" : "Not met"}
-                          </span>
-                          <span className="text-rh-text">{c.criterion}</span>
-                          {c.details && <span className="text-rh-muted">- {c.details}</span>}
-                        </div>
-                      ))}
+                      {selectedLedger.exit_criteria_checklist.map((c, i) => {
+                        const status = (c.status || "").toLowerCase();
+                        const isWarning =
+                          status === "warning" ||
+                          (!c.met &&
+                            (c.details?.toLowerCase().includes("not evaluated") ||
+                              c.details?.toLowerCase().includes("insufficient evidence") ||
+                              (c.criterion.toLowerCase().includes("coverage") &&
+                                !c.details?.includes("0 of"))));
+                        return (
+                          <div key={i} className="flex items-start gap-2 text-xs">
+                            <span
+                              className={`px-1.5 py-0.5 rounded-[6px] font-semibold shrink-0 ${
+                                c.met || status === "met"
+                                  ? "bg-rh-go/15 text-rh-go"
+                                  : isWarning
+                                    ? "bg-rh-cond/15 text-rh-cond"
+                                    : "bg-rh-nogo/15 text-rh-nogo"
+                              }`}
+                            >
+                              {c.met || status === "met" ? "Met" : isWarning ? "Warning" : "Not met"}
+                            </span>
+                            <span className="text-rh-text">{c.criterion}</span>
+                            {c.details && <span className="text-rh-muted">- {c.details}</span>}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
 
