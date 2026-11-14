@@ -185,7 +185,7 @@ pub fn form_body(pairs: &[(&str, &str)]) -> String {
 }
 
 fn rand_hex(n: usize) -> String {
-    use rand::Rng;
+    use rand::RngExt;
     let mut r = rand::rng();
     (0..n)
         .map(|_| format!("{:02x}", r.random::<u8>()))

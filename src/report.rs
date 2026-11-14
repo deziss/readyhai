@@ -1,6 +1,7 @@
 //! Reports: HTML (auto-escaped, CSP, no JS), JSON, SARIF 2.1.0, JUnit XML; QA formats live in qa::report.
 use crate::model::*;
 use anyhow::Result;
+use minijinja::value::Serde;
 use minijinja::{AutoEscape, Environment};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -112,7 +113,7 @@ pub fn html(run: &Run) -> Result<String> {
         "groups": groups, "finding_count": run.findings.len(), "notes": run.notes,
         "errors": run.errors.iter().map(|e| json!({"count": e.count, "source": e.source, "signature": e.signature, "example": e.example, "first_seen": e.first_seen})).collect::<Vec<_>>(),
     });
-    Ok(env.get_template("report.html.j2")?.render(ctx)?)
+    Ok(env.get_template("report.html.j2")?.render(Serde(&ctx))?)
 }
 
 /// `GET /x`, `POST /orders/{id}`, `GET /a, GET /b`: an HTTP operation, not a file.

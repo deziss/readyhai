@@ -92,9 +92,9 @@ digest = "sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32e
 version = "latest"
 
 # Built locally: docker build -t readyhai/playwright-runner:local runners/playwright
-# (base mcr.microsoft.com/playwright:v1.56.0-noble; pin its digest in the Dockerfile).
+# (base mcr.microsoft.com/playwright:v1.65.1-noble; pin its digest in the Dockerfile).
 # Intentionally unpinned: no registry digest exists for a :local image.
 [tools.playwright]
 image = "readyhai/playwright-runner:local"
 digest = ""
-version = "1.56.0"
+version = "1.65.1"

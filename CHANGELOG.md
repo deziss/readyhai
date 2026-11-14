@@ -2,6 +2,34 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] - 2026-11-14
+
+Full-stack library, runner, and container toolchain modernization across Rust, TypeScript, React, Python, and Docker environments.
+
+### Upgraded
+
+- **Rust Backend Ecosystem:**
+  - Upgraded template rendering engine to **MiniJinja v3.1.0** (`features = ["serde"]`), adapting template context serialization via `minijinja::value::Serde` across HTML scan, QA, and offline trend dashboard reports (`src/dashboard.rs`, `src/report.rs`, `src/qa/report.rs`).
+  - Upgraded cryptographic hashing to **Sha2 v0.11.1** with `digest v0.11.3` across bearer token verification, fingerprinting, and bundle tamper validation (`src/model.rs`, `src/serve.rs`, `src/bundle.rs`).
+  - Upgraded random generation to **Rand v0.10.3** and migrated RNG trait imports to `rand::RngExt` (`src/engine.rs`, `src/android.rs`, `src/agent/oast.rs`).
+  - Upgraded HTTP client to **Reqwest v0.13.5** with AWS-LC and Rustls cryptographic backends (`features = ["blocking", "rustls", "json"]`) for LLM streaming and agent HTTP executions (`src/llm.rs`, `src/agent/exec.rs`).
+  - Advanced 27 compatible in-range transitive crates (`toml 1.2.1`, `cc 1.11.2`, `rustls-pki-types 1.16.0`, `rustls-webpki 0.103.17`, `globset 0.4.21`, `syn 3.0.10`, `smallvec 1.16.5`, etc.).
+  - Zero test regressions: all 813 Rust tests pass.
+- **Frontend Studio & Node Ecosystem:**
+  - Upgraded container base to **Node 24 Active LTS** (`node:24-slim` across `deps`, `builder`, and `runner` multi-stage targets in `frontend/Dockerfile`).
+  - Upgraded TypeScript to **v7.0.2** with zero typecheck errors (`npx tsc --noEmit`).
+  - Upgraded **Next.js to v16.4.6** and `eslint-config-next` to `v16.4.6` with Turbopack optimizations.
+  - Upgraded **React & React-DOM to v19.3.1**.
+  - Upgraded **Tailwind CSS & plugins to v4.3.5** (`tailwindcss`, `@tailwindcss/postcss`, `@tailwindcss/turbopack`).
+  - Upgraded **Vitest to v5.1.0** and `@vitejs/plugin-react` to `v6.3.0`.
+  - Upgraded **Lucide React to v1.73.0** with expanded iconography.
+  - Upgraded **Undici HTTP client to v8.12.4** in the frontend proxy handler (`src/app/api/[...path]/route.ts`).
+  - Zero test regressions: all 141 frontend Vitest tests pass.
+- **Runners Subsystem:**
+  - Upgraded Playwright QA & browser security runner: **Playwright v1.65.1**, **Axe-core v4.14.0**, **Pixelmatch v8.0.0**, with base container pinned to `mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579`.
+  - Upgraded Python context retriever: **LangChain v0.3.19**, **LangGraph v0.2.74**, **Pydantic v2.10.6**, **Sentence-Transformers v3.4.1**, **Faiss-CPU v1.10.0**.
+  - Pinned `tools.lock.toml` Playwright runner to `v1.65.1`.
+
 ## [0.8.1] - 2026-11-14
 
 Tri-state exit criteria classification, warning status indicators, scaled custom directives capacity (32 KB), and live Composer limit monitoring.

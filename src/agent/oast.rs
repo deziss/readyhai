@@ -11,7 +11,7 @@ use axum::{
     http::{HeaderMap, Method, StatusCode},
     routing::any,
 };
-use rand::Rng;
+use rand::RngExt;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Condvar, Mutex};

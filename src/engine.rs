@@ -10,7 +10,7 @@ use crate::scope::{self, Scope};
 use crate::snapshot;
 use crate::tools::Docker;
 use anyhow::{Context, Result, bail};
-use rand::Rng;
+use rand::RngExt;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
