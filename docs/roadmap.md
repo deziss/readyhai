@@ -23,15 +23,15 @@ Status key: **Done** (implemented, covered by tests or verification), **Done, li
 
 See [plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md) for full architectural specifications.
 
-1. **Horizon 1 (v1.0.0) — Protocol Breadth & Enterprise Queue**:
-   - OpenAPI 3.1 & JSON Schema Draft 2020-12 full support.
-   - GraphQL schema introspection & autonomous query/mutation fuzzer.
-   - Self-healing locator tree in Playwright runner (`qa.mjs`).
-   - SQLite WAL persistent queue with multi-worker execution in `src/serve.rs`.
-2. **Horizon 2 (v1.2.0) — Autonomous Exploration & Deep Observability**:
-   - Dynamic Markov state-graph explorer for single-page web applications.
-   - Multi-persona collaborative browser journeys (Admin vs. Member concurrent sessions).
-   - W3C distributed trace context injection (`traceparent`) & OTel APM correlation.
+1. **Horizon 1 (v1.0.0) — Protocol Breadth & Enterprise Queue**: **Done**
+   - OpenAPI 3.1 & JSON Schema Draft 2020-12 full support (`prefixItems`, polymorphic schemas).
+   - GraphQL schema introspection, circular DoS, and authorization fuzzer (`qa.graphql.*`).
+   - Self-healing resilient locator tree in Playwright runner (`qa.mjs`).
+   - Persistent task queue recovery (`opts.json`) with multi-worker concurrent execution (`READYHAI_WORKERS`) in `src/serve.rs`.
+2. **Horizon 2 (v1.2.0) — Autonomous Exploration & Deep Observability**: **In Progress**
+   - Dynamic Markov state-graph explorer for single-page web applications and dead-end detection (`qa.ui.dead_end`).
+   - Multi-persona collaborative browser journeys with concurrent sessions (`sync_personas: [...]`).
+   - W3C distributed trace context injection (`traceparent`, `tracestate`, `baggage`) & OTel APM correlation (`READYHAI_APM_URL`).
    - Structural visual regression 2.0 with dynamic element masking and SSIM diffing.
 3. **Horizon 3 (v1.5.0) — Universal GenAI & Agent Evaluator (`readyhai eval-ai`)**:
    - Dedicated GenAI evaluation engine: RAG Quality Triad (Context Relevance, Faithfulness/Groundedness, Answer Relevance).
@@ -99,7 +99,6 @@ Ordered by value, each one built on mechanisms already in place:
 |---|---|---|
 | 1 | Windows probe untested on a real host | `probe/windows.ps1`, `host.rs` |
 | 6 | Fake `ghp_`-style token in fixtures may trip GitHub push protection | `tests/fixtures` |
-| 8 | Server queue is in-memory and single-worker; a restart loses queued jobs (they are marked `error: server restarted`, not left as `running`) | `serve.rs` |
 | 9 | The container image has `ssh` but no `adb`; Android runtime checks only work from the CLI | `Dockerfile` |
 | 10 | ArgoCD PostSync Job: pin the image tag or digest instead of `latest`; not run on a cluster | `ci/argocd-postsync-job.yaml` |
 | 11 | Target-supplied `readyhai.toml` is trusted for test image/command and suppressions (server/MCP force `[test] network=false`, and the report notes how many suppressions came from the target) | `engine.rs` |
@@ -117,7 +116,7 @@ Ordered by value, each one built on mechanisms already in place:
 | 32 | The REST `POST /api/agent/run` is synchronous (the HTTP call returns when the run ends; the id of a run in progress comes from `GET /api/agent/runs`); only MCP returns the id at once | `serve.rs` |
 | 33 | `agent --diff-base` needs a spec for diff-based operation mapping (though `--repo` white-box AST discovery in `0.7.0` still finds hidden routes and sinks) | `agent/change.rs`, `agent/whitebox.rs` |
 
-Fixed since earlier roadmaps: TLS expiry/protocol checks (`0.7.0`), Playwright `BrowserSecurity` and adaptive ReAct exploration (`0.7.0`), `Nuclei` and `tool.zap_active` (`0.7.0`), OSV AST import reachability (`0.7.0`), native cross-file AST taint/auth audit (`0.7.0`), single-source versioning (`0.2.0` -> `0.7.0`, `18` of `19` container digests pinned in `tools.lock.toml`).
+Fixed since earlier roadmaps: Server queue persistent task recovery & multi-worker concurrency (`1.0.0`), TLS expiry/protocol checks (`0.7.0`), Playwright `BrowserSecurity` and adaptive ReAct exploration (`0.7.0`), `Nuclei` and `tool.zap_active` (`0.7.0`), OSV AST import reachability (`0.7.0`), native cross-file AST taint/auth audit (`0.7.0`), single-source versioning (`0.2.0` -> `0.7.0`, `18` of `19` container digests pinned in `tools.lock.toml`).
 
 ## History of increments
 
