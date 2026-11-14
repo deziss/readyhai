@@ -228,6 +228,7 @@ Registered with `.qa()`: they run only under `readyhai qa`, not `scan`. Details 
 | `qa.api.functional` | quick | native | `qa.api.server_error` (High), `qa.api.error_leak` (Medium), `qa.api.undocumented_status` (Low), `qa.api.contract_violation` (Medium), `qa.api.validation_missing` (Medium), `qa.api.reflection` (Low), `qa.api.breaking_change` (Medium), `qa.api.slow_response` (Low) |
 | `qa.api.authz` | quick | native | `qa.api.authz_missing` (High), `qa.api.privilege_escalation` (High) |
 | `qa.api.stateful` | standard | native | `qa.api.bola` (Critical), `qa.api.persistence_failure` (Medium), `qa.api.delete_not_effective` (High), `qa.api.idempotency` (Low) |
+| `qa.graphql` | quick | native | `qa.graphql.introspection_enabled` (Low), `qa.graphql.deep_nesting_dos` (High), `qa.graphql.authz_missing` (High), `qa.graphql.server_error` (High), `qa.graphql.error_leak` (Medium) |
 | `qa.ui` | quick (forms/journeys/visual need standard) | playwright | `qa.ui.responsive_overflow` (Low), `qa.ui.a11y` (Medium for critical/serious, else Low), `qa.ui.slow_page` (Medium LCP / Low CLS), `qa.ui.validation_gap` (Medium), `qa.ui.journey_failed` (High), `qa.ui.visual_change` (Low) |
 | `qa.perf` | standard | k6 | `qa.perf.regression` (Medium), `qa.perf.errors` (High), `qa.perf.slow` (Low) |
 | `qa.resilience` | deep | native (docker); verified live with `tests/fixtures/resilience` (SIGINT/SIGTERM/SIGHUP also unpause) | `qa.resilience.hang` (High), `.no_degraded_status` (Medium), `.no_recovery` (Critical), `.health_lies` (Medium) |
