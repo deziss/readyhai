@@ -2,6 +2,26 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.1.0] - 2026-11-17
+
+Full Architectural Modularization (82,460 lines deconstructed across 40 slices), Standalone Single-Binary Engine with Auto-Discovery for Linux & Windows, and Production Docker Hardening.
+
+### Added
+
+- **Architectural Modularization (Slices 1–40)**:
+  - Deconstructed over 82,460 lines of monolithic Rust code into clean, modular domain submodules across `src/` (`agent`, `qa`, `serve`, `eval_ai`, `fix`, `bundle`, `report`, `scope`, `code_audit`, `android`, `tools`, `model`, etc.).
+  - Standardized module visibilities (`pub(crate)`), eliminated circular dependencies, and isolated test suites across 839 unit & integration tests.
+- **Standalone Single-Binary Cross-Platform Engine (Linux & Windows)**:
+  - Added zero-dependency `.env` and `scope.toml` auto-discovery (`config::auto_load_env()`) across current directories, `~/.config/readyhai/`, and `%APPDATA%\readyhai\`.
+  - Added Win32 stdio handle duplication in `src/mcp/protocol.rs` (`DuplicateHandle` + `GetStdHandle`) enabling `readyhai mcp` on Windows for Claude Code, Cursor, and IDE agents.
+  - Cross-platform Tokio signal handling in `src/qa/resilience.rs` (`tokio::signal::ctrl_c()` on Windows, POSIX signals on Unix).
+  - Cross-platform data directory resolution in `src/engine/storage.rs` supporting `%LOCALAPPDATA%\readyhai\data`.
+  - Official one-line installer scripts: `install.sh` (Linux/macOS) and `install.ps1` (Windows PowerShell).
+- **Production Multi-Stage Docker Release**:
+  - Validated multi-stage Dockerfile packaging (`rust:1-slim-bookworm` $\to$ `debian:bookworm-slim` + `docker:29-cli`).
+  - Container image size optimized to 235 MB with Thin-LTO and symbol stripping.
+  - Full cluster integration verified with `readyhai-frontend` (Next.js on port 3000) and `readyhai-socket-proxy`.
+
 ## [3.0.0] - 2026-11-17
 
 Full Ecosystem Modernization, Security Tool Refresh, and Reliability Hardening across Rust 2024, Tree-Sitter 0.27, Node 24 Active LTS, and Container Toolchains.

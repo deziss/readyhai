@@ -4,6 +4,24 @@
 
 ReadyHai does not host scanners. It runs as one small service (or as a CLI) and starts short-lived scanner containers through the Docker CLI. Anything with a Docker daemon (local, rootless, remote through `DOCKER_HOST`) works.
 
+## Single binary standalone deployment
+
+ReadyHai can be deployed directly as a standalone single binary on Linux, macOS, or Windows without requiring Docker Compose:
+
+### Linux / macOS
+```bash
+curl -fsSL https://raw.githubusercontent.com/deziss/readyhai/main/install.sh | bash
+```
+Installs `readyhai` to `~/.local/bin/readyhai`, creates default `~/.config/readyhai/scope.toml`, and auto-generates `~/.config/readyhai/.env` with a 24-byte secure token.
+
+### Windows PowerShell
+```powershell
+irm https://raw.githubusercontent.com/deziss/readyhai/main/install.ps1 | iex
+```
+Installs `readyhai.exe` to `%LOCALAPPDATA%\Programs\readyhai`, appends it to the user's `PATH`, and initializes `%APPDATA%\readyhai\scope.toml` and `%APPDATA%\readyhai\.env`.
+
+When executed standalone without Docker, all native AST security audits, readiness checks, GenAI evaluator (`eval-ai`), mutation testing (`mutate`), fixer (`fix`), MCP server (`readyhai mcp`), and REST API server (`readyhai serve`) operate with zero external container dependencies.
+
 ## Docker compose
 
 `docker-compose.yml` defines three services, two networks and one volume. First run on a fresh clone: `cp .env.example .env` **and** `cp scope.example.toml scope.toml` (compose bind-mounts `scope.toml`; if it does not exist when you run `docker compose up`, Docker creates an empty directory of that name and `readyhai serve` refuses to start with a message that says how to fix it).
