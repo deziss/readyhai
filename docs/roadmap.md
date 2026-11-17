@@ -56,6 +56,12 @@ See [plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11
    - Resilience hardening: Exponential backoff retries on container image pulling; connection pool idle/keepalive socket hardening in HTTP clients.
    - Production binary release optimization: `panic = "abort"` and `codegen-units = 1` for minimal footprint and maximum execution throughput.
    - Node 24 Active LTS ESM test runner alignment (`import.meta.dirname`).
+7. **Horizon 7 (v3.1.0) — Complete Architecture Modularization & Standalone Cross-Platform Single Binary**: **Done**
+   - Full codebase modularization across 40 architectural slices deconstructing 82,460+ lines of monolith into isolated, decoupled submodules across `src/` (`agent`, `qa`, `serve`, `eval_ai`, `fix`, `bundle`, `report`, `scope`, `code_audit`, `android`, `tools`, etc.).
+   - Standalone single-binary cross-platform engine: added automated zero-dependency `.env` and `scope.toml` discovery (`auto_load_env()`).
+   - Cross-platform Win32 stdio handle duplication for MCP server (`readyhai mcp`) on Windows; cross-platform Tokio signal handling and storage paths.
+   - Single-binary installation scripts: `install.sh` (Linux/macOS) and `install.ps1` (Windows PowerShell).
+   - Multi-stage Docker build packaging and Docker Compose cluster verification.
 
 ## Next
 
