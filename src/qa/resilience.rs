@@ -180,15 +180,25 @@ fn install_signal_unpause() {
                     return;
                 };
                 rt.block_on(async {
-                    use tokio::signal::unix::{SignalKind, signal};
-                    let (Ok(mut a), Ok(mut b), Ok(mut c)) = (
-                        signal(SignalKind::interrupt()),
-                        signal(SignalKind::terminate()),
-                        signal(SignalKind::hangup()),
-                    ) else {
-                        return;
+                    #[cfg(unix)]
+                    let code = {
+                        use tokio::signal::unix::{SignalKind, signal};
+                        let (Ok(mut a), Ok(mut b), Ok(mut c)) = (
+                            signal(SignalKind::interrupt()),
+                            signal(SignalKind::terminate()),
+                            signal(SignalKind::hangup()),
+                        ) else {
+                            return;
+                        };
+                        tokio::select! { _ = a.recv() => 130, _ = b.recv() => 143, _ = c.recv() => 129 }
                     };
-                    let code = tokio::select! { _ = a.recv() => 130, _ = b.recv() => 143, _ = c.recv() => 129 };
+                    #[cfg(not(unix))]
+                    let code = {
+                        if tokio::signal::ctrl_c().await.is_err() {
+                            return;
+                        }
+                        130
+                    };
                     let ids: Vec<String> = PAUSED.lock().map(|g| g.clone()).unwrap_or_default();
                     for id in ids {
                         unpause_id(&id);

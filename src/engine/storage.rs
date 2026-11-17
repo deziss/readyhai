@@ -13,12 +13,19 @@ pub fn data_dir() -> PathBuf {
     if let Ok(d) = std::env::var("READYHAI_DATA") {
         return PathBuf::from(d);
     }
-    let base = std::env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".local/share")
-        });
-    base.join("readyhai")
+    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
+        return PathBuf::from(xdg).join("readyhai");
+    }
+    #[cfg(windows)]
+    {
+        if let Ok(app_data) = std::env::var("LOCALAPPDATA").or_else(|_| std::env::var("APPDATA")) {
+            return PathBuf::from(app_data).join("readyhai");
+        }
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".local/share/readyhai")
 }
 
 pub fn now() -> String {

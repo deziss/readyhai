@@ -59,9 +59,49 @@ pub fn isolate_stdio() -> Result<(std::fs::File, std::fs::File)> {
     Ok((rpc_in, rpc_out))
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 pub fn isolate_stdio() -> Result<(std::fs::File, std::fs::File)> {
-    bail!("the MCP server needs a unix platform")
+    use std::os::windows::io::FromRawHandle;
+    unsafe extern "system" {
+        fn GetStdHandle(n_std_handle: u32) -> *mut std::ffi::c_void;
+        fn DuplicateHandle(
+            h_source_process_handle: *mut std::ffi::c_void,
+            h_source_handle: *mut std::ffi::c_void,
+            h_target_process_handle: *mut std::ffi::c_void,
+            lp_target_handle: *mut *mut std::ffi::c_void,
+            dw_desired_access: u32,
+            b_inherit_handle: i32,
+            dw_options: u32,
+        ) -> i32;
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    }
+    const STD_INPUT_HANDLE: u32 = 0xFFFFFFF6;
+    const STD_OUTPUT_HANDLE: u32 = 0xFFFFFFF5;
+    const DUPLICATE_SAME_ACCESS: u32 = 0x00000002;
+
+    unsafe {
+        let cur = GetCurrentProcess();
+        let in_h = GetStdHandle(STD_INPUT_HANDLE);
+        let out_h = GetStdHandle(STD_OUTPUT_HANDLE);
+        let mut dup_in = std::ptr::null_mut();
+        let mut dup_out = std::ptr::null_mut();
+
+        if DuplicateHandle(cur, in_h, cur, &mut dup_in, 0, 0, DUPLICATE_SAME_ACCESS) == 0 {
+            bail!("cannot duplicate stdin on Windows");
+        }
+        if DuplicateHandle(cur, out_h, cur, &mut dup_out, 0, 0, DUPLICATE_SAME_ACCESS) == 0 {
+            bail!("cannot duplicate stdout on Windows");
+        }
+        Ok((
+            std::fs::File::from_raw_handle(dup_in),
+            std::fs::File::from_raw_handle(dup_out),
+        ))
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+pub fn isolate_stdio() -> Result<(std::fs::File, std::fs::File)> {
+    bail!("the MCP server needs a unix or windows platform")
 }
 
 pub fn serve_stdio() -> Result<()> {

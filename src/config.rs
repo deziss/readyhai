@@ -66,3 +66,79 @@ impl TargetConfig {
         ))
     }
 }
+
+/// Automatically loads environment variables from `.env` and checks default configuration paths
+/// for standalone binary usage on Linux, macOS, and Windows.
+pub fn auto_load_env() {
+    let mut candidates = Vec::new();
+    if let Ok(custom) = std::env::var("READYHAI_ENV_FILE") {
+        candidates.push(std::path::PathBuf::from(custom));
+    }
+    candidates.push(std::path::PathBuf::from(".env"));
+
+    #[cfg(windows)]
+    if let Ok(app_data) = std::env::var("APPDATA") {
+        candidates.push(std::path::PathBuf::from(app_data).join("readyhai").join(".env"));
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .ok();
+    if let Some(h) = &home {
+        candidates.push(std::path::PathBuf::from(h).join(".config/readyhai/.env"));
+        candidates.push(std::path::PathBuf::from(h).join(".readyhai/.env"));
+    }
+
+    for path in candidates {
+        if path.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&path) {
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() || trimmed.starts_with('#') {
+                        continue;
+                    }
+                    let line = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+                    if let Some((k, v)) = line.split_once('=') {
+                        let key = k.trim();
+                        let mut val = v.trim();
+                        if (val.starts_with('"') && val.ends_with('"'))
+                            || (val.starts_with('\'') && val.ends_with('\''))
+                        {
+                            val = &val[1..val.len() - 1];
+                        }
+                        if !key.is_empty() && std::env::var(key).is_err() {
+                            unsafe {
+                                std::env::set_var(key, val);
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        }
+    }
+
+    // Default scope file auto-discovery for standalone binary execution
+    if std::env::var("READYHAI_SCOPE").is_err() {
+        let mut scope_candidates = vec![std::path::PathBuf::from("scope.toml")];
+        #[cfg(windows)]
+        if let Ok(app_data) = std::env::var("APPDATA") {
+            scope_candidates.push(
+                std::path::PathBuf::from(app_data)
+                    .join("readyhai")
+                    .join("scope.toml"),
+            );
+        }
+        if let Some(h) = &home {
+            scope_candidates.push(std::path::PathBuf::from(h).join(".config/readyhai/scope.toml"));
+            scope_candidates.push(std::path::PathBuf::from(h).join(".readyhai/scope.toml"));
+        }
+        for s in scope_candidates {
+            if s.is_file() {
+                unsafe {
+                    std::env::set_var("READYHAI_SCOPE", s);
+                }
+                break;
+            }
+        }
+    }
+}
