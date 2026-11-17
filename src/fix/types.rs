@@ -1,0 +1,91 @@
+//! Data types and configuration options for the Agentic Fixer.
+
+use std::path::PathBuf;
+
+use clap::Args;
+use serde::{Deserialize, Serialize};
+
+use crate::model::Severity;
+
+#[derive(Args, Debug, Clone, Serialize, Deserialize)]
+pub struct FixOpts {
+    /// Path to repository root (defaults to current directory)
+    #[arg(long, default_value = ".")]
+    pub repo: PathBuf,
+
+    /// Filter to specific defect ID or finding rule (e.g. D-001, security.auth.missing_guard, security.taint.sql_injection)
+    #[arg(long)]
+    pub defect: Option<String>,
+
+    /// Run ID to load findings from runs/<ID>/run.json or artifacts/evidence_ledger.json
+    #[arg(long)]
+    pub run: Option<String>,
+
+    /// Preview synthesized patches and verification plan without modifying files on disk
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Run repository test suite to verify patch introduces zero regressions (default: true)
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub verify: bool,
+
+    /// Create local git branch with verified fix and commit message (never pushed)
+    #[arg(long)]
+    pub branch: Option<String>,
+
+    /// Output format: text (terminal summary), json, or markdown (PR description)
+    #[arg(long, default_value = "text")]
+    pub format: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PatchStatus {
+    Synthesized,
+    Verified,
+    VerificationFailed,
+    Applied,
+    RolledBack,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TargetDefect {
+    pub id: String,
+    pub rule: String,
+    pub severity: Severity,
+    pub file: String,
+    pub line: usize,
+    pub title: String,
+    pub component: String,
+    pub reproduction: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchRemediation {
+    pub defect_id: String,
+    pub rule: String,
+    pub file_path: String,
+    pub line: usize,
+    pub original_snippet: String,
+    pub patched_snippet: String,
+    pub unified_diff: String,
+    pub rationale: String,
+    pub status: PatchStatus,
+    pub verification_runner: Option<String>,
+    pub verification_duration_ms: Option<u128>,
+    pub error_log: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FixReport {
+    pub repo: String,
+    pub total_defects_evaluated: usize,
+    pub patches_synthesized: usize,
+    pub patches_verified: usize,
+    pub patches_applied: usize,
+    pub branch_created: Option<String>,
+    pub commit_sha: Option<String>,
+    pub patches: Vec<PatchRemediation>,
+    pub pr_title: String,
+    pub pr_body: String,
+}
