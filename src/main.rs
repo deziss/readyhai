@@ -317,6 +317,7 @@ fn main() -> ExitCode {
 }
 
 fn run() -> anyhow::Result<u8> {
+    config::auto_load_env();
     match Cli::parse().cmd {
         Cmd::Scan {
             target,
