@@ -3,11 +3,18 @@
 //! auth matrix, stateful lifecycle, spec baselines.
 use super::testsrv::*;
 use super::*;
-use crate::model::{Run, Target, TargetKind, Verdict};
+use crate::ctx::Ctx;
+use crate::model::{Category, CheckStatus, Profile, Run, Severity, Target, TargetKind, Verdict};
+use crate::qa::QaCtx;
+use crate::qa::model::*;
 use crate::qa::roles::Roles;
-use serde_json::json;
-use std::sync::Once;
-use std::sync::atomic::AtomicUsize;
+use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, Once};
+use super::spec::Op;
+use super::synth::Expect;
 
 const FIXTURE_SPEC: &str = include_str!("../../../tests/fixtures/qa-api/openapi.json");
 const FIXTURE_ROLES: &str = include_str!("../../../tests/fixtures/qa-api/roles.toml");
