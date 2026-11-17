@@ -1,0 +1,976 @@
+//! Orchestration of the multi-agent pipeline stages: Discovery, Planning, Exploration, Verification, Teardown, Triage, and Readiness Gate.
+
+use anyhow::Result;
+use serde_json::Value;
+use std::path::Path;
+use std::sync::Mutex;
+
+use super::super::change;
+use super::super::discover::{discover, harvest_ids};
+use super::super::exec::{auth_for, Auth, Clients, Credentials, ExecOptions};
+use super::super::lead;
+use super::super::ledger::{self, LedgerInput};
+use super::super::plan::{
+    plan_cases_remembered_with_whitebox, plans_from_spec, seed_from_run_id, Depth,
+};
+use super::super::store::{checkpoint_agent_run_in, now_iso, save_agent_run_in, save_cleanup_in};
+use super::super::triage::{add_llm_notes, derive_defects_verified};
+use super::super::types::*;
+use super::super::verify::{self, VerifyOptions};
+use super::change::analyze_change;
+use super::cleanup::{delete_check_results, harvest_created, target_is_nonprod, teardown};
+use super::gate::llm_gate;
+use super::memory::{recall, remember};
+use super::options::{
+    cap_if_slow, checkpoint, ip_fields, log, measure_llm, resolve_llm, take_llm_notes, RunOptions,
+};
+use super::order::order_and_trim;
+use crate::llm::{call_params, clamp_thinking_budget};
+
+pub(crate) fn agent_stages(
+    base: &Path,
+    req: &AgentRunRequest,
+    rep: &mut AgentRunReport,
+    opts: RunOptions,
+    nonprod_pin: Option<bool>,
+) -> Result<()> {
+    let RunOptions {
+        mut budget,
+        mut credentials,
+        llm,
+        reruns,
+        verify_k,
+        request_timeout,
+        lookup_requester_ip,
+        workers,
+        memory_dir,
+    } = opts;
+    let mut llm_budget = budget.llm_budget();
+    let (ip, ip_type, guidance) = ip_fields(lookup_requester_ip, &mut rep.steps);
+    rep.requester_ip = ip;
+    rep.requester_ip_type = ip_type;
+    rep.allowlist_guidance = guidance;
+
+    // LLM: resolved and probed once; every LLM step is skipped when it is not reachable
+    let llm_cfg = match resolve_llm(&llm) {
+        Ok(mut c) => {
+            let latency = measure_llm(&c);
+            if req.thinking {
+                c = c.with_thinking(true, &req.model_tier, req.thinking_budget_tokens);
+            }
+            cap_if_slow(&mut c, &latency, &mut rep.notes);
+            if req.thinking {
+                let p = call_params(&c);
+                let sent = p.anthropic_thinking.is_some() || p.reasoning_effort.is_some();
+                log(
+                    &mut rep.steps,
+                    "Supervisor",
+                    "Extended Thinking (CoT)",
+                    &format!(
+                        "Thinking requested: tier '{}', budget {} tokens (clamped to {}..={}). What {} receives: {}",
+                        c.model_tier,
+                        c.thinking_budget_tokens,
+                        crate::llm::MIN_THINKING_BUDGET,
+                        crate::llm::MAX_THINKING_BUDGET,
+                        c.describe(),
+                        c.thinking_summary()
+                    ),
+                    if sent { "completed" } else { "warning" },
+                    Some("llm"),
+                );
+            }
+            log(
+                &mut rep.steps,
+                "Supervisor",
+                "Model Connectivity",
+                &format!("Connected to {}", c.describe()),
+                "completed",
+                Some("llm"),
+            );
+            rep.llm_status = Some(format!("connected: {} ({})", c.describe(), latency.summary));
+            rep.model = c.model.clone();
+            rep.provider = c.provider.id.to_string();
+            Some(c)
+        }
+        Err(why) => {
+            log(
+                &mut rep.steps,
+                "Supervisor",
+                "Model Connectivity",
+                &format!("{why}; every LLM step is skipped and the deterministic path is used"),
+                "warning",
+                Some("deterministic"),
+            );
+            rep.llm_status = Some(format!("unavailable: {why}"));
+            None
+        }
+    };
+    rep.thinking = req.thinking;
+    rep.model_tier = req.model_tier.clone();
+    rep.thinking_budget_tokens = clamp_thinking_budget(req.thinking_budget_tokens);
+    if let Some(c) = llm_cfg.as_ref().filter(|_| req.thinking) {
+        // what the planner really runs at (a slow endpoint holds it at the High tier)
+        rep.model_tier = c.model_tier.clone();
+        rep.thinking_budget_tokens = c.thinking_budget_tokens;
+    }
+    checkpoint(base, rep, &budget, &llm_budget);
+
+    if credentials.has_pending_logins()
+        && !req.dry_run
+        && let Ok(u) = reqwest::Url::parse(&req.target)
+        && let Ok(cl) = Clients::new(request_timeout, &u)
+    {
+        for note in credentials.bootstrap_pending(&cl) {
+            rep.notes.push(note);
+        }
+    }
+
+    // 1. discovery
+    log(
+        &mut rep.steps,
+        "Discovery",
+        "Route Inspection",
+        "Fingerprinting the target, crawling same-host links, loading the OpenAPI spec when available",
+        "running",
+        Some("deterministic"),
+    );
+    let mut disc = discover(&req.target, req.spec_url.as_deref(), 20, &mut budget);
+    // headless XHR capture (standard/deep, SPA, Docker + runner image present; a note otherwise)
+    super::super::discover::run_xhr_discovery(
+        &mut disc,
+        &req.target,
+        &req.profile,
+        &base.join(&rep.id),
+        &rep.id,
+        &mut budget,
+        !req.dry_run && nonprod_pin.unwrap_or_else(|| target_is_nonprod(&req.target)),
+    );
+    log(
+        &mut rep.steps,
+        "Discovery",
+        "Route Inspection",
+        &format!(
+            "{} ({}); {} route(s){}",
+            disc.tech.app_architecture,
+            disc.tech.primary_framework,
+            disc.routes.len(),
+            if disc.spec.is_some() {
+                ", OpenAPI spec loaded"
+            } else {
+                ""
+            }
+        ),
+        "completed",
+        Some("deterministic"),
+    );
+    if disc.routes.is_empty() {
+        rep.notes.push("no routes were discovered (target unreachable or empty); only root and sensitive-file probes are planned".into());
+    }
+    rep.notes.extend(disc.notes.iter().cloned());
+    // 1b. what did the code change? (only when the caller gave a checkout and a base ref)
+    let change = analyze_change(req, disc.spec.as_ref(), rep);
+    let change_ops = change.as_ref().is_some_and(|a| !a.set.is_empty());
+    // 1b-wb. white-box AST bridge when `--repo` is supplied (works even without `--diff-base` or `--spec`)
+    let depth = Depth::from_profile(&req.profile);
+    let whitebox = req.repo.as_deref().and_then(|repo| {
+        if depth == Depth::Quick {
+            return None;
+        }
+        match super::super::whitebox::analyze_and_enrich(repo, &mut disc, depth) {
+            Ok(wb) => {
+                if !wb.hypotheses.is_empty() || wb.routes_injected > 0 || wb.findings_count > 0 {
+                    log(
+                        &mut rep.steps,
+                        "Discovery",
+                        "White-Box Code Audit",
+                        &format!(
+                            "{} endpoint(s) analyzed in repo; {} hidden route(s) injected; {} targeted sink/guard hypothesis(es)",
+                            wb.endpoints_analyzed,
+                            wb.routes_injected,
+                            wb.hypotheses.len()
+                        ),
+                        "completed",
+                        Some("deterministic"),
+                    );
+                }
+                Some(wb)
+            }
+            Err(why) => {
+                rep.notes
+                    .push(format!("white-box repo audit skipped: {why}"));
+                None
+            }
+        }
+    });
+    // a changed read of one record (`GET /orders/{id}`) is planned against real ids, even at quick
+    let change_needs_ids = change
+        .as_ref()
+        .is_some_and(|a| a.set.labels().any(|l| l.contains('{')));
+    // the ids of records that exist (read-only GETs of the spec's collection endpoints), so the
+    // plan reads and validates real ones
+    let harvested = disc
+        .spec
+        .as_ref()
+        .filter(|_| plans_from_spec(&req.profile) || change_needs_ids)
+        .map(|spec| {
+            harvest_ids(
+                spec,
+                &req.target,
+                &credentials,
+                request_timeout,
+                &mut budget,
+            )
+        });
+    if let Some((ids, notes)) = harvested {
+        disc.ids = ids;
+        rep.notes.extend(notes);
+    }
+    rep.stage_sources
+        .insert("discovery".into(), "deterministic".into());
+    rep.discovered_routes = disc.routes.clone();
+    rep.app_architecture = Some(disc.tech.app_architecture.clone());
+    rep.framework = Some(disc.tech.primary_framework.clone());
+    rep.detected_tech = disc.tech.detected_signals.clone();
+    checkpoint(base, rep, &budget, &llm_budget);
+
+    // 1c. what the agent remembers about this target (deterministic: a file, no LLM, no request)
+    let today = crate::engine::today();
+    let (hints, memory_notes) = recall(memory_dir.as_deref(), &req.target, rep, &today);
+    checkpoint(base, rep, &budget, &llm_budget);
+
+    // 2. planner
+    log(
+        &mut rep.steps,
+        "Planner",
+        "Test Synthesis",
+        "Building the deterministic plan (and asking the LLM for extra cases when available)",
+        "running",
+        None,
+    );
+    let planner_llm = llm_cfg.as_ref().filter(|_| !budget.is_cancelled());
+    let mut plan = plan_cases_remembered_with_whitebox(
+        planner_llm.map(|c| (c, &mut llm_budget)),
+        &req.target,
+        &req.profile,
+        &disc,
+        req.custom_instructions.as_deref(),
+        &credentials,
+        seed_from_run_id(&rep.id),
+        change.as_ref().map(|a| &a.set),
+        hints.as_ref(),
+        whitebox.as_ref(),
+    );
+    take_llm_notes(rep, &mut llm_budget);
+    // Never plan more than the allowance, and make sure what is cut is not what matters most
+    let (limit, limit_why) = {
+        let by_request = req.max_steps.filter(|&n| n > 0);
+        let by_profile = profile_case_cap(&req.profile);
+        match (by_request, by_profile) {
+            (Some(a), Some(b)) if b < a => (Some(b), format!("the '{}' profile cap", req.profile)),
+            (Some(a), _) => (Some(a), "max_steps".to_string()),
+            (None, Some(b)) => (Some(b), format!("the '{}' profile cap", req.profile)),
+            (None, None) => (None, String::new()),
+        }
+    };
+    let planned_total = plan.cases.len();
+    let (kept, dropped) =
+        order_and_trim(std::mem::take(&mut plan.cases), limit, budget.max_steps());
+    plan.cases = kept;
+    if !dropped.is_empty() {
+        let n = dropped.len();
+        let l = limit.unwrap_or(plan.cases.len());
+        let first: Vec<String> = dropped
+            .iter()
+            .take(5)
+            .map(|c| format!("{} {}", c.method, c.component))
+            .collect();
+        rep.notes.push(format!(
+            "plan truncated: {n} of {planned_total} planned case(s) were dropped to fit {limit_why} = {l}. {} were kept first; the dropped cases are listed as SKIPPED and lower coverage (e.g. {}{})",
+            if change_ops {
+                "Cases of changed operations, then authorization, stateful and OpenAPI cases"
+            } else {
+                "Authorization, stateful and OpenAPI cases"
+            },
+            first.join(", "),
+            if n > first.len() { ", ..." } else { "" }
+        ));
+        budget.note_stopped(format!(
+            "plan truncated to {l} case(s) by {limit_why}: {n} of {planned_total} not run"
+        ));
+    }
+    log(
+        &mut rep.steps,
+        "Planner",
+        "Test Synthesis",
+        &format!(
+            "{} planned case(s) ({}), {} from the LLM{}",
+            planned_total,
+            plan.source,
+            plan.llm_cases,
+            if dropped.is_empty() {
+                String::new()
+            } else {
+                format!("; {} dropped by {limit_why}", dropped.len())
+            }
+        ),
+        if dropped.is_empty() {
+            "completed"
+        } else {
+            "warning"
+        },
+        Some(if plan.llm_cases > 0 {
+            "llm+deterministic"
+        } else {
+            "deterministic"
+        }),
+    );
+    rep.notes.extend(plan.notes.iter().cloned());
+    rep.stage_sources
+        .insert("planner".into(), plan.source.clone());
+    rep.planned_cases = plan.cases.iter().chain(dropped.iter()).cloned().collect();
+    checkpoint(base, rep, &budget, &llm_budget);
+
+    // 3. explorer
+    log(
+        &mut rep.steps,
+        "Explorer",
+        "Execution & Probing",
+        "Sending real HTTP requests; failures are re-run to detect flakiness",
+        "running",
+        Some("deterministic"),
+    );
+    let exec_opts = ExecOptions {
+        dry_run: req.dry_run,
+        is_spa_target: disc.tech.is_spa,
+        credentials: credentials.clone(),
+        reruns,
+        timeout: request_timeout,
+    };
+    let created = CreatedLedger::new();
+    // the lead splits the plan by area and runs the area workers; its progress is checkpointed
+    // into report.json while the workers go, so a status poll sees every area
+    let mut executed = {
+        let live = Mutex::new(rep.clone());
+        let observe = |a: &AgentsReport| {
+            let mut snap = live.lock().unwrap_or_else(|e| e.into_inner());
+            snap.agents = Some(a.clone());
+            let _ = checkpoint_agent_run_in(base, &snap);
+        };
+        let cfg = lead::LeadConfig {
+            target: &req.target,
+            opts: &exec_opts,
+            workers,
+            created: &created,
+            llm_calls_left: llm_budget.remaining_calls(),
+            on_progress: Some(&observe),
+        };
+        let out = lead::run(&cfg, &plan.cases, &mut budget);
+        log(
+            &mut rep.steps,
+            "Lead",
+            "Area Workers",
+            &format!(
+                "{} worker(s), {} wave(s): {}",
+                out.agents.workers,
+                out.agents.waves,
+                lead::summary_lines(&out.agents)
+            ),
+            if out.agents.areas.iter().any(|a| a.error.is_some()) {
+                "warning"
+            } else {
+                "completed"
+            },
+            Some("deterministic"),
+        );
+        if !out.follow_ups.is_empty() {
+            log(
+                &mut rep.steps,
+                "Lead",
+                "Wave 2",
+                &format!(
+                    "{} follow-up case(s) planned by rule: {}",
+                    out.follow_ups.len(),
+                    out.agents
+                        .wave2
+                        .iter()
+                        .filter(|w| w.rule != lead::RULE_RESUME)
+                        .map(|w| format!("{} <- {} ({})", w.case_id, w.origin, w.rule))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
+                "completed",
+                Some("deterministic"),
+            );
+        }
+        // follow-up cases are part of the plan from here on (verification replays them by id)
+        plan.cases.extend(out.follow_ups.iter().cloned());
+        rep.planned_cases.extend(out.follow_ups.iter().cloned());
+        rep.agents = Some(out.agents);
+        out.results
+    };
+    let all_non_probe_walled = !disc.routes.is_empty()
+        && disc
+            .routes
+            .iter()
+            .filter(|r| !r.catch_all && r.source != "probe")
+            .all(|r| r.auth_wall);
+    if !req.dry_run && depth != Depth::Quick && !budget.is_cancelled() && !all_non_probe_walled {
+        let react_llm = llm_cfg.as_ref().filter(|_| !budget.is_cancelled());
+        let rout = super::super::react::run_adaptive_waves(
+            &req.target,
+            depth,
+            &disc,
+            &exec_opts,
+            &created,
+            react_llm.map(|c| (c, &mut llm_budget)),
+            &mut budget,
+            &plan.cases,
+            &executed,
+        );
+        take_llm_notes(rep, &mut llm_budget);
+        if rout.waves_run > 0 || !rout.added_cases.is_empty() {
+            let added_n = rout.added_cases.len();
+            plan.cases.extend(rout.added_cases.iter().cloned());
+            rep.planned_cases.extend(rout.added_cases);
+            executed.extend(rout.added_results);
+            if let Some(a) = rep.agents.as_mut() {
+                a.waves += rout.waves_run as u32;
+                super::super::lead::recount(a, &executed, &[]);
+            }
+            rep.stage_sources.insert(
+                "react_lead".into(),
+                if rout.llm_used {
+                    "llm+deterministic"
+                } else {
+                    "deterministic"
+                }
+                .into(),
+            );
+            log(
+                &mut rep.steps,
+                "Lead",
+                "ReAct Adaptive Loop",
+                &format!(
+                    "{} adaptive wave(s) synthesized and executed {} follow-up case(s)",
+                    rout.waves_run, added_n
+                ),
+                "completed",
+                Some(if rout.llm_used {
+                    "llm+deterministic"
+                } else {
+                    "deterministic"
+                }),
+            );
+        }
+        rep.notes.extend(rout.notes);
+    }
+    if !req.dry_run && depth != Depth::Quick && !budget.is_cancelled() && !all_non_probe_walled {
+        let allow_browser_writes =
+            !req.dry_run && nonprod_pin.unwrap_or_else(|| target_is_nonprod(&req.target));
+        let bout = super::super::browser_sec::run_browser_security(
+            &req.target,
+            depth,
+            &disc,
+            &exec_opts,
+            &created,
+            &base.join(&rep.id),
+            &rep.id,
+            allow_browser_writes,
+            &mut budget,
+            &executed,
+        );
+        if !bout.added_cases.is_empty() || !bout.added_results.is_empty() {
+            let added_n = bout.added_cases.len();
+            plan.cases.extend(bout.added_cases.iter().cloned());
+            rep.planned_cases.extend(bout.added_cases);
+            executed.extend(bout.added_results);
+            if let Some(a) = rep.agents.as_mut() {
+                super::super::lead::recount(a, &executed, &[]);
+            }
+            rep.stage_sources
+                .insert("browser_security".into(), bout.source.into());
+            log(
+                &mut rep.steps,
+                "BrowserSecurity",
+                "DOM & Client-Side Security",
+                &format!("Executed {added_n} browser security verification case(s)"),
+                "completed",
+                Some(bout.source),
+            );
+        }
+        rep.notes.extend(bout.notes);
+    }
+    let drop_reason = format!(
+        "dropped: the plan was truncated to {} case(s) by {limit_why}; not sent",
+        limit.unwrap_or(0)
+    );
+    executed.extend(
+        dropped
+            .iter()
+            .map(|c| CaseExecutionResult::not_run(c, drop_reason.clone())),
+    );
+    let n = |s: &str| executed.iter().filter(|r| r.status == s).count();
+    let mutations_count = executed
+        .iter()
+        .filter_map(|r| r.evidence_detail.as_ref())
+        .filter(|d| !d.get("adaptive_mutation").unwrap_or(&Value::Null).is_null())
+        .count();
+    let penetrated_count = executed
+        .iter()
+        .filter_map(|r| r.evidence_detail.as_ref())
+        .filter_map(|d| d.get("adaptive_mutation"))
+        .filter(|m| {
+            m.get("penetrated_validation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
+    if mutations_count > 0 {
+        log(
+            &mut rep.steps,
+            "Explorer",
+            "Adaptive Schema Mutation",
+            &format!(
+                "Triggered {mutations_count} adaptive mutation probe(s) from schema feedback; {penetrated_count} penetrated validation filters"
+            ),
+            "completed",
+            Some("deterministic"),
+        );
+    }
+    log(
+        &mut rep.steps,
+        "Explorer",
+        "Execution & Probing",
+        &format!(
+            "{} PASS, {} FAIL, {} WARN, {} INCONCLUSIVE, {} BLOCKED, {} SKIPPED",
+            n("PASS"),
+            n("FAIL"),
+            n("WARN"),
+            n("INCONCLUSIVE"),
+            n("BLOCKED"),
+            n("SKIPPED")
+        ),
+        if n("BLOCKED") > 0 {
+            "warning"
+        } else {
+            "completed"
+        },
+        Some("deterministic"),
+    );
+    if let Some(stop) = budget.stopped() {
+        log(
+            &mut rep.steps,
+            "Explorer",
+            "Budget",
+            stop,
+            "warning",
+            Some("deterministic"),
+        );
+        rep.notes.push(format!("run budget: {stop}"));
+    }
+    // A plain case whose role has no token is still sent (without Authorization); a stateful chain
+    // needs the token of every actor and is SKIPPED, nothing sent, when one is missing.
+    let is_chain = |c: &PlannedCase| c.stateful_steps.as_ref().is_some_and(|s| !s.is_empty());
+    let roles_missing: Vec<String> = {
+        let mut r: Vec<String> = plan
+            .cases
+            .iter()
+            .filter(|c| !is_chain(c))
+            .filter_map(|c| match auth_for(c) {
+                Auth::Role(r) if !credentials.has_role(&r) => Some(r),
+                _ => None,
+            })
+            .collect();
+        r.sort();
+        r.dedup();
+        r
+    };
+    for r in roles_missing {
+        rep.notes.push(format!("no credential for role '{r}': requests for it were sent without Authorization (set {})", Credentials::env_var(&r)));
+    }
+    for c in plan.cases.iter().filter(|c| is_chain(c)) {
+        if let Some(steps) = &c.stateful_steps
+            && let Err(why) = super::super::stateful::preflight(steps, &credentials)
+            && why.contains("missing credential")
+        {
+            rep.notes.push(format!(
+                "{}: stateful chain skipped, nothing was sent: {why}",
+                c.id
+            ));
+        }
+    }
+    rep.executed_results = executed;
+    checkpoint(base, rep, &budget, &llm_budget);
+
+    // 3a. verifier: replay every FAIL independently, so only what reproduces reaches triage. Replays
+    // are charged to the run budget; what a replay creates lands on the same ledger as the rest
+    // and is torn down below.
+    // failures of cases that were flaky in earlier runs get the maximum number of replays
+    let raise_k = hints
+        .as_ref()
+        .map(|h| h.flaky_case_ids(&plan.cases))
+        .unwrap_or_default();
+    let vopts = VerifyOptions {
+        k: verify_k,
+        raise_k: &raise_k,
+        dry_run: req.dry_run,
+        is_spa_target: disc.tech.is_spa,
+        credentials: &credentials,
+        timeout: request_timeout,
+    };
+    let verified = {
+        let _scope = created.install();
+        verify::verify_failures(
+            &mut rep.executed_results,
+            &plan.cases,
+            &req.target,
+            &vopts,
+            &mut budget,
+        )
+    };
+    {
+        let v = &verified.summary;
+        let (text, status) = if v.k == 0 {
+            (
+                "verification is off (READYHAI_VERIFY_K=0): failures were not replayed".to_string(),
+                "completed",
+            )
+        } else if v.candidates == 0 {
+            ("no FAIL to verify".to_string(), "completed")
+        } else {
+            (
+                format!(
+                    "{} FAIL(s) replayed up to {}x with fresh credentials and the same oracle: {} confirmed, {} flaky, {} not reproduced (now INCONCLUSIVE, not defects), {} unverified; pass^{} {}; {} replay request(s){}",
+                    v.candidates,
+                    v.k,
+                    v.confirmed,
+                    v.flaky,
+                    v.not_reproduced,
+                    v.unverified,
+                    v.k,
+                    v.pass_k_text(),
+                    v.replay_requests,
+                    v.stopped
+                        .as_ref()
+                        .map(|s| format!("; stopped: {s}"))
+                        .unwrap_or_default()
+                ),
+                if v.unverified > 0 || v.stopped.is_some() {
+                    "warning"
+                } else {
+                    "completed"
+                },
+            )
+        };
+        log(
+            &mut rep.steps,
+            "Verifier",
+            "Independent Replay",
+            &text,
+            status,
+            Some("deterministic"),
+        );
+        if v.k > 0 {
+            for r in v
+                .records
+                .iter()
+                .filter(|r| r.verdict == super::super::types::VerifyVerdict::NotReproduced)
+                .take(10)
+            {
+                rep.notes.push(format!(
+                    "verification: {} {} {} failed on the original run but 0 of {} independent replay(s) reproduced it: reported as INCONCLUSIVE, not a defect",
+                    r.case_id, r.method, r.component, r.k
+                ));
+            }
+            for r in v
+                .records
+                .iter()
+                .filter(|r| r.verdict == super::super::types::VerifyVerdict::Unverified)
+                .take(10)
+            {
+                rep.notes.push(format!(
+                    "verification: {} {} {} was not verified{}; it stays FAIL",
+                    r.case_id,
+                    r.method,
+                    r.component,
+                    r.note
+                        .as_ref()
+                        .map(|n| format!(" ({n})"))
+                        .unwrap_or_default()
+                ));
+            }
+            if let Some(s) = &v.stopped {
+                rep.notes.push(format!("verification stopped early: {s}"));
+            }
+        }
+        let raised = v.records.iter().filter(|r| r.k > v.k).count();
+        if raised > 0 {
+            rep.notes.push(format!(
+                "agent memory: {raised} failed case(s) were flaky in earlier runs and were replayed {} times instead of {}",
+                super::super::verify::MAX_K,
+                v.k
+            ));
+        }
+        rep.stage_sources.insert(
+            "verifier".into(),
+            if v.k == 0 {
+                "off".to_string()
+            } else {
+                format!("deterministic, k={}", v.k)
+            },
+        );
+    }
+    checkpoint(base, rep, &budget, &llm_budget);
+
+    // 3b. cleanup: delete what the run created (nonprod only), confirm it is gone, report what is left
+    let mut unidentified = harvest_created(&rep.executed_results, &plan.cases, &created);
+    unidentified.extend(verified.unidentified.iter().cloned());
+    let nonprod = nonprod_pin.unwrap_or_else(|| target_is_nonprod(&req.target));
+    let cleanup = teardown(
+        &req.target,
+        &created,
+        unidentified,
+        &credentials,
+        nonprod,
+        req.dry_run,
+        request_timeout,
+    );
+    if cleanup.created > 0
+        || cleanup.skipped.as_deref().is_some_and(|s| {
+            !s.starts_with("the run created nothing") && !s.starts_with("dry-run: no state")
+        })
+    {
+        log(
+            &mut rep.steps,
+            "Cleanup",
+            "Teardown",
+            &format!(
+                "{}{}",
+                cleanup.summary(),
+                if cleanup.leftovers.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        ". Left over: {}",
+                        cleanup
+                            .leftovers
+                            .iter()
+                            .take(10)
+                            .map(|l| format!("{} {} ({})", l.method, l.path, l.reason))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
+                }
+            ),
+            if cleanup.leftovers.is_empty() {
+                "completed"
+            } else {
+                "warning"
+            },
+            Some("deterministic"),
+        );
+        if !cleanup.leftovers.is_empty() {
+            rep.notes.push(format!(
+                "cleanup: {} resource(s) created by this run were NOT removed from {} (see cleanup.json): {}",
+                cleanup.leftovers.len(),
+                req.target,
+                cleanup
+                    .leftovers
+                    .iter()
+                    .take(10)
+                    .map(|l| format!("{} {} [{}]", l.method, l.path, l.reason))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        } else {
+            rep.notes.push(format!("cleanup: {}", cleanup.summary()));
+        }
+    }
+    rep.stage_sources.insert(
+        "cleanup".into(),
+        match (&cleanup.skipped, cleanup.created) {
+            (Some(_), 0) => "not needed".to_string(),
+            (Some(why), _) => format!("skipped: {why}"),
+            (None, _) => format!("deleted {} of {}", cleanup.deleted, cleanup.created),
+        },
+    );
+    if cleanup.created > 0 {
+        let _ = save_cleanup_in(base, &rep.id, &cleanup);
+    }
+    // a DELETE that answered 2xx while the resource stayed is a defect, not a clean teardown
+    let not_deleted = delete_check_results(&req.target, &cleanup);
+    if !not_deleted.is_empty() {
+        log(
+            &mut rep.steps,
+            "Cleanup",
+            "Delete Verification",
+            &format!(
+                "{} resource(s) were still present after a 2xx DELETE (follow-up GET): reported as defects",
+                not_deleted.len()
+            ),
+            "warning",
+            Some("deterministic"),
+        );
+        rep.executed_results.extend(not_deleted);
+    }
+
+    // how the changed operations were covered, from the final statuses
+    if let (Some(a), Some(ci)) = (change.as_ref(), rep.change_impact.as_mut()) {
+        let labels: Vec<String> = a.set.labels().cloned().collect();
+        ci.coverage = change::coverage(&labels, &rep.planned_cases, &rep.executed_results);
+        let (sent, planned) = change::coverage_totals(&ci.coverage);
+        log(
+            &mut rep.steps,
+            "Planner",
+            "Change Impact",
+            &format!(
+                "{} changed operation(s): {sent} of {planned} planned case(s) sent",
+                labels.len()
+            ),
+            if sent < planned {
+                "warning"
+            } else {
+                "completed"
+            },
+            Some("deterministic"),
+        );
+    }
+
+    // 4. triager: deterministic defects, LLM prose only
+    log(
+        &mut rep.steps,
+        "Triager",
+        "Root Cause Analysis",
+        "Deriving defects from failed assertions",
+        "running",
+        Some("deterministic"),
+    );
+    let mut defects = derive_defects_verified(&rep.executed_results, Some(&verified.summary));
+    if let Some(wb) = whitebox.as_ref() {
+        wb.annotate_defects(&mut defects);
+    }
+    let mut triage_src = "deterministic".to_string();
+    if let (Some(cfg), false) = (
+        llm_cfg.as_ref().filter(|_| !budget.is_cancelled()),
+        defects.is_empty(),
+    ) {
+        // short prose over defects found already: 2048 tokens and no reasoning, whatever the planner's tier
+        let light = cfg.without_thinking();
+        match add_llm_notes(&light, &mut llm_budget, &mut defects, &rep.executed_results) {
+            Ok(k) if k > 0 => triage_src = "deterministic+llm-notes".into(),
+            Ok(_) => rep.notes.push("LLM triage notes: none usable".into()),
+            Err(e) => rep.notes.push(format!("LLM triage notes skipped: {e}")),
+        }
+        take_llm_notes(rep, &mut llm_budget);
+    }
+    let failed = rep
+        .executed_results
+        .iter()
+        .filter(|r| r.status == "FAIL")
+        .count();
+    log(
+        &mut rep.steps,
+        "Triager",
+        "Root Cause Analysis",
+        &format!(
+            "{} defect(s) cover {} failed case(s)",
+            defects.len(),
+            failed
+        ),
+        "completed",
+        Some(if triage_src == "deterministic" {
+            "deterministic"
+        } else {
+            "llm+deterministic"
+        }),
+    );
+    rep.stage_sources.insert("triage".into(), triage_src);
+    rep.triaged_defects = defects;
+    // 4b. memory: fold this run into what the agent knew; an unexpired acceptance of a known
+    // defect is applied here, so the ledger below does not count it as blocking
+    let mut remembered = remember(memory_dir.as_deref(), req, rep, &cleanup, &today);
+    // what each area ended as, after verification and triage changed some statuses
+    if let Some(a) = rep.agents.as_mut() {
+        lead::recount(a, &rep.executed_results, &rep.triaged_defects);
+    }
+    checkpoint(base, rep, &budget, &llm_budget);
+
+    // 5. readiness gate: the verdict is the computed one; the LLM's opinion is recorded beside it, advisory only
+    log(
+        &mut rep.steps,
+        "ReadinessGate",
+        "Evidence Ledger",
+        "Computing the technique-coverage matrix, pillars and verdict",
+        "running",
+        Some("deterministic"),
+    );
+    let mut led = ledger::compute(&LedgerInput {
+        results: &rep.executed_results,
+        defects: &rep.triaged_defects,
+        dry_run: req.dry_run,
+        budget_stop: budget.stopped(),
+    });
+    ledger::attach_verification(&mut led, verified.summary.clone(), &rep.triaged_defects);
+    let mut gate_src = "computed".to_string();
+    if let Some(cfg) = llm_cfg.as_ref().filter(|_| !budget.is_cancelled()) {
+        match llm_gate(
+            cfg,
+            &mut llm_budget,
+            &req.target,
+            &mut led,
+            &rep.triaged_defects,
+        ) {
+            Ok(()) => gate_src = "computed+llm-advisory".into(),
+            Err(e) => rep.notes.push(format!("LLM gate advisory skipped: {e}")),
+        }
+        take_llm_notes(rep, &mut llm_budget);
+    }
+    log(
+        &mut rep.steps,
+        "ReadinessGate",
+        "Evidence Ledger",
+        &format!("Gate verdict {} ({})", led.gate_verdict, led.verdict_basis),
+        "completed",
+        Some(if gate_src == "computed" {
+            "deterministic"
+        } else {
+            "llm+deterministic"
+        }),
+    );
+    rep.stage_sources.insert("gate".into(), gate_src);
+    let gate_verdict = led.gate_verdict.clone();
+    rep.evidence_ledger = Some(led);
+
+    budget.sync_llm(&llm_budget);
+    rep.budget = Some(budget.usage());
+    let cancelled = budget.is_cancelled();
+    rep.status = if cancelled {
+        "cancelled".into()
+    } else {
+        "completed".into()
+    };
+    rep.finished_at = Some(now_iso());
+    // a cancelled run did not test everything it planned: it must not mark a defect fixed
+    rep.since_last_run = remembered
+        .take()
+        .map(|r| r.finish(&gate_verdict, !cancelled, memory_notes));
+    if let Some(s) = &rep.since_last_run {
+        log(
+            &mut rep.steps,
+            "Memory",
+            "Since Last Run",
+            &s.summary_line(),
+            "completed",
+            Some("deterministic"),
+        );
+        let fresh: Vec<String> = s
+            .notes
+            .iter()
+            .filter(|n| !rep.notes.contains(*n))
+            .cloned()
+            .collect();
+        rep.notes.extend(fresh);
+    }
+    save_agent_run_in(base, rep)?;
+    Ok(())
+}
