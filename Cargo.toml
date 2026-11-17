@@ -1,6 +1,6 @@
 [package]
 name = "readyhai"
-version = "2.5.0"
+version = "3.0.0"
 edition = "2024"
 description = "Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate"
 authors = ["Anshu Kushawaha <kushawahaanshu8858@gmail.com>"]
@@ -23,13 +23,13 @@ hex = "0.4"
 walkdir = "2.5"
 globset = "0.4"
 regex = "1.13"
-minijinja = { version = "3", features = ["serde"] }
+minijinja = { version = "3.1", features = ["serde"] }
 time = { version = "0.3", features = ["formatting", "macros"] }
 rand = "0.10"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
 axum = "0.8"
-tree-sitter = "0.25"
+tree-sitter = "0.27"
 tree-sitter-python = "0.25.0"
 tree-sitter-javascript = "0.25.0"
 tree-sitter-typescript = "0.23.2"
@@ -42,3 +42,5 @@ debug = 0
 [profile.release]
 strip = true
 lto = "thin"
+panic = "abort"
+codegen-units = 1

@@ -1,15 +1,15 @@
-# Pinned tool images (resolved 2026-10-30 from the registries; digests are the multi-arch index digests).
+# Pinned tool images (resolved 2026-11-17 from the registries; digests are the multi-arch index digests).
 # `readyhai tools pull --lock` re-resolves them. Review the diff: pinning is trust-on-first-use.
 # Where the registry exposes no concrete version tag for the digest, the tag stays latest/stable.
 [tools.syft]
-image = "anchore/syft:v1.55.0"
-digest = "sha256:4cc92b64ca74ffca4c94d4c8fcc01f217731375300be14d0b6eeb2e82eaa110a"
-version = "v1.55.0"
+image = "anchore/syft:v1.57.1"
+digest = "sha256:03215d0e98b661d0ecbc8575dbc14d65be1743b5de5df6410aecb7e80f95b060"
+version = "v1.57.1"
 
 [tools.grype]
-image = "anchore/grype:v0.121.0"
-digest = "sha256:621d56d1d68106b787022c81546f7e0a36202a25d1239f0c20195fab8c16f7ea"
-version = "v0.121.0"
+image = "anchore/grype:v0.121.3"
+digest = "sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887"
+version = "v0.121.3"
 
 [tools.gitleaks]
 image = "zricethezav/gitleaks:v8.30.1"
@@ -17,9 +17,9 @@ digest = "sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7
 version = "v8.30.1"
 
 [tools.semgrep]
-image = "semgrep/semgrep:1.182.1"
-digest = "sha256:451b3d875c00dac7ed5db5293e584a07de11449a409c10b3c2d2652f429630b6"
-version = "1.182.1"
+image = "semgrep/semgrep:1.183.0"
+digest = "sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0"
+version = "1.183.0"
 
 [tools.opengrep]
 image = "wollomatic/opengrep:latest"
@@ -32,9 +32,9 @@ digest = "sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12
 version = "v2.15.1"
 
 [tools.checkov]
-image = "bridgecrew/checkov:3.4.0"
-digest = "sha256:ece5efac4443084ca273072909985dce988a81e8cc94faa305aeda0df27c68f9"
-version = "3.4.0"
+image = "bridgecrew/checkov:3.4.5"
+digest = "sha256:122602cf32cc72286155d39f1f234b7b594818f7b8d7fdf490701620e521368b"
+version = "3.4.5"
 
 [tools.dockle]
 image = "goodwithtech/dockle:v0.4.15"
@@ -64,7 +64,7 @@ version = "latest"
 [tools.k6]
 image = "grafana/k6:latest"
 digest = "sha256:3e4186aea62e11a45560bfc51e19eeafe82fc07ce069c78aff44b7ff893d9a5e"
-version = "latest"
+version = "v2.3.0"
 
 [tools.osv-scanner]
 image = "ghcr.io/google/osv-scanner:v2.7.0"
@@ -87,9 +87,9 @@ digest = "sha256:75a513546b09466bfcbb192bd1ed117e5a22945306602ba2a7bbebf2665d107
 version = "latest"
 
 [tools.nuclei]
-image = "projectdiscovery/nuclei:latest"
+image = "projectdiscovery/nuclei:v3.11.1"
 digest = "sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32eb"
-version = "latest"
+version = "v3.11.1"
 
 # Built locally: docker build -t readyhai/playwright-runner:local runners/playwright
 # (base mcr.microsoft.com/playwright:v1.65.1-noble; pin its digest in the Dockerfile).

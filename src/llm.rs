@@ -754,6 +754,8 @@ fn authorize(
 fn http(timeout: Duration) -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .timeout(timeout)
+        .pool_idle_timeout(Duration::from_secs(90))
+        .tcp_keepalive(Duration::from_secs(30))
         .build()?)
 }
 

@@ -2,6 +2,31 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-11-17
+
+Full Ecosystem Modernization, Security Tool Refresh, and Reliability Hardening across Rust 2024, Tree-Sitter 0.27, Node 24 Active LTS, and Container Toolchains.
+
+### Added
+
+- **Reliability Hardening & Resilient Tool Pulling:**
+  - Added exponential backoff retry loop (up to 3 attempts with dynamic backoff) in `tools_pull_filtered` for container image pulls to gracefully handle transient network spikes and registry rate limits.
+  - Hardened HTTP connection pooling in `src/llm.rs` with explicit `pool_idle_timeout` (90s) and `tcp_keepalive` (30s) to prevent socket timeouts and connection churn.
+  - Release profile optimization in `Cargo.toml`: configured `panic = "abort"` and `codegen-units = 1` for ultra-lean, fast production binaries with reduced memory fragmentation.
+
+### Changed
+
+- **Crate & Core Engine Upgrades:**
+  - Upgraded `tree-sitter` from `0.25` to `0.27.2` (leveraging the pure-Rust runtime architecture for robust multi-language AST auditing).
+  - Upgraded `minijinja` to `3.1.0`, `clap` to `4.6.8`, and `rand` to `0.10.4`.
+  - Updated frontend Vite/Vitest test runner to native `import.meta.dirname` for 100% deprecation-free ESM runs under Node 24.
+- **Security Scanner & Tool Images Refresh (`tools.lock.toml`):**
+  - Upgraded Anchore Syft to `v1.57.1` (`sha256:03215d0e98b661d0ecbc8575dbc14d65be1743b5de5df6410aecb7e80f95b060`).
+  - Upgraded Anchore Grype to `v0.121.3` (`sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887`).
+  - Upgraded Semgrep to `1.183.0` (`sha256:2e45517a85e13a9cca14a2a00df6bb48affd66b8ebfae1b0991cd57578362fb0`).
+  - Upgraded Bridgecrew Checkov to `3.4.5` (`sha256:122602cf32cc72286155d39f1f234b7b594818f7b8d7fdf490701620e521368b`).
+  - Pinned ProjectDiscovery Nuclei to `v3.11.1` (`sha256:582d5546902e67052097cb2d07296c642d50a1afc5e44623cb038845df9a32eb`).
+  - Pinned Grafana k6 to `v2.3.0` (`sha256:3e4186aea62e11a45560bfc51e19eeafe82fc07ce069c78aff44b7ff893d9a5e`).
+
 ## [2.5.0] - 2026-11-14
 
 Autonomous Source Code Mutation Testing (`readyhai mutate`), test oracle calibration, negative test synthesis, and multi-region probe mesh.
