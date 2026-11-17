@@ -7,9 +7,9 @@
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate.
 
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-2.5.0-brightgreen.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-3.0.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/tests-836%20Rust%20%7C%20141%20Vitest-informational.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-839%20Rust%20%7C%20141%20Vitest-informational.svg)](#testing)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)
 
 Point ReadyHai at a codebase, a container image, an API/web app, an SSH host, or an Android APK.  

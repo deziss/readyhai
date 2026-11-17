@@ -2223,12 +2223,33 @@ pub fn tools_pull_filtered(
             continue;
         }
         eprintln!("pulling {name}: {}", e.image);
-        let st = Command::new("docker")
-            .args(["pull", &e.image])
-            .status()
-            .context("docker pull")?;
-        if !st.success() {
-            eprintln!("  pull failed for {}", e.image);
+        let mut attempts = 0;
+        let max_attempts = 3;
+        let mut success = false;
+        while attempts < max_attempts {
+            attempts += 1;
+            match Command::new("docker").args(["pull", &e.image]).status() {
+                Ok(st) if st.success() => {
+                    success = true;
+                    break;
+                }
+                Ok(_) => {
+                    eprintln!("  pull failed for {} (attempt {attempts}/{max_attempts})", e.image);
+                    if attempts < max_attempts {
+                        std::thread::sleep(Duration::from_millis(1000 * (1 << (attempts - 1))));
+                    }
+                }
+                Err(err) => {
+                    eprintln!("  docker pull error for {}: {err} (attempt {attempts}/{max_attempts})", e.image);
+                    if attempts == max_attempts {
+                        return Err(err).context("docker pull");
+                    }
+                    std::thread::sleep(Duration::from_millis(1000 * (1 << (attempts - 1))));
+                }
+            }
+        }
+        if !success {
+            eprintln!("  all pull attempts failed for {}", e.image);
             if write_lock.is_some() {
                 e.id = local_image_id(&e.image);
             }

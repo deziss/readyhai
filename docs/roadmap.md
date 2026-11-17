@@ -50,6 +50,12 @@ See [plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11
    - REST endpoint `POST /api/mutate` for on-demand mutation test planning.
    - Multi-region distributed probe nodes for global edge latency and geo-fence testing (`POST /api/network/multi-region`).
    - Cross-Service Quality Drift Tracking.
+6. **Horizon 6 (v3.0.0) — Modern Toolchain, Multi-Arch Security Images & Reliability Hardening**: **Done**
+   - Upgraded core AST engine to `tree-sitter 0.27.2` (pure Rust runtime architecture) and `minijinja 3.1.0`.
+   - Security scanner tool images refreshed to modern multi-arch releases: Syft `v1.57.1`, Grype `v0.121.3`, Semgrep `1.183.0`, Checkov `3.4.5`, Nuclei pinned to `v3.11.1`, k6 pinned to `v2.3.0`.
+   - Resilience hardening: Exponential backoff retries on container image pulling; connection pool idle/keepalive socket hardening in HTTP clients.
+   - Production binary release optimization: `panic = "abort"` and `codegen-units = 1` for minimal footprint and maximum execution throughput.
+   - Node 24 Active LTS ESM test runner alignment (`import.meta.dirname`).
 
 ## Next
 
