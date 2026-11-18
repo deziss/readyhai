@@ -7,8 +7,9 @@
 //! for `verify` + cleanup, and stops early when no new anomalies emerge.
 
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ use super::discover::Discovery;
 use super::exec::{Credentials, ExecOptions, execute_cases_with};
 use super::lead::Area;
 use super::oracle::Verdict;
-use super::plan::{Depth, Known, PlannerOutput, key_of, validate_raw};
+use super::plan::{Depth, Known, RawCase, key_of, validate_raw};
 use super::triage::path_of;
 use super::types::{CaseExecutionResult, CreatedLedger, PlannedCase, ProbeOracle};
 use crate::llm::{Budget, LlmConfig, untrusted};
@@ -34,18 +35,24 @@ pub struct ReactOutcome {
     pub notes: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
-struct Anomaly {
-    dedup_key: String,
-    component: String,
-    method: String,
-    status_code: Option<u16>,
-    signals: Vec<&'static str>,
-    request_payload: Option<String>,
-    body_excerpt: String,
-    hinted_params: Vec<String>,
-    hinted_routes: Vec<String>,
+/// Anomaly signature detected by the OODA loop observer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OodaAnomaly {
+    pub anomaly_type: String,
+    pub dedup_key: String,
+    pub component: String,
+    pub method: String,
+    pub status_code: Option<u16>,
+    pub signals: Vec<String>,
+    pub request_payload: Option<String>,
+    pub evidence: String,
+    pub body_excerpt: String,
+    pub hinted_params: Vec<String>,
+    pub hinted_routes: Vec<String>,
+    pub reflection_signature: Option<String>,
 }
+
+pub type Anomaly = OodaAnomaly;
 
 fn body_excerpt(r: &CaseExecutionResult) -> &str {
     if let Some(b) = r.response_body.as_deref() {
@@ -59,15 +66,25 @@ fn body_excerpt(r: &CaseExecutionResult) -> &str {
         .unwrap_or("")
 }
 
-/// Anomaly detector identifying high-signal responses suitable for adaptive ReAct mutation:
-/// - 500 stack traces, runtime exceptions, server errors
-/// - 403 authorization leaks (revealed roles, tenant isolation boundary messages)
-/// - 422 (and 400) schema validation leaks (unveiled expected model schemas, parameters, constraints)
-/// - Reflected injection inputs and newly created authorization tokens
-pub fn is_anomaly_candidate(r: &CaseExecutionResult) -> bool {
+fn has_fail_check(r: &CaseExecutionResult, codes: &[&str]) -> bool {
+    r.oracle.as_ref().is_some_and(|o| {
+        o.checks
+            .iter()
+            .any(|c| c.verdict == Verdict::Fail && codes.iter().any(|want| c.code == *want))
+    })
+}
+
+/// OODA Loop Observer & Orienter: scans execution results for anomalies and categorizes signatures:
+/// - `sql_leak`: 500 stack traces, SQL syntax errors, database driver exceptions leaking source/queries
+/// - `authz_leak`: 403 authorization leaks, revealed roles/tenants, newly minted auth tokens
+/// - `schema_leak`: 422/400 validation leaks, exposed schema constraints, parameter types
+/// - `ssti_reflection`: template engine error disclosures, evaluated math expressions (`105623`)
+/// - `canary_reflection`: reflected user inputs, canary tokens in response body
+pub fn detect_ooda_anomaly(r: &CaseExecutionResult) -> Option<OodaAnomaly> {
     if matches!(r.status.as_str(), "SKIPPED" | "NOT_APPLICABLE") {
-        return false;
+        return None;
     }
+
     let status = r.response_status.or(r.status_code);
     let body = r
         .response_body
@@ -77,35 +94,82 @@ pub fn is_anomaly_candidate(r: &CaseExecutionResult) -> bool {
     let low_ev = r.evidence.to_ascii_lowercase();
     let low_fail = r.failure_reason.as_deref().unwrap_or("").to_ascii_lowercase();
 
-    // 1. HTTP 500 or stack trace leaks
     let is_500 = status.is_some_and(|s| s >= 500);
-    let stack_trace_indicators = [
-        "traceback",
-        "stacktrace",
-        "nullpointer",
-        "internalservererror",
-        "internal server error",
-        "exception",
-        "syntaxerror",
-        "at line",
-        "fatal error",
-        "panic at",
-        "debug_backtrace",
-        "server_error",
-        "typeerror",
-        "indexerror",
-    ];
-    let has_stack_trace = stack_trace_indicators
-        .iter()
-        .any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
-
-    if is_500 || has_stack_trace {
-        return true;
-    }
-
-    // 2. HTTP 403 authorization leaks
     let is_403 = status.is_some_and(|s| s == 403);
-    let auth_leak_indicators = [
+    let is_422 = status.is_some_and(|s| s == 422 || s == 400);
+
+    // Canary reflection detection
+    let has_canary_oracle = has_fail_check(r, &["injection_reflection", "canary_reflection"]);
+    let has_canary_kw = low_ev.contains("canary")
+        || low_body.contains("canary")
+        || low_body.contains("rh-canary")
+        || low_ev.contains("reflected_input")
+        || low_ev.contains("reflection");
+    let reflects_payload = r.request_payload.as_deref().is_some_and(|p| {
+        let t = p.trim();
+        !t.is_empty()
+            && (t.to_ascii_lowercase().contains("canary")
+                || t.contains("<script")
+                || (t.len() >= 4 && !t.starts_with('{') && body.contains(t)))
+    });
+    let is_canary = has_canary_oracle || (r.status == "FAIL" && has_canary_kw) || reflects_payload;
+
+    // SSTI reflection detection
+    let has_ssti_oracle = has_fail_check(r, &["ssti"]);
+    let ssti_indicators = [
+        "templatesyntaxerror",
+        "template",
+        "jinja",
+        "freemarker",
+        "twig",
+        "velocity",
+        "mako",
+        "render(",
+        "105623",
+        "{{1337*79}}",
+        "${1337*79}",
+    ];
+    let has_ssti_kw = low_fail.contains("ssti")
+        || low_ev.contains("ssti")
+        || ssti_indicators.iter().any(|ind| low_body.contains(ind));
+    let is_ssti = has_ssti_oracle
+        || ((is_500 || r.status == "FAIL") && has_ssti_kw)
+        || low_body.contains("105623");
+
+    // SQL leak detection
+    let has_sql_oracle = has_fail_check(r, &["sqli", "sql_injection"]);
+    let sql_indicators = [
+        "syntaxerror",
+        "unterminated quoted string",
+        "quoted string at or near",
+        "at or near '",
+        "sql syntax",
+        "mysql",
+        "postgresql",
+        "postgres",
+        "sqlite",
+        "sqlite3",
+        "ora-",
+        "psycopg2",
+        "sequelize",
+        "hibernate",
+        "database error",
+        "sql error",
+        "unclosed quotation mark",
+        "column does not exist",
+        "table does not exist",
+        "relation does not exist",
+        "sqlstate",
+        "pg::",
+    ];
+    let has_sql_kw = low_ev.contains("sql")
+        || low_fail.contains("sql")
+        || sql_indicators.iter().any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+    let is_sql = has_sql_oracle || ((is_500 || r.status == "FAIL") && has_sql_kw);
+
+    // AuthZ leak detection (403 authorization leak or created auth tokens)
+    let has_auth_oracle = has_fail_check(r, &["authz", "broken_auth"]);
+    let auth_indicators = [
         "role",
         "permission",
         "unauthorized",
@@ -120,17 +184,20 @@ pub fn is_anomaly_candidate(r: &CaseExecutionResult) -> bool {
         "access denied",
         "principal",
     ];
-    let has_auth_leak = auth_leak_indicators
-        .iter()
-        .any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+    let has_auth_kw = auth_indicators.iter().any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+    let is_auth_token_created = status.is_some_and(|s| matches!(s, 200 | 201))
+        && matches!(r.method.as_str(), "POST" | "PUT" | "PATCH")
+        && !r.is_spa_shell
+        && r.technique != "boundary"
+        && r.technique != "negative"
+        && (low_body.contains("\"token\"")
+            || low_body.contains("\"access_token\"")
+            || low_body.contains("\"jwt\"")
+            || low_body.contains("\"role\""));
+    let is_auth = (is_403 && (has_auth_kw || !body.trim().is_empty())) || has_auth_oracle || is_auth_token_created;
 
-    if is_403 && (has_auth_leak || !body.trim().is_empty()) {
-        return true;
-    }
-
-    // 3. HTTP 422 (or 400) schema validation leaks
-    let is_422 = status.is_some_and(|s| s == 422 || s == 400);
-    let schema_leak_indicators = [
+    // Schema leak detection (422/400 validation leaks)
+    let schema_indicators = [
         "validation",
         "schema",
         "missing required",
@@ -144,16 +211,30 @@ pub fn is_anomaly_candidate(r: &CaseExecutionResult) -> bool {
         "invalid parameter",
         "loc",
     ];
-    let has_schema_leak = schema_leak_indicators
-        .iter()
-        .any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+    let has_schema_kw = schema_indicators.iter().any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+    let is_schema = is_422 && (has_schema_kw || !body.trim().is_empty());
 
-    if is_422 && has_schema_leak {
-        return true;
-    }
+    // 500 stack trace indicators
+    let stack_trace_indicators = [
+        "traceback",
+        "stacktrace",
+        "nullpointer",
+        "internalservererror",
+        "internal server error",
+        "exception",
+        "at line",
+        "fatal error",
+        "panic at",
+        "debug_backtrace",
+        "server_error",
+        "typeerror",
+        "indexerror",
+    ];
+    let has_stack_trace = is_500
+        || ((is_500 || r.status == "FAIL")
+            && stack_trace_indicators.iter().any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind)));
 
-    // 4. Other oracle fail checks
-    if has_fail_check(
+    let has_oracle_fail = has_fail_check(
         r,
         &[
             "error_disclosure",
@@ -165,33 +246,312 @@ pub fn is_anomaly_candidate(r: &CaseExecutionResult) -> bool {
             "ssrf_oast",
             "ssti",
         ],
-    ) {
-        return true;
-    }
+    );
 
-    // 5. Auth token created
-    if status.is_some_and(|s| matches!(s, 200 | 201))
-        && matches!(r.method.as_str(), "POST" | "PUT" | "PATCH")
-        && !r.is_spa_shell
-        && r.technique != "boundary"
-        && r.technique != "negative"
-        && (low_body.contains("\"token\"")
-            || low_body.contains("\"access_token\"")
-            || low_body.contains("\"jwt\"")
-            || low_body.contains("\"role\""))
+    if !is_canary
+        && !is_ssti
+        && !is_sql
+        && !is_auth
+        && !is_schema
+        && !has_stack_trace
+        && !has_oracle_fail
     {
-        return true;
+        return None;
     }
 
-    false
+    // Orient: Categorize anomaly signatures into canonical taxonomy
+    let anomaly_type = if is_ssti {
+        "ssti_reflection"
+    } else if is_sql {
+        "sql_leak"
+    } else if is_canary {
+        "canary_reflection"
+    } else if is_403 || (is_auth && !is_500) {
+        "authz_leak"
+    } else if is_422 || (is_schema && !is_500) {
+        "schema_leak"
+    } else if has_stack_trace || is_500 {
+        "sql_leak"
+    } else if is_auth {
+        "authz_leak"
+    } else if is_schema {
+        "schema_leak"
+    } else {
+        "sql_leak"
+    };
+
+    let mut signals = Vec::new();
+    signals.push(anomaly_type.to_string());
+    if is_500 {
+        signals.push("http_5xx".to_string());
+    }
+    if is_403 {
+        signals.push("authz_leak".to_string());
+    }
+    if is_422 {
+        signals.push("schema_leak".to_string());
+    }
+    if is_canary {
+        signals.push("reflected_input".to_string());
+    }
+    if is_auth_token_created {
+        signals.push("created_auth_token".to_string());
+    }
+    if has_fail_check(
+        r,
+        &[
+            "blind_boolean_injection",
+            "blind_time_injection",
+            "ssrf_oast",
+            "ssti",
+        ],
+    ) {
+        signals.push("oob_or_timing_signal".to_string());
+    }
+
+    let norm_path = path_of(&r.component);
+    let dedup_key = format!("{}:{}:{}:{}", anomaly_type, r.method, norm_path, signals.join(","));
+    let hinted_params = extract_hinted_params(body, r.request_payload.as_deref());
+    let hinted_routes = extract_hinted_routes(body, &r.component);
+
+    let reflection_sig = if is_canary {
+        r.request_payload.clone().or_else(|| Some("canary".into()))
+    } else {
+        None
+    };
+
+    Some(OodaAnomaly {
+        anomaly_type: anomaly_type.to_string(),
+        dedup_key,
+        component: r.component.clone(),
+        method: r.method.clone(),
+        status_code: status,
+        signals,
+        request_payload: r.request_payload.clone(),
+        evidence: if r.evidence.is_empty() {
+            body_excerpt(r).to_string()
+        } else {
+            r.evidence.clone()
+        },
+        body_excerpt: untrusted::redact_then_truncate(body, 280),
+        hinted_params,
+        hinted_routes,
+        reflection_signature: reflection_sig,
+    })
 }
 
-fn has_fail_check(r: &CaseExecutionResult, codes: &[&str]) -> bool {
-    r.oracle.as_ref().is_some_and(|o| {
-        o.checks
-            .iter()
-            .any(|c| c.verdict == Verdict::Fail && codes.iter().any(|want| c.code == *want))
-    })
+/// Anomaly candidate predicate maintaining backwards compatibility with lead loops.
+pub fn is_anomaly_candidate(r: &CaseExecutionResult) -> bool {
+    detect_ooda_anomaly(r).is_some()
+}
+
+/// OODA Loop Decider: synthesizes a precision mutation probe targeting the observed anomaly signature.
+pub fn synthesize_mutation_probe(anomaly: &OodaAnomaly, target: &str) -> PlannedCase {
+    let component = if !anomaly.component.trim().is_empty() {
+        path_of(&anomaly.component).to_string()
+    } else if let Ok(u) = reqwest::Url::parse(target) {
+        let p = u.path();
+        if p.is_empty() || p == "/" {
+            "/".to_string()
+        } else {
+            p.to_string()
+        }
+    } else if target.starts_with('/') {
+        target.to_string()
+    } else {
+        path_of(target).to_string()
+    };
+
+    let method = if matches!(anomaly.method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE") {
+        anomaly.method.clone()
+    } else {
+        "GET".to_string()
+    };
+
+    let mut headers = Vec::new();
+    let mut content_type = None;
+    let mut probe_oracle = None;
+    let mut expected_status = None;
+    let mut risk_level = "high".to_string();
+    let role = Some("anon".to_string());
+    let mut secured = None;
+
+    let (technique, title, input_hint, payload, expected_behavior) = match anomaly.anomaly_type.as_str() {
+        "authz_leak" => {
+            secured = Some(true);
+            expected_status = Some(403);
+            risk_level = "critical".into();
+            headers = vec![
+                ("X-Role".into(), "admin".into()),
+                ("X-Tenant-Id".into(), "tenant-001".into()),
+            ];
+            content_type = Some("application/json".into());
+            (
+                "authz".to_string(),
+                format!("OODA AuthZ privilege escalation mutation probe on {method} {component}"),
+                format!("Precision mutation derived from 403 authorization leak anomaly: {}", anomaly.signals.join(", ")),
+                Some(json!({"role": "admin", "tenant_id": "tenant-001"}).to_string()),
+                "Server must reject unauthorized role tampering and enforce tenant isolation".to_string(),
+            )
+        }
+        "schema_leak" => {
+            let param = anomaly.hinted_params.first().map(String::as_str).unwrap_or("id");
+            expected_status = Some(400);
+            risk_level = "medium".into();
+            content_type = Some("application/json".into());
+            let p = if method == "GET" {
+                format!("{param}=1000000")
+            } else {
+                json!({ param: 1000000 }).to_string()
+            };
+            (
+                "boundary".to_string(),
+                format!("OODA Schema boundary mutation probe on {method} {component} via `{param}`"),
+                format!("Precision mutation derived from 422/400 schema leak anomaly via parameter `{param}`"),
+                Some(p),
+                "Server must gracefully reject or validate out-of-bound parameter".to_string(),
+            )
+        }
+        "ssti_reflection" => {
+            let param = anomaly.hinted_params.first().map(String::as_str).unwrap_or("q");
+            probe_oracle = Some(ProbeOracle::Ssti {
+                expected_eval: "105623".into(),
+            });
+            let p = if method == "GET" {
+                format!("{param}={{{{1337*79}}}}")
+            } else {
+                json!({ param: "{{1337*79}}" }).to_string()
+            };
+            (
+                "injection".to_string(),
+                format!("OODA SSTI mutation probe on {method} {component} via `{param}`"),
+                format!("Precision mutation derived from template rendering anomaly via param `{param}`"),
+                Some(p),
+                "Server must not evaluate template syntax in user input".to_string(),
+            )
+        }
+        "canary_reflection" => {
+            let param = anomaly.hinted_params.first().map(String::as_str).unwrap_or("q");
+            let canary = anomaly.reflection_signature.as_deref().unwrap_or("<rh-canary-01>");
+            let p = if method == "GET" {
+                format!("{param}={canary}")
+            } else {
+                json!({ param: canary }).to_string()
+            };
+            (
+                "injection".to_string(),
+                format!("OODA Canary reflection XSS probe on {method} {component} via `{param}`"),
+                format!("Precision mutation derived from canary string reflection anomaly via `{param}`"),
+                Some(p),
+                "Input must be sanitized and HTML-encoded before reflection".to_string(),
+            )
+        }
+        _ => {
+            // "sql_leak" and default database/server errors
+            let param = anomaly.hinted_params.first().map(String::as_str).unwrap_or("q");
+            expected_status = Some(400);
+            let p = if method == "GET" {
+                format!("{param}=' OR '1'='1--")
+            } else {
+                content_type = Some("application/json".into());
+                json!({ param: "' OR '1'='1--" }).to_string()
+            };
+            (
+                "injection".to_string(),
+                format!("OODA SQL injection mutation probe on {method} {component} via `{param}`"),
+                format!("Precision mutation derived from SQL error leak: {}", anomaly.body_excerpt),
+                Some(p),
+                "Database query must be parameterized and not disclose syntax errors".to_string(),
+            )
+        }
+    };
+
+    let mut probe = PlannedCase {
+        id: String::new(),
+        title,
+        component,
+        method,
+        technique,
+        input_hint,
+        payload,
+        headers,
+        content_type,
+        probe_oracle,
+        expected_behavior,
+        expected_status,
+        risk_level,
+        role,
+        secured,
+        route_status: anomaly.status_code,
+        expect_fields: Vec::new(),
+        expected_content_type: None,
+        source: Some("ooda".into()),
+        stateful_steps: None,
+        concurrency_burst: None,
+        contract: None,
+        changed_ops: Vec::new(),
+        area: String::new(),
+        regression_of: Vec::new(),
+        history_priority: false,
+    };
+    probe.area = Area::classify(&probe).as_str().to_string();
+    probe
+}
+
+/// Oscillation Damper preventing runaway cycles and redundant probe generation in the OODA loop.
+#[derive(Debug, Clone)]
+pub struct OscillationDamper {
+    seen_signatures: HashSet<String>,
+    adaptive_counts: HashMap<String, usize>,
+    max_adaptive_per_endpoint: usize,
+}
+
+impl Default for OscillationDamper {
+    fn default() -> Self {
+        Self::new(3)
+    }
+}
+
+impl OscillationDamper {
+    pub fn new(max_adaptive_per_endpoint: usize) -> Self {
+        Self {
+            seen_signatures: HashSet::new(),
+            adaptive_counts: HashMap::new(),
+            max_adaptive_per_endpoint,
+        }
+    }
+
+    /// Seeds baseline/historical cases so adaptive waves do not duplicate their payloads.
+    pub fn seed_seen(&mut self, case: &PlannedCase) {
+        let norm_path = path_of(&case.component).to_string();
+        let payload_str = case.payload.as_deref().unwrap_or("");
+        let sig = format!("{}:{}:{}", case.method, norm_path, payload_str);
+        self.seen_signatures.insert(sig);
+    }
+
+    /// Checks if a proposed case oscillates (duplicates an earlier probe or exceeds endpoint cap).
+    /// Returns true if the probe should be damped (suppressed).
+    pub fn should_damp(&mut self, case: &PlannedCase) -> bool {
+        let norm_path = path_of(&case.component).to_string();
+        let payload_str = case.payload.as_deref().unwrap_or("");
+        let sig = format!("{}:{}:{}", case.method, norm_path, payload_str);
+
+        if !self.seen_signatures.insert(sig) {
+            return true; // Suppress duplicate payload
+        }
+
+        let count = self.adaptive_counts.entry(norm_path).or_insert(0);
+        *count += 1;
+        if *count > self.max_adaptive_per_endpoint {
+            return true; // Exceeded per-endpoint probe limit
+        }
+
+        false
+    }
+
+    pub fn tracked_count(&self) -> usize {
+        self.seen_signatures.len()
+    }
 }
 
 fn param_hint_re() -> &'static Regex {
@@ -319,89 +679,25 @@ fn extract_anomalies(
     results: &[CaseExecutionResult],
     existing_ssti_paths: &HashSet<String>,
     seen_anomalies: &HashSet<String>,
-) -> Vec<Anomaly> {
+) -> Vec<OodaAnomaly> {
     let mut out = Vec::new();
     let mut seen_this_wave = HashSet::new();
 
     for r in results {
-        if !is_anomaly_candidate(r) {
+        let Some(anomaly) = detect_ooda_anomaly(r) else {
             continue;
-        }
-        let body = r
-            .response_body
-            .as_deref()
-            .unwrap_or_else(|| body_excerpt(r));
-        let status = r.response_status.or(r.status_code);
-        let mut signals: Vec<&'static str> = Vec::new();
-
-        if status.is_some_and(|s| s >= 500) {
-            signals.push("http_5xx");
-        }
-        if has_fail_check(r, &["error_disclosure", "stack_trace", "server_error"]) {
-            signals.push("error_disclosure");
-        }
-        if status.is_some_and(|s| s == 403) {
-            signals.push("authz_leak");
-        }
-        if status.is_some_and(|s| s == 422 || s == 400) {
-            signals.push("schema_leak");
-        }
-        if has_fail_check(r, &["injection_reflection"]) {
-            signals.push("reflected_input");
-        }
-        if status.is_some_and(|s| matches!(s, 200 | 201))
-            && matches!(r.method.as_str(), "POST" | "PUT" | "PATCH")
-            && !r.is_spa_shell
-            && r.technique != "boundary"
-            && r.technique != "negative"
-            && (body.contains("\"token\"")
-                || body.contains("\"access_token\"")
-                || body.contains("\"jwt\"")
-                || body.contains("\"role\""))
-            && serde_json::from_str::<Value>(body).is_ok_and(|v| v.is_object())
-        {
-            signals.push("created_auth_token");
-        }
-        if has_fail_check(
-            r,
-            &[
-                "blind_boolean_injection",
-                "blind_time_injection",
-                "ssrf_oast",
-                "ssti",
-            ],
-        ) {
-            signals.push("oob_or_timing_signal");
-        }
-        if signals.is_empty() {
-            signals.push("anomaly_leak");
-        }
+        };
 
         let norm_path = path_of(&r.component);
-        if signals.iter().all(|s| *s == "oob_or_timing_signal")
-            && existing_ssti_paths.contains(norm_path)
-        {
-            continue;
-        }
-        let dedup_key = format!("{}:{}:{}", r.method, norm_path, signals.join(","));
-        if seen_anomalies.contains(&dedup_key) || !seen_this_wave.insert(dedup_key.clone()) {
+        if anomaly.anomaly_type == "ssti_reflection" && existing_ssti_paths.contains(norm_path) {
             continue;
         }
 
-        let hinted_params = extract_hinted_params(body, r.request_payload.as_deref());
-        let hinted_routes = extract_hinted_routes(body, &r.component);
+        if seen_anomalies.contains(&anomaly.dedup_key) || !seen_this_wave.insert(anomaly.dedup_key.clone()) {
+            continue;
+        }
 
-        out.push(Anomaly {
-            dedup_key,
-            component: r.component.clone(),
-            method: r.method.clone(),
-            status_code: status,
-            signals,
-            request_payload: r.request_payload.clone(),
-            body_excerpt: untrusted::redact_then_truncate(body, 280),
-            hinted_params,
-            hinted_routes,
-        });
+        out.push(anomaly);
     }
     out
 }
@@ -434,7 +730,7 @@ fn propose_via_llm(
     cfg: &LlmConfig,
     llm_budget: &mut Budget,
     wave: usize,
-    anomalies: &[Anomaly],
+    anomalies: &[OodaAnomaly],
     disc: &Discovery,
     creds: &Credentials,
     seen_keys: &mut HashSet<String>,
@@ -464,6 +760,7 @@ fn propose_via_llm(
         .take(10)
         .map(|a| {
             json!({
+                "anomaly_type": a.anomaly_type,
                 "method": a.method,
                 "component": a.component,
                 "status_code": a.status_code,
@@ -476,26 +773,29 @@ fn propose_via_llm(
         })
         .collect();
 
-    let fenced_data = untrusted::fence_capped(
-        &json!({
-            "wave": wave,
-            "known_routes": routes_summary,
-            "anomalies": anomaly_summary,
-        }),
-        350,
+    let system = crate::agent::prompts::build_adaptive_mutator_system_prompt();
+    let user_prompt = crate::agent::prompts::build_adaptive_mutator_user_prompt(
+        wave,
+        &routes_summary,
+        &anomaly_summary,
+        None,
+        cap,
     );
+    let prompt = if user_prompt.contains("<data>") {
+        user_prompt
+    } else {
+        format!("<data>\n{user_prompt}\n</data>")
+    };
 
-    let system = untrusted::system(
-        "You are an adaptive security tester running a bounded ReAct exploration loop. \
-         Examine the HTTP anomalies, error tracebacks, parameter hints, and newly revealed tokens inside <data>. \
-         Propose up to 6 concrete follow-up test cases strictly targeting known routes listed in <data>. \
-         Return JSON {\"cases\": [{\"title\", \"component\", \"method\", \"technique\", \"input_hint\", \"payload\", \"expected_behavior\", \"risk_level\", \"role\"}]}.",
-    );
-    let prompt = format!(
-        "Wave {wave} observed HTTP anomalies that may unlock deeper injection (use SSTI payload {{{{1337*79}}}} when template rendering is suspected), SSRF (use {{{{OAST_URL}}}}), BOLA/IDOR, or privilege escalation paths.\n\n{fenced_data}"
-    );
+    #[derive(Debug, Deserialize)]
+    struct AdaptiveMutatorOutput {
+        #[serde(default)]
+        hypothesis: Option<String>,
+        #[serde(default)]
+        cases: Vec<RawCase>,
+    }
 
-    let res = crate::llm::ask_typed::<PlannerOutput>(cfg, llm_budget, &system, &prompt, |p| {
+    let res = crate::llm::ask_typed::<AdaptiveMutatorOutput>(cfg, llm_budget, &system, &prompt, |p| {
         if p.cases.len() > MAX_REACT_CASES_PER_WAVE * 2 {
             anyhow::bail!("too many cases returned by ReAct planner");
         }
@@ -504,6 +804,9 @@ fn propose_via_llm(
 
     match res {
         Ok(out) => {
+            if let Some(hypo) = out.hypothesis {
+                notes.push(format!("react wave {wave}: OODA LLM hypothesis: {hypo}"));
+            }
             if out.cases.is_empty() {
                 return Some(Vec::new());
             }
@@ -542,7 +845,7 @@ fn propose_via_llm(
 }
 
 fn synthesize_offline_followups(
-    anomalies: &[Anomaly],
+    anomalies: &[OodaAnomaly],
     disc: &Discovery,
     creds: &Credentials,
     seen_keys: &mut HashSet<String>,
@@ -563,156 +866,34 @@ fn synthesize_offline_followups(
         if out.len() >= cap {
             break;
         }
-        let exploitable_signal = a
-            .signals
-            .iter()
-            .any(|s| matches!(*s, "http_5xx" | "error_disclosure" | "reflected_input" | "authz_leak" | "schema_leak" | "anomaly_leak"));
-        if !exploitable_signal {
-            continue;
-        }
         let norm_path = path_of(&a.component);
-        if !known_paths.contains(norm_path) || existing_ssti_paths.contains(norm_path) {
+        if !known_paths.contains(norm_path) {
+            continue;
+        }
+        if a.anomaly_type == "ssti_reflection" && existing_ssti_paths.contains(norm_path) {
             continue;
         }
 
-        let param = a.hinted_params.first().map(String::as_str).unwrap_or("q");
-        let method = if matches!(a.method.as_str(), "POST" | "PUT" | "PATCH") {
-            a.method.as_str()
-        } else {
-            "GET"
-        };
+        let mut probe = synthesize_mutation_probe(a, norm_path);
+        if let Some(act) = &actor {
+            probe.role = Some(act.clone());
+        }
 
-        if a.signals.contains(&"authz_leak") {
-            let mut c = PlannedCase {
-                id: String::new(),
-                title: format!("ReAct AuthZ privilege escalation follow-up on {method} {norm_path}"),
-                component: norm_path.to_string(),
-                method: method.to_string(),
-                technique: "authz".into(),
-                input_hint: format!("Mutated from 403 authorization leak anomaly: {}", a.signals.join(", ")),
-                payload: Some(json!({"role": "admin", "tenant_id": "tenant-001"}).to_string()),
-                headers: vec![("X-Role".into(), "admin".into())],
-                content_type: Some("application/json".into()),
-                probe_oracle: None,
-                expected_behavior: "Server must reject unauthorized role tampering".into(),
-                expected_status: Some(403),
-                risk_level: "critical".into(),
-                role: Some("anon".into()),
-                secured: Some(true),
-                route_status: a.status_code,
-                expect_fields: Vec::new(),
-                expected_content_type: None,
-                source: Some("followup".into()),
-                stateful_steps: None,
-                concurrency_burst: None,
-                contract: None,
-                changed_ops: Vec::new(),
-                area: String::new(),
-                regression_of: Vec::new(),
-                history_priority: false,
-            };
-            c.area = Area::classify(&c).as_str().to_string();
-            let key = key_of(&c);
-            if seen_keys.insert(key) {
-                *next_id += 1;
-                c.id = format!("R{:03}", *next_id);
-                out.push(c);
-            }
-        } else if a.signals.contains(&"schema_leak") {
-            let payload = if method == "GET" {
-                format!("{param}=1000000")
-            } else {
-                json!({ param: 1000000 }).to_string()
-            };
-            let mut c = PlannedCase {
-                id: String::new(),
-                title: format!("ReAct Schema boundary mutation follow-up on {method} {norm_path} via `{param}`"),
-                component: norm_path.to_string(),
-                method: method.to_string(),
-                technique: "boundary".into(),
-                input_hint: format!("Mutated from 422 schema leak anomaly via parameter `{param}`"),
-                payload: Some(payload),
-                headers: Vec::new(),
-                content_type: Some("application/json".into()),
-                probe_oracle: None,
-                expected_behavior: "Server must gracefully reject or validate out-of-bound parameter".into(),
-                expected_status: Some(400),
-                risk_level: "medium".into(),
-                role: actor.clone().or_else(|| Some("anon".into())),
-                secured: None,
-                route_status: a.status_code,
-                expect_fields: Vec::new(),
-                expected_content_type: None,
-                source: Some("followup".into()),
-                stateful_steps: None,
-                concurrency_burst: None,
-                contract: None,
-                changed_ops: Vec::new(),
-                area: String::new(),
-                regression_of: Vec::new(),
-                history_priority: false,
-            };
-            c.area = Area::classify(&c).as_str().to_string();
-            let key = key_of(&c);
-            if seen_keys.insert(key) {
-                *next_id += 1;
-                c.id = format!("R{:03}", *next_id);
-                out.push(c);
-            }
-        } else {
-            let payload = if method == "GET" {
-                format!("{param}={{{{1337*79}}}}")
-            } else {
-                json!({ param: "{{1337*79}}" }).to_string()
-            };
-
-            let mut c = PlannedCase {
-                id: String::new(),
-                title: format!("ReAct SSTI follow-up on {method} {norm_path} via `{param}`"),
-                component: norm_path.to_string(),
-                method: method.to_string(),
-                technique: "injection".into(),
-                input_hint: format!(
-                    "Escalated from wave anomaly ({}) via param `{param}`",
-                    a.signals.join(", ")
-                ),
-                payload: Some(payload),
-                headers: Vec::new(),
-                content_type: None,
-                probe_oracle: Some(ProbeOracle::Ssti {
-                    expected_eval: "105623".into(),
-                }),
-                expected_behavior: "Server must not evaluate template syntax in user input".into(),
-                expected_status: None,
-                risk_level: "high".into(),
-                role: actor.clone().or_else(|| Some("anon".into())),
-                secured: None,
-                route_status: a.status_code,
-                expect_fields: Vec::new(),
-                expected_content_type: None,
-                source: Some("followup".into()),
-                stateful_steps: None,
-                concurrency_burst: None,
-                contract: None,
-                changed_ops: Vec::new(),
-                area: String::new(),
-                regression_of: Vec::new(),
-                history_priority: false,
-            };
-            c.area = Area::classify(&c).as_str().to_string();
-            let key = key_of(&c);
-            if seen_keys.insert(key) {
-                *next_id += 1;
-                c.id = format!("R{:03}", *next_id);
+        let key = key_of(&probe);
+        if seen_keys.insert(key) {
+            *next_id += 1;
+            probe.id = format!("R{:03}", *next_id);
+            if a.anomaly_type == "ssti_reflection" {
                 existing_ssti_paths.insert(norm_path.to_string());
-                out.push(c);
             }
+            out.push(probe);
         }
     }
     out
 }
 
 /// Bounded multi-turn ReAct adaptive execution loop across post-Wave 1/2 HTTP anomalies.
+/// Implements the closed-loop OODA cycle: Observe -> Orient -> Decide -> Act with loop bounds and oscillation damping.
 #[allow(clippy::too_many_arguments)]
 pub fn run_adaptive_waves(
     target: &str,
@@ -740,10 +921,16 @@ pub fn run_adaptive_waves(
         .map(|c| path_of(&c.component).to_string())
         .collect();
     let mut seen_anomalies = HashSet::new();
+    let mut damper = OscillationDamper::default();
+    for c in existing_cases {
+        damper.seed_seen(c);
+    }
+
     let mut frontier = existing_results.to_vec();
     let mut next_id = 0usize;
 
     for wave in 1..=MAX_REACT_WAVES {
+        // --- Loop bounds check ---
         if budget.is_cancelled() || budget.wall_left() < Duration::from_secs(2) {
             break;
         }
@@ -756,6 +943,7 @@ pub fn run_adaptive_waves(
             break;
         }
 
+        // --- Step 1: OBSERVE & ORIENT ---
         let anomalies = extract_anomalies(&frontier, &existing_ssti_paths, &seen_anomalies);
         if anomalies.is_empty() {
             break;
@@ -769,6 +957,17 @@ pub fn run_adaptive_waves(
             break;
         }
 
+        outcome.notes.push(format!(
+            "ooda wave {wave} orient: observed {} anomalies ({})",
+            anomalies.len(),
+            anomalies
+                .iter()
+                .map(|a| a.anomaly_type.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+
+        // --- Step 2: DECIDE ---
         let mut proposals = None;
         if let Some((cfg, llm_budget)) = llm.as_mut() {
             let cfg = *cfg;
@@ -790,7 +989,7 @@ pub fn run_adaptive_waves(
             }
         }
 
-        let wave_cases = proposals.unwrap_or_else(|| {
+        let candidate_cases = proposals.unwrap_or_else(|| {
             synthesize_offline_followups(
                 &anomalies,
                 disc,
@@ -802,10 +1001,25 @@ pub fn run_adaptive_waves(
             )
         });
 
+        // --- Step 3: OSCILLATION DAMPING ---
+        let mut wave_cases = Vec::new();
+        for case in candidate_cases {
+            if !damper.should_damp(&case) {
+                wave_cases.push(case);
+            } else {
+                outcome.notes.push(format!(
+                    "ooda wave {wave}: damped oscillating probe on {} {}",
+                    case.method, case.component
+                ));
+            }
+        }
+
         if wave_cases.is_empty() {
+            outcome.notes.push(format!("ooda wave {wave}: all candidate probes damped; exiting loop early"));
             break;
         }
 
+        // --- Step 4: ACT ---
         let req_grant = avail_reqs.min(
             wave_cases
                 .len()
@@ -1140,5 +1354,120 @@ mod tests {
         pass_res.response_status = Some(200);
         pass_res.response_body = Some(r#"{"status":"ok"}"#.into());
         assert!(!is_anomaly_candidate(&pass_res));
+    }
+
+    #[test]
+    fn test_ooda_closed_loop_controller() {
+        let mut observation = CaseExecutionResult::default();
+        observation.status = "FAIL".into();
+        observation.response_status = Some(500);
+        observation.response_body = Some("SyntaxError: unterminated quoted string at or near 'admin'".into());
+        let anomaly = detect_ooda_anomaly(&observation).expect("should detect SQL anomaly");
+        assert_eq!(anomaly.anomaly_type, "sql_leak");
+        let probe = synthesize_mutation_probe(&anomaly, "http://localhost:3000/api/users");
+        assert!(probe.method == "GET" || probe.method == "POST");
+    }
+
+    #[test]
+    fn test_ooda_anomaly_categorization_signatures() {
+        // 1. sql_leak
+        let mut sql_obs = CaseExecutionResult::default();
+        sql_obs.status = "FAIL".into();
+        sql_obs.response_status = Some(500);
+        sql_obs.response_body = Some("pg::SQLException: column \"secret\" does not exist".into());
+        let a = detect_ooda_anomaly(&sql_obs).unwrap();
+        assert_eq!(a.anomaly_type, "sql_leak");
+
+        // 2. authz_leak
+        let mut auth_obs = CaseExecutionResult::default();
+        auth_obs.status = "FAIL".into();
+        auth_obs.response_status = Some(403);
+        auth_obs.response_body = Some("Access Denied: missing required permission 'admin:read'".into());
+        let a = detect_ooda_anomaly(&auth_obs).unwrap();
+        assert_eq!(a.anomaly_type, "authz_leak");
+
+        // 3. schema_leak
+        let mut schema_obs = CaseExecutionResult::default();
+        schema_obs.status = "FAIL".into();
+        schema_obs.response_status = Some(422);
+        schema_obs.response_body = Some("{\"detail\":[{\"loc\":[\"body\",\"account_id\"],\"msg\":\"field required\"}]}".into());
+        let a = detect_ooda_anomaly(&schema_obs).unwrap();
+        assert_eq!(a.anomaly_type, "schema_leak");
+
+        // 4. ssti_reflection
+        let mut ssti_obs = CaseExecutionResult::default();
+        ssti_obs.status = "FAIL".into();
+        ssti_obs.response_status = Some(500);
+        ssti_obs.response_body = Some("TemplateSyntaxError: unexpected char in render(template)".into());
+        let a = detect_ooda_anomaly(&ssti_obs).unwrap();
+        assert_eq!(a.anomaly_type, "ssti_reflection");
+
+        // 5. canary_reflection
+        let mut canary_obs = CaseExecutionResult::default();
+        canary_obs.status = "FAIL".into();
+        canary_obs.request_payload = Some("CANARY_TEST_XYZ".into());
+        canary_obs.response_body = Some("<div>Hello CANARY_TEST_XYZ</div>".into());
+        let a = detect_ooda_anomaly(&canary_obs).unwrap();
+        assert_eq!(a.anomaly_type, "canary_reflection");
+    }
+
+    #[test]
+    fn test_ooda_synthesize_mutation_probes_for_all_types() {
+        let types = ["sql_leak", "authz_leak", "schema_leak", "ssti_reflection", "canary_reflection"];
+        for t in types {
+            let anomaly = OodaAnomaly {
+                anomaly_type: t.to_string(),
+                dedup_key: format!("{t}:GET:/api/test:sig"),
+                component: "/api/test".into(),
+                method: "GET".into(),
+                status_code: Some(500),
+                signals: vec![t.to_string()],
+                request_payload: None,
+                evidence: "leak evidence".into(),
+                body_excerpt: "leak excerpt".into(),
+                hinted_params: vec!["param1".into()],
+                hinted_routes: Vec::new(),
+                reflection_signature: Some("canary_str".into()),
+            };
+            let probe = synthesize_mutation_probe(&anomaly, "http://localhost:3000");
+            assert_eq!(probe.component, "/api/test");
+            assert_eq!(probe.method, "GET");
+            assert!(probe.payload.is_some());
+        }
+    }
+
+    #[test]
+    fn test_ooda_oscillation_damping() {
+        let mut damper = OscillationDamper::new(2);
+        let base_anomaly = OodaAnomaly {
+            anomaly_type: "sql_leak".into(),
+            dedup_key: "k".into(),
+            component: "/api/items".into(),
+            method: "GET".into(),
+            status_code: Some(500),
+            signals: vec!["sql_leak".into()],
+            request_payload: None,
+            evidence: "".into(),
+            body_excerpt: "".into(),
+            hinted_params: vec!["q".into()],
+            hinted_routes: Vec::new(),
+            reflection_signature: None,
+        };
+        let mut case = synthesize_mutation_probe(&base_anomaly, "http://localhost:3000");
+        case.payload = Some("q=1".into());
+
+        // 1. First probe accepted
+        assert!(!damper.should_damp(&case));
+
+        // 2. Exact same probe suppressed by oscillation damping
+        assert!(damper.should_damp(&case));
+
+        // 3. Different payload accepted (count = 2)
+        case.payload = Some("q=2".into());
+        assert!(!damper.should_damp(&case));
+
+        // 4. Third distinct payload on same endpoint damped by endpoint cap (limit = 2)
+        case.payload = Some("q=3".into());
+        assert!(damper.should_damp(&case));
     }
 }

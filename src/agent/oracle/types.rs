@@ -83,7 +83,7 @@ impl Technique {
             "authz" | "auth_matrix" | "authorization" | "authz_matrix" => Technique::Authz,
             "boundary" => Technique::Boundary,
             "negative" => Technique::Negative,
-            "injection" => Technique::Injection,
+            "injection" | "sqli" | "ssti" | "xss" | "sql_injection" => Technique::Injection,
             "state_transition" | "state" | "liveness" => Technique::StateTransition,
             _ => Technique::Other,
         }
