@@ -36,30 +36,28 @@ Single Rust crate (`readyhai`, edition 2024, about 101,300 lines in `src/` inclu
 
 ## Agent architecture (`src/agent/`)
 
-The agent is a deterministic pipeline with an optional LLM on the side:
+The agent is an autonomous **6-Station Software Factory StateGraph** (`src/agent/pipeline/graph.rs`) combining deep LLM reasoning with deterministic verification guardrails:
 
 ```
 [target URL, optional spec, optional repo + diff_base]
         |
         v
-1. Discovery ----------> crawl (same-host redirects only), route classification, SPA/XHR detection, spec read, ids of existing records; with `--repo`, Tree-sitter AST white-box handler/sink/guard inventory (`whitebox.rs`)
+1. Recon --------------> HTTP fingerprinting (headers, security cookies, TLS), dynamic directive synthesis (rules of engagement, canary tokens, focus areas) (recon/)
         |
         v
-2. Planner ------------> baseline from crawl + spec-driven cases (`qa::api::synth`) + deep-security attack modules (`attacks/{auth,bopla,injection,logic}`) + white-box probes (`whitebox.rs`); changed operations first (`change.rs`); known defects first (`memory.rs`); optional validated LLM extras
+2. Discovery ----------> crawl (same-host redirects only), route classification, SPA/XHR detection, spec read, ids of existing records, LLM semantic shadow route & param inference (discover/semantic.rs); with `--repo`, Tree-sitter AST white-box handler/sink/guard inventory (whitebox.rs)
         |
         v
-3. Explorer = Lead ----> allocates budget slice per area, runs auth | contract | state | ui workers with in-process OAST collector (`oast.rs`), merges by case id, plans deterministic wave 2 (`lead.rs`), runs adaptive ReAct follow-ups (`react.rs`) and Playwright DOM security (`browser_sec.rs`); every response judged by the oracle
-        v
-4. Verifier -----------> replays every FAIL k times through the same oracle; not reproduced = INCONCLUSIVE (verify.rs)
+3. Planner ------------> baseline from crawl + spec-driven cases (qa::api::synth) + deep-security attack modules (attacks/{auth,bopla,injection,logic}) + white-box probes (whitebox.rs) + Attack DAG dependency synthesis (plan/dag.rs); dynamic directives enforcement (plan/directives.rs)
         |
         v
-5. Cleanup ------------> deletes what the run created (newest first, nonprod only), reads each 2xx DELETE back (pipeline.rs::teardown)
+4. Explorer / Lead ----> areas (auth, contract, state, ui), worker pool (READYHAI_AGENT_WORKERS), adaptive ReAct exploration loop with real-time anomaly detection (react.rs)
         |
         v
-6. Triager ------------> clusters failures into defects, OWASP labels, severities from one table (triage.rs)
+5. Verifier / Juror ---> replay failures k times (pass^k), Contextual Taint Tracing Juror (verify/juror.rs) eliminating false positives and synthesizing remediation diffs
         |
         v
-7. Readiness gate -----> technique-coverage matrix -> four pillars -> GO | CONDITIONAL_GO | NO_GO | NOT_EVALUATED (ledger.rs)
+6. Readiness Gate -----> technique-coverage matrix -> four pillars -> Software Factory Attestation certificate with OWASP ASVS scoring and signed release directives (pipeline/gate.rs)
         |
         v
 [AgentRunReport: <data>/agent-runs/<run id>/report.json + evidence/ + cleanup.json + report/*]
@@ -67,36 +65,35 @@ The agent is a deterministic pipeline with an optional LLM on the side:
 
 `report.json` is checkpointed after every stage with `status: "running"` and ends as `completed`, `failed` or `cancelled`. Cancellation (`request_cancel`, the REST route, MCP `readyhai_agent_cancel`, client disconnect) is honoured between steps; the run still triages and tears down what it did.
 
-**Rules every module follows.** Verdicts are deterministic. The oracle judges each observation, triage derives defects and severities from failed assertions, and the ledger computes pillars and the gate from a technique-coverage matrix. The LLM can add planned cases (validated against the discovered routes and the spec, never remapped), prose notes and an advisory opinion; the opinion is stored beside the verdict (`llm_advisory`) and never changes `gate_verdict`. Everything that reaches an LLM and came from the target goes through `llm::untrusted`. Test credentials come only from `RH_<ROLE>_TOKEN` variables; the server's own secrets are never attached to requests sent to a target. A run has a `RunBudget` (steps, requests, wall clock, per-host rate, LLM calls) and honours `dry_run`. Nothing is invented: a pillar with no conclusive evidence is "not evaluated", an unreachable target is BLOCKED, never PASS.
-
 ### Module map
 
 | Module | Role |
 |---|---|
-| `mod.rs` | Module wiring and the design rules above |
-| `pipeline.rs` | The run: stage order, checkpoints, LLM resolution, `RunOptions`, cancellation, cleanup/teardown, memory hooks, `run_agentic_loop_with`, `run_discovery_scan` |
-| `discover.rs` | Crawl and route discovery, tech detection, `SpecDoc`, id harvesting |
+| `mod.rs` | Module wiring, re-exports, and operational design rules |
+| `recon/` | Target fingerprinting, security cookies analysis, and Dynamic Directives Engine (`directives.rs`) |
+| `discover/` | Crawl and route discovery, tech detection, `SpecDoc`, id harvesting, and LLM semantic shadow route predictor (`semantic.rs`) |
 | `whitebox.rs` | Tree-sitter AST source-sink bridge (`src/code_audit.rs`): enriches discovery, plans hidden-route exploit probes, annotates defects with `file:line handler` linkage |
 | `attacks/` | Modular adversarial generators: `auth.rs` (JWT tampering, BFLA, proxy/header ACL bypass), `bopla.rs` (excessive data exposure, mass assignment), `injection.rs` (param-guided open redirect, SSRF, path traversal, SSTI, blind SQLi/CMDi), `logic.rs` (TOCTOU, step skip, negative values, HPP, GraphQL) |
 | `oast.rs` | In-process loopback HTTP callback collector (`OastCollector`, `__OAST_URL__` substitution, `oast_callback` correlation) |
-| `browser_sec.rs` | Playwright interactive DOM security orchestrator (`runners/playwright/agent_browser.mjs`: DOM XSS, DOM sinks, storage leaks, cookie hygiene, sourcemaps, clickjacking) |
-| `react.rs` | Bounded adaptive ReAct follow-up exploration loop under `Budget` (`react_lead`) |
-| `plan.rs` | The planner: baseline, spec-driven cases (`qa::api::synth`, `qa::plan`), depth by profile, `plan_cases_changed`, `plan_cases_remembered`, `plan_cases_remembered_with_whitebox`, LLM extras validation |
-| `change.rs` | Change-aware planning: `git diff`, route extraction (`qa::suite::extract_routes`), operation mapping, optional context retriever |
-| `lead.rs` | The lead: areas, budget allocation, workers, write ordering, merge, wave 2, the "Agents" report |
+| `browser_sec/` | Playwright interactive DOM security orchestrator (`runners/playwright/agent_browser.mjs`: DOM XSS, DOM sinks, storage leaks, cookie hygiene, sourcemaps, clickjacking) |
+| `react.rs` | Bounded adaptive ReAct follow-up exploration loop under `Budget` with anomaly detection (`react_lead`) |
+| `plan/` | The planner: baseline, spec-driven cases (`qa::api::synth`, `qa::plan`), depth by profile, Attack DAG (`dag.rs`), dynamic directives (`directives.rs`), LLM extras validation |
+| `change/` | Change-aware planning: `git diff`, route extraction (`qa::suite::extract_routes`), operation mapping, optional context retriever |
+| `lead/` | The lead: areas, budget allocation, workers, write ordering, merge, wave 2, the "Agents" report |
 | `budget.rs` | `RunBudget`, per-host `HostLimiter`, slices, environment overrides |
-| `exec.rs` | The explorer: builds and sends requests (`Clients::send` is the only place a request leaves), credentials, reproduction curls, evidence files, flaky re-runs, teardown confirmation reads |
-| `oracle.rs` | The typed assertion oracle: one observation plus its case in, PASS / FAIL / INCONCLUSIVE checks out |
-| `verify.rs` | The independent verifier: replay, pass^k, `apply` policy |
+| `exec/` | The explorer: builds and sends requests (`Clients::send` is the only place a request leaves), credentials, reproduction curls, evidence files, flaky re-runs, teardown confirmation reads |
+| `oracle/` | The typed assertion oracle: one observation plus its case in, PASS / FAIL / INCONCLUSIVE checks out |
+| `verify/` | The independent verifier: replay, pass^k, and Contextual Taint Tracing Juror (`juror.rs`) |
 | `mutation.rs` | Adaptive schema mutation from validation-error reflection |
-| `stateful.rs` | Multi-actor chains (BOLA) and concurrency bursts (TOCTOU) |
-| `triage.rs` | Defects, OWASP classes, `severity_for`, folding of repeated failures, LLM notes |
-| `ledger.rs` | Coverage matrix, pillars, gate verdict, exit checklist, claims, verification summary |
-| `memory.rs` | Per-target memory, "Since last run", acceptance |
-| `remediation.rs` | Generic example guidance per defect class (never a patch) |
-| `report.rs` | HTML, Markdown, SARIF, JSON and JUnit renderings of a run |
+| `stateful/` | Multi-actor chains (BOLA) and concurrency bursts (TOCTOU) |
+| `triage/` | Defects, OWASP classes, `severity_for`, folding of repeated failures, LLM notes |
+| `ledger/` | Coverage matrix, pillars, gate verdict, exit checklist, claims, verification summary |
+| `pipeline/` | Software Factory StateGraph (`graph.rs`), pipeline stages (`stages.rs`), release attestation (`gate.rs`), memory hooks, checkpoints |
+| `memory/` | Per-target memory, "Since last run", acceptance |
+| `remediation.rs` | Generic example guidance per defect class |
+| `report/` | HTML, Markdown, SARIF, JSON and JUnit renderings of a run |
 | `store.rs` | Persistence under `<data>/agent-runs/`, per-run locks, sign-off, retest, delete |
-| `types.rs` | Shared types: request, report, planned case, result, defect, ledger, cleanup, verification, cancel token |
+| `types/` | Shared types: request, report, planned case, result, defect, ledger, cleanup, verification, cancel token |
 
 ### Oracle (`oracle.rs`)
 
