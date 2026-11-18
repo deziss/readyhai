@@ -10,6 +10,7 @@ use super::types::{PlannedCase, any_prioritised, plan_order};
 use crate::llm::{Budget, LlmConfig};
 
 pub mod baseline;
+pub mod dag;
 pub mod directives;
 pub mod helpers;
 pub mod llm;
@@ -20,9 +21,11 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
+pub use dag::{AttackDag, AttackDagNode};
 pub use types::{Depth, PlanOutcome, MAX_CASES, plans_from_spec, seed_from_run_id};
 pub(crate) use helpers::{key_of, mk, user_or_anon};
 pub(crate) use llm::{Known, PlannerOutput, RawCase, validate_raw};
+pub use llm::synthesize_attack_dag;
 
 use baseline::baseline;
 use directives::plan_directives;

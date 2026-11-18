@@ -2377,3 +2377,124 @@ fn traditional_web_app_without_query_links_evaluates_injection_and_directives() 
         );
     }
 }
+
+#[test]
+fn test_attack_dag_resolution() {
+    use super::dag::{AttackDag, AttackDagNode};
+    let mut dag = AttackDag::new();
+    dag.add_node(AttackDagNode::new("setup_user", vec![]));
+    dag.add_node(AttackDagNode::new("escalate_role", vec!["setup_user".into()]));
+    dag.add_node(AttackDagNode::new("exfiltrate_tenant", vec!["escalate_role".into()]));
+    let sorted = dag.topological_order().expect("cycle detected");
+    assert_eq!(sorted, vec!["setup_user", "escalate_role", "exfiltrate_tenant"]);
+}
+
+#[test]
+fn test_attack_dag_cycle_detection() {
+    use super::dag::{AttackDag, AttackDagNode};
+    let mut dag = AttackDag::new();
+    dag.add_node(AttackDagNode::new("node_a", vec!["node_b".into()]));
+    dag.add_node(AttackDagNode::new("node_b", vec!["node_a".into()]));
+    assert!(dag.detect_cycle());
+    assert!(dag.is_cyclic());
+    assert!(dag.topological_order().is_err());
+}
+
+#[test]
+fn test_attack_dag_self_loop() {
+    use super::dag::{AttackDag, AttackDagNode};
+    let mut dag = AttackDag::new();
+    dag.add_node(AttackDagNode::new("node_a", vec!["node_a".into()]));
+    assert!(dag.detect_cycle());
+}
+
+#[test]
+fn test_attack_dag_conversion_to_stateful_steps() {
+    use super::dag::{AttackDag, AttackDagNode};
+    let mut dag = AttackDag::new();
+    dag.add_node(
+        AttackDagNode::new("step1", vec![])
+            .with_component("/api/auth/register")
+            .with_method("POST")
+            .with_payload(serde_json::json!({"user": "test"}))
+            .with_expected_status(201),
+    );
+    dag.add_node(
+        AttackDagNode::new("step2", vec!["step1".into()])
+            .with_component("/api/v1/tenant")
+            .with_method("GET")
+            .with_expected_status(403),
+    );
+    let steps = dag.to_stateful_steps().expect("valid steps");
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0].step_number, 1);
+    assert_eq!(steps[0].path, "/api/auth/register");
+    assert_eq!(steps[1].step_number, 2);
+    assert_eq!(steps[1].path, "/api/v1/tenant");
+
+    let planned_case = dag
+        .into_planned_case("Stateful Multi-step Attack", "/api/v1/tenant")
+        .expect("valid case");
+    assert_eq!(planned_case.technique, "state_transition");
+    assert_eq!(planned_case.stateful_steps.as_ref().unwrap().len(), 2);
+}
+
+#[test]
+fn test_synthesize_attack_dag_deterministic() {
+    let routes = vec![
+        route("/", 200),
+        route("/api/auth/login", 200),
+        route("/api/v1/tenant", 403),
+    ];
+    let dag = super::llm::synthesize_attack_dag(
+        None,
+        "https://target.local",
+        &routes,
+        Some("BOLA/IDOR on /api/v1/tenant"),
+    );
+    assert_eq!(dag.nodes.len(), 3);
+    let order = dag.topological_order().expect("valid topological order");
+    assert_eq!(order, vec!["setup_user", "escalate_role", "exfiltrate_tenant"]);
+}
+
+#[test]
+fn test_dynamic_directives_json_parsing_and_synthesis() {
+    let mut d = Discovery::default();
+    d.routes = vec![
+        route("/", 200),
+        route("/api/auth/session", 401),
+        route("/api/v1/tenant", 403),
+        route("/chat", 200),
+    ];
+    let directives_json = r#"{
+        "focus_areas": ["BOLA/IDOR on /api/v1/tenant", "JWT algorithm confusion", "Prompt injection canary"],
+        "boundary_rules": ["Stay within /api paths", "Do not fuzz destructive deletion"],
+        "rules_of_engagement": "Adversarial assessment targeting authorization boundaries and input sanitization",
+        "canary_token": "CANARY_RECON_7A3B"
+    }"#;
+    let cases = super::directives::plan_directives(directives_json, &d, &Credentials::none());
+    assert!(!cases.is_empty(), "expected synthesized cases from dynamic directives");
+    assert!(
+        cases
+            .iter()
+            .any(|c| c.title.contains("BOLA/IDOR") && c.component == "/api/v1/tenant"),
+        "expected BOLA/IDOR case on /api/v1/tenant"
+    );
+    assert!(
+        cases
+            .iter()
+            .any(|c| c.title.contains("JWT algorithm confusion")),
+        "expected JWT algorithm confusion case"
+    );
+    let canary_case = cases
+        .iter()
+        .find(|c| c.title.contains("CANARY_RECON_7A3B"))
+        .expect("expected canary case with custom token");
+    assert!(
+        canary_case
+            .payload
+            .as_ref()
+            .unwrap()
+            .contains("CANARY_RECON_7A3B")
+    );
+}
