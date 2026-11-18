@@ -7,6 +7,7 @@ use super::super::discover::Discovery;
 use super::super::exec::{Credentials, normalize_method};
 use super::super::oracle::Technique;
 use super::super::types::{DiscoveredRoute, InputSurface, PlannedCase, ResponseContract};
+use super::dag::{AttackDag, AttackDagNode};
 use super::helpers::{key_of, mk, template_regex, user_or_anon};
 use super::surface::surface_of;
 use super::types::SeededRng;
@@ -399,4 +400,164 @@ Important rules:\n\
             v
         }
     }
+}
+
+const ATTACK_DAG_PLANNER_ROLE: &str = "You are a senior adversarial QA architect and offensive workflow planner. \
+Given a target web application, known discovered endpoints, and operational directives, synthesize a stateful Attack DAG \
+(Directed Acyclic Graph) representing a multi-step adversarial workflow (e.g. user setup/registration -> privilege escalation/token tampering -> unauthorized tenant access/data exfiltration). \
+Format: {\"nodes\": [{\"id\": string, \"dependencies\": [string], \"action\": string, \"component\": string, \"method\": string, \"payload\": object|null, \"expected_status\": int|null}]}. \
+Ensure there are no circular dependencies and all dependencies reference earlier node ids.";
+
+#[derive(Debug, Deserialize)]
+struct AttackDagOutput {
+    nodes: Vec<RawAttackDagNode>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawAttackDagNode {
+    id: String,
+    #[serde(default)]
+    dependencies: Vec<String>,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    component: Option<String>,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    payload: Option<Value>,
+    #[serde(default)]
+    expected_status: Option<u16>,
+}
+
+pub fn synthesize_attack_dag(
+    llm: Option<(&LlmConfig, &mut Budget)>,
+    target: &str,
+    routes: &[DiscoveredRoute],
+    directives: Option<&str>,
+) -> AttackDag {
+    if let Some((cfg, budget)) = llm {
+        let endpoints: Vec<Value> = routes
+            .iter()
+            .filter(|r| !r.catch_all)
+            .take(40)
+            .map(|r| serde_json::json!({"method": r.method, "path": r.path, "status": r.status_code, "secured": r.secured}))
+            .collect();
+
+        let prompt = format!(
+            "Target under test: {}\nKnown endpoints: {}\nOperational Directives: {}\n\
+            Synthesize an Attack DAG with 3 to 6 interdependent attack steps exploring authorization boundaries, \
+            privilege escalation, and sensitive resource access. Ensure topological acyclicity.",
+            target,
+            serde_json::to_string(&endpoints).unwrap_or_default(),
+            directives.unwrap_or("None")
+        );
+
+        let res = ask_typed::<AttackDagOutput>(
+            cfg,
+            budget,
+            &untrusted::system(ATTACK_DAG_PLANNER_ROLE),
+            &prompt,
+            |out| {
+                if out.nodes.is_empty() {
+                    anyhow::bail!("empty nodes in attack dag output");
+                }
+                Ok(())
+            },
+        );
+
+        if let Ok(out) = res {
+            let mut dag = AttackDag::new();
+            for raw in out.nodes {
+                let mut node = AttackDagNode::new(raw.id, raw.dependencies);
+                node.action = raw.action;
+                node.component = raw.component;
+                node.method = raw.method;
+                node.payload = raw.payload;
+                node.expected_status = raw.expected_status;
+                dag.add_node(node);
+            }
+            if dag.topological_order().is_ok() && !dag.nodes.is_empty() {
+                return dag;
+            }
+        }
+    }
+
+    // Deterministic fallback Attack DAG guided by discovered routes and directives
+    let dir_str = directives.unwrap_or("").to_ascii_lowercase();
+
+    let setup_path = routes
+        .iter()
+        .find(|r| {
+            let p = r.path.to_ascii_lowercase();
+            p.contains("register")
+                || p.contains("signup")
+                || p.contains("login")
+                || p.contains("auth")
+        })
+        .map(|r| r.path.as_str())
+        .unwrap_or("/api/auth/register");
+
+    let escalate_path = routes
+        .iter()
+        .find(|r| {
+            let p = r.path.to_ascii_lowercase();
+            p.contains("user")
+                || p.contains("session")
+                || p.contains("profile")
+                || p.contains("role")
+        })
+        .map(|r| r.path.as_str())
+        .unwrap_or("/api/auth/session");
+
+    let exfil_path = if dir_str.contains("/api/v1/tenant") {
+        "/api/v1/tenant"
+    } else {
+        routes
+            .iter()
+            .find(|r| {
+                let p = r.path.to_ascii_lowercase();
+                p.contains("tenant")
+                    || p.contains("admin")
+                    || p.contains("internal")
+                    || p.contains("data")
+            })
+            .map(|r| r.path.as_str())
+            .unwrap_or("/api/v1/tenant")
+    };
+
+    let mut dag = AttackDag::new();
+    dag.add_node(
+        AttackDagNode::new("setup_user", vec![])
+            .with_action("Initial user registration and identity provisioning")
+            .with_component(setup_path)
+            .with_method("POST")
+            .with_payload(serde_json::json!({
+                "username": "attacker_user",
+                "email": "attacker@example.org",
+                "password": "Password123!"
+            }))
+            .with_expected_status(201),
+    );
+    dag.add_node(
+        AttackDagNode::new("escalate_role", vec!["setup_user".into()])
+            .with_action("Role tampering and claim elevation injection")
+            .with_component(escalate_path)
+            .with_method("POST")
+            .with_payload(serde_json::json!({
+                "role": "admin",
+                "is_admin": true,
+                "tenant_id": "tenant-001"
+            }))
+            .with_expected_status(200),
+    );
+    dag.add_node(
+        AttackDagNode::new("exfiltrate_tenant", vec!["escalate_role".into()])
+            .with_action("Unauthorized cross-tenant resource access and data exfiltration probe")
+            .with_component(exfil_path)
+            .with_method("GET")
+            .with_expected_status(403),
+    );
+
+    dag
 }
