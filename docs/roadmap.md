@@ -62,6 +62,19 @@ See [plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11
    - Cross-platform Win32 stdio handle duplication for MCP server (`readyhai mcp`) on Windows; cross-platform Tokio signal handling and storage paths.
    - Single-binary installation scripts: `install.sh` (Linux/macOS) and `install.ps1` (Windows PowerShell).
    - Multi-stage Docker build packaging and Docker Compose cluster verification.
+8. **Horizon 8 (v3.2.0) — Deep Agentic Software Factory Pipeline & Autonomous Directives**: **Done**
+   - Formalized 6-station Software Factory StateGraph (`src/agent/pipeline/graph.rs`): Recon $\to$ Discovery $\to$ Plan $\to$ Execute $\to$ Verify $\to$ Gate.
+   - Dynamic Directives Engine (`src/agent/recon/`): autonomous LLM synthesis of Rules of Engagement, canary tokens, and high-priority focus vectors (`POST /api/agent/directives/synthesize`), eliminating manual text inputs from Command Center (`Composer.tsx`).
+   - Semantic Shadow Route & Parameter Discovery (`src/agent/discover/semantic.rs`).
+   - Attack DAG & Stateful Workflow Planner (`src/agent/plan/dag.rs`).
+   - Adaptive ReAct mutation loop with live anomaly detection (`src/agent/react.rs`).
+   - Contextual Taint Tracing Juror (`src/agent/verify/juror.rs`) with unified diff remediation synthesis.
+   - Readiness Gate & Software Factory Attestation (`src/agent/pipeline/gate.rs`) with ASVS V2–V14 compliance mapping and SHA-256 seal.
+9. **Horizon 9 (v3.3.0) — The Quad-Engineering Disciplines (Loop, Graph, Prompt, Software Factory)**: **Done**
+   - **Loop Engineering**: Closed-loop OODA adaptive controller in `src/agent/react.rs`, continuous anomaly detection, mutation hypothesis synthesis (`ADAPTIVE_MUTATOR_ROLE`), and oscillation damping (`OscillationDamper`) to eliminate repetitive loops.
+   - **Graph Engineering**: StateGraph execution engine with typed dynamic conditional routing (`RoutingCondition`), iteration tracking, execution telemetry (`GraphTelemetry`), Attack DAG dependency modeling with topological sorting, and prerequisite execution guards (`execute_guarded`).
+   - **Prompt Engineering**: Centralized role-specialized prompt templates in `src/agent/prompts/` across all 6 stations with strict XML fencing (`<target_untrusted_content>`) and proactive injection tag sanitization (`neutralise_target_tags`).
+   - **Software Factory Engineering**: Formal station entrance/exit Quality Gates (`src/agent/pipeline/gates.rs`), evidence provenance, ASVS V2–V14 compliance mapping, and cryptographically signed Release Attestation.
 
 ## Next
 

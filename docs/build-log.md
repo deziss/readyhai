@@ -306,3 +306,20 @@ The docs were rewritten against the code, not against the previous docs. Claims 
 - Checked against the source: every `READYHAI_*` variable found by `grep` in `src/`, `runners/`, `frontend/src`, the compose file and the workflows has a row in `configuration.md` (except two test-only names and the curl timing marker); the REST route list in `api.md` matches `build_router`; the MCP tool schemas match `tool_defs`; the CI job list matches `ci.yml` and `image.yml`.
 - Still not verified live: the Windows probe, the context retriever against a real index in CI, the agent against a real (non-fixture) application, an MCP session in a live Claude Code.
 
+## Round 7: Deep Agentic Software Factory Pipeline & Quad-Engineering Disciplines (2026-11-18)
+
+Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.2.0 and v3.3.0).
+
+### What landed
+- **Loop Engineering (`src/agent/react.rs`)**: Closed-loop OODA (Observe-Orient-Decide-Act) controller, real-time anomaly detection, adaptive mutation probe synthesis (`ADAPTIVE_MUTATOR_ROLE`), oscillation damping (`OscillationDamper`), bounded execution waves.
+- **Graph Engineering (`src/agent/pipeline/graph.rs`, `src/agent/plan/dag.rs`)**: 6-station StateGraph finite state machine (`Recon` $\to$ `Discovery` $\to$ `Plan` $\to$ `Execute` $\to$ `Verify` $\to$ `Gate`), typed dynamic conditional routing, station iteration counters (`MAX_STATION_ITERATIONS = 5`), graph telemetry, Attack DAG dependency modeling with topological sorting, prerequisite execution guards (`execute_guarded`).
+- **Prompt Engineering (`src/agent/prompts/`)**: Centralized role-specialized prompt templates across all 6 stations with strict XML fencing (`<target_untrusted_content>`) and adversarial prompt injection neutralization (`neutralise_target_tags`).
+- **Software Factory Engineering (`src/agent/pipeline/gates.rs`, `src/agent/pipeline/gate.rs`)**: Formal entrance/exit station Quality Gates, cryptographic evidence provenance, ASVS V2–V14 compliance mapping, and SHA-256 cryptographically signed Release Attestation.
+- **Autonomous Directives Engine (`frontend/src/components/Composer.tsx`)**: Removed manual text inputs from Command Center; dynamically synthesizes directives via LLM from target surface via `POST /api/agent/directives/synthesize`.
+
+### Verification status
+- `cargo test --bin readyhai -- --test-threads=4`: 889 passed, 0 failed, 3 ignored (100% pass rate).
+- `vitest run`: 144 passed across 14 test files (100% pass rate).
+- `cargo clippy --bin readyhai -- -D warnings`: 0 warnings.
+- Docker E2E live run: verified in Docker container against `http://localhost:8080/` with live vLLM model `qwen3.8-flash-next`. Completed all 6 stations with 6 routing transitions and a final GO verdict (100/100 ASVS score).
+
