@@ -15,12 +15,14 @@ mod spec;
 mod surface;
 mod tech;
 mod xhr;
+pub mod semantic;
 
 #[cfg(test)]
 mod tests;
 
 pub use crawler::*;
 pub use harvest::*;
+pub use semantic::*;
 pub use spec::*;
 pub use surface::*;
 pub use tech::*;
