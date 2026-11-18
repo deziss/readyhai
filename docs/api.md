@@ -74,6 +74,7 @@ All rows except `/health` require the bearer token.
 | POST | `/api/agent/memory/accept` | Accept a known open defect until a date: body `{"target", "fingerprint" (a unique prefix of 6+ hex characters is enough), "reason", "expires": "YYYY-MM-DD"}`. It stays listed in every report and stops blocking the gate through the expiry date. Recorded as the authenticated principal; a `by` field is ignored. `400` empty reason or invalid/past date, `404` no memory or no such defect, `409` the defect is fixed |
 | DELETE | `/api/agent/memory?target=URL` | Forget the target: `{"forgotten": bool}` |
 | GET/POST | `/api/agent/discover` | Route discovery and SPA detection |
+| POST | `/api/agent/directives/synthesize` | Dynamic AI agent directives synthesis from target reconnaissance |
 | GET/POST | `/api/agent/crawl` | Crawl; `max_pages` default 25, maximum 100 |
 | GET | `/api/agent/requester-ip`, `/api/network/requester-ip` | Egress IP of this server (for allow-lists) |
 | GET | `/api/scans` | Last 50 scans with verdicts and report flags |
@@ -105,6 +106,14 @@ curl -s -H "$H" -X POST http://127.0.0.1:8080/api/agent/discover \
   -d '{"target": "https://staging.example.com", "spec_url": null}'
 ```
 Response: `target`, `is_spa`, `app_architecture`, `framework`, `detected_tech`, `routes[]`, `count`, `run_id`, `report`. A discovery scan runs no tests, so it has **no score**: the `report.evidence_ledger` score fields are `null`.
+
+#### Dynamic Agent Directives Synthesis
+```bash
+curl -s -H "$H" -X POST http://127.0.0.1:8080/api/agent/directives/synthesize \
+  -H "Content-Type: application/json" \
+  -d '{"target": "https://staging.example.com", "spec_url": null}'
+```
+Response: `directives` (formatted markdown/prose), `focus_areas[]` (e.g. `["BOLA/IDOR on /api/v1/tenant", "Prompt injection canary"]`), `boundary_rules[]`, `canary_token` (e.g. `CANARY_RECON_...`). Used by the Autonomous Directives Engine in `Composer.tsx`.
 
 #### Model health
 ```bash

@@ -2,6 +2,36 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.2.0] - 2026-11-18
+
+Deep Agentic Software Factory Pipeline (Recon, Discovery, Plan, Execute, Verify, Gate), Dynamic Directives Synthesis Engine, Attack DAGs, Contextual Taint Juror, and Command Center Autonomous UI.
+
+### Added
+
+- **6-Station Software Factory StateGraph Pipeline (`src/agent/pipeline/graph.rs`)**:
+  - Formalized agent execution into a finite state graph with verified station transitions: `Recon` $\to$ `Discovery` $\to$ `Plan` $\to$ `Execute` [Adaptive ReAct Loop] $\to$ `Verify` [Contextual Taint Juror] $\to$ `Gate` [Software Factory Attestation].
+- **Station 1: Target Reconnaissance & Dynamic Directives Engine (`src/agent/recon/`)**:
+  - Implemented HTTP security header, cookie, and TLS certificate fingerprinting (`probe_target_recon`).
+  - Implemented dynamic agent directives synthesis (`SynthesizedDirectives`): automatically synthesizes rules of engagement, threat vectors (BOLA, IDOR, session leaks, prompt injection), boundary rules, and unique canary tokens via LLM.
+  - Exposed endpoint `POST /api/agent/directives/synthesize` in `src/serve/agent_api.rs`.
+- **Station 2: Semantic Shadow Route & Parameter Discovery (`src/agent/discover/semantic.rs`)**:
+  - Added LLM-assisted semantic route and parameter schema prediction (`discover_semantic_routes`).
+  - Predicts hidden shadow endpoints (internal health, admin users, RBAC permissions) and realistic schema shapes for unparameterized API routes.
+- **Station 3: Attack DAG & Stateful Workflow Planner (`src/agent/plan/dag.rs`)**:
+  - Implemented `AttackDag` and `AttackDagNode` with dependency tracking, cycle detection, and topological sorting.
+  - Synthesizes chained multi-step stateful exploit sequences (e.g. setup user $\to$ escalate role $\to$ exfiltrate tenant) guided by dynamic directives.
+- **Station 4: Execution & Adaptive ReAct Loop (`src/agent/react.rs`)**:
+  - Added real-time anomaly detection (`is_anomaly_candidate`) for HTTP 500 stack traces, 403 authorization leaks, and 422/400 validation schema leaks.
+  - Added adaptive branching waves: automatically synthesizes mutation hypotheses and dispatches immediate probe waves to pivot attack paths.
+- **Station 5: Verification & Contextual Taint Tracing Juror (`src/agent/verify/juror.rs`)**:
+  - Implemented Source-to-Sink taint reflection analysis (`evaluate_with_juror`, `audit_defects_with_juror`) to eliminate automated false positives.
+  - Synthesizes concrete unified diff remediation patches (`remediation_patch`) and explanations for verified true positive defects.
+- **Station 6: Readiness Gate & Software Factory Attestation (`src/agent/pipeline/gate.rs`)**:
+  - Added `software_factory_attestation`: computes release risk scores (0–100), OWASP ASVS breakdown across V2–V14 categories, release directives, and a SHA-256 integrity seal.
+- **Frontend Command Center Autonomous Directives Engine (`frontend/src/components/Composer.tsx`)**:
+  - Removed manual directives `<textarea>` and static hint buttons.
+  - Introduced autonomous directives panel with live threat focus badges, security boundary tags, and 1-click re-synthesis without requiring operator prompt engineering.
+
 ## [3.1.0] - 2026-11-17
 
 Full Architectural Modularization (82,460 lines deconstructed across 40 slices), Standalone Single-Binary Engine with Auto-Discovery for Linux & Windows, and Production Docker Hardening.
