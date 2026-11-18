@@ -2498,3 +2498,137 @@ fn test_dynamic_directives_json_parsing_and_synthesis() {
             .contains("CANARY_RECON_7A3B")
     );
 }
+
+#[test]
+fn test_attack_dag_prerequisite_guard_execution_and_clean_defect_metrics() {
+    use super::dag::{is_prerequisite_skipped, AttackDag, AttackDagNode, SKIPPED_PREREQUISITE_FAILED};
+    use crate::agent::triage::derive_defects;
+
+    let mut dag = AttackDag::new();
+    dag.add_node(
+        AttackDagNode::new("setup_login", vec![])
+            .with_component("/api/auth/login")
+            .with_method("POST"),
+    );
+    dag.add_node(
+        AttackDagNode::new("escalate_role", vec!["setup_login".into()])
+            .with_component("/api/v1/roles")
+            .with_method("POST"),
+    );
+    dag.add_node(
+        AttackDagNode::new("exfiltrate_tenant", vec!["escalate_role".into()])
+            .with_component("/api/v1/tenant/data")
+            .with_method("GET"),
+    );
+
+    // Runner simulates a failure in the initial prerequisite step
+    let results = dag
+        .execute_guarded(|node| {
+            let mut res = CaseExecutionResult::default();
+            res.case_id = node.id.clone();
+            res.component = node.component.clone().unwrap();
+            res.method = node.method.clone().unwrap();
+
+            if node.id == "setup_login" {
+                // Prerequisite step fails
+                res.status = "FAIL".into();
+                res.status_code = Some(500);
+                res.failure_reason = Some("Authentication service unavailable (HTTP 500)".into());
+            } else {
+                // Downstream steps should never reach here!
+                res.status = "PASS".into();
+                res.status_code = Some(200);
+            }
+            res
+        })
+        .expect("guarded execution succeeds");
+
+    assert_eq!(results.len(), 3);
+
+    // 1. First step failed as executed
+    assert_eq!(results[0].case_id, "setup_login");
+    assert_eq!(results[0].status, "FAIL");
+    assert!(results[0].was_sent());
+    assert!(!is_prerequisite_skipped(&results[0]));
+
+    // 2. Downstream dependent step 2 marked SKIPPED (prerequisite failed)
+    assert_eq!(results[1].case_id, "escalate_role");
+    assert_eq!(results[1].status, SKIPPED_PREREQUISITE_FAILED);
+    assert!(is_prerequisite_skipped(&results[1]));
+    assert!(!results[1].was_sent());
+    assert!(results[1]
+        .failure_reason
+        .as_ref()
+        .unwrap()
+        .contains("node 'setup_login' did not succeed"));
+
+    // 3. Downstream dependent step 3 marked SKIPPED (prerequisite failed)
+    assert_eq!(results[2].case_id, "exfiltrate_tenant");
+    assert_eq!(results[2].status, SKIPPED_PREREQUISITE_FAILED);
+    assert!(is_prerequisite_skipped(&results[2]));
+    assert!(!results[2].was_sent());
+    assert!(results[2]
+        .failure_reason
+        .as_ref()
+        .unwrap()
+        .contains("node 'escalate_role' did not succeed"));
+
+    // 4. Defect metrics verification: exactly 1 defect from setup_login, 0 from downstream skipped nodes
+    let defects = derive_defects(&results);
+    assert_eq!(
+        defects.len(),
+        1,
+        "defect metrics must not be polluted by prerequisite-skipped nodes"
+    );
+    assert_eq!(defects[0].component, "/api/auth/login");
+}
+
+#[test]
+fn test_attack_dag_partition_independent_branches() {
+    use super::dag::{AttackDag, AttackDagNode};
+
+    let mut dag = AttackDag::new();
+
+    // Branch 1: User privilege escalation chain
+    dag.add_node(AttackDagNode::new("user_reg", vec![]));
+    dag.add_node(AttackDagNode::new("user_auth", vec!["user_reg".into()]));
+    dag.add_node(AttackDagNode::new("user_escalate", vec!["user_auth".into()]));
+
+    // Branch 2: Admin settings injection chain (independent of Branch 1)
+    dag.add_node(AttackDagNode::new("admin_login", vec![]));
+    dag.add_node(AttackDagNode::new("admin_inject", vec!["admin_login".into()]));
+
+    // Branch 3: Health probe (independent single-node branch)
+    dag.add_node(AttackDagNode::new("ping_health", vec![]));
+
+    let branches = dag.partition_independent_branches();
+    assert_eq!(
+        branches.len(),
+        3,
+        "expected 3 disjoint, parallel attack branches"
+    );
+
+    // Verify Branch 1
+    let b1_ids: Vec<&str> = branches[0].iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(b1_ids, vec!["user_reg", "user_auth", "user_escalate"]);
+
+    // Verify Branch 2
+    let b2_ids: Vec<&str> = branches[1].iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(b2_ids, vec!["admin_login", "admin_inject"]);
+
+    // Verify Branch 3
+    let b3_ids: Vec<&str> = branches[2].iter().map(|n| n.id.as_str()).collect();
+    assert_eq!(b3_ids, vec!["ping_health"]);
+
+    // Test empty DAG
+    let empty_dag = AttackDag::new();
+    assert!(empty_dag.partition_independent_branches().is_empty());
+
+    // Test single connected chain DAG
+    let mut single_dag = AttackDag::new();
+    single_dag.add_node(AttackDagNode::new("s1", vec![]));
+    single_dag.add_node(AttackDagNode::new("s2", vec!["s1".into()]));
+    let single_branches = single_dag.partition_independent_branches();
+    assert_eq!(single_branches.len(), 1);
+    assert_eq!(single_branches[0].len(), 2);
+}

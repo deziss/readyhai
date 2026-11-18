@@ -99,7 +99,7 @@ impl CaseExecutionResult {
     /// A transport error counts: the request was sent, it just got no answer.
     pub fn was_sent(&self) -> bool {
         match self.status.as_str() {
-            "SKIPPED" | "NOT_APPLICABLE" => false,
+            s if s.starts_with("SKIPPED") || s == "NOT_APPLICABLE" => false,
             "BLOCKED" => {
                 self.status_code.is_some()
                     || !matches!(

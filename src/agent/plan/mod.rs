@@ -21,7 +21,7 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-pub use dag::{AttackDag, AttackDagNode};
+pub use dag::{is_prerequisite_skipped, AttackDag, AttackDagNode, SKIPPED_PREREQUISITE_FAILED};
 pub use types::{Depth, PlanOutcome, MAX_CASES, plans_from_spec, seed_from_run_id};
 pub(crate) use helpers::{key_of, mk, user_or_anon};
 pub(crate) use llm::{Known, PlannerOutput, RawCase, validate_raw};

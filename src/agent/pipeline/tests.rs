@@ -1670,6 +1670,117 @@
     }
 
     #[test]
+    fn test_stategraph_conditional_routing_and_reentry() {
+        use super::graph::{PipelineState, RoutingCondition, StationNode};
+        let mut station = StationNode::new(PipelineState::Execute);
+        // Anomaly observed routes back to Execute for another wave
+        assert!(station.can_route(&RoutingCondition::AnomalyDetected));
+        station
+            .route(RoutingCondition::AnomalyDetected)
+            .expect("valid route");
+        assert_eq!(station.current_state(), PipelineState::Execute);
+        assert_eq!(station.loop_iteration_count(PipelineState::Execute), 2);
+    }
+
+    #[test]
+    fn test_stategraph_loop_bounds_prevention() {
+        use super::graph::{PipelineState, RoutingCondition, StationNode};
+        let mut station = StationNode::new(PipelineState::Execute).with_max_loop_iterations(2);
+        assert_eq!(station.max_loop_iterations(), 2);
+        assert_eq!(station.loop_iteration_count(PipelineState::Execute), 1);
+
+        // Second iteration succeeds (count becomes 2)
+        station
+            .route(RoutingCondition::AnomalyDetected)
+            .expect("second iteration should succeed");
+        assert_eq!(station.loop_iteration_count(PipelineState::Execute), 2);
+
+        // Third iteration exceeds max loop bounds (2) and fails safely
+        let err = station
+            .route(RoutingCondition::AnomalyDetected)
+            .expect_err("third iteration must be blocked by loop bounds guard");
+        assert!(
+            err.to_string().contains("loop bound exceeded"),
+            "unexpected error message: {err}"
+        );
+        assert_eq!(station.telemetry().loop_bounds_exceeded_count, 1);
+    }
+
+    #[test]
+    fn test_stategraph_telemetry_and_transitions() {
+        use super::graph::{PipelineState, RoutingCondition, StationNode};
+        let mut station = StationNode::new(PipelineState::Recon);
+        assert_eq!(station.telemetry().total_transitions, 0);
+
+        station
+            .route(RoutingCondition::NormalProgression)
+            .expect("Recon -> Discovery");
+        assert_eq!(station.current_state(), PipelineState::Discovery);
+
+        station
+            .route(RoutingCondition::NormalProgression)
+            .expect("Discovery -> Plan");
+        assert_eq!(station.current_state(), PipelineState::Plan);
+
+        // Re-refine in Plan
+        assert!(station.can_route(&RoutingCondition::AmbiguityRefine));
+        station
+            .route(RoutingCondition::AmbiguityRefine)
+            .expect("Plan loop");
+        assert_eq!(station.current_state(), PipelineState::Plan);
+        assert_eq!(station.loop_iteration_count(PipelineState::Plan), 2);
+
+        station
+            .route(RoutingCondition::NormalProgression)
+            .expect("Plan -> Execute");
+        assert_eq!(station.current_state(), PipelineState::Execute);
+
+        station
+            .route(RoutingCondition::NormalProgression)
+            .expect("Execute -> Verify");
+        assert_eq!(station.current_state(), PipelineState::Verify);
+
+        // Replay in Verify
+        assert!(station.can_route(&RoutingCondition::ReplayRequired));
+        station
+            .route(RoutingCondition::ReplayRequired)
+            .expect("Verify replay");
+        assert_eq!(station.current_state(), PipelineState::Verify);
+
+        station
+            .route(RoutingCondition::NormalProgression)
+            .expect("Verify -> Gate");
+        assert_eq!(station.current_state(), PipelineState::Gate);
+
+        station
+            .route(RoutingCondition::NormalProgression)
+            .expect("Gate -> Completed");
+        assert_eq!(station.current_state(), PipelineState::Completed);
+
+        let tel = station.telemetry();
+        assert_eq!(tel.total_transitions, 8);
+        assert_eq!(tel.routing_events.len(), 8);
+        assert_eq!(tel.iterations_per_station.get("Plan"), Some(&2));
+        assert_eq!(tel.iterations_per_station.get("Verify"), Some(&2));
+        assert_eq!(tel.iterations_per_station.get("Completed"), Some(&1));
+
+        // Terminal state cannot route further
+        assert!(!station.can_route(&RoutingCondition::NormalProgression));
+        assert!(station.route(RoutingCondition::NormalProgression).is_err());
+    }
+
+    #[test]
+    fn test_stategraph_fatal_error_routing() {
+        use super::graph::{PipelineState, RoutingCondition, StationNode};
+        let mut station = StationNode::new(PipelineState::Discovery);
+        assert!(station.can_route(&RoutingCondition::FatalError));
+        station
+            .route(RoutingCondition::FatalError)
+            .expect("fatal error transitions to Failed");
+        assert_eq!(station.current_state(), PipelineState::Failed);
+    }
+
+    #[test]
     fn test_software_factory_attestation_clean_release() {
         use super::gate::software_factory_attestation;
         use crate::agent::types::EvidenceLedger;
@@ -1713,3 +1824,359 @@
         assert!(!attestation.asvs_breakdown.level_2_compliant);
         assert!(attestation.release_directives.iter().any(|d| d.contains("BLOCK_DEPLOYMENT")));
     }
+
+    #[test]
+    fn test_recon_quality_gate_validation() {
+        use super::gates::{validate_recon_gate, ReconGateInput};
+        let invalid_input = ReconGateInput {
+            target_reachable: false,
+            directives_present: false,
+            focus_areas_count: 0,
+        };
+        assert!(validate_recon_gate(&invalid_input).is_err());
+
+        let valid_input = ReconGateInput {
+            target_reachable: true,
+            directives_present: true,
+            focus_areas_count: 3,
+        };
+        assert!(validate_recon_gate(&valid_input).is_ok());
+    }
+
+    #[test]
+    fn test_discovery_quality_gate_validation() {
+        use super::gates::{validate_discovery_gate, DiscoveryGateInput};
+
+        // Invalid: 0 routes and no verified fallback
+        let invalid = DiscoveryGateInput {
+            routes_count: 0,
+            verified_empty_fallback: false,
+            semantic_predictions_validated: true,
+        };
+        assert!(validate_discovery_gate(&invalid).is_err());
+
+        // Invalid: semantic predictions not validated
+        let invalid_preds = DiscoveryGateInput {
+            routes_count: 5,
+            verified_empty_fallback: false,
+            semantic_predictions_validated: false,
+        };
+        assert!(validate_discovery_gate(&invalid_preds).is_err());
+
+        // Valid: routes discovered > 0
+        let valid_routes = DiscoveryGateInput {
+            routes_count: 12,
+            verified_empty_fallback: false,
+            semantic_predictions_validated: true,
+        };
+        let verdict = validate_discovery_gate(&valid_routes).expect("should pass");
+        assert!(verdict.passed);
+        assert_eq!(verdict.checks.len(), 2);
+
+        // Valid: 0 routes with verified empty fallback confirmed
+        let valid_fallback = DiscoveryGateInput {
+            routes_count: 0,
+            verified_empty_fallback: true,
+            semantic_predictions_validated: true,
+        };
+        assert!(validate_discovery_gate(&valid_fallback).is_ok());
+    }
+
+    #[test]
+    fn test_plan_quality_gate_validation() {
+        use super::gates::{validate_plan_gate, PlanGateInput};
+
+        // Invalid: cyclic DAG
+        let cyclic = PlanGateInput {
+            is_dag_acyclic: false,
+            baseline_cases_count: 10,
+            directives_covered: true,
+        };
+        assert!(validate_plan_gate(&cyclic).is_err());
+
+        // Invalid: 0 baseline cases
+        let zero_cases = PlanGateInput {
+            is_dag_acyclic: true,
+            baseline_cases_count: 0,
+            directives_covered: true,
+        };
+        assert!(validate_plan_gate(&zero_cases).is_err());
+
+        // Invalid: directives not covered
+        let uncover = PlanGateInput {
+            is_dag_acyclic: true,
+            baseline_cases_count: 10,
+            directives_covered: false,
+        };
+        assert!(validate_plan_gate(&uncover).is_err());
+
+        // Valid
+        let valid = PlanGateInput {
+            is_dag_acyclic: true,
+            baseline_cases_count: 15,
+            directives_covered: true,
+        };
+        let verdict = validate_plan_gate(&valid).expect("valid plan gate");
+        assert!(verdict.passed);
+    }
+
+    #[test]
+    fn test_execution_quality_gate_validation() {
+        use super::gates::{validate_execution_gate, ExecutionGateInput};
+
+        // Invalid: worker thread panic detected
+        let panic_input = ExecutionGateInput {
+            waves_completed: 3,
+            budget_compliant: true,
+            worker_panics: 1,
+        };
+        assert!(validate_execution_gate(&panic_input).is_err());
+
+        // Invalid: budget exceeded
+        let budget_fail = ExecutionGateInput {
+            waves_completed: 3,
+            budget_compliant: false,
+            worker_panics: 0,
+        };
+        assert!(validate_execution_gate(&budget_fail).is_err());
+
+        // Invalid: 0 waves completed
+        let zero_waves = ExecutionGateInput {
+            waves_completed: 0,
+            budget_compliant: true,
+            worker_panics: 0,
+        };
+        assert!(validate_execution_gate(&zero_waves).is_err());
+
+        // Valid
+        let valid = ExecutionGateInput {
+            waves_completed: 2,
+            budget_compliant: true,
+            worker_panics: 0,
+        };
+        let verdict = validate_execution_gate(&valid).expect("valid execution gate");
+        assert!(verdict.passed);
+    }
+
+    #[test]
+    fn test_verify_quality_gate_validation() {
+        use super::gates::{validate_verify_gate, VerifyGateInput};
+
+        // Invalid: k-replay not executed
+        let no_replay = VerifyGateInput {
+            k_replay_executed: false,
+            juror_taint_evaluated: true,
+            unverified_false_positives: 0,
+        };
+        assert!(validate_verify_gate(&no_replay).is_err());
+
+        // Invalid: Juror taint not evaluated
+        let no_juror = VerifyGateInput {
+            k_replay_executed: true,
+            juror_taint_evaluated: false,
+            unverified_false_positives: 0,
+        };
+        assert!(validate_verify_gate(&no_juror).is_err());
+
+        // Invalid: unverified false-positive defects remain
+        let unverified_fps = VerifyGateInput {
+            k_replay_executed: true,
+            juror_taint_evaluated: true,
+            unverified_false_positives: 2,
+        };
+        assert!(validate_verify_gate(&unverified_fps).is_err());
+
+        // Valid
+        let valid = VerifyGateInput {
+            k_replay_executed: true,
+            juror_taint_evaluated: true,
+            unverified_false_positives: 0,
+        };
+        let verdict = validate_verify_gate(&valid).expect("valid verify gate");
+        assert!(verdict.passed);
+    }
+
+    #[test]
+    fn test_release_quality_gate_validation() {
+        use super::gates::{
+            validate_release_gate, validate_release_gate_verdict, ReleaseGate, ReleaseGateInput,
+        };
+        use crate::agent::types::{EvidenceLedger, TriagedDefect};
+
+        // Invalid: critical defect present
+        let crit_input = ReleaseGateInput {
+            value_score: 90,
+            authority_score: 90,
+            safety_score: 90,
+            evidence_score: 90,
+            min_threshold: 70,
+            asvs_l1_compliant: true,
+            critical_defects: 1,
+        };
+        assert!(validate_release_gate(&crit_input).is_err());
+
+        // Invalid: ASVS L1 non-compliant
+        let asvs_fail = ReleaseGateInput {
+            value_score: 90,
+            authority_score: 90,
+            safety_score: 90,
+            evidence_score: 90,
+            min_threshold: 70,
+            asvs_l1_compliant: false,
+            critical_defects: 0,
+        };
+        assert!(validate_release_gate(&asvs_fail).is_err());
+
+        // Invalid: safety score below threshold
+        let low_safety = ReleaseGateInput {
+            value_score: 85,
+            authority_score: 85,
+            safety_score: 65, // Below 70
+            evidence_score: 85,
+            min_threshold: 70,
+            asvs_l1_compliant: true,
+            critical_defects: 0,
+        };
+        assert!(validate_release_gate(&low_safety).is_err());
+
+        // Valid: Clean release with high scores
+        let valid_input = ReleaseGateInput {
+            value_score: 95,
+            authority_score: 90,
+            safety_score: 85,
+            evidence_score: 90,
+            min_threshold: 70,
+            asvs_l1_compliant: true,
+            critical_defects: 0,
+        };
+        let attestation = validate_release_gate(&valid_input).expect("release gate should pass");
+        assert_eq!(attestation.gate_verdict, "GO");
+        assert!(attestation.release_readiness_score >= 80);
+        assert!(attestation.asvs_breakdown.level_1_compliant);
+        assert!(attestation.asvs_breakdown.level_2_compliant);
+        assert!(!attestation.attestation_digest.is_empty());
+        assert!(attestation
+            .release_directives
+            .iter()
+            .any(|d| d.contains("ALLOW_DEPLOYMENT")));
+
+        // Valid: verdict representation
+        let verdict = validate_release_gate_verdict(&valid_input).expect("release verdict");
+        assert!(verdict.passed);
+        assert_eq!(verdict.checks.len(), 6);
+
+        // Evaluation directly from EvidenceLedger
+        let mut ledger = EvidenceLedger::default();
+        ledger.value_score = Some(88);
+        ledger.authority_score = Some(85);
+        ledger.safety_score = Some(92);
+        ledger.evidence_score = Some(80);
+        let ledger_attestation =
+            ReleaseGate::evaluate_ledger(&ledger, &[], 70).expect("ledger evaluation");
+        assert_eq!(ledger_attestation.gate_verdict, "GO");
+
+        // Fails with critical defect
+        let crit_defect = TriagedDefect {
+            id: "DEF-CRIT-1".into(),
+            title: "Remote Code Execution".into(),
+            severity: "CRITICAL".into(),
+            ..Default::default()
+        };
+        assert!(ReleaseGate::evaluate_ledger(&ledger, &[crit_defect], 70).is_err());
+    }
+
+    #[test]
+    fn test_quality_gates_entrance_checks() {
+        use super::gates::{
+            DiscoveryGate, ExecutionGate, PlanGate, ReconGate, ReleaseGate, VerifyGate,
+        };
+
+        // Recon entrance
+        assert!(ReconGate::check_entrance("https://example.com/api", 100).is_ok());
+        assert!(ReconGate::check_entrance("ftp://example.com", 100).is_err());
+        assert!(ReconGate::check_entrance("not a url", 100).is_err());
+        assert!(ReconGate::check_entrance("http://localhost:8080", 0).is_err());
+
+        // Discovery entrance
+        assert!(DiscoveryGate::check_entrance(true).is_ok());
+        assert!(DiscoveryGate::check_entrance(false).is_err());
+
+        // Plan entrance
+        assert!(PlanGate::check_entrance(5, false).is_ok());
+        assert!(PlanGate::check_entrance(0, true).is_ok());
+        assert!(PlanGate::check_entrance(0, false).is_err());
+
+        // Execution entrance
+        assert!(ExecutionGate::check_entrance(10, 50).is_ok());
+        assert!(ExecutionGate::check_entrance(0, 50).is_err());
+        assert!(ExecutionGate::check_entrance(10, 0).is_err());
+
+        // Verify entrance
+        assert!(VerifyGate::check_entrance(10).is_ok());
+        assert!(VerifyGate::check_entrance(0).is_err());
+
+        // Release entrance
+        assert!(ReleaseGate::check_entrance(true, true).is_ok());
+        assert!(ReleaseGate::check_entrance(false, true).is_err());
+        assert!(ReleaseGate::check_entrance(true, false).is_err());
+    }
+
+    #[test]
+    fn test_quality_gate_trait_dispatch() {
+        use super::gates::{
+            DiscoveryGate, DiscoveryGateInput, ExecutionGate, ExecutionGateInput, PlanGate,
+            PlanGateInput, QualityGate, ReconGate, ReconGateInput, ReleaseGate, ReleaseGateInput,
+            VerifyGate, VerifyGateInput,
+        };
+
+        let recon = ReconGate::default();
+        assert_eq!(recon.gate_name(), "ReconGate");
+        let recon_in = ReconGateInput {
+            target_reachable: true,
+            directives_present: true,
+            focus_areas_count: 2,
+        };
+        assert!(recon.evaluate(&recon_in).is_ok());
+
+        let disc = DiscoveryGate::default();
+        assert_eq!(disc.gate_name(), "DiscoveryGate");
+        let disc_in = DiscoveryGateInput {
+            routes_count: 3,
+            verified_empty_fallback: false,
+            semantic_predictions_validated: true,
+        };
+        assert!(disc.evaluate(&disc_in).is_ok());
+
+        let plan = PlanGate::default();
+        assert_eq!(plan.gate_name(), "PlanGate");
+        let plan_in = PlanGateInput {
+            is_dag_acyclic: true,
+            baseline_cases_count: 5,
+            directives_covered: true,
+        };
+        assert!(plan.evaluate(&plan_in).is_ok());
+
+        let exec = ExecutionGate::default();
+        assert_eq!(exec.gate_name(), "ExecutionGate");
+        let exec_in = ExecutionGateInput {
+            waves_completed: 1,
+            budget_compliant: true,
+            worker_panics: 0,
+        };
+        assert!(exec.evaluate(&exec_in).is_ok());
+
+        let verify = VerifyGate::default();
+        assert_eq!(verify.gate_name(), "VerifyGate");
+        let verify_in = VerifyGateInput {
+            k_replay_executed: true,
+            juror_taint_evaluated: true,
+            unverified_false_positives: 0,
+        };
+        assert!(verify.evaluate(&verify_in).is_ok());
+
+        let release = ReleaseGate::default();
+        assert_eq!(release.gate_name(), "ReleaseGate");
+        let release_in = ReleaseGateInput::default();
+        assert!(release.evaluate(&release_in).is_ok());
+    }
+

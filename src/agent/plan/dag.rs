@@ -6,7 +6,20 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::agent::types::{PlannedCase, StatefulStep};
+use crate::agent::types::{CaseExecutionResult, PlannedCase, StatefulStep};
+
+/// Sentinel marker status for downstream nodes whose prerequisites failed.
+pub const SKIPPED_PREREQUISITE_FAILED: &str = "SKIPPED (prerequisite failed)";
+
+/// Check if a case execution result was skipped due to a failed prerequisite.
+pub fn is_prerequisite_skipped(res: &CaseExecutionResult) -> bool {
+    res.status == SKIPPED_PREREQUISITE_FAILED
+        || (res.status.starts_with("SKIPPED")
+            && res
+                .failure_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("prerequisite failed")))
+}
 
 /// A single step/node in the attack DAG.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -256,6 +269,188 @@ impl AttackDag {
             history_priority: false,
         };
         Ok(c)
+    }
+
+    /// Partition the DAG into independent, mutually disjoint parallel branches.
+    ///
+    /// Each branch is an independent connected component of the DAG whose nodes
+    /// are sorted in topological execution order. Different branches have no
+    /// inter-dependencies and can be executed concurrently in parallel.
+    pub fn partition_independent_branches(&self) -> Vec<Vec<AttackDagNode>> {
+        if self.nodes.is_empty() {
+            return Vec::new();
+        }
+
+        // Build undirected graph for finding weakly connected components
+        let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
+        let all_ids: HashSet<&str> = self.nodes.iter().map(|n| n.id.as_str()).collect();
+
+        for node in &self.nodes {
+            adj.entry(node.id.as_str()).or_default();
+            for dep in &node.dependencies {
+                if all_ids.contains(dep.as_str()) {
+                    adj.entry(node.id.as_str()).or_default().push(dep.as_str());
+                    adj.entry(dep.as_str()).or_default().push(node.id.as_str());
+                }
+            }
+        }
+
+        // BFS to extract connected components
+        let mut visited: HashSet<&str> = HashSet::new();
+        let mut components: Vec<Vec<&str>> = Vec::new();
+
+        // Iterate through nodes in their registered order for determinism
+        for node in &self.nodes {
+            let start = node.id.as_str();
+            if visited.contains(start) {
+                continue;
+            }
+
+            let mut component = Vec::new();
+            let mut queue = VecDeque::new();
+            visited.insert(start);
+            queue.push_back(start);
+
+            while let Some(curr) = queue.pop_front() {
+                component.push(curr);
+                if let Some(neighbors) = adj.get(curr) {
+                    for &nbr in neighbors {
+                        if !visited.contains(nbr) {
+                            visited.insert(nbr);
+                            queue.push_back(nbr);
+                        }
+                    }
+                }
+            }
+
+            components.push(component);
+        }
+
+        // Topological rank lookup if acyclic, otherwise fallback to registration order
+        let topo_order = self.topological_order().ok();
+        let rank_map: HashMap<&str, usize> = match &topo_order {
+            Some(order) => order
+                .iter()
+                .enumerate()
+                .map(|(idx, id)| (id.as_str(), idx))
+                .collect(),
+            None => self
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(idx, n)| (n.id.as_str(), idx))
+                .collect(),
+        };
+
+        // Sort nodes within each component by topological rank
+        for comp in &mut components {
+            comp.sort_by_key(|&id| rank_map.get(id).copied().unwrap_or(usize::MAX));
+        }
+
+        // Sort branches deterministically by the rank of their first node
+        components.sort_by_key(|comp| {
+            comp.first()
+                .and_then(|&id| rank_map.get(id).copied())
+                .unwrap_or(usize::MAX)
+        });
+
+        // Convert node IDs to AttackDagNode clones
+        let node_map: HashMap<&str, &AttackDagNode> =
+            self.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+
+        components
+            .into_iter()
+            .map(|comp| {
+                comp.into_iter()
+                    .filter_map(|id| node_map.get(id).copied().cloned())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Execute the DAG in topological order with prerequisite guards.
+    ///
+    /// If any prerequisite node fails in execution (`status == "FAIL"` or `"BLOCKED"`),
+    /// all downstream dependent nodes are marked `SKIPPED (prerequisite failed)`
+    /// without calling the runner and without polluting defect metrics.
+    pub fn execute_guarded<F>(&self, mut runner: F) -> Result<Vec<CaseExecutionResult>, String>
+    where
+        F: FnMut(&AttackDagNode) -> CaseExecutionResult,
+    {
+        let order = self.topological_order()?;
+        let mut results = Vec::with_capacity(order.len());
+        let mut failed_or_skipped_nodes: HashSet<String> = HashSet::new();
+
+        for node_id in order {
+            let node = self
+                .get_node(&node_id)
+                .ok_or_else(|| format!("node '{}' not found in DAG", node_id))?;
+
+            // Check if any prerequisite dependency failed or was skipped
+            let failed_prereq = node
+                .dependencies
+                .iter()
+                .find(|dep| failed_or_skipped_nodes.contains(dep.as_str()));
+
+            if let Some(failed_dep) = failed_prereq {
+                failed_or_skipped_nodes.insert(node.id.clone());
+                let reason = format!("prerequisite failed: node '{failed_dep}' did not succeed");
+                let mut res = if let Some(case) = &node.planned_case {
+                    CaseExecutionResult::not_run(case, reason.clone())
+                } else {
+                    let mut r = CaseExecutionResult::default();
+                    r.case_id = node.id.clone();
+                    r.title = node.action.clone().unwrap_or_else(|| node.id.clone());
+                    r.component = node.component.clone().unwrap_or_else(|| format!("/{}", node.id));
+                    r.method = node.method.clone().unwrap_or_else(|| "GET".into());
+                    r.failure_reason = Some(reason.clone());
+                    r
+                };
+                res.status = SKIPPED_PREREQUISITE_FAILED.to_string();
+                results.push(res);
+            } else {
+                let res = runner(node);
+                let failed = res.status == "FAIL"
+                    || res.status == "BLOCKED"
+                    || res.status.starts_with("SKIPPED");
+                if failed {
+                    failed_or_skipped_nodes.insert(node.id.clone());
+                }
+                results.push(res);
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Fallible version of `execute_guarded` where the runner returns a `Result`.
+    pub fn execute_guarded_fallible<F, E>(
+        &self,
+        mut runner: F,
+    ) -> Result<Vec<CaseExecutionResult>, String>
+    where
+        F: FnMut(&AttackDagNode) -> Result<CaseExecutionResult, E>,
+        E: std::fmt::Display,
+    {
+        self.execute_guarded(|node| match runner(node) {
+            Ok(res) => res,
+            Err(err) => {
+                let reason = err.to_string();
+                let mut res = if let Some(case) = &node.planned_case {
+                    CaseExecutionResult::not_run(case, reason.clone())
+                } else {
+                    let mut r = CaseExecutionResult::default();
+                    r.case_id = node.id.clone();
+                    r.title = node.action.clone().unwrap_or_else(|| node.id.clone());
+                    r.component = node.component.clone().unwrap_or_else(|| format!("/{}", node.id));
+                    r.method = node.method.clone().unwrap_or_else(|| "GET".into());
+                    r.failure_reason = Some(reason);
+                    r
+                };
+                res.status = "FAIL".into();
+                res
+            }
+        })
     }
 
     /// Convert the DAG into a planned case with stateful multi-step workflow (consumed).
