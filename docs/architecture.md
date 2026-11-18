@@ -65,19 +65,47 @@ The agent is an autonomous **6-Station Software Factory StateGraph** (`src/agent
 
 `report.json` is checkpointed after every stage with `status: "running"` and ends as `completed`, `failed` or `cancelled`. Cancellation (`request_cancel`, the REST route, MCP `readyhai_agent_cancel`, client disconnect) is honoured between steps; the run still triages and tears down what it did.
 
+### Quad-Engineering Architecture
+
+The pipeline orchestrator is structured according to four core engineering disciplines:
+
+1. **Loop Engineering (`src/agent/react.rs`)**
+   - Closed-loop *Observe-Orient-Decide-Act (OODA)* controller.
+   - Continuous anomaly detection monitoring response status codes (500, 403, 422), body lengths, and syntax leaks.
+   - Adaptive mutation probe generation with oscillation damping (`OscillationDamper`) preventing repetitive loops.
+   - Bounded wave execution respecting per-slice and total run budgets.
+
+2. **Graph Engineering (`src/agent/pipeline/graph.rs`, `src/agent/plan/dag.rs`)**
+   - Type-safe `StateGraph` state machine governing the 6-station lifecycle.
+   - Conditional edge routing (`RoutingCondition::NormalProgression`, `AnomalyDetected`, `ReplayRequired`, `BudgetExhausted`).
+   - Attack DAG dependency engine sorting complex multi-step exploits into topological execution chains.
+   - Guarded execution semantics (`execute_guarded`) preventing cascade false positives if prerequisites fail.
+   - Execution graph telemetry (`GraphTelemetry`) embedded into every run report.
+
+3. **Prompt Engineering (`src/agent/prompts/`)**
+   - Centralized, role-specialized prompt templates across Recon, Discovery, Plan, Execute, Verify, and Gate.
+   - Strict untrusted input encapsulation via XML tags (`<target_untrusted_content>`) with proactive injection neutralization (`neutralise_target_tags`).
+   - Schema-constrained JSON outputs with deterministic fallback paths.
+
+4. **Software Factory Engineering (`src/agent/pipeline/gates.rs`, `src/agent/pipeline/gate.rs`)**
+   - Formal station entrance and exit quality gates validating input completeness and verification assertions.
+   - Cryptographically signed release attestation (`SoftwareFactoryAttestation`) certifying OWASP ASVS V2–V14 compliance and SHA-256 seal.
+   - End-to-end evidence ledger provenance guaranteeing reproducibility.
+
 ### Module map
 
 | Module | Role |
 |---|---|
 | `mod.rs` | Module wiring, re-exports, and operational design rules |
+| `prompts/` | Prompt Engineering: Centralized station templates, role definitions, and adversarial XML injection defenses |
 | `recon/` | Target fingerprinting, security cookies analysis, and Dynamic Directives Engine (`directives.rs`) |
 | `discover/` | Crawl and route discovery, tech detection, `SpecDoc`, id harvesting, and LLM semantic shadow route predictor (`semantic.rs`) |
 | `whitebox.rs` | Tree-sitter AST source-sink bridge (`src/code_audit.rs`): enriches discovery, plans hidden-route exploit probes, annotates defects with `file:line handler` linkage |
 | `attacks/` | Modular adversarial generators: `auth.rs` (JWT tampering, BFLA, proxy/header ACL bypass), `bopla.rs` (excessive data exposure, mass assignment), `injection.rs` (param-guided open redirect, SSRF, path traversal, SSTI, blind SQLi/CMDi), `logic.rs` (TOCTOU, step skip, negative values, HPP, GraphQL) |
 | `oast.rs` | In-process loopback HTTP callback collector (`OastCollector`, `__OAST_URL__` substitution, `oast_callback` correlation) |
 | `browser_sec/` | Playwright interactive DOM security orchestrator (`runners/playwright/agent_browser.mjs`: DOM XSS, DOM sinks, storage leaks, cookie hygiene, sourcemaps, clickjacking) |
-| `react.rs` | Bounded adaptive ReAct follow-up exploration loop under `Budget` with anomaly detection (`react_lead`) |
-| `plan/` | The planner: baseline, spec-driven cases (`qa::api::synth`, `qa::plan`), depth by profile, Attack DAG (`dag.rs`), dynamic directives (`directives.rs`), LLM extras validation |
+| `react.rs` | Loop Engineering: Closed-loop OODA ReAct controller with adaptive branching, anomaly detection, and oscillation damping |
+| `plan/` | The planner: baseline, spec-driven cases (`qa::api::synth`, `qa::plan`), depth by profile, Graph Engineering Attack DAG (`dag.rs`), dynamic directives (`directives.rs`), LLM extras validation |
 | `change/` | Change-aware planning: `git diff`, route extraction (`qa::suite::extract_routes`), operation mapping, optional context retriever |
 | `lead/` | The lead: areas, budget allocation, workers, write ordering, merge, wave 2, the "Agents" report |
 | `budget.rs` | `RunBudget`, per-host `HostLimiter`, slices, environment overrides |
@@ -88,7 +116,7 @@ The agent is an autonomous **6-Station Software Factory StateGraph** (`src/agent
 | `stateful/` | Multi-actor chains (BOLA) and concurrency bursts (TOCTOU) |
 | `triage/` | Defects, OWASP classes, `severity_for`, folding of repeated failures, LLM notes |
 | `ledger/` | Coverage matrix, pillars, gate verdict, exit checklist, claims, verification summary |
-| `pipeline/` | Software Factory StateGraph (`graph.rs`), pipeline stages (`stages.rs`), release attestation (`gate.rs`), memory hooks, checkpoints |
+| `pipeline/` | Software Factory StateGraph (`graph.rs`), conditional routing, station entrance/exit Quality Gates (`gates.rs`), pipeline stages (`stages.rs`), release attestation (`gate.rs`), memory hooks, checkpoints |
 | `memory/` | Per-target memory, "Since last run", acceptance |
 | `remediation.rs` | Generic example guidance per defect class |
 | `report/` | HTML, Markdown, SARIF, JSON and JUnit renderings of a run |

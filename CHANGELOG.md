@@ -2,6 +2,38 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.3.0] - 2026-11-18
+
+### Added
+
+- **Loop Engineering (OODA Adaptive Control Engine - `src/agent/react.rs`)**:
+  - Implemented closed-loop *Observe-Orient-Decide-Act (OODA)* controller for the Explorer stage.
+  - Added continuous anomaly detection monitoring runtime errors, HTTP 500 stack traces, and validation schema leaks.
+  - Dynamic mutation hypothesis synthesis powered by `ADAPTIVE_MUTATOR_ROLE` system prompts.
+  - Integrated `OscillationDamper` with signature-based repetition detection to eliminate infinite mutation cycling.
+  - Bounded wave execution strictly respecting global wall-clock, request count, and token budgets.
+
+- **Graph Engineering (StateGraph & Attack DAGs - `src/agent/pipeline/graph.rs`, `src/agent/plan/dag.rs`)**:
+  - Formalized typed `StateGraph` finite state machine governing the 6-station lifecycle: `Recon` $\to$ `Discovery` $\to$ `Plan` $\to$ `Execute` $\to$ `Verify` $\to$ `Gate`.
+  - Added conditional edge routing (`RoutingCondition::NormalProgression`, `AnomalyDetected`, `ReplayRequired`, `BudgetExhausted`).
+  - Added station iteration counters and infinite-loop guards (`MAX_STATION_ITERATIONS = 5`).
+  - Extended Attack DAG dependency engine with topological sorting and prerequisite execution guards (`execute_guarded`), preventing cascade false positives.
+  - Embedded execution telemetry (`GraphTelemetry`) into every run report.
+
+- **Prompt Engineering (Adversarial Defense & Role Specialization - `src/agent/prompts/`)**:
+  - Centralized role-specialized prompt templates across all 6 stations: Recon, Discovery, Plan, Execute, Verify, and Gate.
+  - Adversarial XML fencing (`<target_untrusted_content>`) and proactive sanitization (`neutralise_target_tags`) neutralizing prompt breakout and tag forgery.
+  - Strict JSON schema constraints and deterministic fallback mechanisms ensuring LLM outputs never corrupt pipeline state.
+
+- **Software Factory Engineering (Station Quality Gates & Signed Attestation - `src/agent/pipeline/gates.rs`)**:
+  - Formal station entrance and exit quality gates validating input completeness and verification contracts.
+  - Cryptographically signed release attestation (`SoftwareFactoryAttestation`) certifying OWASP ASVS V2–V14 compliance with a deterministic SHA-256 digest seal.
+  - Cryptographic evidence provenance in the Evidence Ledger.
+
+- **Autonomous Directives Engine & Command Center UI (`frontend/src/components/Composer.tsx`)**:
+  - Removed manual text inputs from Command Center; dynamically synthesizes directives via LLM from target surface.
+  - Live threat focus badges, security boundary rules, and unique canary token tracking.
+
 ## [3.2.0] - 2026-11-18
 
 Deep Agentic Software Factory Pipeline (Recon, Discovery, Plan, Execute, Verify, Gate), Dynamic Directives Synthesis Engine, Attack DAGs, Contextual Taint Juror, and Command Center Autonomous UI.

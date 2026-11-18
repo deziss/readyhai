@@ -7,9 +7,9 @@
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate.
 
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.2.0-brightgreen.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-3.3.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/tests-860%20Rust%20%7C%20144%20Vitest-informational.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-889%20Rust%20%7C%20144%20Vitest-informational.svg)](#testing)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)
 
 Point ReadyHai at a codebase, a container image, an API/web app, an SSH host, or an Android APK.  
@@ -63,6 +63,31 @@ The agent (`readyhai agent`, `POST /api/agent/run`, MCP `readyhai_agent_swarm`) 
 - **Station 4: Execution & Adaptive ReAct Loop (`src/agent/react.rs`).** Area workers execute tests across concurrent waves. When responses reveal anomalies (500 stack traces leaking SQL/source, 403 permission leaks, 422 schema validation errors), the ReAct loop formulates mutation hypotheses and triggers branching probe waves in real time.
 - **Station 5: Verification & Contextual Taint Juror (`src/agent/verify/juror.rs`).** Replays failing cases independently up to $k$ times (`READYHAI_VERIFY_K`). An LLM-powered **Juror** inspects Source-to-Sink taint reflection to eliminate false positives and automatically synthesizes unified diff remediation patches (`remediation_patch`) onto confirmed defects.
 - **Station 6: Readiness Gate & Software Factory Attestation (`src/agent/pipeline/gate.rs`).** Formulates an official **Software Factory Attestation Certificate** (`SoftwareFactoryAttestation`): evaluates release risk score (0–100), OWASP ASVS breakdown across V2–V14 categories, release directives, and signs off with a SHA-256 seal.
+
+### Quad-Engineering Disciplines
+
+ReadyHai unifies four foundational agentic engineering disciplines into a production-grade autonomous verification lifecycle:
+
+1. **Loop Engineering (OODA Adaptive Control)**
+   - Closed-loop *Observe-Orient-Decide-Act* control system implemented in `src/agent/react.rs`.
+   - Continuous anomaly detection observing HTTP responses for runtime errors, leaked stack traces, SQL syntax fragments, and schema validation failures.
+   - Dynamic mutation probe synthesis with oscillation damping (`OscillationDamper`) to prevent repetitive probe cycles.
+   - Bounded execution waves strictly respecting global wall-clock, request count, and LLM budget constraints.
+
+2. **Graph Engineering (StateGraph & Attack DAGs)**
+   - Type-safe `StateGraph` pipeline execution engine (`src/agent/pipeline/graph.rs`) with dynamic conditional routing (`RoutingCondition::NormalProgression`, `AnomalyDetected`, `ReplayRequired`, `BudgetExhausted`).
+   - Directed Acyclic Graph (Attack DAG) dependency model in `src/agent/plan/dag.rs` supporting topological sorting and prerequisite execution guards (`execute_guarded`), preventing false positive escalations when prerequisites fail.
+   - Execution graph telemetry (`GraphTelemetry`) capturing node transition counts, routing events, and loop bound limits for end-to-end auditability.
+
+3. **Prompt Engineering (Adversarial Defense & Role Specialization)**
+   - Centralized prompt templates in `src/agent/prompts/` specialized across all 6 pipeline stations: Recon, Discovery, Plan, Execute, Verify, and Gate.
+   - Untrusted target boundary protection using XML fences (`<target_untrusted_content>`) and proactive sanitization (`neutralise_target_tags`) preventing prompt injection attacks from adversarial payloads or reflected server inputs.
+   - Strict JSON schema constraints and deterministic fallback mechanisms ensuring LLM outputs never corrupt pipeline state.
+
+4. **Software Factory Engineering (Station Quality Gates & Signed Attestation)**
+   - Rigorous entrance and exit quality gates (`src/agent/pipeline/gates.rs`) governing transition boundaries between all 6 stations.
+   - Cryptographically verifiable release attestation (`SoftwareFactoryAttestation`) computing risk scores (0–100), OWASP ASVS V2–V14 category breakdowns, and signed with a deterministic SHA-256 digest seal.
+   - Fully auditable evidence ledger preserving cryptographic provenance across every observed vulnerability and verified defect.
 - **Shared QA checks.** With an OpenAPI spec the agent reuses the QA engine's case generator, response validator, error-leak catalog and latency limit (`src/qa/api`), reads the ids of existing records from collection endpoints and validates each one against the spec. On the eval fixture it finds 7 of 7 seeded bugs.
 - **Modular deep-security attacks (`src/agent/attacks/`).** Dedicated probe generators for JWT tampering (`alg:none`, stripped signatures, claim escalation, `kid` traversal), BFLA, reverse-proxy/header ACL bypasses (`/.`, `..;/`, `X-Forwarded-For`, `X-Original-URL`, `X-Rewrite-URL`), BOPLA excessive exposure & mass assignment, parameter-targeted Open Redirect / SSTI / multi-encoded path traversal / blind boolean & time-delay SQLi / command injection, OAST-backed blind SSRF, TOCTOU concurrency races, HTTP parameter pollution, and GraphQL introspection.
 - **In-process OAST & BrowserSecurity.** An ephemeral loopback HTTP listener (`src/agent/oast.rs`) correlates out-of-band `__OAST_URL__` SSRF callbacks during execution and verification, while interactive Playwright (`src/agent/browser_sec.rs`, `runners/playwright/agent_browser.mjs`) verifies DOM XSS, DOM sinks, storage/cookie hygiene, exposed source maps, and clickjacking without storing raw secret values.
