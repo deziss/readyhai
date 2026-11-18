@@ -30,6 +30,13 @@ export interface DiscoveredTarget {
   routes: DiscoveredRoute[];
 }
 
+export interface SynthesizedDirectives {
+  focus_areas: string[];
+  boundary_rules: string[];
+  rules_of_engagement: string;
+  canary_token?: string;
+}
+
 export interface StatefulStep {
   step_number: number;
   actor: string; // "alice", "bob", "anon", "admin"
@@ -281,6 +288,8 @@ export interface AgentRunData {
   run_id: string;
   target: string;
   spec_url?: string;
+  directives?: string;
+  synthesized_directives?: SynthesizedDirectives;
   timestamp: string;
   is_spa: boolean;
   app_architecture?: string;
@@ -307,6 +316,8 @@ export interface AgentRunFull {
   thinking?: boolean;
   model_tier?: ModelTier | string;
   thinking_budget_tokens?: number;
+  directives?: string;
+  synthesized_directives?: SynthesizedDirectives;
   app_architecture?: string;
   framework?: string;
   detected_tech?: string[];
@@ -417,6 +428,8 @@ export interface AgentRunRecord {
   profile?: string;
   provider?: string;
   model?: string;
+  directives?: string | null;
+  synthesized_directives?: SynthesizedDirectives | null;
   status?: string;
   error?: string | null;
   started_at?: string;

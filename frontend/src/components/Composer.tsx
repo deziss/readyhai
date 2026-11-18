@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import {
   Bot,
   BrainCircuit,
@@ -10,12 +10,14 @@ import {
   Globe,
   Loader2,
   Play,
-  Plus,
+  RefreshCw,
   Search,
+  Shield,
   ShieldAlert,
+  Sparkles,
   Zap,
 } from "lucide-react";
-import type { DiscoveredTarget, ModelTier } from "@/types/agent";
+import type { DiscoveredTarget, ModelTier, SynthesizedDirectives } from "@/types/agent";
 import { apiRequest, useApiTokenVersion } from "@/lib/api";
 import { copyTextSafely } from "@/lib/clipboard";
 
@@ -85,18 +87,256 @@ const TIERS: { id: ModelTier; label: string; tokens: string; tokensNum: number; 
   },
 ];
 
-const DIRECTIVE_HINTS: { label: string; text: string }[] = [
-  { label: "Auth session check", text: "Check unauthenticated access to /api/auth/session" },
-  { label: "100 KB boundary", text: "Probe 100KB boundary size on chat input" },
-  { label: "Prompt injection", text: "Inject prompt override canary on chat" },
-];
-
 const QUICK_TARGETS = ["https://myvapi.com", "https://api.example.com", "http://localhost:3000", "http://127.0.0.1:8080"];
 
 const FIELD = "rounded-sm border border-rh-line bg-rh-bg px-3 py-2 text-ui text-rh-text placeholder:text-rh-muted";
 const LABEL = "text-ui font-medium text-rh-text";
 const SECONDARY_BTN =
   "inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-sm border border-rh-line px-3 py-2 text-ui font-medium text-rh-text hover:bg-rh-raised disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent";
+
+export function generateDefaultDirectives(
+  mode: Mode,
+  target: string,
+  discoveredData: DiscoveredTarget | null
+): SynthesizedDirectives {
+  const host = (() => {
+    try {
+      return new URL(target).hostname || "target";
+    } catch {
+      return target || "target";
+    }
+  })();
+
+  const routes = discoveredData?.routes || [];
+  const hasApi = routes.some((r) => r.is_api || r.path.startsWith("/api"));
+
+  if (mode === "adversarial") {
+    return {
+      focus_areas: [
+        hasApi ? "BOLA on API endpoints" : "BOLA / Tenant Isolation",
+        "IDOR on Object Identifiers",
+        "Prompt Injection Canaries",
+        "Auth Boundaries & Session Hijacking",
+        "JWT Algorithm Confusion",
+      ],
+      boundary_rules: [
+        `Stay within scope of ${host}`,
+        "Non-destructive fuzzing only; skip DELETE operations",
+        "Rate-limit safe probes to prevent denial of service",
+      ],
+      rules_of_engagement:
+        "Focus heavily on authorization bypass, BOLA, IDOR, token forgery, and prompt injection canaries.",
+      canary_token: "CANARY_ADV_9F2B",
+    };
+  }
+
+  if (mode === "contract") {
+    return {
+      focus_areas: [
+        "OpenAPI Schema Compliance",
+        "Boundary Values & Off-By-One",
+        "Negative JSON Deserialization",
+        "HTTP Status Code Invariants",
+        "Content-Type Validation",
+      ],
+      boundary_rules: [
+        `Strict adherence to ${host} schema paths`,
+        "Do not mutate parameter types outside schema specs",
+        "Monitor 4xx/5xx leaks",
+      ],
+      rules_of_engagement:
+        "Focus on OpenAPI contract compliance, boundary values, negative JSON parsing, and HTTP status codes.",
+      canary_token: "CANARY_SPEC_4D8A",
+    };
+  }
+
+  // autonomous mode
+  return {
+    focus_areas: [
+      "BOLA & Privilege Escalation",
+      "IDOR & Access Control",
+      "Prompt Injections & Guardrails",
+      "Auth Boundaries",
+      "Resilience & Rate Limiting",
+    ],
+    boundary_rules: [
+      `Stay within discovered routes on ${host}`,
+      "Safeguard production state",
+      "Zero downtime fuzzing",
+    ],
+    rules_of_engagement: "Strict QA and verify resilience, contracts, and authz",
+    canary_token: "CANARY_AUTO_1C7E",
+  };
+}
+
+export function formatSynthesizedDirectives(directives: SynthesizedDirectives): string {
+  const parts: string[] = [];
+  if (directives.rules_of_engagement) {
+    parts.push(directives.rules_of_engagement);
+  }
+  if (directives.focus_areas && directives.focus_areas.length > 0) {
+    parts.push(`Focus: ${directives.focus_areas.join(", ")}`);
+  }
+  if (directives.boundary_rules && directives.boundary_rules.length > 0) {
+    parts.push(`Boundaries: ${directives.boundary_rules.join(", ")}`);
+  }
+  if (directives.canary_token) {
+    parts.push(`Canary: ${directives.canary_token}`);
+  }
+  return parts.join("\n");
+}
+
+export interface AutonomousDirectivesEngineProps {
+  target: string;
+  specUrl?: string;
+  activeMode: Mode;
+  discoveredData: DiscoveredTarget | null;
+  directives: string;
+  setDirectives: (d: string) => void;
+}
+
+export function AutonomousDirectivesEngine({
+  target,
+  specUrl,
+  activeMode,
+  discoveredData,
+  directives: _directives,
+  setDirectives,
+}: AutonomousDirectivesEngineProps) {
+  const [synthesized, setSynthesized] = useState<SynthesizedDirectives>(() =>
+    generateDefaultDirectives(activeMode, target, discoveredData)
+  );
+  const [isSynthesizing, setIsSynthesizing] = useState(false);
+  const tokenVersion = useApiTokenVersion();
+
+  const synthesize = useCallback(
+    async (modeToUse: Mode = activeMode) => {
+      setIsSynthesizing(true);
+      try {
+        const res = await apiRequest<SynthesizedDirectives>("/api/agent/directives/synthesize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            target: target || "http://localhost:3000",
+            spec_url: specUrl || null,
+            mode: modeToUse,
+            discovered_routes: discoveredData?.routes || [],
+          }),
+          label: "Synthesize directives",
+        });
+
+        if (res.ok && res.data && (res.data.focus_areas || res.data.rules_of_engagement)) {
+          const loaded: SynthesizedDirectives = {
+            focus_areas: Array.isArray(res.data.focus_areas) ? res.data.focus_areas : [],
+            boundary_rules: Array.isArray(res.data.boundary_rules) ? res.data.boundary_rules : [],
+            rules_of_engagement:
+              res.data.rules_of_engagement ||
+              generateDefaultDirectives(modeToUse, target, discoveredData).rules_of_engagement,
+            canary_token: res.data.canary_token,
+          };
+          setSynthesized(loaded);
+          setDirectives(formatSynthesizedDirectives(loaded));
+        } else {
+          const fallback = generateDefaultDirectives(modeToUse, target, discoveredData);
+          setSynthesized(fallback);
+          setDirectives(formatSynthesizedDirectives(fallback));
+        }
+      } catch {
+        const fallback = generateDefaultDirectives(modeToUse, target, discoveredData);
+        setSynthesized(fallback);
+        setDirectives(formatSynthesizedDirectives(fallback));
+      } finally {
+        setIsSynthesizing(false);
+      }
+    },
+    [activeMode, target, specUrl, discoveredData, setDirectives]
+  );
+
+  useEffect(() => {
+    const initial = generateDefaultDirectives(activeMode, target, discoveredData);
+    setDirectives(formatSynthesizedDirectives(initial));
+    synthesize(activeMode);
+  }, [target, discoveredData, activeMode, tokenVersion]);
+
+  return (
+    <div className="flex flex-col gap-3 rounded-sm border border-rh-line bg-rh-bg/40 p-3.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-rh-primary" aria-hidden="true" />
+          <h3 className="text-ui font-semibold text-rh-text">Autonomous Directives</h3>
+          <span className="rounded-sm bg-rh-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-rh-primary">
+            Auto-Engine
+          </span>
+        </div>
+        <button
+          id="btn-synthesize-directives"
+          type="button"
+          aria-label="Synthesize Directives"
+          onClick={() => synthesize(activeMode)}
+          disabled={isSynthesizing}
+          title="Re-synthesize directives from target surface and posture"
+          className="inline-flex cursor-pointer items-center gap-1.5 rounded-sm border border-rh-line bg-rh-surface px-2.5 py-1 text-xs font-medium text-rh-text hover:bg-rh-raised disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isSynthesizing ? (
+            <>
+              <Loader2 className="h-3 w-3 animate-spin text-rh-primary" aria-hidden="true" />
+              Synthesizing...
+            </>
+          ) : (
+            <>
+              <RefreshCw className="h-3 w-3 text-rh-primary" aria-hidden="true" />
+              Synthesize Directives
+            </>
+          )}
+        </button>
+      </div>
+
+      {/* Rules of Engagement */}
+      <div className="rounded-sm border border-rh-line bg-rh-surface p-2.5 text-xs text-rh-text leading-relaxed">
+        <span className="mb-1 block text-[11px] font-medium text-rh-muted">Rules of engagement</span>
+        <p className="font-mono text-ui">{synthesized.rules_of_engagement}</p>
+      </div>
+
+      {/* Active Focus Pills */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs font-medium text-rh-muted">Active Focus Areas</span>
+        <div className="flex flex-wrap gap-1.5" role="list" aria-label="Active focus areas">
+          {synthesized.focus_areas.map((focus) => (
+            <span
+              key={focus}
+              role="listitem"
+              className="inline-flex items-center gap-1.5 rounded-full border border-rh-primary/30 bg-rh-primary/10 px-2.5 py-0.5 text-xs font-medium text-rh-text"
+            >
+              <span className="h-1.5 w-1.5 rounded-full bg-rh-primary" aria-hidden="true" />
+              {focus}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {/* Boundary Rules */}
+      <div className="flex flex-col gap-1.5">
+        <span className="text-xs font-medium text-rh-muted">Boundary Rules</span>
+        <ul className="flex flex-col gap-1 text-xs text-rh-muted" aria-label="Boundary rules">
+          {synthesized.boundary_rules.map((rule, idx) => (
+            <li key={idx} className="flex items-center gap-1.5 text-xs text-rh-text">
+              <Shield className="h-3.5 w-3.5 shrink-0 text-rh-cond" aria-hidden="true" />
+              <span>{rule}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* Canary Token (if available) */}
+      {synthesized.canary_token && (
+        <div className="flex items-center justify-between gap-2 rounded-sm border border-rh-line bg-rh-surface/80 px-2.5 py-1 text-xs">
+          <span className="text-rh-muted">Canary token:</span>
+          <span className="font-mono font-medium text-rh-info">{synthesized.canary_token}</span>
+        </div>
+      )}
+    </div>
+  );
+}
 
 /**
  * The agent command center. The header and mode switch are pinned at the top, the Launch button is
@@ -150,7 +390,6 @@ export function Composer({
     }[modelTier] || "High";
   const tierDesc = TIERS.find((t) => t.id === modelTier)?.desc;
 
-  const directivesBytes = typeof TextEncoder !== "undefined" ? new TextEncoder().encode(directives).length : directives.length;
   // not in an effect, so there is no extra cascading render).
   const [syncedMaxSteps, setSyncedMaxSteps] = useState(maxSteps);
   if (syncedMaxSteps !== maxSteps) {
@@ -180,13 +419,8 @@ export function Composer({
 
   function handleModeChange(mode: Mode) {
     setActiveMode(mode);
-    if (mode === "adversarial") {
-      setDirectives("Focus heavily on authorization bypass, BOLA, IDOR, token forgery, and prompt injection canaries.");
-    } else if (mode === "contract") {
-      setDirectives("Focus on OpenAPI contract compliance, boundary values, negative JSON parsing, and HTTP status codes.");
-    } else {
-      setDirectives("Strict QA and verify resilience, contracts, and authz");
-    }
+    const synth = generateDefaultDirectives(mode, target, discoveredData);
+    setDirectives(formatSynthesizedDirectives(synth));
   }
 
   // Arrow keys move between modes (roving tabindex), as expected for a radio group.
@@ -198,12 +432,6 @@ export function Composer({
     e.preventDefault();
     handleModeChange(MODES[next].id);
     modeRefs.current[next]?.focus();
-  }
-
-  function appendDirective(hint: string) {
-    if (!directives.includes(hint)) {
-      setDirectives(directives ? `${directives}; ${hint}` : hint);
-    }
   }
 
   return (
@@ -394,51 +622,15 @@ export function Composer({
           />
         </div>
 
-        <div className="flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <label htmlFor="composer-directives" className={LABEL}>
-              Agent directives
-            </label>
-            <span
-              className={`text-[11px] tabular-nums font-mono ${
-                directivesBytes > MAX_DIRECTIVES_BYTES
-                  ? "text-rh-nogo font-semibold"
-                  : directivesBytes > MAX_DIRECTIVES_BYTES * 0.85
-                    ? "text-rh-cond"
-                    : "text-rh-muted"
-              }`}
-            >
-              {directivesBytes.toLocaleString()} / {MAX_DIRECTIVES_BYTES.toLocaleString()} bytes
-            </span>
-          </div>
-          <textarea
-            id="composer-directives"
-            rows={3}
-            value={directives}
-            onChange={(e) => setDirectives(e.target.value)}
-            placeholder="e.g. Focus on unauthenticated session access, IDOR tenant boundaries, and prompt injection canaries"
-            className={`${FIELD} resize-none leading-relaxed ${directivesBytes > MAX_DIRECTIVES_BYTES ? "border-rh-nogo focus:border-rh-nogo" : ""}`}
-          />
-          {directivesBytes > MAX_CUSTOM_INSTRUCTIONS_BYTES && (
-            <p className="text-[11px] text-rh-nogo">
-              Directives exceed {MAX_DIRECTIVES_BYTES.toLocaleString()} bytes limit ({directivesBytes.toLocaleString()} bytes). Please shorten or configure READYHAI_MAX_CUSTOM_INSTRUCTIONS_BYTES.
-            </p>
-          )}
-          <div className="flex flex-wrap gap-1.5">
-            {DIRECTIVE_HINTS.map((hint) => (
-              <button
-                key={hint.label}
-                type="button"
-                onClick={() => appendDirective(hint.text)}
-                title={hint.text}
-                className="inline-flex cursor-pointer items-center gap-1 rounded-sm border border-rh-line bg-rh-bg px-2 py-0.5 text-xs text-rh-muted hover:text-rh-text"
-              >
-                <Plus className="h-3 w-3" aria-hidden="true" />
-                {hint.label}
-              </button>
-            ))}
-          </div>
-        </div>
+        {/* Autonomous Directives Engine */}
+        <AutonomousDirectivesEngine
+          target={target}
+          specUrl={specUrl}
+          activeMode={activeMode}
+          discoveredData={discoveredData}
+          directives={directives}
+          setDirectives={setDirectives}
+        />
 
         {/* Agent settings */}
         <div className="flex flex-col gap-4 rounded-sm border border-rh-line bg-rh-bg p-3">
