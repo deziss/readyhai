@@ -147,6 +147,10 @@ pub fn build_router(app: Arc<App>) -> Router {
             get(agent_discover).post(agent_discover_post),
         )
         .route(
+            "/api/agent/directives/synthesize",
+            post(agent_directives_post),
+        )
+        .route(
             "/api/agent/crawl",
             get(agent_crawl_get).post(agent_crawl_post),
         )

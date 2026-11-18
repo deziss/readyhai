@@ -2,9 +2,9 @@
 
 use super::guards::{blocking, err, guard, guard_repo, guard_spec, offload, same_target};
 use super::types::{
-    App, ApprovalPayload, CancelOutcome, CrawlBody, CrawlQuery, DiscoverBody, DiscoverQuery,
-    MemoryAccept, MemoryQuery, Principal, RetestError, RetestPayload, clamp_pages, clip_notes,
-    MAX_LISTED_RUNS, MAX_RUN_JSON_BYTES, MODEL_TIERS, PROFILES,
+    App, ApprovalPayload, CancelOutcome, CrawlBody, CrawlQuery, DirectivesSynthesizeBody,
+    DiscoverBody, DiscoverQuery, MemoryAccept, MemoryQuery, Principal, RetestError, RetestPayload,
+    clamp_pages, clip_notes, MAX_LISTED_RUNS, MAX_RUN_JSON_BYTES, MODEL_TIERS, PROFILES,
 };
 use super::worker::run_in_progress;
 use crate::{network, scope};
@@ -603,6 +603,51 @@ pub async fn agent_discover(State(app): State<Arc<App>>, Query(q): Query<Discove
 
 pub async fn agent_discover_post(State(app): State<Arc<App>>, Json(b): Json<DiscoverBody>) -> Response {
     discover(&app, b.target, b.spec_url).await
+}
+
+pub async fn agent_directives_post(
+    State(app): State<Arc<App>>,
+    Json(b): Json<DirectivesSynthesizeBody>,
+) -> Response {
+    let eg = match guard(&app, &b.target, false).await {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    let spec = match guard_spec(&app, b.spec_url).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let url = eg.url.clone();
+    match blocking(&app, move || {
+        let llm_cfg = crate::llm::LlmConfig::from_env().ok();
+        let mut budget = crate::llm::Budget::new(3, std::time::Duration::from_secs(30));
+        let directives = if let Some(ref cfg) = llm_cfg {
+            crate::agent::recon::synthesize_directives(Some((cfg, &mut budget)), &url, spec.as_deref(), None)
+        } else {
+            crate::agent::recon::synthesize_directives(None, &url, spec.as_deref(), None)
+        };
+        (url, directives)
+    })
+    .await
+    {
+        Ok((target, directives)) => {
+            let custom_instructions = directives.as_custom_instructions();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "target": target,
+                    "directives": directives,
+                    "custom_instructions": custom_instructions,
+                    "focus_areas": directives.focus_areas,
+                    "boundary_rules": directives.boundary_rules,
+                    "rules_of_engagement": directives.rules_of_engagement,
+                    "canary_token": directives.canary_token,
+                })),
+            )
+                .into_response()
+        }
+        Err(r) => r,
+    }
 }
 
 
