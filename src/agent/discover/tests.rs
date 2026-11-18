@@ -1054,4 +1054,45 @@ mod site_tests {
         assert!(d_tight.routes.iter().any(|r| r.path == "/.env"));
         assert!(!d_tight.routes.iter().any(|r| r.path == "/.aws/credentials"));
     }
+
+    #[test]
+    fn test_parse_semantic_discovered_routes() {
+        let raw = r#"[
+            {"path": "/api/v1/internal/health", "method": "GET", "reasoning": "Standard Spring/Actuator monitor path"},
+            {"path": "/api/v1/users/{id}/permissions", "method": "GET", "reasoning": "Inferred RBAC boundary from auth endpoints"}
+        ]"#;
+        let routes = super::semantic::parse_semantic_routes(raw).expect("parse semantic routes");
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].path, "/api/v1/internal/health");
+        assert_eq!(routes[0].method, "GET");
+        assert_eq!(routes[1].path, "/api/v1/users/{id}/permissions");
+    }
+
+    #[test]
+    fn test_discover_semantic_routes_deterministic() {
+        let tech = TargetTechProfile {
+            app_architecture: "Microservices API".to_string(),
+            primary_framework: "Spring Boot".to_string(),
+            detected_signals: vec!["Spring Actuator".to_string()],
+            ..Default::default()
+        };
+        let known = vec![];
+        let directives = crate::agent::recon::SynthesizedDirectives {
+            focus_areas: vec!["BOLA/IDOR on tenant endpoints".to_string()],
+            boundary_rules: vec!["Stay in scope".to_string()],
+            rules_of_engagement: "Security test".to_string(),
+            canary_token: "CANARY_TEST".to_string(),
+        };
+        let routes = super::semantic::discover_semantic_routes(
+            None,
+            "https://example.com",
+            &tech,
+            &known,
+            Some(&directives),
+        );
+        assert!(!routes.is_empty());
+        assert!(routes.iter().any(|r| r.path == "/actuator/health"));
+        assert!(routes.iter().any(|r| r.path == "/api/v1/tenant/settings"));
+        assert!(routes.iter().all(|r| r.source == "semantic"));
+    }
 }
