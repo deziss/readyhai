@@ -46,6 +46,8 @@ fn res(id: &str, tech: &str, status: &str) -> CaseExecutionResult {
         evidence_detail: None,
         stateful_chain: None,
         concurrency_burst_results: None,
+        response_status: Some(200),
+        response_body: None,
     }
 }
 

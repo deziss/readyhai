@@ -50,6 +50,8 @@ mod tests {
             evidence_detail: None,
             stateful_chain: None,
             concurrency_burst_results: None,
+            response_status: Some(500),
+            response_body: None,
         }
     }
 

@@ -62,6 +62,7 @@ pub(crate) fn run_stateful_case(
         r.reproduction_curl.clone(),
     );
     res.status_code = Some(r.final_status);
+    res.response_status = Some(r.final_status);
     res.latency_ms = r.total_latency_ms;
     res.stateful_chain = Some(r.steps.clone());
     res.evidence_file = Some(evidence_rel_path(&c.id));
