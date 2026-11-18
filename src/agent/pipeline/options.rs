@@ -225,6 +225,7 @@ pub(crate) fn blank_report(run_id: &str, target: &str, profile: &str, dry_run: b
         agents: None,
         directives: None,
         attestation: None,
+        graph_telemetry: None,
         since_last_run: None,
     }
 }

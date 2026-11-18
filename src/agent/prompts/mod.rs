@@ -88,10 +88,11 @@ fn target_tag_re() -> &'static regex::Regex {
     R.get_or_init(|| regex::Regex::new(r"(?i)<\s*/?\s*target_untrusted_content\b[^>]*>?").unwrap())
 }
 
-/// Neutralizes any attempt within target content to forge `<target_untrusted_content>` or `</target_untrusted_content>`.
+/// Neutralizes any attempt within target content to forge `<target_untrusted_content>` or `<data>` fence tags.
 pub fn neutralise_target_tags(s: &str) -> String {
+    let neut = crate::llm::untrusted::neutralise(s);
     target_tag_re()
-        .replace_all(s, "[target-content-tag]")
+        .replace_all(&neut, "[target-content-tag]")
         .into_owned()
 }
 

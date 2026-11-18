@@ -453,6 +453,7 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
         agents: None,
         directives: None,
         attestation: None,
+        graph_telemetry: None,
         since_last_run: None,
     }
 }

@@ -11,6 +11,7 @@ use super::dag::{AttackDag, AttackDagNode};
 use super::helpers::{key_of, mk, template_regex, user_or_anon};
 use super::surface::surface_of;
 use super::types::SeededRng;
+use crate::agent::prompts::plan::{build_dag_planner_system_prompt, build_dag_planner_user_prompt};
 use crate::llm::untrusted::{self, clean, fence_capped};
 use crate::llm::{Budget, LlmConfig, ask_typed, clamp_thinking_budget};
 
@@ -444,19 +445,19 @@ pub fn synthesize_attack_dag(
             .map(|r| serde_json::json!({"method": r.method, "path": r.path, "status": r.status_code, "secured": r.secured}))
             .collect();
 
-        let prompt = format!(
-            "Target under test: {}\nKnown endpoints: {}\nOperational Directives: {}\n\
-            Synthesize an Attack DAG with 3 to 6 interdependent attack steps exploring authorization boundaries, \
-            privilege escalation, and sensitive resource access. Ensure topological acyclicity.",
+        let system = build_dag_planner_system_prompt();
+        let prompt = build_dag_planner_user_prompt(
             target,
-            serde_json::to_string(&endpoints).unwrap_or_default(),
-            directives.unwrap_or("None")
+            &endpoints,
+            directives,
+            &[],
+            6,
         );
 
         let res = ask_typed::<AttackDagOutput>(
             cfg,
             budget,
-            &untrusted::system(ATTACK_DAG_PLANNER_ROLE),
+            &system,
             &prompt,
             |out| {
                 if out.nodes.is_empty() {

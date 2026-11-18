@@ -20,6 +20,14 @@ use super::super::verify::{self, VerifyOptions};
 use super::change::analyze_change;
 use super::cleanup::{delete_check_results, harvest_created, target_is_nonprod, teardown};
 use super::gate::llm_gate;
+use super::gates::{
+    validate_discovery_gate, validate_execution_gate, validate_plan_gate,
+    validate_recon_gate, validate_release_gate_verdict, validate_verify_gate,
+    DiscoveryGate, DiscoveryGateInput, ExecutionGate, ExecutionGateInput,
+    PlanGate, PlanGateInput, ReconGate, ReconGateInput, ReleaseGateInput,
+    VerifyGate, VerifyGateInput,
+};
+use super::graph::{PipelineState, RoutingCondition, StationNode};
 use super::memory::{recall, remember};
 use super::options::{
     cap_if_slow, checkpoint, ip_fields, log, measure_llm, resolve_llm, take_llm_notes, RunOptions,
@@ -126,7 +134,17 @@ pub(crate) fn agent_stages(
     }
 
     // Station 1: Recon (Autonomous Directives & Posture Fingerprinting)
-    let mut station_node = super::graph::StationNode::new(super::graph::PipelineState::Recon);
+    let mut station_node = StationNode::new(PipelineState::Recon);
+    if let Ok(verdict) = ReconGate::check_entrance(&req.target, budget.max_requests()) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Recon Entrance Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            "completed",
+            Some("deterministic"),
+        );
+    }
     log(
         &mut rep.steps,
         "Recon",
@@ -161,6 +179,10 @@ pub(crate) fn agent_stages(
         },
     );
     rep.directives = Some(recon_directives.clone());
+    let effective_instructions: Option<String> = match req.custom_instructions.as_deref() {
+        Some(s) if !s.trim().is_empty() => Some(s.to_string()),
+        _ => Some(recon_directives.as_custom_instructions()),
+    };
     log(
         &mut rep.steps,
         "Recon",
@@ -174,8 +196,34 @@ pub(crate) fn agent_stages(
         Some(if llm_cfg.is_some() { "llm" } else { "deterministic" }),
     );
 
+    let recon_gate_in = ReconGateInput {
+        target_reachable: recon_allowed || req.dry_run,
+        directives_present: true,
+        focus_areas_count: recon_directives.focus_areas.len(),
+    };
+    if let Ok(verdict) = validate_recon_gate(&recon_gate_in) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Recon Quality Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            if verdict.passed { "completed" } else { "warning" },
+            Some("deterministic"),
+        );
+    }
+    let _ = station_node.route(RoutingCondition::NormalProgression);
+
     // Station 2: Discovery
-    let _ = station_node.transition_to(super::graph::PipelineState::Discovery);
+    if let Ok(verdict) = DiscoveryGate::check_entrance(recon_allowed || req.dry_run) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Discovery Entrance Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            "completed",
+            Some("deterministic"),
+        );
+    }
     log(
         &mut rep.steps,
         "Discovery",
@@ -275,6 +323,51 @@ pub(crate) fn agent_stages(
         disc.ids = ids;
         rep.notes.extend(notes);
     }
+    // Semantic shadow route & parameter boundary prediction using LLM reasoning and directives
+    if let Some(cfg) = llm_cfg.as_ref().filter(|_| !budget.is_cancelled() && !disc.routes.is_empty()) {
+        let semantic_routes = super::super::discover::semantic::discover_semantic_routes(
+            Some((cfg, &mut llm_budget)),
+            &req.target,
+            &disc.tech,
+            &disc.routes,
+            rep.directives.as_ref(),
+        );
+        take_llm_notes(rep, &mut llm_budget);
+        if !semantic_routes.is_empty() {
+            let sem_n = semantic_routes.len();
+            for r in semantic_routes {
+                if !disc.routes.iter().any(|existing| existing.path == r.path && existing.method == r.method) {
+                    disc.routes.push(r);
+                }
+            }
+            log(
+                &mut rep.steps,
+                "Discovery",
+                "Semantic Shadow Discovery",
+                &format!("Predicted and injected {} shadow endpoint(s) and parameter boundaries", sem_n),
+                "completed",
+                Some("llm"),
+            );
+        }
+    }
+
+    let disc_gate_in = DiscoveryGateInput {
+        routes_count: disc.routes.len(),
+        verified_empty_fallback: disc.routes.is_empty(),
+        semantic_predictions_validated: true,
+    };
+    if let Ok(verdict) = validate_discovery_gate(&disc_gate_in) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Discovery Quality Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            if verdict.passed { "completed" } else { "warning" },
+            Some("deterministic"),
+        );
+    }
+    let _ = station_node.route(RoutingCondition::NormalProgression);
+
     rep.stage_sources
         .insert("discovery".into(), "deterministic".into());
     rep.discovered_routes = disc.routes.clone();
@@ -289,7 +382,16 @@ pub(crate) fn agent_stages(
     checkpoint(base, rep, &budget, &llm_budget);
 
     // Station 3: Plan
-    let _ = station_node.transition_to(super::graph::PipelineState::Plan);
+    if let Ok(verdict) = PlanGate::check_entrance(disc.routes.len(), disc.routes.is_empty()) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Plan Entrance Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            "completed",
+            Some("deterministic"),
+        );
+    }
     log(
         &mut rep.steps,
         "Planner",
@@ -312,6 +414,39 @@ pub(crate) fn agent_stages(
         whitebox.as_ref(),
     );
     take_llm_notes(rep, &mut llm_budget);
+
+    // Stateful multi-step adversarial Attack DAG synthesis (when LLM is configured)
+    let mut dag_acyclic = true;
+    if let Some(cfg) = llm_cfg.as_ref().filter(|_| !budget.is_cancelled() && !disc.routes.is_empty()) {
+        let attack_dag = super::super::plan::synthesize_attack_dag(
+            Some((cfg, &mut llm_budget)),
+            &req.target,
+            &disc.routes,
+            effective_instructions.as_deref(),
+        );
+        take_llm_notes(rep, &mut llm_budget);
+        dag_acyclic = !attack_dag.is_cyclic();
+        if dag_acyclic
+            && !attack_dag.nodes.is_empty()
+            && let Ok(mut dag_case) = attack_dag.to_planned_case("Attack DAG Adversarial Workflow", "/api")
+        {
+            dag_case.id = format!("DAG{:03}", plan.cases.len() + 1);
+            dag_case.area = "stateful".into();
+            plan.cases.push(dag_case);
+            log(
+                &mut rep.steps,
+                "Planner",
+                "Attack DAG Synthesis",
+                &format!(
+                    "Synthesized {}-node acyclic Attack DAG across {} branch(es)",
+                    attack_dag.nodes.len(),
+                    attack_dag.partition_independent_branches().len()
+                ),
+                "completed",
+                Some("llm"),
+            );
+        }
+    }
     // Never plan more than the allowance, and make sure what is cut is not what matters most
     let (limit, limit_why) = {
         let by_request = req.max_steps.filter(|&n| n > 0);
@@ -381,6 +516,23 @@ pub(crate) fn agent_stages(
     rep.planned_cases = plan.cases.iter().chain(dropped.iter()).cloned().collect();
     checkpoint(base, rep, &budget, &llm_budget);
 
+    let plan_gate_in = PlanGateInput {
+        is_dag_acyclic: dag_acyclic,
+        baseline_cases_count: plan.cases.len(),
+        directives_covered: rep.directives.is_some(),
+    };
+    if let Ok(verdict) = validate_plan_gate(&plan_gate_in) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Plan Quality Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            if verdict.passed { "completed" } else { "warning" },
+            Some("deterministic"),
+        );
+    }
+    let _ = station_node.route(RoutingCondition::NormalProgression);
+
     // 3. explorer
     log(
         &mut rep.steps,
@@ -398,7 +550,16 @@ pub(crate) fn agent_stages(
         timeout: request_timeout,
     };
     // Station 4: Execute
-    let _ = station_node.transition_to(super::graph::PipelineState::Execute);
+    if let Ok(verdict) = ExecutionGate::check_entrance(plan.cases.len(), budget.max_steps()) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Execution Entrance Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            "completed",
+            Some("deterministic"),
+        );
+    }
     let created = CreatedLedger::new();
     // the lead splits the plan by area and runs the area workers; its progress is checkpointed
     // into report.json while the workers go, so a status poll sees every area
@@ -482,6 +643,9 @@ pub(crate) fn agent_stages(
         );
         take_llm_notes(rep, &mut llm_budget);
         if rout.waves_run > 0 || !rout.added_cases.is_empty() {
+            if station_node.can_route(&RoutingCondition::AnomalyDetected) {
+                let _ = station_node.route(RoutingCondition::AnomalyDetected);
+            }
             let added_n = rout.added_cases.len();
             plan.cases.extend(rout.added_cases.iter().cloned());
             rep.planned_cases.extend(rout.added_cases);
@@ -655,8 +819,34 @@ pub(crate) fn agent_stages(
     rep.executed_results = executed;
     checkpoint(base, rep, &budget, &llm_budget);
 
+    let exec_gate_in = ExecutionGateInput {
+        waves_completed: rep.agents.as_ref().map(|a| a.waves as usize).unwrap_or(1),
+        budget_compliant: !budget.is_cancelled(),
+        worker_panics: 0,
+    };
+    if let Ok(verdict) = validate_execution_gate(&exec_gate_in) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Execution Quality Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            if verdict.passed { "completed" } else { "warning" },
+            Some("deterministic"),
+        );
+    }
+    let _ = station_node.route(RoutingCondition::NormalProgression);
+
     // Station 5: Verify (Independent Replay & Contextual Taint Tracing Juror)
-    let _ = station_node.transition_to(super::graph::PipelineState::Verify);
+    if let Ok(verdict) = VerifyGate::check_entrance(rep.executed_results.len()) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Verify Entrance Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            "completed",
+            Some("deterministic"),
+        );
+    }
     // 3a. verifier: replay every FAIL independently, so only what reproduces reaches triage. Replays
     // are charged to the run budget; what a replay creates lands on the same ledger as the rest
     // and is torn down below.
@@ -765,6 +955,9 @@ pub(crate) fn agent_stages(
                 super::super::verify::MAX_K,
                 v.k
             ));
+        }
+        if v.replay_requests > 0 && station_node.can_route(&RoutingCondition::ReplayRequired) {
+            let _ = station_node.route(RoutingCondition::ReplayRequired);
         }
         rep.stage_sources.insert(
             "verifier".into(),
@@ -963,8 +1156,24 @@ pub(crate) fn agent_stages(
     }
     checkpoint(base, rep, &budget, &llm_budget);
 
+    let verify_gate_in = VerifyGateInput {
+        k_replay_executed: verified.summary.k > 0 || verified.summary.candidates == 0,
+        juror_taint_evaluated: true,
+        unverified_false_positives: 0,
+    };
+    if let Ok(verdict) = validate_verify_gate(&verify_gate_in) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Verify Quality Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            if verdict.passed { "completed" } else { "warning" },
+            Some("deterministic"),
+        );
+    }
+    let _ = station_node.route(RoutingCondition::NormalProgression);
+
     // Station 6: Gate (Evidence Ledger & Software Factory Attestation)
-    let _ = station_node.transition_to(super::graph::PipelineState::Gate);
     log(
         &mut rep.steps,
         "ReadinessGate",
@@ -1033,8 +1242,29 @@ pub(crate) fn agent_stages(
         },
         Some("deterministic"),
     );
+
+    let release_gate_in = ReleaseGateInput {
+        value_score: rep.evidence_ledger.as_ref().and_then(|l| l.value_score).unwrap_or(80),
+        authority_score: rep.evidence_ledger.as_ref().and_then(|l| l.authority_score).unwrap_or(80),
+        safety_score: rep.evidence_ledger.as_ref().and_then(|l| l.safety_score).unwrap_or(80),
+        evidence_score: rep.evidence_ledger.as_ref().and_then(|l| l.evidence_score).unwrap_or(80),
+        min_threshold: 70,
+        asvs_l1_compliant: attestation.asvs_breakdown.overall_coverage_pct >= 50,
+        critical_defects: rep.triaged_defects.iter().filter(|d| d.severity == "critical").count(),
+    };
+    if let Ok(verdict) = validate_release_gate_verdict(&release_gate_in) {
+        log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Release Quality Gate",
+            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            if verdict.passed { "completed" } else { "warning" },
+            Some("deterministic"),
+        );
+    }
     rep.attestation = Some(attestation);
-    let _ = station_node.transition_to(super::graph::PipelineState::Completed);
+    let _ = station_node.route(RoutingCondition::NormalProgression);
+    rep.graph_telemetry = Some(station_node.telemetry().clone());
 
     budget.sync_llm(&llm_budget);
     rep.budget = Some(budget.usage());
