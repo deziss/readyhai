@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::types::{CaseExecutionResult, TriagedDefect};
+use crate::agent::prompts::juror::{build_taint_juror_system_prompt, build_taint_juror_user_prompt};
 use crate::llm::untrusted::{self, clean_output, fence_capped};
 use crate::llm::{ask_typed, Budget, LlmConfig};
 
@@ -79,15 +80,13 @@ fn evaluate_llm(
         "source_context": context,
     });
 
-    let prompt = format!(
-        "Security failure facts (untrusted target response):\n{}\nPerform Contextual Taint Tracing and return your verdict.",
-        fence_capped(&facts, 350)
-    );
+    let system = build_taint_juror_system_prompt();
+    let prompt = build_taint_juror_user_prompt(&facts, context);
 
     let out: JurorVerdict = ask_typed(
         &cfg.without_thinking(),
         budget,
-        &untrusted::system(JUROR_ROLE),
+        &system,
         &prompt,
         |v: &JurorVerdict| {
             if v.confidence > 100 {

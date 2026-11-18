@@ -304,6 +304,9 @@ pub struct AgentRunReport {
     /// Software factory attestation for release readiness and OWASP ASVS compliance.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation: Option<SoftwareFactoryAttestation>,
+    /// Execution graph telemetry and state transitions across the 6 software factory stations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph_telemetry: Option<crate::agent::pipeline::graph::GraphTelemetry>,
     /// What changed since the previous run against this target, from the agent's memory (None:
     /// memory is off, or the run is from before it existed). Deterministic; never changes a verdict
     /// by itself (only an explicit, unexpired acceptance does).

@@ -3,10 +3,13 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::agent::prompts::discovery::{
+    build_semantic_discovery_system_prompt, build_semantic_discovery_user_prompt,
+};
 use crate::agent::recon::SynthesizedDirectives;
 use crate::agent::types::{DiscoveredRoute, InputSurface, TargetTechProfile};
 use crate::llm::untrusted::{self, fence_capped};
-use crate::llm::{Budget, LlmConfig, ask_typed};
+use crate::llm::{ask_typed, Budget, LlmConfig};
 
 /// A semantic route candidate predicted via LLM reasoning or technology fingerprint heuristics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,25 +126,21 @@ pub fn discover_semantic_routes(
             .map(|d| d.focus_areas.as_slice())
             .unwrap_or(&[]);
 
-        let facts = serde_json::json!({
-            "target": target,
-            "architecture": tech.app_architecture,
-            "framework": tech.primary_framework,
-            "detected_signals": tech.detected_signals,
-            "known_endpoints": known_samples,
-            "focus_areas": focus,
-        });
-
-        let prompt = format!(
-            "Target tech profile:\n{}\n\n\
-            Predict up to 10 hidden or undocumented shadow endpoints and RBAC boundaries characteristic of this tech stack.",
-            fence_capped(&facts, 2000)
+        let system = build_semantic_discovery_system_prompt();
+        let prompt = build_semantic_discovery_user_prompt(
+            target,
+            &tech.app_architecture,
+            &tech.primary_framework,
+            &tech.detected_signals,
+            &known_samples,
+            focus,
+            10,
         );
 
         let res = ask_typed::<Vec<SemanticRoute>>(
             cfg,
             budget,
-            &untrusted::system(SEMANTIC_DISCOVERY_ROLE),
+            &system,
             &prompt,
             |routes| {
                 if routes.is_empty() {

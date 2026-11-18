@@ -1759,6 +1759,7 @@ fn hostile_report() -> AgentRunReport {
         agents: None,
         directives: None,
         attestation: None,
+        graph_telemetry: None,
         since_last_run: None,
     };
     let mk = |id: &str, status: &str| CaseExecutionResult {
