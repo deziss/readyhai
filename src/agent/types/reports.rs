@@ -298,6 +298,12 @@ pub struct AgentRunReport {
     /// of every area.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agents: Option<AgentsReport>,
+    /// Dynamic directives synthesized during reconnaissance and passed to planning and execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directives: Option<crate::agent::recon::SynthesizedDirectives>,
+    /// Software factory attestation for release readiness and OWASP ASVS compliance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<SoftwareFactoryAttestation>,
     /// What changed since the previous run against this target, from the agent's memory (None:
     /// memory is off, or the run is from before it existed). Deterministic; never changes a verdict
     /// by itself (only an explicit, unexpired acceptance does).
@@ -407,4 +413,37 @@ pub struct AgentRunSummary {
     pub app_architecture: Option<String>,
     #[serde(default)]
     pub requester_ip: Option<String>,
+}
+
+/// Category compliance score under OWASP ASVS.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AsvsCategoryScore {
+    pub code: String,
+    pub name: String,
+    pub score: u32,
+    pub passed: bool,
+    pub findings: usize,
+}
+
+/// OWASP ASVS compliance breakdown across verification levels and categories.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OwaspAsvsBreakdown {
+    pub level_1_compliant: bool,
+    pub level_2_compliant: bool,
+    pub level_3_compliant: bool,
+    pub overall_coverage_pct: u32,
+    pub categories: Vec<AsvsCategoryScore>,
+}
+
+/// Formal Software Factory Attestation certifying release readiness.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SoftwareFactoryAttestation {
+    pub release_readiness_score: u32,
+    pub gate_verdict: String,
+    pub asvs_breakdown: OwaspAsvsBreakdown,
+    pub release_directives: Vec<String>,
+    pub attestation_digest: String,
+    pub timestamp: String,
+    #[serde(default)]
+    pub advisory_summary: Option<String>,
 }

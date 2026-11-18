@@ -13,6 +13,7 @@ pub mod change;
 pub mod cleanup;
 pub mod discovery;
 pub mod gate;
+pub mod graph;
 pub mod memory;
 pub mod options;
 pub mod order;
@@ -26,6 +27,8 @@ use std::path::Path;
 
 pub use discovery::run_discovery_scan;
 pub(crate) use discovery::run_discovery_in;
+pub use gate::{software_factory_attestation, OwaspAsvsBreakdown, SoftwareFactoryAttestation};
+pub use graph::{PipelineState, StationNode};
 pub use options::{LlmMode, RunOptions};
 pub(crate) use cleanup::{
     delete_check_results, harvest_created, teardown, DELETE_NOT_EFFECTIVE, TEARDOWN_MAX,

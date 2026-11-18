@@ -1302,3 +1302,95 @@ fn verify_replays_blind_timing_open_redirect_and_oast_k_times() {
         VerifyVerdict::Confirmed
     );
 }
+
+#[test]
+fn test_juror_verdict_parsing() {
+    let raw = r#"{
+        "is_true_positive": true,
+        "confidence": 95,
+        "taint_path": "request body 'user_id' -> SQL error in response body",
+        "remediation_diff": "--- a/app.py\n+++ b/app.py\n- query = f'SELECT * FROM users WHERE id={id}'\n+ cursor.execute('SELECT * FROM users WHERE id=%s', (id,))",
+        "explanation": "Unsanitized user_id parameter allows SQL syntax injection"
+    }"#;
+    let verdict = super::juror::parse_juror_verdict(raw).expect("parse juror verdict");
+    assert!(verdict.is_true_positive);
+    assert_eq!(verdict.confidence, 95);
+    assert!(verdict.remediation_diff.unwrap().contains("cursor.execute"));
+}
+
+#[test]
+fn test_juror_deterministic_taint_tracing_sql_injection() {
+    use crate::agent::types::CaseExecutionResult;
+    let mut failure = CaseExecutionResult::default();
+    failure.case_id = "TC-SQL-1".into();
+    failure.status = "FAIL".into();
+    failure.status_code = Some(500);
+    failure.evidence = "Server returned 500: syntax error at or near 'admin'".into();
+    failure.failure_reason = Some("oracle failed: sql_syntax_error".into());
+
+    let verdict = super::juror::evaluate_with_juror(None, &failure, Some("src/db/users.py:42"));
+    assert!(verdict.is_true_positive);
+    assert!(verdict.confidence >= 90);
+    assert!(verdict.taint_path.unwrap().contains("SQL query execution"));
+    let diff = verdict.remediation_diff.expect("diff should be generated");
+    assert!(diff.contains("--- a/src/db/users.py"));
+    assert!(diff.contains("cursor.execute"));
+}
+
+#[test]
+fn test_juror_deterministic_false_positive_elimination() {
+    use crate::agent::types::CaseExecutionResult;
+    let mut failure = CaseExecutionResult::default();
+    failure.case_id = "TC-FP-1".into();
+    failure.status = "FAIL".into();
+    failure.status_code = Some(404);
+    failure.evidence = "404 Not Found: Cannot GET /api/v1/unknown".into();
+
+    let verdict = super::juror::evaluate_with_juror(None, &failure, None);
+    assert!(!verdict.is_true_positive);
+    assert_eq!(verdict.confidence, 90);
+    assert!(verdict.remediation_diff.is_none());
+}
+
+#[test]
+fn test_audit_defects_with_juror() {
+    use crate::agent::types::{CaseExecutionResult, TriagedDefect};
+    let mut failure_tp = CaseExecutionResult::default();
+    failure_tp.case_id = "TC-TP".into();
+    failure_tp.component = "/api/v1/users".into();
+    failure_tp.status = "FAIL".into();
+    failure_tp.status_code = Some(500);
+    failure_tp.evidence = "psycopg2.OperationalError: syntax error at or near SELECT".into();
+
+    let mut failure_fp = CaseExecutionResult::default();
+    failure_fp.case_id = "TC-FP".into();
+    failure_fp.component = "/api/v1/nonexistent".into();
+    failure_fp.status = "FAIL".into();
+    failure_fp.status_code = Some(404);
+    failure_fp.evidence = "Not found".into();
+
+    let defect_tp = TriagedDefect {
+        id: "DEF-001".into(),
+        case_ids: vec!["TC-TP".into()],
+        component: "/api/v1/users".into(),
+        source_context: Some("src/routes/users.py:10".into()),
+        ..Default::default()
+    };
+
+    let defect_fp = TriagedDefect {
+        id: "DEF-002".into(),
+        case_ids: vec!["TC-FP".into()],
+        component: "/api/v1/nonexistent".into(),
+        ..Default::default()
+    };
+
+    let defects = vec![defect_tp, defect_fp];
+    let results = vec![failure_tp, failure_fp];
+
+    let (kept, eliminated) = super::juror::audit_defects_with_juror(None, defects, &results);
+    assert_eq!(eliminated, 1, "false positive defect should be eliminated");
+    assert_eq!(kept.len(), 1, "only true positive should be retained");
+    assert_eq!(kept[0].id, "DEF-001");
+    assert!(kept[0].remediation_patch.as_ref().unwrap().contains("cursor.execute"));
+    assert!(kept[0].remediation_explanation.is_some());
+}

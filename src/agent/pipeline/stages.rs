@@ -125,7 +125,57 @@ pub(crate) fn agent_stages(
         }
     }
 
-    // 1. discovery
+    // Station 1: Recon (Autonomous Directives & Posture Fingerprinting)
+    let mut station_node = super::graph::StationNode::new(super::graph::PipelineState::Recon);
+    log(
+        &mut rep.steps,
+        "Recon",
+        "Target Fingerprinting & Directives",
+        "Inspecting security headers, cookies, and synthesizing autonomous rules of engagement",
+        "running",
+        Some("deterministic"),
+    );
+    let host = reqwest::Url::parse(&req.target)
+        .ok()
+        .map(|u| {
+            format!(
+                "{}:{}",
+                u.host_str().unwrap_or(""),
+                u.port_or_known_default().unwrap_or(0)
+            )
+        })
+        .unwrap_or_default();
+    let recon_allowed = !req.dry_run && budget.take_request(&host).is_ok();
+    let empty_headers = reqwest::header::HeaderMap::new();
+    let recon_directives = super::super::recon::synthesize_directives(
+        llm_cfg
+            .as_ref()
+            .filter(|_| !budget.is_cancelled())
+            .map(|c| (c, &mut llm_budget)),
+        &req.target,
+        req.spec_url.as_deref(),
+        if recon_allowed {
+            None
+        } else {
+            Some(&empty_headers)
+        },
+    );
+    rep.directives = Some(recon_directives.clone());
+    log(
+        &mut rep.steps,
+        "Recon",
+        "Target Fingerprinting & Directives",
+        &format!(
+            "Synthesized {} focus areas; canary token: {}",
+            recon_directives.focus_areas.len(),
+            recon_directives.canary_token
+        ),
+        "completed",
+        Some(if llm_cfg.is_some() { "llm" } else { "deterministic" }),
+    );
+
+    // Station 2: Discovery
+    let _ = station_node.transition_to(super::graph::PipelineState::Discovery);
     log(
         &mut rep.steps,
         "Discovery",
@@ -238,7 +288,8 @@ pub(crate) fn agent_stages(
     let (hints, memory_notes) = recall(memory_dir.as_deref(), &req.target, rep, &today);
     checkpoint(base, rep, &budget, &llm_budget);
 
-    // 2. planner
+    // Station 3: Plan
+    let _ = station_node.transition_to(super::graph::PipelineState::Plan);
     log(
         &mut rep.steps,
         "Planner",
@@ -346,6 +397,8 @@ pub(crate) fn agent_stages(
         reruns,
         timeout: request_timeout,
     };
+    // Station 4: Execute
+    let _ = station_node.transition_to(super::graph::PipelineState::Execute);
     let created = CreatedLedger::new();
     // the lead splits the plan by area and runs the area workers; its progress is checkpointed
     // into report.json while the workers go, so a status poll sees every area
@@ -602,6 +655,8 @@ pub(crate) fn agent_stages(
     rep.executed_results = executed;
     checkpoint(base, rep, &budget, &llm_budget);
 
+    // Station 5: Verify (Independent Replay & Contextual Taint Tracing Juror)
+    let _ = station_node.transition_to(super::graph::PipelineState::Verify);
     // 3a. verifier: replay every FAIL independently, so only what reproduces reaches triage. Replays
     // are charged to the run budget; what a replay creates lands on the same ledger as the rest
     // and is torn down below.
@@ -849,6 +904,19 @@ pub(crate) fn agent_stages(
     if let Some(wb) = whitebox.as_ref() {
         wb.annotate_defects(&mut defects);
     }
+    // Contextual Taint Tracing Juror: false-positive elimination and unified diff remediation
+    let juror_llm = llm_cfg.as_ref().filter(|_| !budget.is_cancelled());
+    let (audited_defects, eliminated_fps) = super::super::verify::juror::audit_defects_with_juror(
+        juror_llm.map(|c| (c, &mut llm_budget)),
+        defects,
+        &rep.executed_results,
+    );
+    if eliminated_fps > 0 {
+        rep.notes.push(format!(
+            "juror: eliminated {eliminated_fps} false-positive defect(s) via contextual taint analysis"
+        ));
+    }
+    let mut defects = audited_defects;
     let mut triage_src = "deterministic".to_string();
     if let (Some(cfg), false) = (
         llm_cfg.as_ref().filter(|_| !budget.is_cancelled()),
@@ -895,7 +963,8 @@ pub(crate) fn agent_stages(
     }
     checkpoint(base, rep, &budget, &llm_budget);
 
-    // 5. readiness gate: the verdict is the computed one; the LLM's opinion is recorded beside it, advisory only
+    // Station 6: Gate (Evidence Ledger & Software Factory Attestation)
+    let _ = station_node.transition_to(super::graph::PipelineState::Gate);
     log(
         &mut rep.steps,
         "ReadinessGate",
@@ -940,6 +1009,32 @@ pub(crate) fn agent_stages(
     rep.stage_sources.insert("gate".into(), gate_src);
     let gate_verdict = led.gate_verdict.clone();
     rep.evidence_ledger = Some(led);
+
+    let attestation_llm = llm_cfg.as_ref().filter(|_| !budget.is_cancelled());
+    let attestation = super::gate::software_factory_attestation(
+        attestation_llm.map(|c| (c, &mut llm_budget)),
+        rep.evidence_ledger.as_ref().expect("evidence ledger present"),
+        &rep.triaged_defects,
+    );
+    log(
+        &mut rep.steps,
+        "SoftwareFactory",
+        "Factory Attestation",
+        &format!(
+            "Release readiness score: {}/100, verdict: {}, ASVS coverage: {}%",
+            attestation.release_readiness_score,
+            attestation.gate_verdict,
+            attestation.asvs_breakdown.overall_coverage_pct
+        ),
+        if attestation.gate_verdict == "GO" {
+            "completed"
+        } else {
+            "warning"
+        },
+        Some("deterministic"),
+    );
+    rep.attestation = Some(attestation);
+    let _ = station_node.transition_to(super::graph::PipelineState::Completed);
 
     budget.sync_llm(&llm_budget);
     rep.budget = Some(budget.usage());
