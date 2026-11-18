@@ -223,6 +223,8 @@ pub(crate) fn blank_report(run_id: &str, target: &str, profile: &str, dry_run: b
         notes: vec![],
         change_impact: None,
         agents: None,
+        directives: None,
+        attestation: None,
         since_last_run: None,
     }
 }
