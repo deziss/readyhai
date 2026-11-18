@@ -40,6 +40,7 @@ mod oracle;
 mod pipeline;
 mod plan;
 pub mod react;
+pub mod recon;
 pub mod remediation;
 mod report;
 pub mod stateful;
@@ -74,3 +75,4 @@ pub use store::{
 };
 #[allow(unused_imports)]
 pub use types::*;
+pub use recon::*;

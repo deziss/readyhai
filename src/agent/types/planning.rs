@@ -50,7 +50,7 @@ pub enum ProbeOracle {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlannedCase {
     pub id: String,
     pub title: String,
