@@ -1646,3 +1646,70 @@
             think.details
         );
     }
+
+    #[test]
+    fn test_pipeline_graph_state_transitions() {
+        use super::graph::{PipelineState, StationNode};
+        let mut station = StationNode::new(PipelineState::Recon);
+        assert_eq!(station.current_state(), PipelineState::Recon);
+        station.transition_to(PipelineState::Discovery).expect("valid transition");
+        assert_eq!(station.current_state(), PipelineState::Discovery);
+        station.transition_to(PipelineState::Plan).expect("valid transition");
+        assert_eq!(station.current_state(), PipelineState::Plan);
+        station.transition_to(PipelineState::Execute).expect("valid transition");
+        assert_eq!(station.current_state(), PipelineState::Execute);
+        // Adaptive ReAct loop iteration
+        station.transition_to(PipelineState::Execute).expect("valid loop iteration");
+        assert_eq!(station.current_state(), PipelineState::Execute);
+        station.transition_to(PipelineState::Verify).expect("valid transition");
+        assert_eq!(station.current_state(), PipelineState::Verify);
+        station.transition_to(PipelineState::Gate).expect("valid transition");
+        assert_eq!(station.current_state(), PipelineState::Gate);
+        station.transition_to(PipelineState::Completed).expect("valid transition");
+        assert_eq!(station.current_state(), PipelineState::Completed);
+    }
+
+    #[test]
+    fn test_software_factory_attestation_clean_release() {
+        use super::gate::software_factory_attestation;
+        use crate::agent::types::EvidenceLedger;
+
+        let mut ledger = EvidenceLedger::default();
+        ledger.overall_readiness = 95;
+        ledger.computed_verdict = "GO".into();
+
+        let attestation = software_factory_attestation(None, &ledger, &[]);
+        assert_eq!(attestation.release_readiness_score, 95);
+        assert_eq!(attestation.gate_verdict, "GO");
+        assert!(attestation.asvs_breakdown.level_1_compliant);
+        assert!(attestation.asvs_breakdown.level_2_compliant);
+        assert!(attestation.asvs_breakdown.level_3_compliant);
+        assert_eq!(attestation.asvs_breakdown.overall_coverage_pct, 100);
+        assert!(!attestation.attestation_digest.is_empty());
+        assert!(attestation.release_directives.iter().any(|d| d.contains("ALLOW_DEPLOYMENT")));
+    }
+
+    #[test]
+    fn test_software_factory_attestation_critical_block() {
+        use super::gate::software_factory_attestation;
+        use crate::agent::types::{EvidenceLedger, TriagedDefect};
+
+        let mut ledger = EvidenceLedger::default();
+        ledger.overall_readiness = 90;
+
+        let defect = TriagedDefect {
+            id: "DEF-CRIT-1".into(),
+            title: "Remote Code Execution via deserialization".into(),
+            severity: "CRITICAL".into(),
+            owasp_category: "API8:2023 Security Misconfiguration".into(),
+            component: "/api/v1/import".into(),
+            ..Default::default()
+        };
+
+        let attestation = software_factory_attestation(None, &ledger, &[defect]);
+        assert!(attestation.release_readiness_score <= 25);
+        assert_eq!(attestation.gate_verdict, "NO_GO");
+        assert!(!attestation.asvs_breakdown.level_1_compliant);
+        assert!(!attestation.asvs_breakdown.level_2_compliant);
+        assert!(attestation.release_directives.iter().any(|d| d.contains("BLOCK_DEPLOYMENT")));
+    }
