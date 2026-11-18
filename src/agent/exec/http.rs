@@ -32,6 +32,8 @@ pub(crate) fn skeleton(c: &PlannedCase, status: &str, reason: String, curl: Stri
         content_type: None,
         is_spa_shell: false,
         failure_reason: Some(reason),
+        response_status: None,
+        response_body: None,
         expected_status: c.expected_status,
         oracle: None,
         flaky: false,
@@ -312,6 +314,8 @@ pub(crate) fn exec_http(
     let severe = outcome.max_fail_severity().unwrap_or(Severity::High) >= Severity::High;
 
     res.status_code = Some(seen.status);
+    res.response_status = Some(seen.status);
+    res.response_body = Some(seen.body.clone());
     res.latency_ms = seen.latency_ms;
     res.content_type = Some(seen.content_type.clone());
     res.is_spa_shell = spa_shell(&seen.content_type, &seen.body, ctx.opts.is_spa_target);

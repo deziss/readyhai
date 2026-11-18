@@ -59,6 +59,8 @@ pub(crate) fn fail_result_for(
         stateful_chain: None,
         concurrency_burst_results: None,
         redirect_chain: Vec::new(),
+        response_status: Some(200),
+        response_body: None,
     }
 }
 

@@ -7,7 +7,7 @@ use super::discovery::{BlockReason, RedirectHop};
 use super::planning::PlannedCase;
 use crate::agent::oracle::OracleOutcome;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatefulStep {
     pub step_number: u32,
     pub actor: String, // "alice", "bob", "anon", "admin"
@@ -19,7 +19,7 @@ pub struct StatefulStep {
     pub violation_condition: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatefulStepExecution {
     pub step_number: u32,
     pub actor: String,
@@ -62,6 +62,10 @@ pub struct CaseExecutionResult {
     pub content_type: Option<String>,
     pub is_spa_shell: bool,
     pub failure_reason: Option<String>,
+    #[serde(default)]
+    pub response_status: Option<u16>,
+    #[serde(default)]
+    pub response_body: Option<String>,
     #[serde(default)]
     pub expected_status: Option<u16>,
     #[serde(default)]
@@ -130,6 +134,8 @@ impl CaseExecutionResult {
             content_type: None,
             is_spa_shell: false,
             failure_reason: Some(reason.into()),
+            response_status: None,
+            response_body: None,
             expected_status: case.expected_status,
             oracle: None,
             flaky: false,

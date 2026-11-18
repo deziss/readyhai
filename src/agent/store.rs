@@ -350,6 +350,8 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
                 evidence_detail: None,
                 stateful_chain: None,
                 concurrency_burst_results: None,
+                response_status: None,
+                response_body: None,
             }
         })
         .collect();
@@ -449,6 +451,8 @@ pub fn convert_engine_run_to_agent_report(r: &crate::model::Run) -> AgentRunRepo
         notes: vec![],
         change_impact: None,
         agents: None,
+        directives: None,
+        attestation: None,
         since_last_run: None,
     }
 }

@@ -465,6 +465,8 @@ pub(crate) fn delete_check_results(
                 evidence_detail: Some(detail),
                 stateful_chain: None,
                 concurrency_burst_results: None,
+                response_status: get,
+                response_body: None,
             }
         })
         .collect()

@@ -48,12 +48,142 @@ struct Anomaly {
 }
 
 fn body_excerpt(r: &CaseExecutionResult) -> &str {
+    if let Some(b) = r.response_body.as_deref() {
+        return b;
+    }
     r.evidence_detail
         .as_ref()
         .and_then(|d| d.get("response"))
         .and_then(|resp| resp.get("body_excerpt"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
+}
+
+/// Anomaly detector identifying high-signal responses suitable for adaptive ReAct mutation:
+/// - 500 stack traces, runtime exceptions, server errors
+/// - 403 authorization leaks (revealed roles, tenant isolation boundary messages)
+/// - 422 (and 400) schema validation leaks (unveiled expected model schemas, parameters, constraints)
+/// - Reflected injection inputs and newly created authorization tokens
+pub fn is_anomaly_candidate(r: &CaseExecutionResult) -> bool {
+    if matches!(r.status.as_str(), "SKIPPED" | "NOT_APPLICABLE") {
+        return false;
+    }
+    let status = r.response_status.or(r.status_code);
+    let body = r
+        .response_body
+        .as_deref()
+        .unwrap_or_else(|| body_excerpt(r));
+    let low_body = body.to_ascii_lowercase();
+    let low_ev = r.evidence.to_ascii_lowercase();
+    let low_fail = r.failure_reason.as_deref().unwrap_or("").to_ascii_lowercase();
+
+    // 1. HTTP 500 or stack trace leaks
+    let is_500 = status.is_some_and(|s| s >= 500);
+    let stack_trace_indicators = [
+        "traceback",
+        "stacktrace",
+        "nullpointer",
+        "internalservererror",
+        "internal server error",
+        "exception",
+        "syntaxerror",
+        "at line",
+        "fatal error",
+        "panic at",
+        "debug_backtrace",
+        "server_error",
+        "typeerror",
+        "indexerror",
+    ];
+    let has_stack_trace = stack_trace_indicators
+        .iter()
+        .any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+
+    if is_500 || has_stack_trace {
+        return true;
+    }
+
+    // 2. HTTP 403 authorization leaks
+    let is_403 = status.is_some_and(|s| s == 403);
+    let auth_leak_indicators = [
+        "role",
+        "permission",
+        "unauthorized",
+        "forbidden",
+        "scope",
+        "tenant",
+        "claim",
+        "policy",
+        "jwt",
+        "rbac",
+        "missing authority",
+        "access denied",
+        "principal",
+    ];
+    let has_auth_leak = auth_leak_indicators
+        .iter()
+        .any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+
+    if is_403 && (has_auth_leak || !body.trim().is_empty()) {
+        return true;
+    }
+
+    // 3. HTTP 422 (or 400) schema validation leaks
+    let is_422 = status.is_some_and(|s| s == 422 || s == 400);
+    let schema_leak_indicators = [
+        "validation",
+        "schema",
+        "missing required",
+        "value_error",
+        "pydantic",
+        "fastapi",
+        "field required",
+        "unprocessable",
+        "constraint",
+        "expected type",
+        "invalid parameter",
+        "loc",
+    ];
+    let has_schema_leak = schema_leak_indicators
+        .iter()
+        .any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+
+    if is_422 && has_schema_leak {
+        return true;
+    }
+
+    // 4. Other oracle fail checks
+    if has_fail_check(
+        r,
+        &[
+            "error_disclosure",
+            "stack_trace",
+            "server_error",
+            "injection_reflection",
+            "blind_boolean_injection",
+            "blind_time_injection",
+            "ssrf_oast",
+            "ssti",
+        ],
+    ) {
+        return true;
+    }
+
+    // 5. Auth token created
+    if status.is_some_and(|s| matches!(s, 200 | 201))
+        && matches!(r.method.as_str(), "POST" | "PUT" | "PATCH")
+        && !r.is_spa_shell
+        && r.technique != "boundary"
+        && r.technique != "negative"
+        && (low_body.contains("\"token\"")
+            || low_body.contains("\"access_token\"")
+            || low_body.contains("\"jwt\"")
+            || low_body.contains("\"role\""))
+    {
+        return true;
+    }
+
+    false
 }
 
 fn has_fail_check(r: &CaseExecutionResult, codes: &[&str]) -> bool {
@@ -146,6 +276,22 @@ fn extract_hinted_params(body: &str, req_payload: Option<&str>) -> Vec<String> {
             out.push(k);
         }
     }
+    if let Ok(val) = serde_json::from_str::<Value>(body)
+        && let Some(detail) = val.get("detail").and_then(|d| d.as_array())
+    {
+        for err in detail {
+            if let Some(loc) = err.get("loc").and_then(|l| l.as_array()) {
+                for part in loc {
+                    if let Some(s) = part.as_str()
+                        && !matches!(s, "body" | "query" | "header" | "path")
+                        && !out.contains(&s.to_string())
+                    {
+                        out.push(s.to_string());
+                    }
+                }
+            }
+        }
+    }
     out
 }
 
@@ -178,22 +324,32 @@ fn extract_anomalies(
     let mut seen_this_wave = HashSet::new();
 
     for r in results {
-        if matches!(r.status.as_str(), "SKIPPED" | "NOT_APPLICABLE") {
+        if !is_anomaly_candidate(r) {
             continue;
         }
-        let body = body_excerpt(r);
+        let body = r
+            .response_body
+            .as_deref()
+            .unwrap_or_else(|| body_excerpt(r));
+        let status = r.response_status.or(r.status_code);
         let mut signals: Vec<&'static str> = Vec::new();
 
-        if r.status_code.is_some_and(|s| s >= 500) {
+        if status.is_some_and(|s| s >= 500) {
             signals.push("http_5xx");
         }
         if has_fail_check(r, &["error_disclosure", "stack_trace", "server_error"]) {
             signals.push("error_disclosure");
         }
+        if status.is_some_and(|s| s == 403) {
+            signals.push("authz_leak");
+        }
+        if status.is_some_and(|s| s == 422 || s == 400) {
+            signals.push("schema_leak");
+        }
         if has_fail_check(r, &["injection_reflection"]) {
             signals.push("reflected_input");
         }
-        if r.status_code.is_some_and(|s| matches!(s, 200 | 201))
+        if status.is_some_and(|s| matches!(s, 200 | 201))
             && matches!(r.method.as_str(), "POST" | "PUT" | "PATCH")
             && !r.is_spa_shell
             && r.technique != "boundary"
@@ -217,10 +373,10 @@ fn extract_anomalies(
         ) {
             signals.push("oob_or_timing_signal");
         }
-
         if signals.is_empty() {
-            continue;
+            signals.push("anomaly_leak");
         }
+
         let norm_path = path_of(&r.component);
         if signals.iter().all(|s| *s == "oob_or_timing_signal")
             && existing_ssti_paths.contains(norm_path)
@@ -239,7 +395,7 @@ fn extract_anomalies(
             dedup_key,
             component: r.component.clone(),
             method: r.method.clone(),
-            status_code: r.status_code,
+            status_code: status,
             signals,
             request_payload: r.request_payload.clone(),
             body_excerpt: untrusted::redact_then_truncate(body, 280),
@@ -410,7 +566,7 @@ fn synthesize_offline_followups(
         let exploitable_signal = a
             .signals
             .iter()
-            .any(|s| matches!(*s, "http_5xx" | "error_disclosure" | "reflected_input"));
+            .any(|s| matches!(*s, "http_5xx" | "error_disclosure" | "reflected_input" | "authz_leak" | "schema_leak" | "anomaly_leak"));
         if !exploitable_signal {
             continue;
         }
@@ -425,52 +581,132 @@ fn synthesize_offline_followups(
         } else {
             "GET"
         };
-        let payload = if method == "GET" {
-            format!("{param}={{{{1337*79}}}}")
-        } else {
-            json!({ param: "{{1337*79}}" }).to_string()
-        };
 
-        let mut c = PlannedCase {
-            id: String::new(),
-            title: format!("ReAct SSTI follow-up on {method} {norm_path} via `{param}`"),
-            component: norm_path.to_string(),
-            method: method.to_string(),
-            technique: "injection".into(),
-            input_hint: format!(
-                "Escalated from wave anomaly ({}) via param `{param}`",
-                a.signals.join(", ")
-            ),
-            payload: Some(payload),
-            headers: Vec::new(),
-            content_type: None,
-            probe_oracle: Some(ProbeOracle::Ssti {
-                expected_eval: "105623".into(),
-            }),
-            expected_behavior: "Server must not evaluate template syntax in user input".into(),
-            expected_status: None,
-            risk_level: "high".into(),
-            role: actor.clone().or_else(|| Some("anon".into())),
-            secured: None,
-            route_status: a.status_code,
-            expect_fields: Vec::new(),
-            expected_content_type: None,
-            source: Some("followup".into()),
-            stateful_steps: None,
-            concurrency_burst: None,
-            contract: None,
-            changed_ops: Vec::new(),
-            area: String::new(),
-            regression_of: Vec::new(),
-            history_priority: false,
-        };
-        c.area = Area::classify(&c).as_str().to_string();
-        let key = key_of(&c);
-        if seen_keys.insert(key) {
-            *next_id += 1;
-            c.id = format!("R{:03}", *next_id);
-            existing_ssti_paths.insert(norm_path.to_string());
-            out.push(c);
+        if a.signals.contains(&"authz_leak") {
+            let mut c = PlannedCase {
+                id: String::new(),
+                title: format!("ReAct AuthZ privilege escalation follow-up on {method} {norm_path}"),
+                component: norm_path.to_string(),
+                method: method.to_string(),
+                technique: "authz".into(),
+                input_hint: format!("Mutated from 403 authorization leak anomaly: {}", a.signals.join(", ")),
+                payload: Some(json!({"role": "admin", "tenant_id": "tenant-001"}).to_string()),
+                headers: vec![("X-Role".into(), "admin".into())],
+                content_type: Some("application/json".into()),
+                probe_oracle: None,
+                expected_behavior: "Server must reject unauthorized role tampering".into(),
+                expected_status: Some(403),
+                risk_level: "critical".into(),
+                role: Some("anon".into()),
+                secured: Some(true),
+                route_status: a.status_code,
+                expect_fields: Vec::new(),
+                expected_content_type: None,
+                source: Some("followup".into()),
+                stateful_steps: None,
+                concurrency_burst: None,
+                contract: None,
+                changed_ops: Vec::new(),
+                area: String::new(),
+                regression_of: Vec::new(),
+                history_priority: false,
+            };
+            c.area = Area::classify(&c).as_str().to_string();
+            let key = key_of(&c);
+            if seen_keys.insert(key) {
+                *next_id += 1;
+                c.id = format!("R{:03}", *next_id);
+                out.push(c);
+            }
+        } else if a.signals.contains(&"schema_leak") {
+            let payload = if method == "GET" {
+                format!("{param}=1000000")
+            } else {
+                json!({ param: 1000000 }).to_string()
+            };
+            let mut c = PlannedCase {
+                id: String::new(),
+                title: format!("ReAct Schema boundary mutation follow-up on {method} {norm_path} via `{param}`"),
+                component: norm_path.to_string(),
+                method: method.to_string(),
+                technique: "boundary".into(),
+                input_hint: format!("Mutated from 422 schema leak anomaly via parameter `{param}`"),
+                payload: Some(payload),
+                headers: Vec::new(),
+                content_type: Some("application/json".into()),
+                probe_oracle: None,
+                expected_behavior: "Server must gracefully reject or validate out-of-bound parameter".into(),
+                expected_status: Some(400),
+                risk_level: "medium".into(),
+                role: actor.clone().or_else(|| Some("anon".into())),
+                secured: None,
+                route_status: a.status_code,
+                expect_fields: Vec::new(),
+                expected_content_type: None,
+                source: Some("followup".into()),
+                stateful_steps: None,
+                concurrency_burst: None,
+                contract: None,
+                changed_ops: Vec::new(),
+                area: String::new(),
+                regression_of: Vec::new(),
+                history_priority: false,
+            };
+            c.area = Area::classify(&c).as_str().to_string();
+            let key = key_of(&c);
+            if seen_keys.insert(key) {
+                *next_id += 1;
+                c.id = format!("R{:03}", *next_id);
+                out.push(c);
+            }
+        } else {
+            let payload = if method == "GET" {
+                format!("{param}={{{{1337*79}}}}")
+            } else {
+                json!({ param: "{{1337*79}}" }).to_string()
+            };
+
+            let mut c = PlannedCase {
+                id: String::new(),
+                title: format!("ReAct SSTI follow-up on {method} {norm_path} via `{param}`"),
+                component: norm_path.to_string(),
+                method: method.to_string(),
+                technique: "injection".into(),
+                input_hint: format!(
+                    "Escalated from wave anomaly ({}) via param `{param}`",
+                    a.signals.join(", ")
+                ),
+                payload: Some(payload),
+                headers: Vec::new(),
+                content_type: None,
+                probe_oracle: Some(ProbeOracle::Ssti {
+                    expected_eval: "105623".into(),
+                }),
+                expected_behavior: "Server must not evaluate template syntax in user input".into(),
+                expected_status: None,
+                risk_level: "high".into(),
+                role: actor.clone().or_else(|| Some("anon".into())),
+                secured: None,
+                route_status: a.status_code,
+                expect_fields: Vec::new(),
+                expected_content_type: None,
+                source: Some("followup".into()),
+                stateful_steps: None,
+                concurrency_burst: None,
+                contract: None,
+                changed_ops: Vec::new(),
+                area: String::new(),
+                regression_of: Vec::new(),
+                history_priority: false,
+            };
+            c.area = Area::classify(&c).as_str().to_string();
+            let key = key_of(&c);
+            if seen_keys.insert(key) {
+                *next_id += 1;
+                c.id = format!("R{:03}", *next_id);
+                existing_ssti_paths.insert(norm_path.to_string());
+                out.push(c);
+            }
         }
     }
     out
@@ -877,5 +1113,32 @@ mod tests {
             ssti.verified,
             "SSTI from offline ReAct wave must verify cleanly"
         );
+    }
+
+    #[test]
+    fn test_react_anomaly_detector() {
+        let mut result = CaseExecutionResult::default();
+        result.status = "FAIL".into();
+        result.response_status = Some(500);
+        result.response_body = Some(r#"{"error":"InternalServerError: NullPointer at AuthService.java:42"}"#.into());
+        assert!(is_anomaly_candidate(&result));
+
+        let mut auth_res = CaseExecutionResult::default();
+        auth_res.status = "FAIL".into();
+        auth_res.response_status = Some(403);
+        auth_res.response_body = Some(r#"{"error":"Forbidden: requires role 'admin' for tenant_id"}"#.into());
+        assert!(is_anomaly_candidate(&auth_res));
+
+        let mut schema_res = CaseExecutionResult::default();
+        schema_res.status = "FAIL".into();
+        schema_res.response_status = Some(422);
+        schema_res.response_body = Some(r#"{"detail":[{"loc":["body","user_id"],"msg":"field required"}]}"#.into());
+        assert!(is_anomaly_candidate(&schema_res));
+
+        let mut pass_res = CaseExecutionResult::default();
+        pass_res.status = "PASS".into();
+        pass_res.response_status = Some(200);
+        pass_res.response_body = Some(r#"{"status":"ok"}"#.into());
+        assert!(!is_anomaly_candidate(&pass_res));
     }
 }

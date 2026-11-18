@@ -1757,6 +1757,8 @@ fn hostile_report() -> AgentRunReport {
         notes: vec![evil.into()],
         change_impact: None,
         agents: None,
+        directives: None,
+        attestation: None,
         since_last_run: None,
     };
     let mk = |id: &str, status: &str| CaseExecutionResult {
@@ -1784,6 +1786,8 @@ fn hostile_report() -> AgentRunReport {
         evidence_detail: None,
         stateful_chain: None,
         concurrency_burst_results: None,
+        response_status: Some(200),
+        response_body: None,
     };
     r.executed_results = ["PASS", "FAIL", "BLOCKED", "SKIPPED", "INCONCLUSIVE", "WARN"]
         .iter()
