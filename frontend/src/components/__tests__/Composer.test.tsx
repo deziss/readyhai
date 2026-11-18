@@ -1,6 +1,25 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Composer } from "./Composer";
+import { Composer } from "../Composer";
+
+interface CustomMatchers<R = unknown> {
+  toBeInTheDocument(): R;
+}
+
+declare module "vitest" {
+  interface Assertion<R = void, T = unknown> extends CustomMatchers<R> {}
+  interface AsymmetricMatchersContaining extends CustomMatchers {}
+}
+
+expect.extend({
+  toBeInTheDocument(received) {
+    const pass = received !== null && received !== undefined;
+    return {
+      pass,
+      message: () => (pass ? "expected element not to be in document" : "expected element to be in document"),
+    };
+  },
+});
 
 function renderComposer(overrides: Partial<React.ComponentProps<typeof Composer>> = {}) {
   const props: React.ComponentProps<typeof Composer> = {
@@ -34,10 +53,37 @@ function renderComposer(overrides: Partial<React.ComponentProps<typeof Composer>
 }
 
 beforeEach(() => {
-  // The component asks the backend for the requester IP on mount.
+  // The component asks the backend for the requester IP and directives synthesis on mount.
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => new Response(JSON.stringify({ egress_public_ip: "203.0.113.7", ip_type: "public", allowlist_guidance: "" })))
+    vi.fn(async (input: string | URL | Request) => {
+      const urlStr = typeof input === "string" ? input : (input as { url?: string }).url ?? input.toString();
+      if (urlStr.includes("/api/agent/directives/synthesize")) {
+        return new Response(
+          JSON.stringify({
+            focus_areas: [
+              "BOLA & Privilege Escalation",
+              "IDOR & Access Control",
+              "Prompt Injections & Guardrails",
+              "Auth Boundaries",
+              "Resilience & Rate Limiting",
+            ],
+            boundary_rules: [
+              "Stay within discovered routes on localhost",
+              "Safeguard production state",
+              "Zero downtime fuzzing",
+            ],
+            rules_of_engagement: "Strict QA and verify resilience, contracts, and authz",
+            canary_token: "CANARY_AUTO_1C7E",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({ egress_public_ip: "203.0.113.7", ip_type: "public", allowlist_guidance: "" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    })
   );
 });
 
@@ -118,5 +164,42 @@ describe("Composer behaviour", () => {
     expect(screen.getByText("Agent command center")).toBeTruthy();
     expect(container.textContent).not.toMatch(/→|->/);
     expect(container.querySelector(".uppercase")).toBeNull();
+  });
+
+  it("renders autonomous dynamic directives without requiring manual textarea input", () => {
+    renderComposer();
+    expect(screen.getByText(/Autonomous Directives/i)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/e\.g\. Focus on unauthenticated/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Synthesize Directives/i })).toBeInTheDocument();
+
+    // Renders active focus pills
+    expect(screen.getByText(/BOLA/i)).toBeInTheDocument();
+    expect(screen.getByText(/IDOR/i)).toBeInTheDocument();
+    expect(screen.getByText(/Prompt Injections/i)).toBeInTheDocument();
+    expect(screen.getByText(/Auth Boundaries/i)).toBeInTheDocument();
+
+    // Renders boundary rules and rules of engagement
+    expect(screen.getByText(/Boundary Rules/i)).toBeInTheDocument();
+    expect(screen.getByText(/Rules of engagement/i)).toBeInTheDocument();
+  });
+
+  it("provides a 1-click button to refresh and synthesize directives on demand", async () => {
+    const { props } = renderComposer();
+    const synthButton = screen.getByRole("button", { name: /Synthesize Directives/i });
+    expect(synthButton).toBeInTheDocument();
+
+    fireEvent.click(synthButton);
+    await waitFor(() => {
+      expect(props.setDirectives).toHaveBeenCalled();
+    });
+  });
+
+  it("keeps directives in sync with the agent run payload without manual operator input", () => {
+    const { props } = renderComposer();
+    // Verify directives state was initialized or synchronized automatically
+    expect(props.setDirectives).toHaveBeenCalled();
+    const lastCall = (props.setDirectives as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
+    expect(typeof lastCall).toBe("string");
+    expect(lastCall.length).toBeGreaterThan(0);
   });
 });
