@@ -13,6 +13,7 @@ pub mod change;
 pub mod cleanup;
 pub mod discovery;
 pub mod gate;
+pub mod gates;
 pub mod graph;
 pub mod memory;
 pub mod options;
@@ -28,7 +29,14 @@ use std::path::Path;
 pub use discovery::run_discovery_scan;
 pub(crate) use discovery::run_discovery_in;
 pub use gate::{software_factory_attestation, OwaspAsvsBreakdown, SoftwareFactoryAttestation};
-pub use graph::{PipelineState, StationNode};
+pub use gates::{
+    validate_discovery_gate, validate_execution_gate, validate_plan_gate, validate_recon_gate,
+    validate_release_gate, validate_release_gate_verdict, validate_verify_gate, DiscoveryGate,
+    DiscoveryGateInput, ExecutionGate, ExecutionGateInput, GateCheck, GateType, GateVerdict,
+    PlanGate, PlanGateInput, QualityGate, ReconGate, ReconGateInput, ReleaseGate, ReleaseGateInput,
+    VerifyGate, VerifyGateInput,
+};
+pub use graph::{GraphTelemetry, PipelineState, RoutingCondition, StationNode, TransitionRecord};
 pub use options::{LlmMode, RunOptions};
 pub(crate) use cleanup::{
     delete_check_results, harvest_created, teardown, DELETE_NOT_EFFECTIVE, TEARDOWN_MAX,
