@@ -107,6 +107,13 @@ pub struct DiscoverBody {
 }
 
 #[derive(Deserialize)]
+pub struct DirectivesSynthesizeBody {
+    pub target: String,
+    #[serde(default, alias = "spec")]
+    pub spec_url: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct CrawlQuery {
     pub target: String,
     #[serde(default)]

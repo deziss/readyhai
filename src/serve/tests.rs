@@ -101,6 +101,7 @@ use tokio::sync::{Semaphore, mpsc};
         ("GET", "/api/agent/status"),
         ("GET", "/api/agent/discover"),
         ("POST", "/api/agent/discover"),
+        ("POST", "/api/agent/directives/synthesize"),
         ("GET", "/api/agent/crawl"),
         ("POST", "/api/agent/crawl"),
         ("POST", "/api/agent/run"),
@@ -388,6 +389,28 @@ use tokio::sync::{Semaphore, mpsc};
                 .unwrap();
             assert_eq!(r.status().as_u16(), 400);
         }
+    }
+
+    #[test]
+    fn test_agent_directives_synthesize_endpoint() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (_rt, base) = test_server();
+        let c = client();
+        let auth = format!("Bearer {TOKEN}");
+        let resp = c
+            .post(format!("{base}/api/agent/directives/synthesize"))
+            .header("authorization", &auth)
+            .header("content-type", "application/json")
+            .body(r#"{"target":"https://example.com"}"#)
+            .send()
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        let val: serde_json::Value = resp.json().unwrap();
+        assert!(val["target"].as_str().unwrap().starts_with("https://example.com"));
+        assert!(val["directives"]["focus_areas"].is_array());
+        assert!(!val["directives"]["focus_areas"].as_array().unwrap().is_empty());
+        assert!(val["custom_instructions"].is_string());
+        assert!(val["canary_token"].is_string());
     }
 
     #[test]
