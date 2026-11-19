@@ -2,9 +2,12 @@
 //! QA checks only run under `readyhai qa` (Check::qa flag).
 pub mod ai;
 pub mod api;
+pub mod data;
+pub mod design;
 pub mod graphql;
 pub mod model;
 pub mod perf;
+pub mod pentest;
 pub mod plan;
 pub mod recommend;
 pub mod report;
@@ -13,6 +16,7 @@ pub mod roles;
 pub mod suite;
 pub mod triage;
 pub mod ui;
+pub mod wstg;
 
 use crate::checks::Check;
 use model::QaCollector;
@@ -111,6 +115,9 @@ pub fn checks() -> Vec<Check> {
     v.extend(perf::checks());
     v.extend(resilience::checks());
     v.extend(suite::checks());
+    v.extend(pentest::checks());
+    v.extend(crate::qa::data::checks());
+    v.extend(crate::qa::design::checks());
     v
 }
 

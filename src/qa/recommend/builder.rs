@@ -299,6 +299,44 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         s.push_str("No outstanding risks were identified.");
     }
 
+    // WSTG traceability: how much of the mapped checklist the run actually exercised.
+    let refs: std::collections::BTreeSet<&str> =
+        col.executed_rules.iter().map(String::as_str).collect();
+    let mut notes = col.notes;
+    if !refs.is_empty() {
+        let cov = crate::qa::wstg::coverage(&refs);
+        let done = cov.iter().filter(|g| g.covered > 0).count();
+        notes.push(format!(
+            "WSTG coverage: {done}/{} groups touched, {} of {} mapped rules executed.",
+            cov.len(),
+            refs.len(),
+            crate::qa::wstg::table().len()
+        ));
+        let missed: Vec<&str> = cov
+            .iter()
+            .filter(|g| g.total > 0 && g.covered == 0)
+            .map(|g| g.group)
+            .collect();
+        if !missed.is_empty() {
+            notes.push(format!("WSTG groups not exercised: {}.", missed.join(", ")));
+        }
+        let mut wstg_ids: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+        for r in &refs {
+            if let Some(m) = crate::qa::wstg::lookup(r) {
+                wstg_ids.extend(m.wstg);
+            }
+        }
+        let pentest_untested = crate::qa::wstg::unmapped(&refs)
+            .into_iter()
+            .filter(|r| r.starts_with("qa.pentest."))
+            .count();
+        notes.push(format!(
+            "WSTG traceability: {} WSTG test ids touched; {pentest_untested} pentest rule(s) \
+             in the table not executed this run.",
+            wstg_ids.len()
+        ));
+    }
+
     QaReport {
         recommendation,
         conditions,
@@ -317,6 +355,6 @@ pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaRepor
         coverage: col.coverage,
         risks: col.risks,
         exit_criteria,
-        notes: col.notes,
+        notes,
     }
 }

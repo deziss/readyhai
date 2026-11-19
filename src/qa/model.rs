@@ -14,6 +14,12 @@ pub enum Area {
     Resilience,
     Suite,
     Release,
+    /// Security testing a QA engineer performs (OWASP WSTG work products).
+    Security,
+    /// Data-quality assertions on datasets and API payloads.
+    Data,
+    /// Test-design techniques (BVA, equivalence, decision tables, state transition, pairwise).
+    Design,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -31,6 +37,14 @@ pub enum Technique {
     PerfBaseline,
     Resilience,
     Static,
+    /// Decision-table / cause-effect case derivation.
+    DecisionTable,
+    /// Pairwise (all-pairs) combinatorial reduction.
+    Pairwise,
+    /// Active attack probe (payload, mutation, oracle) — WSTG-style.
+    Attack,
+    /// Statistical data-quality assertion over a dataset or payload set.
+    DataQuality,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -361,6 +375,8 @@ pub struct QaCollector {
     /// (the surviving one included), so the status of a merged defect is judged over all of its
     /// members' fingerprints, not the first one's.
     pub merged: std::collections::BTreeMap<String, Vec<(String, String)>>,
+    /// Rules a probe actually executed (pass or fail), used for WSTG coverage reporting.
+    pub executed_rules: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
