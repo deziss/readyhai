@@ -19,6 +19,9 @@ pub fn area_label(a: Area) -> &'static str {
         Area::Resilience => "Resilience testing",
         Area::Suite => "Test-suite quality",
         Area::Release => "Release quality",
+        Area::Security => "Security (WSTG) testing",
+        Area::Data => "Data-quality testing",
+        Area::Design => "Test-design coverage",
     }
 }
 
@@ -30,6 +33,9 @@ pub fn area_checks(a: Area) -> &'static [&'static str] {
         Area::Perf => &["qa.perf"],
         Area::Resilience => &["qa.resilience"],
         Area::Suite | Area::Release => &["qa.suite", "qa.release"],
+        Area::Security => &["qa.pentest."],
+        Area::Data => &["qa.data."],
+        Area::Design => &["qa.design."],
     }
 }
 

@@ -213,6 +213,47 @@ Status: decision logic is unit-tested, and pause, detection and unpause were ver
 
 Licence deny list: `[license] deny = ["AGPL-3.0*", "GPL-3.0*"]` in `readyhai.toml`, or `READYHAI_LICENSE_DENY` (comma separated) in the environment. Needs `sbom.cdx.json`, i.e. the syft tool must have run (not with `--no-tools`); otherwise the check records "not evaluated". Without a deny list the licences are listed but nothing is judged: the check is Skipped (result Skipped, an *untested* note), not a green "licences comply".
 
+## Pentest probes (`src/qa/pentest/`, safe WSTG checks)
+
+Probe checks bring classic web-application pentest items into the QA run. They send
+only benign marker payloads, are bounded by the shared request budget, and never attempt
+exploitation or data access. Each finding maps to WSTG / API Top 10 / ASVS via `qa::wstg`.
+
+| Check | What | Rules (examples) |
+|---|---|---|
+| `qa.pentest.files` | sensitive files (`.env`, backups, `.git`), path traversal in params | `qa.pentest.sensitive_file`, `qa.pentest.path_traversal` |
+| `qa.pentest.methods` | dangerous HTTP methods (PUT/DELETE/TRACE unauthenticated) | `qa.pentest.dangerous_method` |
+| `qa.pentest.jwt` / `qa.pentest.jwt_tamper` | weak/missing JWT on auth endpoints; tampered signature still accepted | `qa.pentest.weak_jwt`, `qa.pentest.jwt_tamper` |
+| `qa.pentest.input` | benign injection/SSRF/redirect markers: reflection, 5xx or canary callback only | `qa.pentest.injection_reflected`, `qa.pentest.open_redirect`, `qa.pentest.ssrf_canary` |
+| `qa.pentest.session` | session fixation, logout does not revoke, low-entropy tokens | `qa.pentest.session_fixation`, `qa.pentest.session_not_revoked` |
+| `qa.pentest.headers` | missing security headers, unsafe cookie flags, cacheable private pages, missing CSRF | `qa.pentest.csrf_missing`, `qa.pentest.private_cacheable` |
+| `qa.pentest.ratelimit` | auth endpoints without rate limiting (bounded probe) | `qa.pentest.no_rate_limit` |
+| `qa.pentest.apilogic` | BOLA-style object-id swaps, mass assignment, verbose errors, auth bypass on API ops | `qa.pentest.auth_bypass` |
+
+## Data quality (`src/qa/data/`, repo-side, no live systems)
+
+QA checks over the fixtures/seed data feeding tests (files matching fixture/seed/sample/testdata with `.csv/.json/.sql`):
+`qa.data.duplicate-key`, `qa.data.null-violation`, `qa.data.invalid-format`, `qa.data.pii-exposed`,
+`qa.data.stale-dates`, `qa.data.orphan-reference`, `qa.data.sql-fixture`. See `src/qa/data/README.md`.
+
+## Test-design techniques (`src/qa/design/`, spec-driven case generation)
+
+From the OpenAPI spec the engine generates classic black-box design cases — boundary-value
+analysis (`qa.design.boundary`), equivalence partitions (`qa.design.equivalence`), greedy
+all-pairs covering arrays (`qa.design.pairwise`, Deep) and decision tables
+(`qa.design.decision-table`, Deep) — and writes an operation x technique
+`CoverageMatrix` (`qa.design.matrix`). Generated cases are **planned only**: they are
+registered as TestCases with `Skipped` results and matrix cells stay `Untested` until
+executed elsewhere, so design gaps are visible without fabricating evidence.
+
+## Standards traceability (`src/qa/wstg.rs`)
+
+Every security/QA rule maps to OWASP WSTG v4.1 work products, OWASP API Security Top 10
+2023 ids and ASVS v4.2 requirements as data. The QA report renders a coverage matrix
+per WSTG group, and the recommendation notes list which mapped rules were actually
+executed (`QaCollector::executed_rules`), so sign-off follows the standard, not an ad-hoc
+check list.
+
 ## roles.toml
 
 Keep it outside the target repo, `chmod 600` (a looser mode logs a warning). Secrets are env-var references, resolved at request time, never stored in run.json.
