@@ -134,7 +134,13 @@ pub fn client() -> Result<&'static Client> {
 
 fn mask_header(k: &str, v: &str) -> String {
     match k.to_ascii_lowercase().as_str() {
-        "set-cookie" | "authorization" | "cookie" | "proxy-authorization" | "x-api-key" => {
+        // Keep the attribute tail (`; HttpOnly; Secure; ...`) of Set-Cookie auditable;
+        // only the name=value pair is secret.
+        "set-cookie" => match v.find(';') {
+            Some(i) => format!("[REDACTED]{}", &v[i..]),
+            None => "[REDACTED]".into(),
+        },
+        "authorization" | "cookie" | "proxy-authorization" | "x-api-key" => {
             "[REDACTED]".into()
         }
         _ => v.to_string(),
@@ -412,6 +418,10 @@ mod tests {
     #[test]
     fn headers_masked() {
         assert_eq!(mask_header("Set-Cookie", "a=b"), "[REDACTED]");
+        assert_eq!(
+            mask_header("Set-Cookie", "sid=secret123; Path=/; HttpOnly"),
+            "[REDACTED]; Path=/; HttpOnly"
+        );
         assert_eq!(mask_header("Content-Type", "x"), "x");
     }
 

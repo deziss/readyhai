@@ -64,6 +64,13 @@ const MAP: &[Mapping] = &[
     Mapping { rule: "qa.graphql.server_error", wstg: &["WSTG-ERRT-01"], api_top10: &[], asvs: &["v4.2.07.04"] },
     Mapping { rule: "qa.graphql.unauthorized_field", wstg: &["WSTG-ATHZ-04", "WSTG-APIT-02"], api_top10: &["API3"], asvs: &["v4.2.04.08"] },
     Mapping { rule: "qa.pentest.auth_bypass", wstg: &["WSTG-ATHZ-01", "WSTG-ATHN-001"], api_top10: &["API5"], asvs: &["v4.2.04.01"] },
+    Mapping { rule: "qa.pentest.cookie_flags", wstg: &["WSTG-SESS-002"], api_top10: &["API2"], asvs: &["v4.2.03.04"] },
+    Mapping { rule: "qa.pentest.cookie_no_httponly", wstg: &["WSTG-SESS-002"], api_top10: &["API2"], asvs: &["v4.2.03.04"] },
+    Mapping { rule: "qa.pentest.cookie_no_secure", wstg: &["WSTG-SESS-002"], api_top10: &["API2"], asvs: &["v4.2.03.05"] },
+    Mapping { rule: "qa.pentest.cookie_samesite_none_insecure", wstg: &["WSTG-SESS-002"], api_top10: &["API2"], asvs: &["v4.2.03.06"] },
+    Mapping { rule: "qa.pentest.cors_null_origin", wstg: &["WSTG-CLNT-07"], api_top10: &["API8"], asvs: &["v4.2.09.01"] },
+    Mapping { rule: "qa.pentest.cors_unvalidated_origin", wstg: &["WSTG-CLNT-07"], api_top10: &["API8"], asvs: &["v4.2.09.01"] },
+    Mapping { rule: "qa.pentest.cors_wildcard", wstg: &["WSTG-CLNT-07"], api_top10: &["API8"], asvs: &["v4.2.09.02"] },
     Mapping { rule: "qa.pentest.csrf_missing", wstg: &["WSTG-SESS-005", "WSTG-CLNT-08"], api_top10: &["API2"], asvs: &["v4.2.03.05"] },
     Mapping { rule: "qa.pentest.dangerous_method", wstg: &["WSTG-CONFIG-01"], api_top10: &["API8"], asvs: &["v4.2.13.03"] },
     Mapping { rule: "qa.pentest.excessive_data", wstg: &["WSTG-ATHZ-04", "WSTG-APIT-02"], api_top10: &["API3"], asvs: &["v4.2.04.08"] },
@@ -180,6 +187,17 @@ pub fn rules_of_check(check_id: &str) -> &'static [&'static str] {
         "qa.pentest.headers" => &["qa.pentest.private_cacheable", "qa.pentest.csrf_missing"],
         "qa.pentest.ratelimit" => &["qa.pentest.no_rate_limit"],
         "qa.pentest.apilogic" => &["qa.pentest.auth_bypass"],
+        "qa.pentest.cors" => &[
+            "qa.pentest.cors_wildcard",
+            "qa.pentest.cors_null_origin",
+            "qa.pentest.cors_unvalidated_origin",
+        ],
+        "qa.pentest.cookies" => &[
+            "qa.pentest.cookie_flags",
+            "qa.pentest.cookie_no_httponly",
+            "qa.pentest.cookie_no_secure",
+            "qa.pentest.cookie_samesite_none_insecure",
+        ],
         _ => &[],
     }
 }
@@ -236,6 +254,8 @@ mod tests {
             "qa.pentest.headers",
             "qa.pentest.ratelimit",
             "qa.pentest.apilogic",
+            "qa.pentest.cors",
+            "qa.pentest.cookies",
         ] {
             for rule in rules_of_check(check) {
                 assert!(lookup(rule).is_some(), "{rule} mapped");
