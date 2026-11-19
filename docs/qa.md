@@ -229,6 +229,8 @@ exploitation or data access. Each finding maps to WSTG / API Top 10 / ASVS via `
 | `qa.pentest.headers` | missing security headers, unsafe cookie flags, cacheable private pages, missing CSRF | `qa.pentest.csrf_missing`, `qa.pentest.private_cacheable` |
 | `qa.pentest.ratelimit` | auth endpoints without rate limiting (bounded probe) | `qa.pentest.no_rate_limit` |
 | `qa.pentest.apilogic` | BOLA-style object-id swaps, mass assignment, verbose errors, auth bypass on API ops | `qa.pentest.auth_bypass` |
+| `qa.pentest.cors` | CORS policy: wildcard with credentials, probe origin reflected back, `null` origin accepted | `qa.pentest.cors_wildcard`, `qa.pentest.cors_null_origin`, `qa.pentest.cors_unvalidated_origin` |
+| `qa.pentest.cookies` | Set-Cookie attribute audit (attributes only — values are redacted before inspection) | `qa.pentest.cookie_flags`, `qa.pentest.cookie_no_httponly`, `qa.pentest.cookie_no_secure`, `qa.pentest.cookie_samesite_none_insecure` |
 
 ## Data quality (`src/qa/data/`, repo-side, no live systems)
 
