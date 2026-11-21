@@ -151,22 +151,35 @@ profile = "quick"                  # quick | standard (default) | deep
 image = "ghcr.io/pycqa/bandit@sha256:..."
 args = ["-r", "{src}", "-f", "sarif", "-o", "/out/bandit.sarif"]
 output = "/out/bandit.sarif"       # file inside /out the plugin writes
-format = "sarif"                   # sarif | junit | readyhai-json
+format = "sarif"                   # sarif | junit | readyhai-json | lines
 network = false                    # default false
-entrypoint = "bandit"              # optional
+entrypoint = "bandit"              # optional, single string (--entrypoint override)
+# Optional runner-v2 fields:
+cache_rw = false                   # writable /cache mount (scanner DBs, templates, wordlists)
+env = ["BANDIT_TOKEN"]             # env NAME passthrough (values come from ReadyHai's env, never argv)
+stdout = false                     # capture stdout as the report (then `output` is not needed)
+host_gateway = false               # --add-host host.docker.internal (auto-on for loopback targets)
+user = "10001"                     # numeric uid[:gid] override for the container
+intrusive = false                  # respect the scope prod guard (deep scans too)
+# For format = "lines" only:
+rule = "recon.httpx.probe"         # rule id on every finding
+severity = "info"                  # info | low | medium | high | critical
+title_prefix = "HTTP surface"      # finding title becomes "<prefix>: <value>"
 ```
 
 | Field | Notes |
 |---|---|
-| Placeholders in `args` | `{src}` -> `/src`, `{out}` -> `/out`, `{url}` -> target URL (empty for non-web), `{image_tar}` -> `/src/image.tar` |
-| Sandbox | Same hardening as built-in tools (net none unless `network = true`, caps dropped, read-only rootfs, non-root, `/src` ro, `/out` rw). Container-create policy applies. |
+| Placeholders in `args` | `{src}` -> `/src`, `{out}` -> `/out`, `{url}` -> target URL (loopback hosts rewritten to `host.docker.internal`, empty for non-web), `{domain}` -> bare hostname of the target, `{image_tar}` -> `/src/image.tar` |
+| Sandbox | Same hardening as built-in tools (net none unless `network = true`, caps dropped, read-only rootfs, non-root, `/src` ro, `/out` rw, `/tmp` tmpfs; `/cache` ro unless `cache_rw`). Container-create policy applies. Loopback targets auto-enable the host gateway so `network = true` plugins can reach a localhost dev server. |
 | `sarif` | `runs[].results[]` mapped: `ruleId`, `level` (error high, warning medium, note low, none info), first physical location, message first line. Category `security`. fp = `uri|rule|hash(message)` |
-| `junit` | Failed cases become `tests.failed` findings (same rules as `tests.own`); errors-only is `errored` |
+| `junit` | Failed cases become `tests.failed` findings (same rules as `tests.own`); errors-only is `errored`. The container exit code is only trusted when `stdout = true`. |
 | `readyhai-json` | A JSON array of `Finding` objects (see [architecture.md](architecture.md#data-model)); `check` is overwritten with `plugin.<id>` |
+| `lines` | JSONL (one object per line), for recon CLIs (`httpx -json`, `katana -json -silent`, `subfinder -json`...). URL/host taken from common keys (`url`, `host`, `input`, ...); one deduped finding per value with `rule`/`severity`/`title_prefix`. Empty output with exit 0 = zero findings. |
 | Unpinned image | Status `partial("plugin image unpinned")` and a pin warning. Use `@sha256:` |
-| Failure | Missing output file -> `errored` with the container exit code and stderr tail |
+| `env` names not set | Status `partial("env not set, ...")` — the plugin ran, coverage may be lower |
+| Failure | Missing/empty output (except exit-0 `lines`) -> `errored` with the container exit code and stderr tail. Invalid `plugin.toml` (unknown format, `user` not numeric, `env` entry not an identifier, missing `output` without `stdout`) -> skipped at load with a warning. |
 
-Plugins cannot be marked intrusive.
+Plugins marked `intrusive = true` (or `profile = "deep"`) run only on targets the scope file does not mark `prod`, like built-in intrusive checks. ReadyHai's own verified plugin pack lives in [`../plugins/official/`](../plugins/README.md).
 
 ## Environment variables
 
