@@ -1,0 +1,19 @@
+# Trivy filesystem secret scan — complements tool.gitleaks (regex/entropy) with
+# Trivy's embedded-scan rules (kubeconfigs, private keys, cloud tokens).
+id = "trivy-secrets"
+title = "Trivy secret scan (repo, SARIF)"
+kinds = ["repo"]
+profile = "standard"
+image = "aquasec/trivy:0.69.1@sha256:1c78ed1ef824ab8bb05b04359d186e4c1229d0b3e67005faacb54a7d71974f73"
+args = [
+  "fs",
+  "--scanners", "secret",
+  "--format", "sarif",
+  "--output", "/out/trivy-secrets.sarif",
+  "--exit-code", "0",
+  "--no-progress",
+  "--skip-db-update",
+  "/src",
+]
+output = "/out/trivy-secrets.sarif"
+format = "sarif"

@@ -1,0 +1,18 @@
+# Trivy IaC/misconfig scan (Terraform, k8s manifests, Dockerfile, compose).
+# Overlaps tool.checkov; trivy-config is the successor home of tfsec's engine.
+id = "trivy-config"
+title = "Trivy IaC misconfiguration (SARIF)"
+kinds = ["repo"]
+profile = "standard"
+image = "aquasec/trivy:0.69.1@sha256:1c78ed1ef824ab8bb05b04359d186e4c1229d0b3e67005faacb54a7d71974f73"
+args = [
+  "config",
+  "--format", "sarif",
+  "--output", "/out/trivy-config.sarif",
+  "--exit-code", "0",
+  "--no-progress",
+  "--skip-policy-bundle",
+  "/src",
+]
+output = "/out/trivy-config.sarif"
+format = "sarif"

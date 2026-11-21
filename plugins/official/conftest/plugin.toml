@@ -1,0 +1,13 @@
+# Conftest (Apache-2.0, CNCF/OPA) - custom rego policy over any config: k8s yaml,
+# Terraform hcl2, Dockerfile, ini, json all auto-parse. ReadyHai ships a policy
+# pack (policies/rego); fetch it into the cache with `scripts/fetch-feeds.sh rego`
+# (or drop your rego at <cache>/rego/). No policies -> 0 results, silent pass.
+id = "conftest"
+title = "Conftest rego policy checks (SARIF)"
+kinds = ["repo"]
+profile = "deep"
+image = "openpolicyagent/conftest:v0.71.1@sha256:0e77cdf7c1fcde035f3c579e4aaa6664ee2a8be5777eaa9af9f520cdd02280c0"
+cache_rw = true
+stdout = true
+format = "sarif"
+args = ["test", "/src", "--policy", "/cache/rego", "--no-color", "--output", "sarif"]

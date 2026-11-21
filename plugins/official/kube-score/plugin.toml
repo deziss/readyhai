@@ -1,0 +1,12 @@
+# kube-score (MIT) - k8s best-practice scoring, SARIF native.
+# The image ships busybox: we cat all manifests into stdin ("-"), which yields
+# ONE valid SARIF doc regardless of file count.
+id = "kube-score"
+title = "kube-score k8s best practices (SARIF)"
+kinds = ["repo"]
+profile = "standard"
+image = "zegl/kube-score:v1.20.0@sha256:ac4c43ad560af905d66f6bf57b0937c591332e6dbf2167c31193a13b4695ab97"
+entrypoint = "/bin/sh"
+stdout = true
+format = "sarif"
+args = ["-c", "find /src -name '*.yaml' -o -name '*.yml' | sort | while read f; do echo '---'; cat \"$f\"; echo; done | /kube-score score --output-format sarif - 2>/dev/null"]
