@@ -1,0 +1,24 @@
+# Trivy (Aqua Security, OSS Apache-2.0). Overlaps tool.sbom_cve (syft+grype) but adds
+# misconfig/license scanning in one pass and is the successor engine to tfsec.
+# Digest resolved from Docker Hub 2026-11-21. Re-check with: docker inspect --format='{{index .RepoDigests 0}}' aquasec/trivy:<tag>
+id = "trivy"
+title = "Trivy vulnerabilities + misconfig (SARIF)"
+kinds = ["image"]
+profile = "standard"
+image = "aquasec/trivy:0.69.1@sha256:1c78ed1ef824ab8bb05b04359d186e4c1229d0b3e67005faacb54a7d71974f73"
+network = true   # first-run vulnerability DB download; /cache is read-only for plugins today
+args = [
+  "image",
+  "--scanners", "vuln,misconfig,secret",
+  "--severity", "UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL",
+  "--format", "sarif",
+  "--output", "/out/trivy.sarif",
+  "--exit-code", "0",
+  "--skip-version-check",
+  "--skip-policy-update",
+  "--no-progress",
+  "--cache-dir", "/out/trivy-db",
+  "--input", "{image_tar}",
+]
+output = "/out/trivy.sarif"
+format = "sarif"

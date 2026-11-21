@@ -1,0 +1,17 @@
+# ProjectDiscovery Subfinder (MIT) - passive subdomain enumeration.
+# `-json -silent` JSONL {"host":...} -> native `lines` format keeps one Info
+# finding per subdomain: a recon inventory that makes out-of-scope assets visible.
+# Optional free API keys (tool works without them, fewer sources):
+id = "subfinder"
+title = "Subfinder passive subdomain enum (recon)"
+kinds = ["web"]
+profile = "standard"
+image = "projectdiscovery/subfinder:v2.17.0@sha256:2f5ddea311db2a8b848e40f1b669fc655d0eb78b74a74ead93d3850e372b12bf"
+network = true
+env = ["GITHUB_TOKEN", "SHODAN_API_KEY", "SECURITYTRAILS_API_KEY", "CHAOS_KEY", "VIRUSTOTAL_API_KEY"]
+stdout = true
+format = "lines"
+rule = "recon.subfinder.subdomain"
+severity = "info"
+title_prefix = "Subdomain"
+args = ["-silent", "-json", "-d", "{domain}"]

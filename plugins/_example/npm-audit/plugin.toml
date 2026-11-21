@@ -1,0 +1,15 @@
+# npm audit (bundled with npm, OSS). Registry advisory fetch needs network.
+# Runs the repo mount inside a pinned node image; npm never writes under /out,
+# so we redirect + convert to readyhai-json in one sh -c (see wrapper_note.md).
+id = "npm-audit"
+title = "npm audit (high/critical)"
+kinds = ["repo"]
+profile = "standard"
+image = "node:22-slim"
+network = true
+args = [
+  "sh", "-c",
+  "cd /src && npm audit --audit-level=high --json > /tmp/audit.json 2>/dev/null; jq -f /tmp/rh.jq /tmp/audit.json > /out/rh.json 2>/dev/null || echo '[]' > /out/rh.json",
+]
+output = "/out/rh.json"
+format = "readyhai-json"

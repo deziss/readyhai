@@ -1,0 +1,9 @@
+# StackRox KubeLinter (Apache-2.0) - k8s manifest linting, SARIF native.
+id = "kube-linter"
+title = "KubeLinter k8s manifest lint (SARIF)"
+kinds = ["repo"]
+profile = "standard"
+image = "ghcr.io/stackrox/kube-linter:v0.8.3@sha256:f2bfce7879206d32f69ab6572c376f916643f54ca291ac38cf7d01ef591ff3f9"
+args = ["lint", "/src", "--format", "sarif", "--output", "/out/kube-linter.sarif"]
+output = "/out/kube-linter.sarif"
+format = "sarif"

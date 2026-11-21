@@ -1,0 +1,17 @@
+# ProjectDiscovery httpx (MIT) - live HTTP probe + Wappalyzer tech-detect.
+# JSONL per URL; `lines` picks .input -> one Info inventory finding for the
+# probed surface incl. detected tech in the detail. Pair with subfinder by
+# pointing `{url}` at each asset or running httpx over a URL list.
+id = "httpx"
+title = "httpx surface + tech fingerprint (recon)"
+kinds = ["web"]
+profile = "standard"
+image = "projectdiscovery/httpx:v1.12.0@sha256:f8275a7c6aaec187249df9eaf4ad9196f4677adfc6a51a47b4aaa1d4db4f8ffc"
+network = true
+host_gateway = true
+stdout = true
+format = "lines"
+rule = "recon.httpx.probe"
+severity = "info"
+title_prefix = "HTTP surface"
+args = ["-silent", "-json", "-u", "{url}", "-tech-detect", "-status-code", "-title", "-server"]

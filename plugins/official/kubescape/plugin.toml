@@ -1,0 +1,18 @@
+# Kubescape (Apache-2.0) - k8s posture, SARIF native.
+# IMPORTANT (verified 2026-11-21): the quay.io/kubescape/kubescape image ships
+# `ksserver` only (operator/agent role); the `scan framework` CLI is distributed
+# as a GitHub release binary, not in the image. Use the sidecar pattern below.
+# Build once (keeps every scan deterministic; pinned by your own digest):
+#   FROM alpine:3.21
+#   RUN wget -qO /usr/local/bin/kubescape https://github.com/kubescape/kubescape/releases/download/v4.0.21/kubescape-alpine-latest-amd64 && chmod +x /usr/local/bin/kubescape
+# Then set image = your-image@sha256:<digest> below.
+id = "kubescape"
+title = "Kubescape k8s posture (NSA-CISA, SARIF; custom image required)"
+kinds = ["repo"]
+profile = "standard"
+image = "REPLACE-WITH-YOUR-kubescape-cli-image@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+network = true
+stdout = true
+format = "sarif"
+args = ["scan", "framework", "nsa-cisa", "/src", "--format", "sarif", "--enable-host-scan=false", "--exceptions", "/dev/null"]
+# NOTE: loader skips unresolvable digests; copy and fix the image line.

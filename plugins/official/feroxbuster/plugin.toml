@@ -1,0 +1,18 @@
+# Feroxbuster (MIT) - content discovery, CI-safe via --time-limit.
+# Ferox JSON needs shaping that jq can't do inside the image (no jq shipped),
+# so run the default TEXT output through `lines`: ferox prints one URL per line
+# by default in quiet mode. status detail is lost -> inventory severity info.
+id = "feroxbuster"
+title = "Feroxbuster content discovery (intrusive fuzz)"
+kinds = ["web"]
+profile = "deep"
+image = "epi052/feroxbuster:2.13.0@sha256:ed41806cb9c45bdc01cc8767b68fd47027025570eac8dc2605a024a43a97a873"
+network = true
+host_gateway = true
+intrusive = true
+stdout = true
+format = "lines"
+rule = "recon.ferox.endpoint"
+severity = "info"
+title_prefix = "Discovered path"
+args = ["-u", "{url}", "-q", "--time-limit", "120", "-t", "40", "-w", "/cache/SecLists/Discovery/Web-Content/directory-list-2.3-medium.txt", "--no-autoupdate"]

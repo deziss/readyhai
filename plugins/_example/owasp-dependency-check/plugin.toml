@@ -1,0 +1,14 @@
+# OWASP Dependency-Check (OSS, Apache-2.0): NVD CVE matching for JVM/Python/JS.
+# First run downloads the NVD feed (minutes; network=true required). An NVD API
+# key makes it ~10x faster; until the runner passes env to plugins, pass
+# --nvdApiKey inline (visible in audit log) or skip the key.
+id = "owasp-dependency-check"
+title = "OWASP Dependency-Check (NVD CVEs)"
+kinds = ["repo"]
+profile = "standard"
+image = "owasp/dependency-check:12.1.0@sha256:60ee7af9cf80ac009761e397b2d4ba5ddbf072c2a0ead1c068dc24dc62155600"
+network = true
+entrypoint = "/bin/sh"
+args = ["-c", "java -jar /usr/share/dependency-check/dependency-check.jar --scan /src --format JSON --out /out || true"]
+output = "/out/dependency-check-report.json"
+format = "readyhai-json"

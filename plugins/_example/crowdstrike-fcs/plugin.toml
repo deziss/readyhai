@@ -1,0 +1,20 @@
+# CrowdStrike Falcon Container Security (COMMERCIAL). Not redistributable: obtain
+# falcon-provision-tool / the container-scan CLI from your Falcon tenant and
+# install it on the scanning host under your CrowdStrike license.
+# This is a TEMPLATE: fill <...>, then copy the dir out of _example/ and enable.
+# CrowdStrike CLI JSON is Falcon-specific; convert to readyhai.json with the
+# shipped falcon2readyhai.sh wrapper (needs host jq), or write findings directly.
+id = "crowdstrike-fcs"
+title = "CrowdStrike Falcon container scan"
+kinds = ["image"]
+profile = "deep"
+image = "alpine:3.21"
+network = true
+entrypoint = "/bin/sh"
+# Mount-free pattern: the falcon CLI + credentials must be inside the image.
+# Build a private image: FROM alpine; COPY falcon-provision-tool + falcon2readyhai.sh;
+# provide FALCON_API_KEYID / FALCON_API_KEYSECRET via the wrapper reading
+# /secrets/falcon (add a secrets mount, or bake a short-lived token).
+args = ["-c", "/opt/falcon/falcon2readyhai.sh <registry>/<image> > /out/falcon.json"]
+output = "/out/falcon.json"
+format = "readyhai-json"

@@ -1,0 +1,17 @@
+# ProjectDiscovery Katana (MIT) - headless JS crawler -> endpoint inventory.
+# Deep profile: it hits the target hard; treat as intrusive-adjacent (crawling
+# is passive-ish but unbounded; -dur caps it). JSONL {"url":...} -> `lines`.
+id = "katana"
+title = "Katana crawl (endpoint inventory)"
+kinds = ["web"]
+profile = "deep"
+image = "projectdiscovery/katana:v1.8.0@sha256:20c42a63b71f0c2e95cb02d973e8887e70ad65ea9cb818183f163143275e746c"
+network = true
+host_gateway = true
+intrusive = true
+stdout = true
+format = "lines"
+rule = "recon.katana.endpoint"
+severity = "info"
+title_prefix = "Crawled endpoint"
+args = ["-silent", "-jsonl", "-u", "{url}", "-jc", "-d", "3", "-dur", "60"]
