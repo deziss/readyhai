@@ -336,6 +336,68 @@ format = "sarif"
 }
 
 #[test]
+fn plugin_new_fields_parse_and_validate() {
+    let dir = std::env::temp_dir().join(format!("readyhai-plug2-{:08x}", rand::random::<u32>()));
+    let mk = |name: &str, body: &str| {
+        let p = dir.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("plugin.toml"), body).unwrap();
+    };
+    mk(
+        "ok",
+        r#"
+id = "ok"
+kinds = ["web"]
+image = "x/y@sha256:0000"
+stdout = true
+env = ["MY_TOKEN"]
+cache_rw = true
+host_gateway = true
+user = "1000:1000"
+intrusive = true
+format = "readyhai-json"
+"#,
+    );
+    mk(
+        "baduser",
+        r#"
+id = "baduser"
+kinds = ["web"]
+image = "x/y"
+output = "/out/x.sarif"
+user = "root"
+format = "sarif"
+"#,
+    );
+    mk(
+        "badenv",
+        r#"
+id = "badenv"
+kinds = ["web"]
+image = "x/y"
+output = "/out/x.sarif"
+env = ["OK_1", "not an ident!"]
+format = "sarif"
+"#,
+    );
+    mk(
+        "noout",
+        r#"
+id = "noout"
+kinds = ["web"]
+image = "x/y"
+format = "sarif"
+"#,
+    );
+    let c = plugin_checks(&dir);
+    assert_eq!(c.len(), 1, "only the valid plugin loads: {:?}", c.iter().map(|x| &x.id).collect::<Vec<_>>());
+    assert_eq!(c[0].id, "plugin.ok");
+    assert!(c[0].intrusive);
+    assert_eq!(c[0].kinds, vec![TargetKind::Web]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn lock_precedence_env_data_embedded() {
     let d = std::env::temp_dir().join(format!("rh-lockprec-{:08x}", rand::random::<u32>()));
     std::fs::create_dir_all(&d).unwrap();
