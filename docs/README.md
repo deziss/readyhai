@@ -24,6 +24,8 @@ These docs describe what the code in `src/`, `frontend/`, `tests/eval/` and `.gi
 | [status-and-competition.md](status-and-competition.md) | Where ReadyHai stands (live vs unit-only vs eval-gated), competitor table, sources |
 | [roadmap.md](roadmap.md) | Phase status, what is done, what is next, known issues |
 | [market-research.md](market-research.md) | OSS vs commercial landscape, the gap, sources |
+| [superapp-orchestrator.md](superapp-orchestrator.md) | ReadyHai as the pentest super-app: plugin lanes, verified packs, sprint plan, Orchestrator 0.x backlog, BYO-licence policy |
+| [data-sources.md](data-sources.md) | Feed cache (`scripts/fetch-feeds.sh`): OSV/GHSA/KEV/EPSS/wordlists/templates/rego — licenses, cadence, air-gap rules |
 | [build-log.md](build-log.md) | What was done in this build, in order, round by round |
 | [../frontend/README.md](../frontend/README.md) | The Next.js Agent Studio: design system, scripts, token handling, node version |
 | [../CHANGELOG.md](../CHANGELOG.md) | Release notes (Keep a Changelog) |

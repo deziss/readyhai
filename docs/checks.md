@@ -212,7 +212,7 @@ Journal/oslog/event-log error lines go to the error clusters (`host.journal`, `h
 
 ### Plugins
 
-`plugin.<id>` findings use the rule ids from the plugin's output (SARIF `ruleId`, JUnit `tests.failed`, or `rule` in `readyhai-json`). SARIF levels map error high, warning medium, note low, none info; category `security`.
+`plugin.<id>` findings use the rule ids from the plugin's output (SARIF `ruleId`, JUnit `tests.failed`, `rule` in `readyhai-json`, or the plugin's `rule =` field for the `lines` JSONL format). SARIF levels map error high, warning medium, note low, none info; category `security`.
 
 ## Fixture expectations (`tests/fixtures/vuln-app`)
 
