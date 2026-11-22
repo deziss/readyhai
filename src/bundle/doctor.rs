@@ -115,6 +115,38 @@ pub fn doctor() -> Result<()> {
         );
     }
 
+    // Pure filesystem, no docker: what the plugin loader accepted and what it
+    // silently dropped (same rules as plugin_checks, via plugin_diags).
+    let pdir = tools::plugins_dir();
+    let diags = tools::plugin_diags(&pdir);
+    if diags.is_empty() {
+        println!("  plugins:      none found ({})", pdir.display());
+    } else {
+        println!("plugins:");
+        let mut loaded = 0;
+        for d in &diags {
+            let ok = matches!(d.status, tools::PluginLoad::Loaded);
+            loaded += ok as usize;
+            let note = match &d.reason {
+                Some(r) => crate::tools::parsers::first_line(r, 90),
+                None => "loaded".to_string(),
+            };
+            let image = if d.image.is_empty() { "-" } else { &d.image };
+            let name = format!("plugin.{}", d.id);
+            // Skipped lines carry the full pack path so the manifest is easy to fix;
+            // loaded plugins are identified by their id alone.
+            if ok {
+                println!("  {:<24} {:<92} {}", name, note, image);
+            } else {
+                println!("! {:<24} {:<92} {}  {}", name, note, image, d.dir);
+            }
+        }
+        println!(
+            "  plugins:      {loaded} loaded, {} skipped",
+            diags.len() - loaded
+        );
+    }
+
     match tools::db_age_days(&cache) {
         Some(d) if d > 30 => println!("! grype DB:  {d} day(s) old (> 30: stale)"),
         Some(d) if d > 7 => println!("! grype DB:  {d} day(s) old (> 7: scans are Partial)"),

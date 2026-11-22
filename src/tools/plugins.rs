@@ -291,39 +291,162 @@ pub(crate) fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
     Ok(partial(notes, findings))
 }
 
-pub fn plugin_checks(dir: &Path) -> Vec<Check> {
-    let mut v = vec![];
+/// Whether one candidate plugin directory loaded under the loader rules.
+#[derive(Debug, Clone)]
+pub enum PluginLoad {
+    Loaded,
+    Skipped,
+}
+
+/// One candidate plugin (a directory holding a readable `plugin.toml`) and why it
+/// loaded or was skipped. Produced by [`plugin_diags`]; same rules as [`plugin_checks`].
+#[derive(Debug, Clone)]
+pub struct PluginDiag {
+    /// The pack directory the manifest was read from (`<dir>/<pack>`).
+    pub dir: String,
+    /// Declared plugin id; the directory name when the manifest could not be parsed.
+    pub id: String,
+    pub status: PluginLoad,
+    /// Rejection reason; `None` when loaded.
+    pub reason: Option<String>,
+    /// Image the manifest declares (empty when the manifest could not be parsed).
+    pub image: String,
+}
+
+/// The single source of truth for rejecting malformed plugins — at load, not at
+/// scan time (the loader is best-effort). `None` means the manifest is valid.
+fn reject_reason(p: &Plugin) -> Option<String> {
+    if !p.stdout && p.output.is_empty() {
+        return Some("file format with no output path (empty `output` and `stdout=false`)".into());
+    }
+    if let Some(u) = p.user.as_deref().filter(|u| !valid_user(u)) {
+        return Some(format!("invalid user {u:?} (must be numeric uid[:gid])"));
+    }
+    if let Some(k) = p
+        .env
+        .iter()
+        .find(|k| k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+    {
+        return Some(format!("invalid env name {k:?}"));
+    }
+    if p.kinds
+        .iter()
+        .all(|k| !matches!(k.as_str(), "repo" | "image" | "web"))
+    {
+        return Some("no valid kinds (repo/image/web)".into());
+    }
+    None
+}
+
+/// Pack subdirectories of `dir`, sorted: the loader reads one level, `<dir>/<pack>/plugin.toml`.
+fn pack_dirs(dir: &Path) -> Vec<PathBuf> {
     let Ok(rd) = std::fs::read_dir(dir) else {
-        return v;
+        return Vec::new();
     };
-    let mut dirs: Vec<PathBuf> = rd
+    let mut v: Vec<PathBuf> = rd
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.is_dir())
         .collect();
-    dirs.sort();
-    for d in dirs {
-        let Ok(text) = std::fs::read_to_string(d.join("plugin.toml")) else {
+    v.sort();
+    v
+}
+
+fn skip_diag(dir: &str, id: String, reason: String, image: String) -> PluginDiag {
+    PluginDiag {
+        dir: dir.to_string(),
+        id,
+        status: PluginLoad::Skipped,
+        reason: Some(reason),
+        image,
+    }
+}
+
+/// Reads and validates one pack directory: `Ok(Some)` loads; `Err(diag)` is a
+/// candidate that was rejected; `Ok(None)` has no readable `plugin.toml`, so the
+/// directory is inert (a pack root like `official/`), not a candidate.
+fn load_plugin(dir: &Path) -> Result<Option<Plugin>, PluginDiag> {
+    let dir_s = dir.display().to_string();
+    let name = || {
+        dir.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let Ok(text) = std::fs::read_to_string(dir.join("plugin.toml")) else {
+        return Ok(None);
+    };
+    let p = match toml::from_str::<Plugin>(&text) {
+        Ok(p) => p,
+        Err(e) => {
+            return Err(skip_diag(
+                &dir_s,
+                name(),
+                format!("plugin.toml parse failed: {e}"),
+                String::new(),
+            ));
+        }
+    };
+    match reject_reason(&p) {
+        Some(reason) => {
+            let id = if p.id.is_empty() {
+                name()
+            } else {
+                p.id.clone()
+            };
+            Err(skip_diag(&dir_s, id, reason, p.image.clone()))
+        }
+        None => Ok(Some(p)),
+    }
+}
+
+/// Every candidate plugin under `dir` sorted by directory, with load status and
+/// skip reason — exactly what [`plugin_checks`] accepts or drops. Pure filesystem:
+/// no docker, no network.
+pub fn plugin_diags(dir: &Path) -> Vec<PluginDiag> {
+    pack_dirs(dir)
+        .into_iter()
+        .filter_map(|d| match load_plugin(&d) {
+            Ok(Some(p)) => Some(PluginDiag {
+                dir: d.display().to_string(),
+                id: p.id.clone(),
+                status: PluginLoad::Loaded,
+                reason: None,
+                image: p.image.clone(),
+            }),
+            Ok(None) => None,
+            Err(diag) => Some(diag),
+        })
+        .collect()
+}
+
+/// `(id, image)` for every plugin that loads successfully (validation shared with
+/// [`plugin_checks`]), in directory order. Duplicates across plugins are kept;
+/// callers dedup.
+pub fn plugin_image_refs(dir: &Path) -> Vec<(String, String)> {
+    pack_dirs(dir)
+        .into_iter()
+        .filter_map(|d| load_plugin(&d).ok().flatten().map(|p| (p.id, p.image)))
+        .collect()
+}
+
+/// Plugin dir for commands without a `--plugins` flag: `READYHAI_PLUGINS` when set,
+/// else `<data>/plugins`. A scan with neither loads no plugins; `doctor` and
+/// `tools pull` also probe the data-dir location so an installed layout is visible.
+pub fn plugins_dir() -> PathBuf {
+    match std::env::var_os("READYHAI_PLUGINS") {
+        Some(d) => PathBuf::from(d),
+        None => crate::engine::data_dir().join("plugins"),
+    }
+}
+
+pub fn plugin_checks(dir: &Path) -> Vec<Check> {
+    let mut v = vec![];
+    for d in pack_dirs(dir) {
+        // load_plugin applies reject_reason, so every plugin below is valid.
+        let Ok(Some(p)) = load_plugin(&d) else {
             continue;
         };
-        let Ok(p) = toml::from_str::<Plugin>(&text) else {
-            continue;
-        };
-        // Reject malformed plugins at load, not at scan time (loader is best-effort).
-        if !p.stdout && p.output.is_empty() {
-            continue; // file format needs an output path to parse
-        }
-        if p.user.as_deref().is_some_and(|u| !valid_user(u)) {
-            continue;
-        }
-        if p.env.iter().any(|k| {
-            k.is_empty()
-                || !k
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
-        }) {
-            continue;
-        }
         let kinds: Vec<TargetKind> = p
             .kinds
             .iter()
@@ -334,9 +457,6 @@ pub fn plugin_checks(dir: &Path) -> Vec<Check> {
                 _ => None,
             })
             .collect();
-        if kinds.is_empty() {
-            continue;
-        }
         let profile = match p.profile.as_str() {
             "quick" => Profile::Quick,
             "deep" => Profile::Deep,

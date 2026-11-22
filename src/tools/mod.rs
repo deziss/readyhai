@@ -36,7 +36,9 @@ pub use pinning::{
 #[allow(unused_imports)]
 pub(crate) use pinning::missing_image;
 #[allow(unused_imports)]
-pub use plugins::plugin_checks;
+pub use plugins::{
+    PluginDiag, PluginLoad, plugin_checks, plugin_diags, plugin_image_refs, plugins_dir,
+};
 #[allow(unused_imports)]
 pub use policy::validate_create_policy;
 #[allow(unused_imports)]

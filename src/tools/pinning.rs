@@ -144,9 +144,168 @@ pub fn pin_warnings() -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// `readyhai tools pull [--lock]`
-pub fn tools_pull(write_lock: Option<&Path>) -> Result<()> {
-    tools_pull_filtered(write_lock, None)
+/// `docker image inspect` first RepoDigest (`repo@sha256:...`); None when docker is
+/// absent, the image is unknown, or it has no registry digest (a locally built image).
+fn repo_digest0(image: &str) -> Option<String> {
+    let o = Command::new("docker")
+        .args([
+            "image",
+            "inspect",
+            "--format",
+            "{{index .RepoDigests 0}}",
+            image,
+        ])
+        .output()
+        .ok()?;
+    if !o.status.success() {
+        return None;
+    }
+    let t = String::from_utf8_lossy(&o.stdout).trim().to_string();
+    if t.is_empty() { None } else { Some(t) }
+}
+
+/// Digest part (`sha256:...`) of an `repo@sha256:...` image reference, None when unpinned.
+fn digest_of(r: &str) -> Option<&str> {
+    r.rsplit_once('@').map(|(_, d)| d)
+}
+
+/// Warning when the digest the registry resolved for a pulled image differs from the
+/// digest pinned in the plugin's `image`. None when either side carries no digest
+/// (unpinned plugin, or a locally built image without RepoDigests: nothing to compare).
+pub(crate) fn digest_drift(declared: &str, resolved: &str) -> Option<String> {
+    let want = digest_of(declared)?;
+    let got = digest_of(resolved)?;
+    if got == want {
+        return None;
+    }
+    Some(format!(
+        "plugin image drift: {declared} resolved to {resolved} — repin the digest in the plugin.toml"
+    ))
+}
+
+/// `docker pull` with three attempts and exponential backoff. `Ok(true)` = the image is
+/// local; `Ok(false)` = every attempt ran and failed; `Err` only when docker cannot start.
+fn docker_pull(image: &str) -> Result<bool> {
+    let max_attempts = 3;
+    for attempts in 1..=max_attempts {
+        match Command::new("docker").args(["pull", image]).status() {
+            Ok(st) if st.success() => return Ok(true),
+            Ok(_) => eprintln!("  pull failed for {image} (attempt {attempts}/{max_attempts})"),
+            Err(err) => {
+                eprintln!(
+                    "  docker pull error for {image}: {err} (attempt {attempts}/{max_attempts})"
+                );
+                if attempts == max_attempts {
+                    return Err(err).context("docker pull");
+                }
+            }
+        }
+        if attempts < max_attempts {
+            std::thread::sleep(Duration::from_millis(1000 * (1 << (attempts - 1))));
+        }
+    }
+    eprintln!("  all pull attempts failed for {image}");
+    Ok(false)
+}
+
+/// Plan of plugin (id, image) refs to pull: deduped across plugins and against every
+/// image the lock already provides. Empty image strings are ignored.
+pub(crate) fn plugin_pull_plan(
+    lock: &LockFile,
+    refs: &[(String, String)],
+) -> Vec<(String, String)> {
+    let mut seen = BTreeSet::new();
+    refs.iter()
+        .filter(|(_, image)| !image.is_empty() && seen.insert(image.clone()))
+        .filter(|(_, image)| !lock.tools.values().any(|e| &e.image == image))
+        .cloned()
+        .collect()
+}
+
+/// Pulls the planned plugin images and checks each for digest drift. `pull` / `digest`
+/// are the docker calls (injectable so tests need no docker); messages go to `warn`.
+/// `strict` (set when `--lock` is written) makes an unpullable image fatal; otherwise a
+/// plugin that cannot be pulled is only a warning and the run continues.
+pub(crate) fn pull_plugin_refs(
+    plan: &[(String, String)],
+    strict: bool,
+    pull: &dyn Fn(&str) -> Result<bool>,
+    digest: &dyn Fn(&str) -> Option<String>,
+    warn: &dyn Fn(String),
+) -> Result<()> {
+    for (id, image) in plan {
+        eprintln!("pulling plugin {id}: {image}");
+        let pulled = match pull(image) {
+            Ok(p) => p,
+            Err(e) if strict => return Err(e),
+            // Without --lock the plugin set is best-effort: a missing/broken docker
+            // or an unknown image must not fail `readyhai tools pull`.
+            Err(e) => {
+                warn(format!(
+                    "plugin {id}: docker pull {image} failed ({e:#}), skipped"
+                ));
+                continue;
+            }
+        };
+        if !pulled {
+            if strict {
+                bail!("plugin {id}: docker pull {image} failed");
+            }
+            warn(format!(
+                "plugin {id}: image {image} could not be pulled, skipped"
+            ));
+            continue;
+        }
+        if digest_of(image).is_none() {
+            warn_unpinned(&format!("plugin:{id}"), image);
+            continue;
+        }
+        let resolved = match digest(image) {
+            Some(r) => r,
+            None => {
+                warn(format!(
+                    "plugin {id}: no registry digest for {image} (locally built?)"
+                ));
+                continue;
+            }
+        };
+        if let Some(w) = digest_drift(image, &resolved) {
+            warn(w);
+        }
+    }
+    Ok(())
+}
+
+/// The plugin images under `dir` that the lock does not already provide, pulled.
+pub fn pull_plugin_images(plugin_dir: &Path, write_lock: Option<&Path>) -> Result<()> {
+    let refs = super::plugins::plugin_image_refs(plugin_dir);
+    let plan = plugin_pull_plan(&load_lock(), &refs);
+    if plan.is_empty() {
+        return Ok(());
+    }
+    eprintln!(
+        "pulling {} plugin image(s) from {}",
+        plan.len(),
+        plugin_dir.display()
+    );
+    pull_plugin_refs(
+        &plan,
+        write_lock.is_some(),
+        &docker_pull,
+        &repo_digest0,
+        &|w| eprintln!("! {w}"),
+    )
+}
+
+/// `readyhai tools pull [--lock] [--plugins]` — every lock image, then the plugin
+/// images on top. `plugin_dir` is the `--plugins` value; the runtime resolution
+/// (`READYHAI_PLUGINS`, else `<data>/plugins`) is used when it is `None`.
+pub fn tools_pull(write_lock: Option<&Path>, plugin_dir: Option<&Path>) -> Result<()> {
+    tools_pull_filtered(write_lock, None)?;
+    let dir = plugin_dir
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(super::plugins::plugins_dir);
+    pull_plugin_images(&dir, write_lock)
 }
 
 /// Like `tools_pull`, restricted to the named tools (the rest of the lock is kept as-is).
@@ -163,51 +322,22 @@ pub fn tools_pull_filtered(
             continue;
         }
         eprintln!("pulling {name}: {}", e.image);
-        let mut attempts = 0;
-        let max_attempts = 3;
-        let mut success = false;
-        while attempts < max_attempts {
-            attempts += 1;
-            match Command::new("docker").args(["pull", &e.image]).status() {
-                Ok(st) if st.success() => {
-                    success = true;
-                    break;
-                }
-                Ok(_) => {
-                    eprintln!("  pull failed for {} (attempt {attempts}/{max_attempts})", e.image);
-                    if attempts < max_attempts {
-                        std::thread::sleep(Duration::from_millis(1000 * (1 << (attempts - 1))));
-                    }
-                }
-                Err(err) => {
-                    eprintln!("  docker pull error for {}: {err} (attempt {attempts}/{max_attempts})", e.image);
-                    if attempts == max_attempts {
-                        return Err(err).context("docker pull");
-                    }
-                    std::thread::sleep(Duration::from_millis(1000 * (1 << (attempts - 1))));
-                }
-            }
-        }
-        if !success {
-            eprintln!("  all pull attempts failed for {}", e.image);
-            if write_lock.is_some() {
-                e.id = local_image_id(&e.image);
-            }
-            continue;
-        }
+        let pulled = docker_pull(&e.image)?;
         if write_lock.is_some() {
-            let o = Command::new("docker")
-                .args([
-                    "image",
-                    "inspect",
-                    "--format",
-                    "{{index .RepoDigests 0}}",
-                    &e.image,
-                ])
-                .output()?;
-            let t = String::from_utf8_lossy(&o.stdout);
-            if let Some((_, d)) = t.trim().split_once('@') {
-                e.digest = d.to_string();
+            if pulled {
+                let o = Command::new("docker")
+                    .args([
+                        "image",
+                        "inspect",
+                        "--format",
+                        "{{index .RepoDigests 0}}",
+                        &e.image,
+                    ])
+                    .output()?;
+                let t = String::from_utf8_lossy(&o.stdout);
+                if let Some((_, d)) = t.trim().split_once('@') {
+                    e.digest = d.to_string();
+                }
             }
             e.id = local_image_id(&e.image);
         }

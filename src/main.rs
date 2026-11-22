@@ -301,6 +301,9 @@ enum ToolsCmd {
     Pull {
         #[arg(long)]
         lock: Option<PathBuf>,
+        /// Plugin directory whose images are pulled on top of the lock (same as `scan --plugins`)
+        #[arg(long, env = "READYHAI_PLUGINS")]
+        plugins: Option<PathBuf>,
     },
     /// Refresh vulnerability DB + rule packs (the only networked step)
     Update,
@@ -488,9 +491,9 @@ fn run() -> anyhow::Result<u8> {
             Ok(0)
         }
         Cmd::Tools {
-            cmd: ToolsCmd::Pull { lock },
+            cmd: ToolsCmd::Pull { lock, plugins },
         } => {
-            tools::tools_pull(lock.as_deref())?;
+            tools::tools_pull(lock.as_deref(), plugins.as_deref())?;
             Ok(0)
         }
         Cmd::Tools {

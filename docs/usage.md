@@ -19,7 +19,7 @@ Binary: `readyhai` (dev build: `target/debug/readyhai`; `cargo` lives in `~/.car
 | `readyhai mutate [--repo DIR] [--target PATH] [--max-mutants N] [--timeout-secs N] [--format text\|json\|markdown]` | Autonomous Mutation Testing: semantic defect injection, test oracle sensitivity scoring (Killed vs Survived), and negative test assertion synthesis |
 | `readyhai baseline accept <run> [--out FILE]` | Accept a run's findings as the baseline |
 | `readyhai checks` | List registered checks (reads `READYHAI_PLUGINS` for plugins) |
-| `readyhai tools pull [--lock FILE]` | `docker pull` every image in `tools.lock.toml`; optionally write resolved digests |
+| `readyhai tools pull [--lock FILE] [--plugins DIR]` | `docker pull` every image in `tools.lock.toml`, then the images of valid plugins in `DIR` (`READYHAI_PLUGINS`, else `<data>/plugins`); optionally write resolved digests; warns on plugin image digest drift |
 | `readyhai tools update` | Refresh grype DB, semgrep rules, Lynis tarball (the only networked step) |
 | `readyhai bundle export [--out FILE] [--set core\|full] [--with-model FILE.gguf]` / `bundle import <bundle.tar>` | Offline bundle. See [offline.md](offline.md) |
 | `readyhai doctor` | Mode (offline / lan-llm / deterministic), tool presence, grype DB age, LLM reachability, disk |

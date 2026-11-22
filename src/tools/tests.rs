@@ -1,6 +1,10 @@
 use super::docker::{exec_with, rewrite_scrubbed};
-use super::pinning::{pick_lock_text, ref_with_digest, resolve_entry};
+use super::pinning::{
+    digest_drift, pick_lock_text, plugin_pull_plan, pull_plugin_refs, ref_with_digest,
+    resolve_entry,
+};
 use super::plugins::exit_incompleteness;
+use super::types::LockFile;
 use super::*;
 use crate::ctx::Ctx;
 use crate::model::{
@@ -450,6 +454,197 @@ format = "sarif"
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A plugin dir with one loaded, one parse-broken, and one rule-violating pack.
+/// `loaddemo` loads (no `[plugin]` output but stdout=true), `broken` fails to parse,
+/// `noout` is a valid file format plugin with no output path.
+fn plug_diag_dir(tag: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("rh-{tag}-{:08x}", rand::random::<u32>()));
+    let mk = |name: &str, body: &str| {
+        let p = dir.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::write(p.join("plugin.toml"), body).unwrap();
+    };
+    mk(
+        "loaddemo",
+        r#"
+id = "loaddemo"
+kinds = ["repo"]
+image = "demo/x@sha256:aaaa"
+stdout = true
+format = "json"
+"#,
+    );
+    mk("broken", "this is = not valid toml [");
+    mk(
+        "noout",
+        r#"
+id = "noout"
+kinds = ["repo"]
+image = "demo/y"
+format = "sarif"
+"#,
+    );
+    dir
+}
+
+#[test]
+fn plugin_diags_report_load_and_skip_reasons() {
+    let dir = plug_diag_dir("diag");
+    // A directory without a readable plugin.toml is not a candidate at all.
+    std::fs::create_dir_all(dir.join("notapack")).unwrap();
+    let d = plugin_diags(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    let loaded: Vec<&str> = d
+        .iter()
+        .filter(|x| matches!(x.status, PluginLoad::Loaded))
+        .map(|x| x.id.as_str())
+        .collect();
+    let skipped: Vec<&str> = d
+        .iter()
+        .filter(|x| matches!(x.status, PluginLoad::Skipped))
+        .map(|x| x.id.as_str())
+        .collect();
+    let order: Vec<&str> = d.iter().map(|x| x.id.as_str()).collect();
+    assert_eq!(
+        order,
+        ["broken", "loaddemo", "noout"],
+        "sorted by dir, one record per candidate pack"
+    );
+    assert_eq!(loaded, ["loaddemo"]);
+    assert_eq!(skipped, ["broken", "noout"]);
+    let broken = d.iter().find(|x| x.id == "broken").unwrap();
+    let br = broken.reason.as_deref();
+    assert!(br.is_some_and(|r| r.contains("parse")), "{br:?}");
+    assert!(
+        broken.image.is_empty(),
+        "a plugin that won't parse has no image"
+    );
+    let loaded = d.iter().find(|x| x.id == "loaddemo").unwrap();
+    assert!(loaded.reason.is_none(), "loaded plugins carry no reason");
+    assert_eq!(loaded.image, "demo/x@sha256:aaaa");
+    let noout = d.iter().find(|x| x.id == "noout").unwrap();
+    let nr = noout.reason.as_deref();
+    assert!(nr.is_some_and(|r| r.contains("no output path")), "{nr:?}");
+}
+
+#[test]
+fn plugin_image_refs_only_lists_loaded() {
+    let dir = plug_diag_dir("refs");
+    let refs = plugin_image_refs(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        refs,
+        vec![("loaddemo".to_string(), "demo/x@sha256:aaaa".to_string())]
+    );
+}
+
+#[test]
+fn plugin_pull_plan_dedups_across_plugins_and_lock() {
+    let lock: LockFile =
+        toml::from_str("[tools.grype]\nimage=\"ghcr.io/anchore/grype:v1\"\ndigest=\"sha256:g\"\n")
+            .unwrap();
+    let refs = vec![
+        ("a".to_string(), "reg/x:1".to_string()),
+        ("b".to_string(), "reg/x:1".to_string()), // dup across plugins
+        ("c".to_string(), "ghcr.io/anchore/grype:v1".to_string()), // already in lock
+        ("d".to_string(), String::new()),         // no image
+        ("e".to_string(), "reg/y:2".to_string()),
+    ];
+    let plan = plugin_pull_plan(&lock, &refs);
+    assert_eq!(
+        plan,
+        vec![
+            ("a".to_string(), "reg/x:1".to_string()),
+            ("e".to_string(), "reg/y:2".to_string())
+        ]
+    );
+}
+
+#[test]
+fn digest_drift_only_when_both_pinned_and_differ() {
+    // matching digests -> no warning
+    assert!(
+        digest_drift("r@sha256:aaa", "r@sha256:aaa").is_none(),
+        "match is clean"
+    );
+    // differing digests -> warning naming both refs
+    let w = digest_drift("r@sha256:aaa", "r@sha256:bbb").unwrap();
+    assert!(
+        w.contains("r@sha256:aaa") && w.contains("r@sha256:bbb"),
+        "{w}"
+    );
+    // the plugin didn't pin a digest -> nothing to compare
+    assert!(digest_drift("r:latest", "r@sha256:bbb").is_none());
+    // image has no RepoDigests (locally built) -> nothing to compare
+    assert!(digest_drift("r@sha256:aaa", "sha256:local").is_none());
+}
+
+#[test]
+fn pull_plugin_refs_warns_and_continues_offline() {
+    // No docker: the pull closure reports failure. Non-strict must not bail.
+    let plan = [("x".to_string(), "reg/x:1".to_string())];
+    let warns = std::cell::RefCell::new(Vec::new());
+    let push = |w: String| warns.borrow_mut().push(w);
+    let r = pull_plugin_refs(&plan, false, &|_| Ok(false), &|_| None, &push);
+    assert!(r.is_ok(), "a failed pull without --lock is only a warning");
+    let warns = warns.into_inner();
+    let found = warns
+        .iter()
+        .any(|w| w.contains("x") && w.contains("could not be pulled"));
+    assert!(found, "{warns:?}");
+
+    // A pull that cannot even start (docker missing) is also a non-fatal warning.
+    let warns2 = std::cell::RefCell::new(Vec::new());
+    let push2 = |w: String| warns2.borrow_mut().push(w);
+    let r2 = pull_plugin_refs(
+        &plan,
+        false,
+        &|_| Err(anyhow!("docker: executable not found")),
+        &|_| None,
+        &push2,
+    );
+    assert!(r2.is_ok(), "docker missing must not fail the plugin pull");
+    let warns2 = warns2.into_inner();
+    let found2 = warns2.iter().any(|w| w.contains("executable not found"));
+    assert!(found2, "{warns2:?}");
+
+    // strict (--lock) turns a failed pull into an error.
+    assert!(
+        pull_plugin_refs(&plan, true, &|_| Ok(false), &|_| None, &|_| ())
+            .unwrap_err()
+            .to_string()
+            .contains("docker pull"),
+        "with --lock a failed plugin pull is fatal"
+    );
+}
+
+#[test]
+fn pull_plugin_refs_flags_digest_drift() {
+    // Pinned plugin, digest present but different -> one drift warning.
+    let plan = [("p".to_string(), "r@sha256:aaa".to_string())];
+    let warns = std::cell::RefCell::new(Vec::new());
+    let push = |w: String| warns.borrow_mut().push(w);
+    pull_plugin_refs(
+        &plan,
+        false,
+        &|_| Ok(true),
+        &|_| Some("r@sha256:bbb".to_string()),
+        &push,
+    )
+    .unwrap();
+    let warns = warns.into_inner();
+    assert_eq!(warns.len(), 1, "{warns:?}");
+    assert!(warns[0].contains("drift"), "{warns:?}");
+
+    // No RepoDigests back -> locally-built warning, no drift.
+    let warns2 = std::cell::RefCell::new(Vec::new());
+    let push2 = |w: String| warns2.borrow_mut().push(w);
+    pull_plugin_refs(&plan, false, &|_| Ok(true), &|_| None, &push2).unwrap();
+    let warns2 = warns2.into_inner();
+    let found = warns2.iter().any(|w| w.contains("no registry digest"));
+    assert!(found, "{warns2:?}");
+}
+
 #[test]
 fn lock_precedence_env_data_embedded() {
     let d = std::env::temp_dir().join(format!("rh-lockprec-{:08x}", rand::random::<u32>()));
@@ -505,7 +700,7 @@ fn offline_refuses_pull_and_update() {
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     unsafe { std::env::set_var("READYHAI_OFFLINE", "1") };
-    let e1 = tools_pull(None).unwrap_err().to_string();
+    let e1 = tools_pull(None, None).unwrap_err().to_string();
     let d = Docker {
         available: false,
         mode: MountMode::Bind,
