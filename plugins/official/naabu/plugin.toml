@@ -1,0 +1,23 @@
+# ProjectDiscovery naabu (MIT) - active TCP port scanner -> open-port inventory.
+# JSONL per open port (`-json` -> {"host":..,"port":..}); `lines` picks `host`.
+# Active scanning: marked intrusive like katana/feroxbuster, so the orchestrator
+# only runs it at deep profile + non-prod (an intrusive check is skipped
+# everywhere else). The repo convention therefore forces deep, not standard:
+# intrusive && profile != deep would never execute. `-top-ports 100 -rate 200`
+# bounds a scan to well under the 600s tool timeout; naabu defaults to CONNECT
+# scanning, which works unprivileged in the runner sandbox (verified).
+id = "naabu"
+title = "naabu TCP port scan (inventory)"
+kinds = ["web"]
+profile = "deep"
+# digest resolved 2026-11-22 via docker inspect --format='{{index .RepoDigests 0}}' projectdiscovery/naabu:latest (== tag v2.7.0)
+image = "projectdiscovery/naabu:v2.7.0@sha256:67c120a669954b768354197fc04328e08027898dc821bc8f276b3e26cd21f6aa"
+network = true
+host_gateway = true
+intrusive = true
+stdout = true
+format = "lines"
+rule = "recon.naabu.port"
+severity = "info"
+title_prefix = "Open port"
+args = ["-silent", "-json", "-duc", "-no-stdin", "-host", "{domain}", "-top-ports", "100", "-rate", "200"]

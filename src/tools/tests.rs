@@ -866,6 +866,18 @@ fn exec_caps_a_tools_stdout() {
 }
 
 #[test]
+fn official_recon_chain_plugins_load() {
+    // The Saturday recon chain (dnsx, tlsx, naabu, gau) must load from the
+    // shipped packs. Assertions are narrow (ids only) so unrelated official
+    // packs coming and going can't break this test.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/official");
+    let ids: Vec<String> = plugin_checks(&dir).into_iter().map(|c| c.id).collect();
+    for i in ["plugin.dnsx", "plugin.tlsx", "plugin.naabu", "plugin.gau"] {
+        assert!(ids.iter().any(|x| x == i), "{i} missing from {ids:?}");
+    }
+}
+
+#[test]
 fn builtin_checks_registered() {
     let ids: Vec<String> = checks().into_iter().map(|c| c.id).collect();
     for i in [

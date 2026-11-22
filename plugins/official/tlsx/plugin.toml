@@ -1,0 +1,19 @@
+# ProjectDiscovery tlsx (MIT) - TLS/certificate probe -> cert inventory.
+# JSONL per host:port (`-json`); `lines` picks the `host` key -> one Info
+# finding carrying tls_version/cipher/issuer/expiry/self_signed in the detail.
+# Non-intrusive: a plain TLS handshake. tlsx accepts a scheme'd `{url}` and
+# extracts the host, so the standard web-target templating works as-is.
+id = "tlsx"
+title = "tlsx TLS certificate probe (recon)"
+kinds = ["web"]
+profile = "standard"
+# digest resolved 2026-11-22 via docker inspect --format='{{index .RepoDigests 0}}' projectdiscovery/tlsx:latest (== tag v1.5.0)
+image = "projectdiscovery/tlsx:v1.5.0@sha256:6ee6a07c5a633149d5e0482c6df654c9975be97bb7733ec91faaa72a7940295b"
+network = true
+host_gateway = true
+stdout = true
+format = "lines"
+rule = "recon.tlsx.cert"
+severity = "info"
+title_prefix = "TLS cert"
+args = ["-silent", "-json", "-duc", "-u", "{url}"]
