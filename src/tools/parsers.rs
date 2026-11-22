@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use serde_json::Value;
 
 #[allow(unused_imports)]
-pub use super::sarif_junit::{parse_junit, parse_sarif};
+pub use super::sarif_junit::{parse_junit, parse_sarif_report};
 
 pub(crate) fn rel(p: &str) -> String {
     let p = p.trim_start_matches("file://");

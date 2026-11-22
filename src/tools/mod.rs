@@ -42,7 +42,7 @@ pub use policy::validate_create_policy;
 #[allow(unused_imports)]
 pub use process::run_capped;
 #[allow(unused_imports)]
-pub use sarif_junit::{parse_junit, parse_sarif};
+pub use sarif_junit::{parse_junit, parse_sarif_report};
 #[allow(unused_imports)]
 pub use types::{
     Captured, JunitCase, LockEntry, MountMode, OutTooLarge, TOOL_STDOUT_CAP, ToolRun, ToolSpec,

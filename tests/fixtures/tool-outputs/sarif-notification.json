@@ -1,0 +1,3 @@
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"x"}},"results":[],
+ "invocations":[{"executionSuccessful":true,
+   "toolExecutionNotifications":[{"level":"note","message":{"text":"indexed 3 files"}},{"level":"error","message":{"text":"rule R7 crashed on 1 file"},"exception":{"message":"overflow"}}]}]}]}

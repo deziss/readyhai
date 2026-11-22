@@ -1,0 +1,3 @@
+{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"x"}},"results":[],
+ "invocations":[{"executionSuccessful":false,
+   "toolExecutionNotifications":[{"level":"error","message":{"text":"failed to open /src: permission denied"}}]}]}]}

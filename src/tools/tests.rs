@@ -1,8 +1,11 @@
 use super::docker::{exec_with, rewrite_scrubbed};
 use super::pinning::{pick_lock_text, ref_with_digest, resolve_entry};
+use super::plugins::exit_incompleteness;
 use super::*;
 use crate::ctx::Ctx;
-use crate::model::{Category, CheckStatus, Finding, Profile, Severity, TargetKind};
+use crate::model::{
+    Category, CheckResult, CheckStatus, Finding, Profile, Severity, TargetKind, Verdict,
+};
 use anyhow::anyhow;
 use std::path::PathBuf;
 use std::process::Command;
@@ -102,6 +105,10 @@ const CHECKOV: &str = include_str!("../../tests/fixtures/tool-outputs/checkov.js
 const DOCKLE: &str = include_str!("../../tests/fixtures/tool-outputs/dockle.json");
 const JUNIT: &str = include_str!("../../tests/fixtures/tool-outputs/junit.xml");
 const SARIF: &str = include_str!("../../tests/fixtures/tool-outputs/sarif.json");
+const SARIF_INCOMPLETE: &str =
+    include_str!("../../tests/fixtures/tool-outputs/sarif-incomplete.json");
+const SARIF_NOTIFICATION: &str =
+    include_str!("../../tests/fixtures/tool-outputs/sarif-notification.json");
 
 fn dump(f: &[Finding]) -> String {
     serde_json::to_string(f).unwrap()
@@ -297,12 +304,58 @@ fn junit_golden() {
 
 #[test]
 fn sarif_golden() {
-    let f = parse_sarif(SARIF, "plugin.x").unwrap();
+    let f = parse_sarif_report(SARIF, "plugin.x").unwrap().0;
     assert_eq!(f.len(), 2);
     assert_eq!(f[0].rule, "XR001");
     assert_eq!(f[0].severity, Severity::High);
     assert_eq!(f[0].location, "a/b.py:5");
     assert_eq!(f[1].severity, Severity::Low);
+}
+
+/// A tool that reports a broken run must never look like a clean scan: an empty `results`
+/// with `executionSuccessful: false` yields an incompleteness note, not silence.
+#[test]
+fn sarif_incomplete_run_is_never_clean() {
+    let (f, notes) = parse_sarif_report(SARIF_INCOMPLETE, "plugin.x").unwrap();
+    assert!(f.is_empty());
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("executionSuccessful=false"), "{notes:?}");
+    assert!(notes[0].contains("permission denied"), "{notes:?}");
+    // Partial status is what keeps the gate from passing on unknown coverage.
+    let out = partial(notes, f);
+    let status = out.status.expect("partial status");
+    assert!(matches!(status, CheckStatus::Partial(_)));
+    let check = CheckResult {
+        id: "plugin.x".into(),
+        title: String::new(),
+        tool: Some("x".into()),
+        status,
+        findings: 0,
+        duration_ms: 0,
+    };
+    let pol = crate::policy::Policy::load(None).unwrap();
+    let (v, reasons) = crate::policy::verdict(&pol, &[], std::slice::from_ref(&check));
+    assert_ne!(v, Verdict::Pass, "{reasons:?}");
+}
+
+/// A note-level notification is normal chatter; an error/exception one is not.
+#[test]
+fn sarif_error_notification_is_incomplete_but_note_is_not() {
+    let (_, notes) = parse_sarif_report(SARIF_NOTIFICATION, "plugin.x").unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("error notification"), "{notes:?}");
+    assert!(notes[0].contains("rule R7 crashed"), "{notes:?}");
+    let (_, clean) = parse_sarif_report(SARIF, "plugin.x").unwrap();
+    assert!(clean.is_empty(), "honest SARIF must stay clean: {clean:?}");
+}
+
+/// Every exit code decides it; only the exempt `lines` format stays silent on a non-zero exit.
+#[test]
+fn nonzero_exit_with_parseable_output_is_partial() {
+    assert!(exit_incompleteness("sarif", 0, "").is_none());
+    assert!(exit_incompleteness("lines", 1, "boom").is_none());
+    let n = exit_incompleteness("sarif", 3, "line1\nline2").unwrap();
+    assert!(n.contains("exited 3") && n.contains("line1"), "{n}");
 }
 
 #[test]

@@ -1,7 +1,7 @@
 use super::checks::junit_output;
 use super::docker::read_out;
 use super::pinning::warn_unpinned;
-use super::sarif_junit::parse_sarif;
+use super::sarif_junit::parse_sarif_report;
 use super::types::{ToolSpec, gate, out_err, partial, tool_failed};
 use crate::checks::Check;
 use crate::ctx::Ctx;
@@ -157,6 +157,25 @@ fn host_of(url: &str) -> String {
     host.rsplit_once('@').map_or(host, |(_, h)| h).split(':').next().unwrap_or("").to_string()
 }
 
+/// Non-zero exit with parseable output = a truncated run, not a clean one: the tool stopped
+/// midway, so whatever it enumerated is partial coverage. The note becomes `CheckStatus::Partial`,
+/// which the gate can warn or fail on but can never turn into PASS. The `lines` inventory format
+/// is exempt — those capture stdout, and several recon tools exit non-zero on partial input while
+/// their inventory is still valid.
+pub(crate) fn exit_incompleteness(
+    format: &str,
+    exit_code: i32,
+    stderr_tail: &str,
+) -> Option<String> {
+    if exit_code == 0 || format == "lines" {
+        return None;
+    }
+    Some(format!(
+        "tool exited {exit_code}: findings may be incomplete ({})",
+        super::parsers::first_line(stderr_tail.trim(), 160)
+    ))
+}
+
 pub(crate) fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
     if let Some(o) = gate(ctx) {
         return Ok(o);
@@ -243,8 +262,13 @@ pub(crate) fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
     if txt.trim().is_empty() && !(p.format == "lines" && p.stdout && r.exit_code == 0) {
         return Err(tool_failed(&p.id, &r));
     }
+    let mut sarif_notes = Vec::new();
     let mut findings = match p.format.as_str() {
-        "sarif" => parse_sarif(&txt, &check)?,
+        "sarif" => {
+            let (f, notes) = parse_sarif_report(&txt, &check)?;
+            sarif_notes = notes;
+            f
+        }
         "junit" => match junit_output(&txt, if p.stdout { r.exit_code } else { 0 }) {
             CheckOutput {
                 status: Some(st), ..
@@ -259,6 +283,8 @@ pub(crate) fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
         f.check = check.clone();
     }
     let mut notes = skipped_env;
+    notes.extend(sarif_notes);
+    notes.extend(exit_incompleteness(&p.format, r.exit_code, &r.stderr_tail));
     if !p.image.contains("@sha256:") {
         notes.push("plugin image unpinned".to_string());
     }

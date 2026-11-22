@@ -54,15 +54,83 @@ pub fn parse_junit(xml: &str) -> Vec<JunitCase> {
     out
 }
 
-pub fn parse_sarif(json: &str, check: &str) -> Result<Vec<Finding>> {
+/// Why one SARIF `run` (index `i`) cannot be treated as a complete scan.
+///
+/// SARIF 2.1.0 §3.13.4 lets a tool say `executionSuccessful: false` and §3.14 lets it attach
+/// error notifications, all in a document that parses fine whose `results` array is legitimately
+/// empty. Missing `invocations` is *unknown* status, not a failure, so it stays silent: only an
+/// explicit negative is reported, which keeps honest minimal SARIF from being flagged.
+fn run_incompleteness(run: &Value, i: usize) -> Vec<String> {
+    let notifications = run
+        .get("invocations")
+        .and_then(|x| x.as_array())
+        .map(|invs| {
+            invs.iter()
+                .flat_map(|inv| {
+                    inv.get("toolExecutionNotifications")
+                        .and_then(|x| x.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let fatal_note = notifications.iter().find_map(|n| {
+        let failed = matches!(n.get("level").and_then(|x| x.as_str()), Some("error"));
+        let threw = n.get("exception").is_some();
+        if !(failed || threw) {
+            return None;
+        }
+        let msg = n
+            .get("message")
+            .and_then(|m| m.get("text"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .trim();
+        Some(if msg.is_empty() {
+            "no message".to_string()
+        } else {
+            super::parsers::first_line(msg, 200)
+        })
+    });
+    let mut notes = vec![];
+    let failed_run = run
+        .get("invocations")
+        .and_then(|x| x.as_array())
+        .is_some_and(|invs| {
+            invs.iter().any(|inv| {
+                inv.get("executionSuccessful").and_then(|x| x.as_bool()) == Some(false)
+            })
+        });
+    if failed_run {
+        notes.push(match &fatal_note {
+            Some(m) => format!("run {i}: tool reported executionSuccessful=false ({m})"),
+            None => format!("run {i}: tool reported executionSuccessful=false"),
+        });
+    } else if let Some(m) = &fatal_note {
+        notes.push(format!("run {i}: tool reported an error notification ({m})"));
+    }
+    notes
+}
+
+/// Findings plus **incomplete-run notes** from one SARIF document.
+///
+/// A note means coverage is unknown, so the caller must report `CheckStatus::Partial`: a scan
+/// whose tool errored can warn or fail the gate, but can never green-light it.
+pub fn parse_sarif_report(json: &str, check: &str) -> Result<(Vec<Finding>, Vec<String>)> {
     let v: Value = serde_json::from_str(json)?;
     let mut out = vec![];
-    for run in v
+    let mut notes = vec![];
+    let runs: Vec<Value> = v
         .get("runs")
         .and_then(|x| x.as_array())
         .cloned()
-        .unwrap_or_default()
-    {
+        .unwrap_or_default();
+    if runs.is_empty() {
+        notes.push("SARIF document has no runs: no tool output to trust".to_string());
+    }
+    for (i, run) in runs.iter().enumerate() {
+        notes.extend(run_incompleteness(run, i));
         for r in run
             .get("results")
             .and_then(|x| x.as_array())
@@ -118,5 +186,6 @@ pub fn parse_sarif(json: &str, check: &str) -> Result<Vec<Finding>> {
             );
         }
     }
-    Ok(out)
+    Ok((out, notes))
 }
+
