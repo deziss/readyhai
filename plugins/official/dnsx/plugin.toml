@@ -1,0 +1,22 @@
+# ProjectDiscovery dnsx (MIT) - DNS lookup + resolvable-subdomain verification.
+# JSONL per host (`-json`); `-rc noerror` keeps only *resolvable* hosts so the
+# inventory is real attack surface, `-or` trims the raw DNS packet from detail.
+# Limitation: the runner gives tools a NULL stdin, so dnsx cannot consume a
+# piped `-l` host list here. We therefore run its self-contained brute-force
+# mode (`-d {domain} -w <wordlist>`), fed by the wordlist cache the
+# scripts/fetch-feeds.sh job ships at /cache/wordlists/ (same mount feroxbuster
+# uses for SecLists). Output pairs naturally with subfinder/httpx downstream.
+id = "dnsx"
+title = "dnsx resolvable-subdomain brute (recon)"
+kinds = ["web"]
+profile = "standard"
+# digest resolved 2026-11-22 via docker inspect --format='{{index .RepoDigests 0}}' projectdiscovery/dnsx:latest (== tag v1.2.2)
+image = "projectdiscovery/dnsx:v1.2.2@sha256:8fced0bedf3655e06c9f1805f6277d60d4988a4b13209e24b3d7cde7baa656ec"
+network = true
+host_gateway = true
+stdout = true
+format = "lines"
+rule = "recon.dnsx.resolve"
+severity = "info"
+title_prefix = "Resolved host"
+args = ["-silent", "-json", "-or", "-rc", "noerror", "-duc", "-d", "{domain}", "-w", "/cache/wordlists/10k.txt"]

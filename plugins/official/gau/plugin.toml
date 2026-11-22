@@ -1,0 +1,21 @@
+# GAU - Get All Urls (github.com/lc/gau, MIT): pulls known URLs from Wayback,
+# Common Crawl, OTX, urlscan, AlienVault -> archived-URL inventory.
+# Upstream `projectdiscovery/gau` was renamed to `projectdiscovery/urlfinder`
+# and no projectdiscovery image for gau exists; lc/gau's README documents this
+# image for Docker, so we pin it here (digest-pinned).
+# No `-json`: in quiet mode gau writes exactly one URL per line to stdout
+# (banners/progress go to stderr, which the runner never parses), which is
+# precisely the `lines` format. Archive-based, so no host_gateway needed.
+id = "gau"
+title = "GAU archived URL collector (recon)"
+kinds = ["web"]
+profile = "standard"
+# digest resolved 2026-11-22 via docker inspect --format='{{index .RepoDigests 0}}' sxcurity/gau:latest (image ships no version tags)
+image = "sxcurity/gau:latest@sha256:e5ad95a6fce296e671b83039d84fc0629afd320cc05ac91972ce83b4ac18b862"
+network = true
+stdout = true
+format = "lines"
+rule = "recon.gau.url"
+severity = "info"
+title_prefix = "Archived URL"
+args = ["--subs", "--threads", "10", "--timeout", "15", "{domain}"]
