@@ -68,17 +68,20 @@ Principles:
 
 ## Sprint plan — now → Monday 00:00 (aggressive, each step verifiable)
 
-- **Sat — Recon chain:** `dnsx` + `naabu` + `tlsx` + `gau` plugins (all PD images,
-  `lines`); wire katana output to feed nuclei via a shared `/cache` hand-off dir;
-  feroxbuster wordlist from `fetch-feeds.sh recon`.
-- **Sun AM — Supply-chain lane:** `grype` + `osv-scanner` plugins (`cache_rw` DBs);
-  trivy `--skip-db-update` when KEV/EPSS caches are fresh; CVE enrichment from
-  `fetch-feeds.sh vulndata` → findings gain `known_exploited`/`epss` evidence notes.
-- **Sun PM — Cloud + LLM lanes:** Prowler plugin (BYO creds via `env`), `garak` and
-  `promptfoo` plugins (JSONL/JSON report under `/out`).
-- **Mon — Glue:** `readyhai tools pull` also pulls plugin images; `readyhai doctor`
-  lists plugin load/skip reasons; docs (this file, `docs/data-sources.md`,
-  `plugins/README.md`) + `cargo test --all-targets` + clippy clean.
+- **Sat — Recon chain:** ✅ shipped (Nov 22) — `dnsx`, `naabu`, `tlsx`, `gau` official
+  plugins (digest-pinned, `lines`; naabu `intrusive`; gau via `sxcurity/gau` because
+  `projectdiscovery/gau` was renamed `urlfinder` and no PD image exists). katana→nuclei
+  `/cache` hand-off NOT done (needs a shared-writable scratch mount; runner gives each
+  plugin its own `/out`). feroxbuster wordlist from `fetch-feeds.sh recon` NOT done.
+- **Sun AM — Supply-chain lane:** ✅ `grype` + `osv-scanner` official plugins shipped
+  (`grype` reuses the seeded `/cache/grype` DB via `GRYPE_DB_CACHE_DIR` env-name).
+  trivy `--skip-db-update` on fresh caches + KEV/EPSS CVE-enrichment notes NOT done.
+- **Sun PM — Cloud + LLM lanes:** not started (Prowler BYO creds, garak, promptfoo).
+- **Mon — Glue:** ✅ shipped (Nov 22) — `readyhai tools pull` also pulls valid plugin
+  images (dedup vs lock, digest-drift warnings, `--plugins DIR`/`READYHAI_PLUGINS`);
+  `readyhai doctor` prints a `plugins:` section with per-pack loaded/skipped reasons
+  from a single validator shared with the loader (`plugin_diags`). `cargo test
+  --all-targets` green (932) + clippy adds no new errors on touched files.
 
 ## Orchestrator 0.x backlog (research-validated, effort-sized)
 
@@ -92,7 +95,9 @@ Priority order; S ≤ 2wk, M 2–6wk, L > 6wk solo. Full analysis in the researc
 3. **SARIF conformance overhaul** (M): suppressions/baselineState visible,
    executionSuccessful notifications, GitHub-safe shaping, `security-severity`.
 4. **Incomplete-run ⇒ never PASS** (S): parseable-but-error scanner output can't
-   green-light the gate. Highest trust-per-line-change. *(Do first — tiny.)*
+   green-light the gate. Highest trust-per-line-change. ✅ *done (Nov 22)* — SARIF
+   `executionSuccessful: false` / error-notifications / no-runs and non-zero exits with
+   parseable output now surface as `Partial` notes, so an incomplete run can never PASS.
 5. **Standards export layer** (L, split 5a–5d): CycloneDX 1.6/1.7 BOM+VEX+VDR,
    OpenVEX, CSAF VEX, GitLab report, OCSF, SPDX 3.0.
 6. **Dependency-Track integration** (M): BOM+VEX round-trip, ReadyHai-authored DT policy bundle.

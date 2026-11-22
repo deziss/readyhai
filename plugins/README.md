@@ -26,10 +26,16 @@ The loader reads one level: `<dir>/<pack>/plugin.toml`. Directories without a
 | `httpx` | recon | `lines` | surface + tech fingerprint; `host_gateway` for localhost targets |
 | `katana` | recon | `lines` | crawler; feeds nuclei/zap next run |
 | `feroxbuster` | recon | `lines` | point `-w` at `/cache/wordlists/...` from `scripts/fetch-feeds.sh recon` |
+| `dnsx` | recon | `lines` | resolvable-host filter (`-d {domain} -w /cache/wordlists/...`; stdin is null in the sandbox, so no piped `-l`) |
+| `tlsx` | recon | `lines` (JSONL) | TLS/cert inventory of the web target |
+| `naabu` | recon | `lines` (JSONL) | active TCP port scan ⇒ `intrusive` (deep profile, nonprod only) |
+| `gau` | recon | `lines` | archived-URL collector (`lc/gau` lineage — `projectdiscovery/gau` was renamed `urlfinder`, no PD image exists) |
 | `kube-linter` | posture | `sarif` | manifest/Helm lint of `/src` |
 | `kube-score` | posture | `sarif` | real exit-code semantics |
 | `conftest` | posture | `sarif` | ships ReadyHai's own rego pack (`policies/rego`) via cache |
 | `kubescape` | posture | recipe README | official image is server-only; build a CLI image first |
+| `grype` | supply chain | `sarif` | image lane; shares `cache_rw` `/cache/grype` DB (set `GRYPE_DB_CACHE_DIR`) seeded by `tools update` |
+| `osv-scanner` | supply chain | `sarif` | repo lane (`scan source -r /src`); `network` for the OSV API, `--allow-no-lockfiles` keeps clean repos at exit 0 |
 
 **`_example/` — templates** (loader ignores them; copy and adapt):
 
