@@ -323,3 +323,19 @@ Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.2.0 and v3.3.0).
 - `cargo clippy --bin readyhai -- -D warnings`: 0 warnings.
 - Docker E2E live run: verified in Docker container against `http://localhost:8080/` with live vLLM model `qwen3.8-flash-next`. Completed all 6 stations with 6 routing transitions and a final GO verdict (100/100 ASVS score).
 
+## Round 8: Orchestrator Trust & Plugin Lanes (2026-11-22)
+
+Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.4.0).
+
+### What landed
+- **Incomplete run never PASS (`src/tools/plugins.rs`, `src/tools/sarif_junit.rs`)**: SARIF/JUnit parsing reports partial notes (`parse_sarif_report`), plugin runs surface exit-code incompleteness (`exit_incompleteness`), and the release gate treats any partial note as WARN/FAIL — a run where a required tool errored, crashed, or emitted a truncated report can no longer certify PASS.
+- **Glue code (Mon)**: `tools pull` is plugin-aware (`tools pull [--lock FILE] [--plugins DIR]` pulls plugin image pins alongside the built-in 17), and `doctor` gained plugin load/skip diagnostics with a shared validator (`plugin_diags` / `reject_reason`) so a broken `plugin.toml` reports why it was skipped instead of vanishing.
+- **Six new official plugin packs** (`plugins/official/`): recon chain `dnsx`, `tlsx`, `naabu`, `gau` (pinned to `sxcurity/gau` — the `projectdiscovery` repo was renamed to `urlfinder`), and supply chain `grype`, `osv-scanner`. All images digest-pinned with real digests.
+- **Release hygiene**: version references re-synced by `scripts/version.sh check` discipline (the Playwright runner had drifted at 3.0.0); tags were also found to have stopped at `v0.8.0` while releases continued to v3.3.0 — v3.4.0 resumes tagging, which `release.yml` requires (it compares the tag to `VERSION`).
+
+### Verification status
+- `cargo test --locked --bin readyhai` (Docker, git installed): 932 passed, 0 failed, 3 ignored (100% pass rate; up from 889 in Round 7).
+- `readyhai doctor` with `READYHAI_PLUGINS=/app/plugins/official`: 14 plugins loaded, 0 skipped.
+- `bash scripts/version.sh check`: all version references synchronized at 3.4.0.
+- `cargo clippy -D warnings`: clean in every file touched by this round (6 pre-existing errors elsewhere remain tracked separately).
+

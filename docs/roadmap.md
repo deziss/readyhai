@@ -75,6 +75,10 @@ See [plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11
    - **Graph Engineering**: StateGraph execution engine with typed dynamic conditional routing (`RoutingCondition`), iteration tracking, execution telemetry (`GraphTelemetry`), Attack DAG dependency modeling with topological sorting, and prerequisite execution guards (`execute_guarded`).
    - **Prompt Engineering**: Centralized role-specialized prompt templates in `src/agent/prompts/` across all 6 stations with strict XML fencing (`<target_untrusted_content>`) and proactive injection tag sanitization (`neutralise_target_tags`).
    - **Software Factory Engineering**: Formal station entrance/exit Quality Gates (`src/agent/pipeline/gates.rs`), evidence provenance, ASVS V2–V14 compliance mapping, and cryptographically signed Release Attestation.
+10. **Horizon 10 (v3.4.0) — Orchestrator Trust & Plugin Lanes**: **Done**
+    - **Incomplete-run never PASS** (backlog item 4): SARIF `executionSuccessful: false` / error-level notifications / no-runs and non-zero exits with parseable output surface as `Partial` notes, so a scan that did not happen can never green-light the gate.
+    - **Mon glue**: `readyhai tools pull` also pulls valid plugin images (dedup vs lock, digest-drift warnings, `--plugins DIR`); `readyhai doctor` prints per-pack plugin load/skip reasons from a validator shared with the loader.
+    - **Recon chain packs**: `dnsx`, `tlsx`, `naabu` (intrusive), `gau` (`sxcurity/gau` — `projectdiscovery/gau` was renamed `urlfinder`); **supply-chain packs**: `grype` (image lane, shared `/cache/grype` DB), `osv-scanner` (repo lane). All digest-pinned and sandbox-verified; `plugins/official` now loads 14 packs.
 
 ## Next
 

@@ -2,6 +2,27 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.4.0] - 2026-11-22
+
+### Added
+
+- **Recon-chain plugin packs** (`plugins/official/`): `dnsx` (resolvable-host brute — stdin is null in the sandbox so the self-contained `-d {domain} -w` mode is used), `tlsx` (TLS/cert inventory), `naabu` (active TCP port scan, `intrusive`: deep profile + nonprod only), `gau` (archived-URL collector; pinned `sxcurity/gau` because `projectdiscovery/gau` was renamed `urlfinder` and no PD image exists). All `lines`-format, digest-pinned, and every flag set run live in the runner sandbox.
+- **Supply-chain plugin packs** (`plugins/official/`): `grype` (image lane, SARIF; reuses the `/cache/grype` DB seeded by `readyhai tools update` via the `GRYPE_DB_CACHE_DIR` env name — without it the first-run DB download overruns the runner's 1 GB tmpfs) and `osv-scanner` (repo lane, `scan source -r /src`, `--allow-no-lockfiles` keeps manifest-free repos reporting an empty SARIF instead of exiting 128 with no file).
+- **`readyhai tools pull` also pulls plugin images** (`--plugins DIR` / `READYHAI_PLUGINS`, default `<data>/plugins`): valid plugin images are pulled on top of the lock, deduped against the lock and across packs, sharing the retry/backoff; each pulled image is inspected and a **digest-drift warning** fires when the registry digest differs from the pin in `plugin.toml`. Without `--lock` an unpullable plugin image warns and continues.
+- **`readyhai doctor` plugin diagnostics**: a `plugins:` section lists every pack in the plugin directory as loaded/skipped, with the exact rejection reason (missing `output`, bad `user`, invalid `env` name, unrecognized `kinds`, unparseable TOML) plus its image and an `N loaded, M skipped` summary. A single validator (`reject_reason`) is shared by the loader and the diagnostics so the two can never drift.
+
+### Fixed
+
+- **An incomplete run can never yield a PASS verdict** (orchestrator backlog item 4). A plugin whose report parses but records a failed or interrupted run was previously only a warning, so a run with zero findings converged on PASS — "the scan did not happen" was reported as "the scan was clean". Now SARIF `executionSuccessful: false`, error-level or exception-bearing `toolExecutionNotifications`, reports with no runs, and non-zero process exits that still produced parseable output all surface as `CheckStatus::Partial` notes the gate may warn or fail on but can never upgrade to PASS. The `lines` inventory format is exempt from the exit-code rule (recon tools legitimately exit non-zero on partial input). `parse_sarif` became `parse_sarif_report` (findings + incompleteness notes).
+
+### Docs
+
+- `plugins/README.md` official table covers the six new packs; `docs/superapp-orchestrator.md` sprint/backlog status records what shipped (Sat recon chain, Sun-AM supply chain, Mon glue, item 4) and what explicitly did not (katana→nuclei `/cache` hand-off — needs a shared-writable mount the runner does not give; trivy `--skip-db-update` + KEV/EPSS enrichment; the Sun-PM cloud/LLM lanes).
+
+### Testing
+
+- Suite: 932 passed / 0 failed / 3 ignored (`cargo test --locked --bin readyhai`). New coverage: SARIF incompleteness (3), plugin load/skip diagnostics + image-ref enumeration + pull-plan dedup + digest-drift + warn-and-continue/strict (6), pack-loading goldens for all six new packs (2). `readyhai doctor` verified live against `plugins/official`: 14 loaded, 0 skipped.
+
 ## [3.3.0] - 2026-11-18
 
 ### Added
