@@ -1,0 +1,27 @@
+# Grype (Apache-2.0, Anchore) - the same engine as core tool.sbom_cve, as a standalone
+# plugin: image-only SARIF, results oriented by CVE with CPE fallback generation, so
+# findings join cleanly against sbom_cve / trivy output.
+# Needs the grype DB: set GRYPE_DB_CACHE_DIR=/cache/grype in the ReadyHai process env
+# (e.g. ~/.config/readyhai/.env, or .env for compose) and seed it with
+# `readyhai tools update` (core warms this exact path; warm scans take seconds).
+# The var is passed by name because Plugin env carries names, not values.
+# Without it grype falls back to $HOME/.cache (the tmpfs), and the first-run DB
+# download overruns the runner's 1g /tmp limit: "no space left on device" (verified).
+# Digest resolved from Docker Hub 2026-11-22. Re-check with: docker inspect --format='{{index .RepoDigests 0}}' anchore/grype:<tag>
+id = "grype"
+title = "Grype image vulnerabilities, by-CVE (SARIF)"
+kinds = ["image"]
+profile = "standard"
+image = "anchore/grype:v0.121.3@sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887"
+network = true   # grype refreshes a stale/missing DB on use
+cache_rw = true  # GRYPE_DB_CACHE_DIR=/cache/grype must be writable to persist the DB
+env = ["GRYPE_DB_CACHE_DIR"]
+args = [
+  "docker-archive:{image_tar}",
+  "--output", "sarif",
+  "--file", "/out/grype.sarif",
+  "--by-cve",
+  "--add-cpes-if-none",
+]
+output = "/out/grype.sarif"
+format = "sarif"

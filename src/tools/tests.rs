@@ -451,6 +451,35 @@ format = "sarif"
 }
 
 #[test]
+fn official_supply_chain_packs_load() {
+    // The grype + osv-scanner packs in the repo must parse and validate against the
+    // real schema (their flags were smoke-run in containers, see the packs' comments).
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/official");
+    let all = plugin_checks(&root);
+    let ids: Vec<&str> = all.iter().map(|c| c.id.as_str()).collect();
+    for want in ["plugin.grype", "plugin.osv-scanner"] {
+        assert!(ids.contains(&want), "{want} missing from official packs: {ids:?}");
+    }
+    let g = all.iter().find(|c| c.id == "plugin.grype").unwrap();
+    assert_eq!(g.kinds, vec![TargetKind::Image]);
+    assert_eq!(g.min_profile, Profile::Standard);
+    let o = all.iter().find(|c| c.id == "plugin.osv-scanner").unwrap();
+    assert_eq!(o.kinds, vec![TargetKind::Repo]);
+    assert_eq!(o.min_profile, Profile::Standard);
+    // Digest pins must stay exact (never drifted to a mutable tag).
+    let gtoml = std::fs::read_to_string(root.join("grype/plugin.toml")).unwrap();
+    let otoml = std::fs::read_to_string(root.join("osv-scanner/plugin.toml")).unwrap();
+    assert_eq!(
+        toml::from_str::<toml::Value>(&gtoml).unwrap()["image"].as_str().unwrap(),
+        "anchore/grype:v0.121.3@sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887"
+    );
+    assert_eq!(
+        toml::from_str::<toml::Value>(&otoml).unwrap()["image"].as_str().unwrap(),
+        "ghcr.io/google/osv-scanner:v2.7.0@sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0"
+    );
+}
+
+#[test]
 fn lock_precedence_env_data_embedded() {
     let d = std::env::temp_dir().join(format!("rh-lockprec-{:08x}", rand::random::<u32>()));
     std::fs::create_dir_all(&d).unwrap();

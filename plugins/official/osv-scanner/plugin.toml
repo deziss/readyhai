@@ -1,0 +1,27 @@
+# OSV-Scanner (Apache-2.0, Google) - lockfile/manifest scanning against the OSV
+# advisories DB, SARIF native. Repo lane complement to plugin.grype (image lane):
+# covers repositories without a built image. v2 CLI: `scan source` subcommand.
+# network = true: queries api.osv.dev per package. The offline DB mode exists
+# (--offline-vulnerabilities) but needs OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY values
+# pre-seeded by `readyhai tools update`, which plugins cannot pass (env = names only);
+# core tool.osv_reachability covers the offline path.
+# Exit 1 = vulns found (SARIF still complete; runner notes it Partial). A repo with
+# no recognized manifests would exit 128 writing nothing -- --allow-no-lockfiles
+# turns that into exit 0 with an empty-results SARIF instead.
+# Digest resolved from GHCR 2026-11-22. Re-check with: docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/google/osv-scanner:<tag>
+id = "osv-scanner"
+title = "OSV-Scanner lockfile vulnerabilities (SARIF)"
+kinds = ["repo"]
+profile = "standard"
+image = "ghcr.io/google/osv-scanner:v2.7.0@sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0"
+network = true
+args = [
+  "scan", "source",
+  "-r",
+  "--allow-no-lockfiles",
+  "--format", "sarif",
+  "--output-file", "/out/osv-scanner.sarif",
+  "/src",
+]
+output = "/out/osv-scanner.sarif"
+format = "sarif"
