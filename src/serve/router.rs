@@ -1,7 +1,7 @@
 //! HTTP router assembly, static asset delivery, and graceful server bootstrap.
 
 use super::agent_api::*;
-use super::auth::{require_auth, validate_principal, validate_scope_path, validate_token};
+use super::auth::{require_auth, validate_principal, validate_scope_path, validate_token, whoami};
 use super::badges::*;
 use super::eval_api::*;
 use super::guards::err;
@@ -36,6 +36,16 @@ pub fn serve(bind: &str) -> Result<()> {
         .collect();
     let scope = validate_scope_path(std::env::var("READYHAI_SCOPE").ok().as_deref())?;
     let plugins = std::env::var("READYHAI_PLUGINS").ok().map(PathBuf::from);
+    let rbac_file = std::env::var("READYHAI_RBAC_FILE").ok().map(PathBuf::from);
+    let rbac = super::rbac::Rbac::load(rbac_file.as_deref())?;
+    eprintln!(
+        "rbac: {}",
+        if rbac.enabled {
+            format!("ON, {} key(s)", rbac.keys.len())
+        } else {
+            "OFF (single boot token, legacy mode)".to_string()
+        }
+    );
     let limit = run_timeout();
     init_server_id()?;
 
@@ -52,6 +62,7 @@ pub fn serve(bind: &str) -> Result<()> {
     let app = Arc::new(App {
         token_digest: Sha256::digest(token.as_bytes()).into(),
         principal,
+        rbac,
         tx,
         allowed_roots,
         scope,
@@ -138,8 +149,7 @@ async fn shutdown_signal() {
 
 
 pub fn build_router(app: Arc<App>) -> Router {
-    Router::new()
-        .route("/", get(api_index))
+    Router::new()        .route("/", get(api_index))
         .route("/ui", get(api_index))
         .route("/api/agent/status", get(agent_status))
         .route(
@@ -191,6 +201,7 @@ pub fn build_router(app: Arc<App>) -> Router {
             "/health",
             get(|| async { Json(json!({"status": "ok", "version": engine::VERSION})) }),
         )
+        .route("/api/whoami", get(whoami))
         .route("/checks", get(list_checks))
         .route("/runs", post(create_run).get(list_runs))
         .route("/runs/{id}", get(get_run))

@@ -223,6 +223,24 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
 
     let mut results = vec![];
     let mut findings: Vec<Finding> = vec![];
+    // Operator settings: tri-state toggles per check / integration category.
+    // Re-read every run so edits apply without restart. Never weakens a gate:
+    // it can only ADD skips (or lift settings-added skips), never bypass
+    // profile/kind/docker/intrusive-nonprod checks.
+    let settings_path = opts
+        .settings
+        .clone()
+        .or_else(crate::settings::settings_path_from_env);
+    let settings = crate::settings::Settings::load(settings_path.as_deref())?;
+    if let Some(p) = &settings_path
+        && settings.override_count() > 0
+    {
+        notes.push(format!(
+            "settings: {} override(s) from {}",
+            settings.override_count(),
+            p.display()
+        ));
+    }
     for c in checks::all(opts.plugins.as_deref()) {
         let kind_ok =
             c.kinds.contains(&target.kind) || has_repo && c.kinds.contains(&TargetKind::Repo);
@@ -230,7 +248,14 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
             continue;
         }
         let t0 = Instant::now();
-        let status_findings: (CheckStatus, Vec<Finding>) = if c.tool.is_some() && opts.no_tools {
+        let status_findings: (CheckStatus, Vec<Finding>) = if let Some(reason) = settings.skip(
+            &c.id,
+            c.tool.is_some(),
+            c.id.starts_with("plugin."),
+            c.intrusive,
+        ) {
+            (CheckStatus::Skipped(reason), vec![])
+        } else if c.tool.is_some() && opts.no_tools {
             (CheckStatus::Skipped("--no-tools".into()), vec![])
         } else if c.tool.is_some() && !ctx.docker.available {
             (CheckStatus::Skipped("docker not available".into()), vec![])

@@ -18,6 +18,18 @@ Consequences: a browser UI or a badge `<img>` cannot call the API directly; put 
 export T=your-token-here-16+chars; H="Authorization: Bearer $T"
 ```
 
+
+**RBAC (togglable).** `serve` optionally runs with role-based access control on top of the bearer check: point `READYHAI_RBAC_FILE` at an `rbac.toml` (template: [`../rbac.example.toml`](../rbac.example.toml)) and the toggle resolves `READYHAI_RBAC=on|off|auto` > `[rbac] enabled` in the file > auto (ON when the file exists). Off, everything below behaves exactly as the legacy single-token mode. On, each bearer token is looked up in the keyring (`[[key]]` entries with `key` or `key_sha256 = "sha256:<64 hex>"`, hashed in memory, constant-time compare) and every request is authorized by role against the route:
+
+| Role | May |
+|---|---|
+| `viewer` | `GET`/`HEAD` anywhere except routes that leak nothing extra — i.e. all reads, including `/api/whoami` |
+| `operator` | + trigger work: `POST /api/scans`, `POST /runs`, agent runs/retests/cancel, network lab, evals |
+| `admin` | + govern: approve/reject, `fix`, memory-accept, `DELETE`, settings-level actions |
+
+Unclassified write routes fail closed as Admin-only. A wrong-role call returns `403 {"error":"role viewer may not trigger work (needs operator) this route","role":"viewer","required":"operate"}` — distinct from `401` so clients can tell "bad key" from "insufficient role". The legacy `READYHAI_TOKEN` is break-glass `admin` while RBAC is on unless `READYHAI_RBAC_BOOT_ADMIN=0`. `GET /api/whoami` returns `{"name","role","rbac":"on|off","permissions":{"read":bool,"operate":bool,"govern":bool}}` for the presented key. The startup refuses `READYHAI_RBAC=on` with no key file or zero keys (a lockbox nobody can open is a misconfiguration, not a mode). See [configuration.md](configuration.md#rbac-rbactoml) for the file format.
+
+
 ### Outbound access: scope and the egress guard
 
 Everything the server does to a target over HTTP goes through one guard (`serve.rs::guard`, backed by `scope::egress_guard`):
@@ -45,7 +57,7 @@ Every target the guard refuses returns `403 {"error": ...}`: an unlisted interna
 |---|---|
 | 400 | Invalid input: a bad run id, a path outside allowed roots, an over-limit field such as `custom_instructions` > 32 KB, `repo` without `diff_base`, an unknown profile or format; a target that does not parse, but only on `POST /runs`, `POST /api/scans` and the memory routes (the egress-guarded routes answer 403 for it) |
 | 401 | Missing or wrong bearer token (every route except `/health`) |
-| 403 | Egress guard refused the target on an agent or network-lab route: unparseable URL or a scheme other than http/https, an unlisted internal host, an intrusive action on an `env = "prod"` host, or an unresolvable name for an intrusive action |
+| 403 | Egress guard refused the target on an agent or network-lab route: unparseable URL or a scheme other than http/https, an unlisted internal host, an intrusive action on an `env = "prod"` host, or an unresolvable name for an intrusive action | — **or** RBAC is on and the key's role does not allow the route's action (body names the role and required role)
 | 404 | Unknown run id (also for `POST /api/agent/runs/{id}/cancel`) |
 | 409 | Run is still running (delete), the run is not running (cancel), or a retest target does not match the stored run's target |
 | 429 | Four probes are already running (agent run, retest, network lab); retry when one finishes |

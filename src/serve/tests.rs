@@ -32,6 +32,7 @@ use tokio::sync::{Semaphore, mpsc};
         Arc::new(App {
             token_digest: Sha256::digest(TOKEN.as_bytes()).into(),
             principal: "qa-lead".into(),
+            rbac: crate::serve::rbac::Rbac { enabled: false, keys: vec![] },
             tx,
             allowed_roots: vec![],
             scope: None,
@@ -132,6 +133,7 @@ use tokio::sync::{Semaphore, mpsc};
         ("POST", "/api/fix"),
         ("POST", "/api/mutate"),
         ("POST", "/api/github/pr-comment"),
+        ("GET", "/api/whoami"),
         ("GET", "/api/badges/gate"),
         ("GET", "/api/badges/ledger"),
         ("GET", "/api/badges/network"),
@@ -747,6 +749,7 @@ use tokio::sync::{Semaphore, mpsc};
         let app = App {
             token_digest: Sha256::digest(TOKEN.as_bytes()).into(),
             principal: "qa-lead".into(),
+            rbac: crate::serve::rbac::Rbac { enabled: false, keys: vec![] },
             tx,
             allowed_roots: vec![root.clone()],
             scope: None,
@@ -1569,4 +1572,120 @@ use tokio::sync::{Semaphore, mpsc};
             .build()
             .unwrap()
             .block_on(f)
+    }
+
+    // ---------------------------------------------------------------- rbac
+
+    /// RBAC end-to-end through the real router over TCP: keyring auth, the
+    /// role×action matrix, /api/whoami, and the toggle back to legacy mode.
+    fn test_server_with(app: Arc<App>) -> (tokio::runtime::Runtime, String) {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let listener = rt
+            .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = build_router(app);
+        rt.spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        (rt, format!("http://{addr}"))
+    }
+
+    /// (status, body) for a request against a RBAC-enabled server.
+    #[test]
+    fn rbac_roles_govern_the_api_and_the_toggle_restores_legacy_mode() {
+        let _g = crate::engine::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = data_dir("rbac");
+        unsafe { std::env::remove_var("READYHAI_RBAC") }; // auto: file exists => ON
+        let f = std::env::temp_dir().join(format!("rh-rbac-e2e-{}.toml", std::process::id()));
+        std::fs::write(
+            &f,
+            "[[key]]\nname = \"ro-bot\"\nrole = \"viewer\"\nkey = \"rh-view-key-Vk3xQm7zP9wL2nB4\"\n[[key]]\nname = \"ci-runner\"\nrole = \"operator\"\nkey = \"rh-oper-key-Xd8fH2tR6yU1sK5m\"\n[[key]]\nname = \"dash\"\nrole = \"admin\"\nkey = \"rh-adm-key-Zq4vN7cX9jE3bW8g\"\n",
+        )
+        .unwrap();
+        let rbac = crate::serve::rbac::Rbac::load(Some(&f)).expect("key file loads");
+        assert!(rbac.enabled && rbac.keys.len() == 2 + 1);
+        let (tx, _rx) = mpsc::channel(4);
+        let app = Arc::new(App {
+            token_digest: Sha256::digest(TOKEN.as_bytes()).into(),
+            principal: "qa-lead".into(),
+            rbac,
+            tx,
+            allowed_roots: vec![],
+            scope: None,
+            plugins: None,
+            active: Mutex::new(HashSet::new()),
+            probes: Arc::new(Semaphore::new(MAX_CONCURRENT_PROBES)),
+        });
+        let (_rt, base) = test_server_with(app);
+        let c = client();
+        let send = |method: reqwest::Method, path: &str, key: &str, body: serde_json::Value| {
+            let mut r = c
+                .request(method, format!("{base}{path}"))
+                .header("authorization", format!("Bearer {key}"));
+            if !body.is_null() {
+                r = r.header("content-type", "application/json").body(body.to_string());
+            }
+            let resp = r.send().unwrap();
+            let st = resp.status().as_u16();
+            (st, resp.text().unwrap_or_default())
+        };
+        let VIEW = "rh-view-key-Vk3xQm7zP9wL2nB4";
+        let OPER = "rh-oper-key-Xd8fH2tR6yU1sK5m";
+        let ADM = "rh-adm-key-Zq4vN7cX9jE3bW8g";
+
+        // Viewer: reads fine.
+        let (st, _) = send(reqwest::Method::GET, "/checks", VIEW, serde_json::Value::Null);
+        assert_eq!(st, 200, "viewer may read /checks");
+        // Viewer: work + governance refused by the RBAC gate (distinct body).
+        let (st, b) = send(reqwest::Method::POST, "/api/scans", VIEW, json!({"target": "https://x.example/"}));
+        assert_eq!(st, 403, "viewer POST /api/scans: {b}");
+        assert!(b.contains("needs operator"), "{b}");
+        let (st, b) = send(reqwest::Method::POST, "/api/fix", VIEW, json!({}));
+        assert_eq!(st, 403);
+        assert!(b.contains("needs admin"), "{b}");
+
+        // Operator: cancel reaches the handler (unknown run id is the handler's 404,
+        // not the middleware's 403).
+        let (st, b) = send(reqwest::Method::POST, "/api/agent/runs/r1/cancel", OPER, json!({}));
+        assert!(st != 403 && st != 401, "operator cancel reached the handler, got {st}: {b}");
+        // Operator: governance refused.
+        let (st, _) = send(reqwest::Method::POST, "/api/agent/memory/accept", OPER, json!({"target": "https://x.example/", "fingerprint": "f", "reason": "r", "expires": "2099-01-01"}));
+        assert_eq!(st, 403, "operator may not accept memory");
+        let (st, _) = send(reqwest::Method::DELETE, "/api/scans/r1", OPER, serde_json::Value::Null);
+        assert_eq!(st, 403, "operator may not delete");
+
+        // whoami: identity + resolved permissions for the caller's key.
+        let (st, b) = send(reqwest::Method::GET, "/api/whoami", OPER, serde_json::Value::Null);
+        assert_eq!(st, 200);
+        let who: serde_json::Value = serde_json::from_str(&b).unwrap();
+        assert_eq!(who["name"], "ci-runner");
+        assert_eq!(who["role"], "operator");
+        assert_eq!(who["rbac"], "on");
+        assert_eq!(who["permissions"]["operate"], true);
+        assert_eq!(who["permissions"]["govern"], false);
+
+        // Admin key passes the governance gate (handler output is irrelevant).
+        let (st, b2) = send(reqwest::Method::POST, "/api/agent/memory/accept", ADM, json!({"target": "https://x.example/", "fingerprint": "f", "reason": "r", "expires": "2099-01-01"}));
+        assert!(!b2.contains("needs admin"), "admin passed the gate? {st}: {b2}");
+        // Break-glass boot token: Admin even with RBAC on.
+        let (st, b2) = send(reqwest::Method::POST, "/api/fix", TOKEN, json!({}));
+        assert!(!b2.contains("needs admin"), "boot break-glass must be admin: {st}: {b2}");
+        // Unknown key: 401.
+        let (st, _) = send(reqwest::Method::GET, "/checks", "rh-unknown-key-0000000000", serde_json::Value::Null);
+        assert_eq!(st, 401);
+
+        // Toggle: READYHAI_RBAC=off makes the SAME key file inert — legacy mode.
+        unsafe { std::env::set_var("READYHAI_RBAC", "off") };
+        let off = crate::serve::rbac::Rbac::load(Some(&f)).expect("toggle off");
+        unsafe { std::env::remove_var("READYHAI_RBAC") };
+        assert!(!off.enabled);
+        // (viewer key is now simply an unknown key => 401; boot token = full legacy access)
+        let _ = std::fs::remove_file(f);
+        let _ = std::fs::remove_dir_all(d);
+
     }

@@ -1,0 +1,28 @@
+# ReadyHai operator settings — tool/plugin toggles.
+# Usage: readyhai scan --settings settings.toml ...   (or READYHAI_SETTINGS=settings.toml)
+# This file is operator-owned. A scanned repo's own readyhai/settings file is NEVER read.
+#
+# Tri-state values: "auto" (default, today's behaviour), "on", "off".
+#   off  -> check is Skipped with a visible reason in the report (never hidden)
+#   on   -> settings alone will never skip it. It does NOT bypass the profile,
+#           scope nonprod, --no-tools, --profile or Docker-availability gates.
+# Resolution per check: exact [[toggle]] id > LAST matching glob > category switch > auto.
+
+[integrations]
+tools = "auto"     # pinned-container tool checks (tools.lock.toml images)
+plugins = "auto"   # plugin.* checks from the plugins directory
+intrusive = "auto" # kill switch for the intrusive class: auto | off only ("on" is rejected —
+                   # settings can silence intrusive checks but never force one to run)
+
+# Per-check toggles, evaluated top to bottom; the LAST matching rule wins among globs.
+# [[toggle]]
+# id = "tool.nuclei"          # exact check id (see `readyhai checks`)
+# enabled = "off"
+#
+# [[toggle]]
+# id = "plugin.crowdstrike.*" # glob; place broad rules first, narrow exceptions after
+# enabled = "off"
+#
+# [[toggle]]
+# id = "plugin.crowdstrike.falcon-sensor-audit"
+# enabled = "on"              # ...except this one

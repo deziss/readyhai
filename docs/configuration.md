@@ -8,6 +8,8 @@
 | `policy.toml` | `--policy FILE` | embedded copy of `policies/default.toml` |
 | `scope.toml` | `--scope FILE` or `READYHAI_SCOPE` | none (public hosts get full testing, internal hosts are refused) |
 | baseline JSON | `--baseline FILE` | `<data>/baselines/<hash>.json` |
+| `settings.toml` | `--settings FILE` or `READYHAI_SETTINGS` | none (every integration `auto`) |
+| `rbac.toml` | `READYHAI_RBAC_FILE` (serve) | none = RBAC off |
 | `tools.lock.toml` | `READYHAI_TOOLS_LOCK` | copy embedded in the binary at build time |
 | plugins | `--plugins DIR` or `READYHAI_PLUGINS` | none |
 
@@ -181,6 +183,36 @@ title_prefix = "HTTP surface"      # finding title becomes "<prefix>: <value>"
 
 Plugins marked `intrusive = true` (or `profile = "deep"`) run only on targets the scope file does not mark `prod`, like built-in intrusive checks. ReadyHai's own verified plugin pack lives in [`../plugins/official/`](../plugins/README.md).
 
+## Settings (tool/plugin toggles)
+
+`--settings <file>` (or `READYHAI_SETTINGS`) points at an operator-owned TOML file that switches integrations on or off per check, per glob, or per category. Start from [`../settings.example.toml`](../settings.example.toml). A file that fails to parse or validate is a hard error — a silently-ignored settings file must never flip an integration the operator meant to keep off. A scanned repo's own files are **never** consulted for settings.
+
+```toml
+[integrations]
+tools = "auto"      # pinned-container tool checks (tri-state: auto | on | off)
+plugins = "auto"    # plugin.* checks
+intrusive = "auto"  # kill switch: auto | off only ("on" is rejected at load)
+
+[[toggle]]
+id = "plugin.crowdstrike.*"   # check id or glob; last matching glob wins
+enabled = "off"
+```
+
+Resolution per check: exact `[[toggle]]` id > last matching glob > category switch > `auto`. `off` produces a normal `Skipped` status with a visible reason in the report — a toggle never hides coverage. `on` only protects a check from *settings*; the profile, scope-nonprod, `--no-tools` and Docker gates keep their authority. The precedence mirrors how tools like Trivy and Nuclei layer config (flag > env > file > defaults), same as the rest of ReadyHai: `--settings` > `READYHAI_SETTINGS` > none. Design choices follow verified OSS precedents: tri-state mirrors Wazuh's `<disabled>` wodle switch (auto answers "why didn't it run"); the kill-switch-that-can-only-narrow mirrors github-mcp-server's `--read-only` beating explicit `--tools`; per-file-not-per-flag selectors with hard-fail on an unparseable file follow Trivy's `trivy.yaml`; opaque plugin option pass-through follows DefectDojo's `Tool_Configuration.extras`.
+
+## RBAC (rbac.toml)
+
+`readyhai serve` runs with role-based access control when a key file exists. Start from [`../rbac.example.toml`](../rbac.example.toml) and point `READYHAI_RBAC_FILE` at it. The toggle is tri-state: `READYHAI_RBAC=on|off|auto` (env wins), then `[rbac] enabled` in the file, then `auto` = ON when the file exists, OFF otherwise. With RBAC **off** the server behaves exactly as it always has: one `READYHAI_TOKEN` bearer, full access. With RBAC **on**, every bearer token is resolved against `[[key]]` entries (plaintext `key` or `key_sha256 = "sha256:<64 hex>"`; keys are hashed in memory and compared in constant time) and authorized per route:
+
+| Role | May |
+|---|---|
+| `viewer` | `GET`/`HEAD` anywhere (dashboards, read-only integrations) |
+| `operator` | + trigger scans and agent runs, cancel, network lab, evals |
+| `admin` | + approve/reject, `fix`, memory-accept, delete runs — governance |
+
+Any write route not explicitly classified is treated Admin-only (fail closed). The legacy `READYHAI_TOKEN` remains a break-glass `admin` unless `READYHAI_RBAC_BOOT_ADMIN=0` — set that in real deployments once your first named key works. `READYHAI_RBAC=on` without a key file, or with a key file that has no entries, is a boot error: the server refuses to start a lockbox nobody can open. `GET /api/whoami` reports the caller's name, role and resolved permissions. The role model is deliberately minimal (DefectDojo/Opsgenie-style tiered roles rather than per-permission strings) because every ReadyHai action already falls into read / operate / govern.
+
+
 ## Environment variables
 
 **Server and data**
@@ -194,6 +226,10 @@ Plugins marked `intrusive = true` (or `profile = "deep"`) run only on targets th
 | `READYHAI_ALLOWED_ROOTS` | `serve`, `mcp` | Colon-separated directories that repo paths, APKs and the agent's `repo` must be under. MCP defaults to the current directory if unset; REST with none configured refuses paths. Compose sets `/targets`. |
 | `READYHAI_RUN_TIMEOUT_SECS` | `serve` | Wall-clock deadline of one scan run (default 3600, clamped to 60 to 86400). Late checks are skipped and the run ends as `error`. |
 | `READYHAI_PLUGINS` | `scan`, `qa`, `checks`, `serve`, `mcp` | Plugin directory. |
+| `READYHAI_SETTINGS` | `scan`, `qa` | Operator settings file (tool/plugin toggles); `--settings` wins. See "Settings" above. |
+| `READYHAI_RBAC` | `serve` | RBAC toggle `on\|off\|auto`; auto = on when a key file exists. See "RBAC" above. |
+| `READYHAI_RBAC_FILE` | `serve` | Path to `rbac.toml` (per-key roles). Existence under `auto` decides the default toggle. |
+| `READYHAI_RBAC_BOOT_ADMIN` | `serve` | `0` removes the legacy token's break-glass admin while RBAC is on. |
 | `READYHAI_TOOLS_LOCK` | all tool runs | Path to a lock file overriding the embedded one. |
 | `READYHAI_GIT_TIMEOUT_SECS` | git clones, `agent --diff-base` | Wall-clock limit of a `git clone` (default 300, 10 to 3600, never longer than the run deadline) and of the agent's `git diff` (default 60, 5 to 3600). |
 | `READYHAI_PUBLIC_IP`, `READYHAI_EGRESS_IP` | network lab, agent | Egress IP to report instead of asking public IP-echo services (api.ipify.org, checkip.amazonaws.com, icanhazip.com, ifconfig.me). |

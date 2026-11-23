@@ -36,6 +36,7 @@ mod report;
 mod rules;
 mod scope;
 mod serve;
+mod settings;
 mod snapshot;
 mod supply;
 mod tools;
@@ -98,6 +99,9 @@ enum Cmd {
         /// External plugin directory (plugins/<name>/plugin.toml)
         #[arg(long, env = "READYHAI_PLUGINS")]
         plugins: Option<PathBuf>,
+        /// Operator settings file: tool/plugin toggles ([integrations], [[toggle]])
+        #[arg(long, env = "READYHAI_SETTINGS")]
+        settings: Option<PathBuf>,
     },
     /// Senior-QA run against a running app (+ optional repo): functional API/UI tests,
     /// auth/role matrix, perf baseline, release quality → QA test summary report
@@ -134,6 +138,9 @@ enum Cmd {
         no_tools: bool,
         #[arg(long, env = "READYHAI_PLUGINS")]
         plugins: Option<PathBuf>,
+        /// Operator settings file: tool/plugin toggles ([integrations], [[toggle]])
+        #[arg(long, env = "READYHAI_SETTINGS")]
+        settings: Option<PathBuf>,
     },
     /// Test-account roles for `qa --roles`
     Roles {
@@ -337,6 +344,7 @@ fn run() -> anyhow::Result<u8> {
             key,
             device,
             plugins,
+            settings,
         } => {
             let opts = ScanOpts {
                 target,
@@ -351,6 +359,7 @@ fn run() -> anyhow::Result<u8> {
                 key,
                 device,
                 plugins,
+                settings,
                 ..Default::default()
             };
             let id = engine::new_run_id();
@@ -383,6 +392,7 @@ fn run() -> anyhow::Result<u8> {
             out,
             no_tools,
             plugins,
+            settings,
         } => {
             let opts = ScanOpts {
                 target: url,
@@ -394,6 +404,7 @@ fn run() -> anyhow::Result<u8> {
                 baseline,
                 no_tools,
                 plugins,
+                settings,
                 repo,
                 roles,
                 journeys,

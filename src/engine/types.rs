@@ -42,6 +42,9 @@ pub struct ScanOpts {
     pub qa: bool,
     #[serde(skip)]
     pub plugins: Option<PathBuf>,
+    /// Operator settings file (tool/plugin toggles). `--settings`; else READYHAI_SETTINGS.
+    #[serde(skip)]
+    pub settings: Option<PathBuf>,
     /// Server mode: repo paths must sit under allowed roots; web targets need scope.
     #[serde(skip)]
     pub server: bool,

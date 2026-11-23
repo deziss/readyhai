@@ -2,13 +2,13 @@
 
 use super::types::{App, BANNED_TOKENS, MIN_TOKEN_CHARS, Principal};
 use anyhow::{Result, bail};
+use axum::Extension;
 use axum::Json;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
 use crate::scope::Scope;
@@ -75,22 +75,18 @@ pub fn unauthorized() -> Response {
         .into_response()
 }
 
-pub fn bearer_ok(app: &App, h: &HeaderMap) -> bool {
-    let Some(v) = h.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
-        return false;
-    };
-    let Some((scheme, tok)) = v.split_once(' ') else {
-        return false;
-    };
-    if !scheme.eq_ignore_ascii_case("bearer") {
-        return false;
-    }
-    let got: [u8; 32] = Sha256::digest(tok.as_bytes()).into();
-    got.iter()
-        .zip(app.token_digest.iter())
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-        == 0
+fn forbidden(role: &str, action: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": format!("role {role} may not {action} this route"),
+            "role": role,
+            "required": action,
+        })),
+    )
+        .into_response()
 }
+
 
 /// Paths served without a token (GET only): the health probe and the SVG status badges, which are
 /// read-only and render only a sanitised status/score from the query string (no run data, no secrets).
@@ -105,17 +101,59 @@ pub fn is_public_get(path: &str) -> bool {
     PUBLIC_GET.contains(&path)
 }
 
-/// The single authentication point: `Authorization: Bearer <token>` on everything except
-/// the public GETs in [`PUBLIC_GET`] (/health and the badges).
-/// Handlers never check credentials themselves, so a new route cannot forget to.
+/// What key am I, and what may I do? UI/clients use this to hide what the caller
+/// cannot use; RBAC off reports the legacy single-admin mode.
+pub async fn whoami(Extension(who): Extension<Principal>, State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+    Json(json!({
+        "name": who.name,
+        "role": who.role.as_str(),
+        "rbac": if app.rbac.enabled { "on" } else { "off" },
+        "permissions": {
+            "read": who.role.allows(super::rbac::Action::Read),
+            "operate": who.role.allows(super::rbac::Action::Operate),
+            "govern": who.role.allows(super::rbac::Action::Admin),
+        },
+    }))
+}
+
+/// The single authentication + authorization point: `Authorization: Bearer <token>`
+/// on everything except the public GETs in [`PUBLIC_GET`]; then the RBAC matrix
+/// (role × action) when RBAC is enabled. Handlers never check credentials or roles
+/// themselves, so a new route cannot forget to (an unclassified write is Admin).
 pub async fn require_auth(State(app): State<Arc<App>>, mut req: Request, next: Next) -> Response {
     let public = req.method() == Method::GET && is_public_get(req.uri().path());
-    if !public {
-        if !bearer_ok(&app, req.headers()) {
+    let ident = if public {
+        None
+    } else {
+        let Some(v) = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
+            return unauthorized();
+        };
+        let Some((scheme, tok)) = v.split_once(' ') else {
+            return unauthorized();
+        };
+        if !scheme.eq_ignore_ascii_case("bearer") {
             return unauthorized();
         }
-        req.extensions_mut()
-            .insert(Principal(app.principal.clone()));
+        match app.rbac.authenticate(tok, &app.token_digest, &app.principal) {
+            Some((name, role)) => {
+                let action = super::rbac::action_for(req.method(), req.uri().path());
+                if app.rbac.enabled && !role.allows(action) {
+                    return forbidden(
+                        role.as_str(),
+                        match action {
+                            super::rbac::Action::Operate => "trigger work (needs operator)",
+                            super::rbac::Action::Admin => "govern (needs admin)",
+                            super::rbac::Action::Read => "read",
+                        },
+                    );
+                }
+                Some(Principal { name, role })
+            }
+            None => return unauthorized(),
+        }
+    };
+    if let Some(p) = ident {
+        req.extensions_mut().insert(p);
     }
     let mut resp = next.run(req).await;
     resp.headers_mut()

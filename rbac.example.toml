@@ -1,0 +1,37 @@
+# ReadyHai RBAC — per-key roles for `readyhai serve` (SaaS / shared deployments).
+# Usage: READYHAI_RBAC_FILE=rbac.toml readyhai serve ...
+#
+# Toggle resolution (most specific first):
+#   1. READYHAI_RBAC=on|off|auto           env
+#   2. [rbac] enabled = true|false         this file (applies under "auto")
+#   3. auto: ON when this file exists with keys, OFF when there is no file
+# With RBAC OFF the server behaves exactly like before: the single READYHAI_TOKEN
+# bearer token has full access. With RBAC ON the keyring below is the user
+# database; READYHAI_TOKEN remains break-glass Admin unless
+# READYHAI_RBAC_BOOT_ADMIN=0 (recommended for real deployments after the first key works).
+#
+# Roles (ordinal, each includes the ones above):
+#   viewer    GET / HEAD everywhere (dashboard, read-only integrations)
+#   operator  + trigger scans/agent runs, network lab, evals, cancel runs
+#   admin     + approve/reject, memory-accept, fix, delete runs, settings-level governance
+# Unclassified write routes fail closed as Admin-only.
+#
+# Keys: at least 32 characters, or set key_sha256 = "sha256:<64 hex>"
+# (sha256 of the raw key) to keep the secret itself out of this file.
+
+# enabled = false   # file-side toggle, only consulted under READYHAI_RBAC=auto
+
+# [[key]]
+# name = "ci-runner"          # recorded as the principal on sign-offs and run audit lines
+# role = "operator"
+# key = "replace-with-a-32+char-secret"
+
+# [[key]]
+# name = "secops"
+# role = "admin"
+# key_sha256 = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+
+# [[key]]
+# name = "dashboard-readonly"
+# role = "viewer"
+# key = "another-32+char-secret-here-ok"

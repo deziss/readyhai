@@ -405,7 +405,7 @@ pub async fn agent_approve(
     if !engine::valid_run_id(&id) {
         return err(StatusCode::BAD_REQUEST, "bad run id");
     }
-    match crate::agent::approve_agent_run(&id, &who.0, &clip_notes(&body.notes)) {
+    match crate::agent::approve_agent_run(&id, &who.name, &clip_notes(&body.notes)) {
         Ok(rep) => Json(rep).into_response(),
         Err(e) => signoff_err(e),
     }
@@ -432,7 +432,7 @@ pub async fn agent_reject(
     if !engine::valid_run_id(&id) {
         return err(StatusCode::BAD_REQUEST, "bad run id");
     }
-    match crate::agent::reject_agent_run(&id, &who.0, &clip_notes(&body.notes)) {
+    match crate::agent::reject_agent_run(&id, &who.name, &clip_notes(&body.notes)) {
         Ok(rep) => Json(rep).into_response(),
         Err(e) => signoff_err(e),
     }
@@ -501,7 +501,7 @@ pub async fn agent_memory_accept(
             &crate::agent::memory::dir(),
             &target,
             &b.fingerprint,
-            &who.0,
+            &who.name,
             &b.reason,
             &b.expires,
             &engine::today(),

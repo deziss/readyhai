@@ -39,6 +39,8 @@ pub const BADGE_VALUE_MAX: usize = 24;
 pub struct App {
     pub token_digest: [u8; 32],
     pub principal: String,
+    /// Per-key RBAC (roles + keyring + toggle). Disabled = legacy single-token mode.
+    pub rbac: super::rbac::Rbac,
     pub tx: mpsc::Sender<(String, ScanOpts)>,
     pub allowed_roots: Vec<PathBuf>,
     pub scope: Option<PathBuf>,
@@ -49,13 +51,9 @@ pub struct App {
 
 /// Authenticated caller, injected by the auth middleware.
 #[derive(Clone, Debug)]
-pub struct Principal(pub String);
-
-impl Principal {
-    #[allow(dead_code)]
-    pub fn name(&self) -> &str {
-        &self.0
-    }
+pub struct Principal {
+    pub name: String,
+    pub role: super::rbac::Role,
 }
 
 #[derive(Debug)]
