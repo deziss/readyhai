@@ -2,6 +2,32 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.5.0] - 2026-11-23
+
+### Added
+
+- **Operator settings layer** (`src/settings.rs`, `--settings FILE` / `READYHAI_SETTINGS`, template `settings.example.toml`): tri-state (`auto|on|off`) toggles for every check — exact id, glob (`plugin.crowdstrike.*`), or category (`[integrations] tools / plugins / intrusive`). `off` produces a visible `Skipped` with reason (a toggle never hides coverage); `on` protects a check from *settings only* — profile, scope-nonprod, `--no-tools`, and Docker gates keep full authority; `integrations.intrusive` accepts only `auto|off`, so settings can silence the intrusive class but never force it. Resolution: exact id > last matching glob > category > auto; precedence `--settings` > env > none. A broken settings file is a hard error, and a scanned repo is never consulted. `cargo scan`/`qa` note `settings: N override(s)` in every report.
+- **RBAC for `serve`** (`src/serve/rbac.rs`, fully togglable, template `rbac.example.toml`): per-key bearer tokens (`[[key]]` with `key` or `key_sha256`, hashed in memory, constant-time compare) carrying roles `viewer < operator < admin`. Toggle precedence `READYHAI_RBAC=on|off|auto` > `[rbac].enabled` in the file > auto (ON when a key file exists); **off restores the exact legacy single-token mode**. Route matrix enforced in middleware: `GET`/`HEAD` = read; scans/agent/network/eval/cancel = operate; approve/reject/fix/memory-accept/delete = admin; unclassified writes fail closed as admin. `403` bodies name the role and the required role (distinct from `401`). The legacy boot token is break-glass admin unless `READYHAI_RBAC_BOOT_ADMIN=0`. `READYHAI_RBAC=on` without usable keys refuses to boot. `GET /api/whoami` reports the caller's name/role/permissions. Sign-offs and run audit lines record the authenticated key name.
+- **Settings UI + REST** (`/api/settings` GET/PUT/DELETE, `/api/settings/checks`, `/api/rbac`; view `SettingsView`): operators flip integrations and per-check toggles in the UI; PUT writes `<data>/settings.toml` atomically, admin-only when RBAC is on (enforced twice: middleware + request classification), with the intrusive-kill-switch rules rejected server-side (`400`), an mtime-based `version` token, `shadowing_env` when an operator `READYHAI_SETTINGS` file outranks the UI-edited file, and the full check catalog with each check's effective decision and decider. The RBAC panel lists key names, roles, and 3-byte digest prefixes — never key material — and answers the admin-only gate with a muted note for lower roles.
+
+### Changed
+
+- `Principal` is now `{name, role}` from the authenticated key (was a bare name); `App` carries the `Rbac` state; `ScanOpts` gained `settings`, which `serve` scans resolve per request (env file wins, else `<data>/settings.toml`) and the orchestrator re-reads per run.
+- Frontend: `SaaSViewMode` gained `"settings"`; a Settings nav tab renders the integrations controls, check catalog, and access panel.
+
+### Docs
+
+- `docs/configuration.md`: "Settings (tool/plugin toggles)" and "RBAC (rbac.toml)" sections with design rationale cross-checked against Trivy, Nuclei, Prowler, DefectDojo, super-linter, Wazuh, and github-mcp-server precedents; new env vars in the reference table; `settings.example.toml` and `rbac.example.toml` templates alongside `scope.example.toml`.
+- `docs/api.md`: RBAC block in the auth model, role-route matrix, new endpoints.
+
+### Fixed
+
+- **Settings UI "unsaved changes" badge stuck on**: the dirty check compared `JSON.stringify` output, which is sensitive to object key order — the server's wire format orders keys differently from the client's object literals, so the view always looked dirty (Discard could not clear it). The comparison now canonicalizes both sides (sorted key/value pairs); the frontend test stub now re-serializes responses in server wire order so the bug class stays caught.
+
+### Testing
+
+- Suite: 946 passed / 0 failed / 3 ignored (`cargo test`). New: settings units (7), RBAC units (5), full-router RBAC e2e over the real TCP stack incl. the off-toggle restoring legacy mode, settings REST round-trip (GET/PUT/DELETE, validation, catalog decision, RBAC panel). Frontend: vitest suite 152 passed incl. 8 new SettingsView tests; `tsc --noEmit` clean. Live smoke against the release binary verified the RBAC status matrix (200/401/403 per role), `/api/whoami`, and `--settings` skipping in a real scan report. Browser (Next.js dev UI against the v3.5.0 binary): admin save → file written → effective decision "off by settings" on refresh; viewer sees the muted RBAC note and a surfaced `403 role viewer may not govern` on Save; Discard and Reset-to-defaults (DELETE) verified.
+
 ## [3.4.0] - 2026-11-22
 
 ### Added

@@ -7,7 +7,7 @@
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate.
 
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.4.0-brightgreen.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-3.5.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
 [![Tests](https://img.shields.io/badge/tests-889%20Rust%20%7C%20144%20Vitest-informational.svg)](#testing)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)
@@ -324,7 +324,7 @@ Suites: `qa-api`, `qa-repo`, `agent-api`, `agent-diff`, `agent-memory`. Details 
 
 ### Web Interface (Port 3000)
 
-The Next.js interface (IBM Plex, dark theme, `rh-*` design tokens) has three top-level views:
+The Next.js interface (IBM Plex, dark theme, `rh-*` design tokens) has four top-level views:
 
 1. **Agent studio**
    - *Command center* (left): mode switch and header pinned at the top, **Run agent** pinned at the bottom, controls (target, OpenAPI spec, directives, profile, steps, model tier, reasoning budget, discovery and crawl) scroll in between. The token key button sits in the header.
@@ -336,6 +336,7 @@ The Next.js interface (IBM Plex, dark theme, `rh-*` design tokens) has three top
    - **Regressive testing**: N iterations with separate private sessions (no connection pooling) to catch flapping endpoints, socket leaks and proxy drops, with throttling presets (Unthrottled, Fast 3G, Slow 3G, flaky jitter, custom latency).
    - **Root-cause diagnosis**: DNS, TCP, TLS, TTFB and gateway status stages; classification into `STABLE`, `TIMEOUT`, `5XX_FLAPPING`, `CONNECTION_RESET`, `HTTP_ERRORS`, `HIGH_JITTER`; copyable reproduction cURLs. Anything that cannot be measured is shown as not measured.
    - **Deep audit** (six pillars: dual-stack, sub-resources, protocol matrix, TLS, CORS preflight, MTU) and a **cURL runner** with stage timings.
+4. **Settings** (server tool integrations and access control): tri-state (auto/on/off) controls for the Tools, Plugins and Intrusive classes, a searchable per-check toggle table showing each check's effective decision and why (`by auto`, `by settings`, …), a custom id/glob field, Save/Discard/Reset with optimistic-concurrency versioning, and a read-only RBAC keyring panel (names, roles, key fingerprint prefixes; admins only — other roles see a muted note). Saving writes `settings.toml` in the server's data directory; the next scan picks it up. Requires the admin role when RBAC is on.
 
 The UI shows only what the backend reported; a missing verdict, score or measurement is "not evaluated", never a default.
 

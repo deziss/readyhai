@@ -75,7 +75,7 @@ pub fn unauthorized() -> Response {
         .into_response()
 }
 
-fn forbidden(role: &str, action: &str) -> Response {
+pub fn forbidden(role: &str, action: &str) -> Response {
     (
         StatusCode::FORBIDDEN,
         Json(json!({

@@ -13,10 +13,10 @@
 //! only accepts auto/off — settings can never force an intrusive check to run.
 use anyhow::{Result, anyhow};
 use globset::Glob;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Settings {
     #[serde(default)]
@@ -26,7 +26,7 @@ pub struct Settings {
     pub toggle: Vec<Toggle>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Integrations {
     /// Checks backed by a pinned container tool (`tools.lock.toml` images).
@@ -37,7 +37,7 @@ pub struct Integrations {
     pub intrusive: TriState,
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase", try_from = "String")]
 pub enum TriState {
     #[default]
@@ -46,7 +46,7 @@ pub enum TriState {
     Off,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Toggle {
     /// Check id or glob, e.g. "tool.nuclei" or "plugin.*".
@@ -93,7 +93,7 @@ impl Settings {
         Ok(s)
     }
 
-    fn validate(&self) -> Result<()> {
+    pub fn validate(&self) -> Result<()> {
         if self.integrations.intrusive == TriState::On {
             return Err(anyhow!(
                 "integrations.intrusive cannot be 'on': intrusive checks require --profile deep and a nonprod host; allowed: auto|off"

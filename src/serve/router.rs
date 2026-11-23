@@ -7,6 +7,7 @@ use super::eval_api::*;
 use super::guards::err;
 use super::network_api::*;
 use super::scans::*;
+use super::settings_api::{api_rbac_get, api_settings_checks, api_settings_delete, api_settings_get, api_settings_put};
 use super::types::{App, FORCED_SHUTDOWN, MAX_CONCURRENT_PROBES, SHUTDOWN_REAP_PER_CALL};
 use super::worker::{claims_run, handle_startup_runs, init_server_id, run_timeout, worker, worker_count, write_status};
 use anyhow::Result;
@@ -202,6 +203,9 @@ pub fn build_router(app: Arc<App>) -> Router {
             get(|| async { Json(json!({"status": "ok", "version": engine::VERSION})) }),
         )
         .route("/api/whoami", get(whoami))
+        .route("/api/settings", get(api_settings_get).put(api_settings_put).delete(api_settings_delete))
+        .route("/api/settings/checks", get(api_settings_checks))
+        .route("/api/rbac", get(api_rbac_get))
         .route("/checks", get(list_checks))
         .route("/runs", post(create_run).get(list_runs))
         .route("/runs/{id}", get(get_run))

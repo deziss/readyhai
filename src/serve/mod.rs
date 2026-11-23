@@ -7,6 +7,7 @@ pub mod eval_api;
 pub mod guards;
 pub mod network_api;
 pub mod rbac;
+mod settings_api;
 pub mod router;
 pub mod scans;
 pub mod types;

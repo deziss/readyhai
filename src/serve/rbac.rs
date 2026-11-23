@@ -275,6 +275,20 @@ impl Rbac {
         Ok(Rbac { enabled, keys })
     }
 
+    /// Which toggle rule decided today's state, for status endpoints and logs.
+    pub fn toggle_mode() -> &'static str {
+        match std::env::var("READYHAI_RBAC")
+            .ok()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .as_deref()
+        {
+            Some("on") => "on",
+            Some("off") => "off",
+            _ => "auto",
+        }
+    }
+
     /// Authenticate a bearer token → (identity name, role).
     /// RBAC off: only the legacy boot token, as Admin (exact legacy behavior).
     /// RBAC on: keyring first; the boot token stays break-glass Admin unless

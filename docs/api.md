@@ -101,6 +101,11 @@ All rows except `/health` require the bearer token.
 | POST | `/api/github/pr-comment` | PR comment markdown built only from the data supplied |
 | GET | `/api/badges/gate`, `/ledger`, `/network` | SVG badges |
 | GET | `/checks` | Array of `{id,title,kinds,min_profile,tool,intrusive}` (includes `READYHAI_PLUGINS`) |
+| GET | `/api/settings` | Effective operator settings: `{path,exists,editable,version,effective:{integrations,toggle},override_count,shadowing_env}`. Any authenticated role may read |
+| PUT | `/api/settings` | Admin only (RBAC on): save `{"integrations":{...},"toggle":[{"id","enabled"}]}` to `<data>/settings.toml` atomically; `version` field is the optimistic-concurrency token from GET. `400` on an invalid body (e.g. `intrusive: "on"`); `409` on a stale `version`. Takes effect on the next scan |
+| DELETE | `/api/settings` | Admin only: remove the `<data>/settings.toml` overrides (file-backed settings via `READYHAI_SETTINGS` are untouched) |
+| GET | `/api/settings/checks` | Check catalog with the effective decision per check: `{id,title,tool,intrusive,enabled,decided_by:"default"|"settings"|"integration"}` |
+| GET | `/api/rbac` | RBAC keyring summary (names, roles, key fingerprint prefixes — never full keys). Admin only when RBAC is on; any role in legacy single-token mode |
 | POST | `/runs` | Queue a scan; `202 {"id","state":"queued"}` |
 | GET | `/runs` | Last 50 runs, newest first: `{id,state,target,verdict}` |
 | GET | `/runs/{id}` | Status; when finished adds `verdict`, `reasons`, `categories`, `checks` and `run` (without `findings`) |

@@ -339,3 +339,20 @@ Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.4.0).
 - `bash scripts/version.sh check`: all version references synchronized at 3.4.0.
 - `cargo clippy -D warnings`: clean in every file touched by this round (6 pre-existing errors elsewhere remain tracked separately).
 
+
+## Round 9: Operator Settings, RBAC and Settings UI (2026-11-23)
+
+Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.5.0).
+
+### What landed
+- **Operator settings (`src/settings.rs`)**: `settings.toml` toggles plugin/tool classes (`tools`, `plugins`, `intrusive` — `auto|on|off`, `intrusive: on` refused) and individual checks (`[[toggle]] id/enabled`). Precedence: `--settings` > `READYHAI_SETTINGS` > `<data>/settings.toml`. Disabled checks are skipped with a `disabled by settings` note in reports; `readyhai scan` prints an override summary.
+- **Togglable RBAC (`src/serve/rbac.rs`)**: `READYHAI_RBAC=on|off|auto` (auto = on when a key file/inline keys exist). Keys in `rbac.toml` map name → role (`viewer`/`operator`/`admin`) → sha256 of the bearer token. Startup refuses `on` with zero keys. Legacy `READYHAI_TOKEN` remains break-glass admin.
+- **Settings REST API (`src/serve/settings_api.rs`)**: `GET/PUT/DELETE /api/settings`, `GET /api/settings/checks`, `GET /api/rbac`. PUT is admin-only (RBAC on), validates, writes atomically with an optimistic-concurrency `version` token; the orchestrator re-reads settings per scan, so saves apply to the next run.
+- **Settings UI (`frontend/src/components/SettingsView.tsx`)**: a Settings tab (Header nav) with integration tri-state selects, a searchable per-check toggle list showing effective decisions, a save/reset bar with conflict handling, and an RBAC keyring panel (fingerprint prefixes only; admin-gated, muted note for non-admins in RBAC mode).
+- **Docs & examples**: `settings.example.toml`, `rbac.example.toml`, Settings/RBAC sections in `docs/configuration.md`, auth matrix + endpoint rows in `docs/api.md`.
+
+### Verification status
+- `cargo test`: 946 passed, 0 failed, 3 ignored (up from 932).
+- `cargo clippy -- -D warnings`: clean.
+- `vitest run`: 152 passed across 15 test files (up from 144).
+- Live smoke (release binary): RBAC role matrix (viewer/operator/admin/whoami/401/403) and settings-driven scan skips verified end to end; browser test of the Settings UI in this round's build.

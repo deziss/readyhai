@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Activity, Cpu, Globe, ShieldCheck } from "lucide-react";
+import { Activity, Cpu, Globe, Settings, ShieldCheck } from "lucide-react";
 import { apiRequest, useApiTokenVersion } from "@/lib/api";
 import { ApiTokenSettings } from "./ApiTokenSettings";
 
-export type SaaSViewMode = "studio" | "agent_history" | "scans_history" | "network_lab";
+export type SaaSViewMode = "studio" | "agent_history" | "scans_history" | "network_lab" | "settings";
 
 interface HeaderProps {
   currentTarget: string;
@@ -19,6 +19,7 @@ const NAV_ITEMS: { id: string; view: SaaSViewMode; label: string; icon: typeof C
   { id: "nav-tab-studio", view: "studio", label: "Agent studio", icon: Cpu },
   { id: "nav-tab-scans-history", view: "scans_history", label: "Scans", icon: ShieldCheck },
   { id: "nav-tab-network-lab", view: "network_lab", label: "Network lab", icon: Activity },
+  { id: "nav-tab-settings", view: "settings", label: "Settings", icon: Settings },
 ];
 
 export function Header({

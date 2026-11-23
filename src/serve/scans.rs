@@ -128,6 +128,9 @@ pub async fn api_scans_create(
     let opts = ScanOpts {
         target: target.clone(),
         profile: Some(profile),
+        // Operator toggles: READYHAI_SETTINGS wins; else <data>/settings.toml
+        // (the file the Settings UI writes). The orchestrator re-reads per run.
+        settings: super::settings_api::scan_settings_path(),
         ..Default::default()
     };
     // Same precheck as POST /runs: allowed roots for paths, scope for every network destination.

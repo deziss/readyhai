@@ -134,6 +134,9 @@ use tokio::sync::{Semaphore, mpsc};
         ("POST", "/api/mutate"),
         ("POST", "/api/github/pr-comment"),
         ("GET", "/api/whoami"),
+        ("GET", "/api/settings"),
+        ("GET", "/api/settings/checks"),
+        ("GET", "/api/rbac"),
         ("GET", "/api/badges/gate"),
         ("GET", "/api/badges/ledger"),
         ("GET", "/api/badges/network"),
@@ -1634,33 +1637,33 @@ use tokio::sync::{Semaphore, mpsc};
             let st = resp.status().as_u16();
             (st, resp.text().unwrap_or_default())
         };
-        let VIEW = "rh-view-key-Vk3xQm7zP9wL2nB4";
-        let OPER = "rh-oper-key-Xd8fH2tR6yU1sK5m";
-        let ADM = "rh-adm-key-Zq4vN7cX9jE3bW8g";
+        let view_key = "rh-view-key-Vk3xQm7zP9wL2nB4";
+        let oper_key = "rh-oper-key-Xd8fH2tR6yU1sK5m";
+        let adm_key = "rh-adm-key-Zq4vN7cX9jE3bW8g";
 
         // Viewer: reads fine.
-        let (st, _) = send(reqwest::Method::GET, "/checks", VIEW, serde_json::Value::Null);
+        let (st, _) = send(reqwest::Method::GET, "/checks", view_key, serde_json::Value::Null);
         assert_eq!(st, 200, "viewer may read /checks");
         // Viewer: work + governance refused by the RBAC gate (distinct body).
-        let (st, b) = send(reqwest::Method::POST, "/api/scans", VIEW, json!({"target": "https://x.example/"}));
+        let (st, b) = send(reqwest::Method::POST, "/api/scans", view_key, json!({"target": "https://x.example/"}));
         assert_eq!(st, 403, "viewer POST /api/scans: {b}");
         assert!(b.contains("needs operator"), "{b}");
-        let (st, b) = send(reqwest::Method::POST, "/api/fix", VIEW, json!({}));
+        let (st, b) = send(reqwest::Method::POST, "/api/fix", view_key, json!({}));
         assert_eq!(st, 403);
         assert!(b.contains("needs admin"), "{b}");
 
         // Operator: cancel reaches the handler (unknown run id is the handler's 404,
         // not the middleware's 403).
-        let (st, b) = send(reqwest::Method::POST, "/api/agent/runs/r1/cancel", OPER, json!({}));
+        let (st, b) = send(reqwest::Method::POST, "/api/agent/runs/r1/cancel", oper_key, json!({}));
         assert!(st != 403 && st != 401, "operator cancel reached the handler, got {st}: {b}");
         // Operator: governance refused.
-        let (st, _) = send(reqwest::Method::POST, "/api/agent/memory/accept", OPER, json!({"target": "https://x.example/", "fingerprint": "f", "reason": "r", "expires": "2099-01-01"}));
+        let (st, _) = send(reqwest::Method::POST, "/api/agent/memory/accept", oper_key, json!({"target": "https://x.example/", "fingerprint": "f", "reason": "r", "expires": "2099-01-01"}));
         assert_eq!(st, 403, "operator may not accept memory");
-        let (st, _) = send(reqwest::Method::DELETE, "/api/scans/r1", OPER, serde_json::Value::Null);
+        let (st, _) = send(reqwest::Method::DELETE, "/api/scans/r1", oper_key, serde_json::Value::Null);
         assert_eq!(st, 403, "operator may not delete");
 
         // whoami: identity + resolved permissions for the caller's key.
-        let (st, b) = send(reqwest::Method::GET, "/api/whoami", OPER, serde_json::Value::Null);
+        let (st, b) = send(reqwest::Method::GET, "/api/whoami", oper_key, serde_json::Value::Null);
         assert_eq!(st, 200);
         let who: serde_json::Value = serde_json::from_str(&b).unwrap();
         assert_eq!(who["name"], "ci-runner");
@@ -1670,7 +1673,7 @@ use tokio::sync::{Semaphore, mpsc};
         assert_eq!(who["permissions"]["govern"], false);
 
         // Admin key passes the governance gate (handler output is irrelevant).
-        let (st, b2) = send(reqwest::Method::POST, "/api/agent/memory/accept", ADM, json!({"target": "https://x.example/", "fingerprint": "f", "reason": "r", "expires": "2099-01-01"}));
+        let (st, b2) = send(reqwest::Method::POST, "/api/agent/memory/accept", adm_key, json!({"target": "https://x.example/", "fingerprint": "f", "reason": "r", "expires": "2099-01-01"}));
         assert!(!b2.contains("needs admin"), "admin passed the gate? {st}: {b2}");
         // Break-glass boot token: Admin even with RBAC on.
         let (st, b2) = send(reqwest::Method::POST, "/api/fix", TOKEN, json!({}));
@@ -1687,5 +1690,87 @@ use tokio::sync::{Semaphore, mpsc};
         // (viewer key is now simply an unknown key => 401; boot token = full legacy access)
         let _ = std::fs::remove_file(f);
         let _ = std::fs::remove_dir_all(d);
+    }
 
+    /// Settings REST: GET defaults, PUT validation + atomic write, checks
+    /// catalog honors the toggle, DELETE restores defaults, RBAC panel gates.
+    #[test]
+    fn settings_api_roundtrips_and_gates() {
+        let _g = crate::engine::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let d = data_dir("settings-api");
+        unsafe { std::env::remove_var("READYHAI_SETTINGS") };
+        let (_rt, base) = test_server();
+        let c = client();
+        let auth = format!("Bearer {TOKEN}");
+
+        // GET with no file anywhere: defaults, exists=false.
+        let r = c.get(format!("{base}/api/settings")).header("authorization", &auth).send().unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        let g: serde_json::Value = r.json().unwrap();
+        assert_eq!(g["effective"]["integrations"]["plugins"], "auto");
+        assert_eq!(g["exists"], false);
+        assert_eq!(g["shadowing_env"], false);
+
+        // PUT a valid doc -> file appears in the data dir, GET reflects it.
+        let put = c
+            .put(format!("{base}/api/settings"))
+            .header("authorization", &auth)
+            .json(&serde_json::json!({
+                "integrations": {"tools": "auto", "plugins": "off", "intrusive": "auto"},
+                "toggle": [{"id": "readiness.deps", "enabled": "off"}]
+            }))
+            .send()
+            .unwrap();
+        assert_eq!(put.status().as_u16(), 200);
+        let g: serde_json::Value = put.json().unwrap();
+        assert_eq!(g["effective"]["integrations"]["plugins"], "off");
+        assert_eq!(g["override_count"], 2); // toggle + plugins switch
+        let f = crate::serve::settings_api::data_settings_path();
+        assert!(f.is_file(), "wrote {}", f.display());
+        assert!(std::fs::read_to_string(&f).unwrap().contains("readiness.deps"));
+
+        // Checks catalog: the toggled check reports the settings decision.
+        let r = c.get(format!("{base}/api/settings/checks")).header("authorization", &auth).send().unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        let all: serde_json::Value = r.json().unwrap();
+        let deps = all["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == "readiness.deps")
+            .expect("catalog lists readiness.deps");
+        assert_eq!(deps["enabled"], false);
+        assert_eq!(deps["decided_by"], "settings");
+
+        // Invalid values are 400 with a message, and intrusive=on never lands.
+        let r = c
+            .put(format!("{base}/api/settings"))
+            .header("authorization", &auth)
+            .json(&serde_json::json!({"integrations": {"intrusive": "on"}}))
+            .send()
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 400);
+        let r = c
+            .put(format!("{base}/api/settings"))
+            .header("authorization", &auth)
+            .json(&serde_json::json!({"toggle": [{"id": "x", "enabled": "maybe"}]}))
+            .send()
+            .unwrap();
+        assert_eq!(r.status().as_u16(), 400);
+
+        // DELETE -> defaults again; file gone.
+        let r = c.delete(format!("{base}/api/settings")).header("authorization", &auth).send().unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        assert!(!f.is_file());
+        let r = c.get(format!("{base}/api/settings")).header("authorization", &auth).send().unwrap();
+        let g: serde_json::Value = r.json().unwrap();
+        assert_eq!(g["override_count"], 0);
+
+        // RBAC panel: off-mode legacy token sees enabled=false, mode auto.
+        let r = c.get(format!("{base}/api/rbac")).header("authorization", &auth).send().unwrap();
+        assert_eq!(r.status().as_u16(), 200);
+        let g: serde_json::Value = r.json().unwrap();
+        assert_eq!(g["enabled"], false);
+        assert_eq!(g["mode"], "auto");
+        let _ = d;
     }
