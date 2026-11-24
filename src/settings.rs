@@ -1,5 +1,6 @@
 //! Operator settings layer: tri-state toggles for tool integrations (tools, plugins,
-//! intrusive class) and per-check enable/disable by id or glob.
+//! intrusive class), per-check enable/disable by id or glob, and the `[vulndb]`
+//! vulnerability-database section.
 //!
 //! Layering (operator-owned only — a scanned target's own repo is NEVER consulted, and
 //! server mode ignores anything the target could supply):
@@ -24,6 +25,31 @@ pub struct Settings {
     /// Per-check toggles, evaluated in file order (last match wins).
     #[serde(default)]
     pub toggle: Vec<Toggle>,
+    /// Global vulnerability database (`readyhai vulns`).
+    #[serde(default)]
+    pub vulndb: VulnDb,
+}
+
+/// The cross-target vulnerability database (`src/vulndb.rs`, `readyhai vulns`).
+/// On by default: recording a warn/fail in the local data dir is the useful behaviour,
+/// and an operator who does not want it says so once here.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct VulnDb {
+    /// When off, scans record nothing and `vulndb.path` is not used by the scan hook.
+    pub enabled: bool,
+    /// JSONL file to use instead of `<data>/vulns/vulns.jsonl` (e.g. a shared volume).
+    /// Relative paths are taken as they are, against the process working directory.
+    pub path: Option<String>,
+}
+
+impl Default for VulnDb {
+    fn default() -> Self {
+        VulnDb {
+            enabled: true,
+            path: None,
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize)]
@@ -79,7 +105,9 @@ impl Settings {
     /// that fails to parse is a hard error — a silently-ignored settings file must
     /// never flip an integration the operator meant to keep off.
     pub fn load(path: Option<&Path>) -> Result<Settings> {
-        let Some(p) = path else { return Ok(Settings::default()) };
+        let Some(p) = path else {
+            return Ok(Settings::default());
+        };
         if !p.is_file() {
             if p == Path::new("") {
                 return Ok(Settings::default());
@@ -87,8 +115,7 @@ impl Settings {
             return Err(anyhow!("settings file {} not found", p.display()));
         }
         let text = std::fs::read_to_string(p)?;
-        let s: Settings =
-            toml::from_str(&text).map_err(|e| anyhow!("{}: {e}", p.display()))?;
+        let s: Settings = toml::from_str(&text).map_err(|e| anyhow!("{}: {e}", p.display()))?;
         s.validate()?;
         Ok(s)
     }
@@ -97,6 +124,13 @@ impl Settings {
         if self.integrations.intrusive == TriState::On {
             return Err(anyhow!(
                 "integrations.intrusive cannot be 'on': intrusive checks require --profile deep and a nonprod host; allowed: auto|off"
+            ));
+        }
+        if let Some(p) = &self.vulndb.path
+            && p.trim().is_empty()
+        {
+            return Err(anyhow!(
+                "vulndb.path must be a file path, not empty (leave it unset for <data>/vulns/vulns.jsonl)"
             ));
         }
         for t in &self.toggle {
@@ -190,6 +224,50 @@ mod tests {
         assert_eq!(st.skip("tool.nuclei", true, false, false), None);
         assert_eq!(st.skip("plugin.trivy", false, true, false), None);
         assert_eq!(st.override_count(), 0);
+        assert!(
+            st.vulndb.enabled,
+            "recording is on unless the operator says otherwise"
+        );
+        assert_eq!(st.vulndb.path, None);
+    }
+
+    #[test]
+    fn vulndb_defaults_and_paths() {
+        assert!(VulnDb::default().enabled);
+        // empty or whitespace-only paths are refused; any real path (absolute or
+        // relative) is the operator's machine, so it is allowed through
+        assert!(
+            toml::from_str::<Settings>("[vulndb]\npath = \"\"\n")
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        assert!(
+            toml::from_str::<Settings>("[vulndb]\npath = \"   \"\n")
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        for ok in [
+            "/srv/readyhai/vulns.jsonl",
+            "vulns.jsonl",
+            "d:/readyhai/vulns.jsonl",
+        ] {
+            let st = s(&format!("[vulndb]\nenabled = false\npath = \"{ok}\"\n"));
+            st.validate().unwrap_or_else(|e| panic!("{ok}: {e}"));
+            assert!(!st.vulndb.enabled);
+            assert_eq!(st.vulndb.path.as_deref(), Some(ok));
+        }
+        // the section is optional and unknown keys inside it are still rejected
+        s("").validate().expect("absent section");
+        assert!(toml::from_str::<Settings>("[vulndb]\nenabled = \"auto\"").is_err());
+        assert!(toml::from_str::<Settings>("[vulndb]\nnope = 1").is_err());
+        // a section written by the API must read back unchanged
+        let st = s("[vulndb]\nenabled = false\npath = \"/srv/v.jsonl\"\n");
+        let text = toml::to_string(&st).expect("serializes");
+        let back = toml::from_str::<Settings>(&text).expect("round-trips");
+        assert!(!back.vulndb.enabled);
+        assert_eq!(back.vulndb.path.as_deref(), Some("/srv/v.jsonl"));
     }
 
     #[test]
@@ -202,14 +280,18 @@ mod tests {
 
     #[test]
     fn exact_toggle_overrides_kill_switch() {
-        let st = s("[integrations]\ntools = \"off\"\n[[toggle]]\nid = \"tool.nuclei\"\nenabled = \"on\"\n");
+        let st = s(
+            "[integrations]\ntools = \"off\"\n[[toggle]]\nid = \"tool.nuclei\"\nenabled = \"on\"\n",
+        );
         assert!(st.skip("tool.nuclei", true, false, false).is_none());
         assert!(st.skip("tool.grype", true, false, false).is_some());
     }
 
     #[test]
     fn glob_toggle_last_match_wins() {
-        let st = s("[[toggle]]\nid = \"plugin.*\"\nenabled = \"off\"\n[[toggle]]\nid = \"plugin.kube*\"\nenabled = \"on\"\n");
+        let st = s(
+            "[[toggle]]\nid = \"plugin.*\"\nenabled = \"off\"\n[[toggle]]\nid = \"plugin.kube*\"\nenabled = \"on\"\n",
+        );
         assert!(st.skip("plugin.httpx", false, true, false).is_some());
         assert_eq!(st.skip("plugin.kube-linter", false, true, false), None);
     }
@@ -232,15 +314,20 @@ mod tests {
         assert!(toml::from_str::<Settings>("bogus = 1").is_err());
         assert!(toml::from_str::<Settings>("[integrations]\nnope = \"off\"").is_err());
         // an unparseable enabled value is a load error, not a silent auto
-        assert!(toml::from_str::<Settings>("[[toggle]]\nid = \"x\"\nenabled = \"maybe\"")
-            .is_err());
+        assert!(toml::from_str::<Settings>("[[toggle]]\nid = \"x\"\nenabled = \"maybe\"").is_err());
         let bad = Settings {
-            toggle: vec![Toggle { id: "".into(), enabled: TriState::Off }],
+            toggle: vec![Toggle {
+                id: "".into(),
+                enabled: TriState::Off,
+            }],
             ..Default::default()
         };
         assert!(bad.validate().is_err());
         let bad_glob = Settings {
-            toggle: vec![Toggle { id: "tool.[[".into(), enabled: TriState::Off }],
+            toggle: vec![Toggle {
+                id: "tool.[[".into(),
+                enabled: TriState::Off,
+            }],
             ..Default::default()
         };
         assert!(bad_glob.validate().is_err());

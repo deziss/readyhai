@@ -5,7 +5,7 @@ use super::sarif_junit::parse_sarif_report;
 use super::types::{ToolSpec, gate, out_err, partial, tool_failed};
 use crate::checks::Check;
 use crate::ctx::Ctx;
-use crate::model::{CheckOutput, Finding, Profile, TargetKind};
+use crate::model::{Category, CheckOutput, Finding, Profile, TargetKind, sha256_hex};
 use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -28,6 +28,9 @@ pub(crate) struct Plugin {
     pub(crate) entrypoint: Option<String>,
     #[serde(default)]
     pub(crate) output: String,
+    /// Report format: `sarif` | `junit` | `readyhai-json` | `lines` (JSONL recon) |
+    /// `nmap` | `nikto-xml` | `testssl` | `sqlmap` | `portline` (scanner natives,
+    /// see the reference block in `plugins/README.md`).
     pub(crate) format: String,
     /// Capture the container's stdout instead of reading a file under /out
     /// (stdout-only CLIs: `npm audit`, `clairctl`). When true, `output` is unused.
@@ -70,7 +73,9 @@ pub(crate) struct Plugin {
 /// First non-empty string under any of the recon-tool keys, searched one level
 /// into `request`/`data` (katana nests under request.url; ferox uses url_full).
 fn pick_url_key(v: &serde_json::Value) -> Option<&str> {
-    const KEYS: [&str; 8] = ["host", "url", "url_full", "input", "endpoint", "name", "value", "path"];
+    const KEYS: [&str; 8] = [
+        "host", "url", "url_full", "input", "endpoint", "name", "value", "path",
+    ];
     for k in KEYS {
         if let Some(s) = v.get(k).and_then(|x| x.as_str())
             && !s.is_empty()
@@ -78,7 +83,9 @@ fn pick_url_key(v: &serde_json::Value) -> Option<&str> {
             return Some(s);
         }
     }
-    ["request", "data"].iter().find_map(|o| v.get(*o).and_then(pick_url_key))
+    ["request", "data"]
+        .iter()
+        .find_map(|o| v.get(*o).and_then(pick_url_key))
 }
 
 /// Turn one text line into an inventory finding. Accepts bare hosts/URLs and
@@ -141,6 +148,659 @@ fn parse_lines(check: &str, p: &Plugin, text: &str) -> Vec<Finding> {
         .collect()
 }
 
+// ------------------------------------------------- scanner-native XML/JSON formats
+//
+// Hand-rolled XML like `parse_junit`: no XML crate is a dependency of this binary and
+// adding one is not worth it for three flat report shapes.
+
+/// Attribute pairs of one XML start tag (`port protocol="tcp" portid="22"`), with the
+/// usual entities unescaped. Bare names map to an empty value.
+fn xml_attrs(tag: &str) -> Vec<(String, String)> {
+    let cs: Vec<char> = tag.chars().collect();
+    let name_char = |c: char| c.is_alphanumeric() || matches!(c, '_' | ':' | '-' | '.');
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < cs.len() {
+        while i < cs.len() && (cs[i].is_whitespace() || cs[i] == '/') {
+            i += 1;
+        }
+        let n0 = i;
+        while i < cs.len() && name_char(cs[i]) {
+            i += 1;
+        }
+        if i == n0 {
+            break;
+        }
+        let name: String = cs[n0..i].iter().collect();
+        while i < cs.len() && cs[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= cs.len() || cs[i] != '=' {
+            out.push((name, String::new()));
+            continue;
+        }
+        i += 1;
+        while i < cs.len() && cs[i].is_whitespace() {
+            i += 1;
+        }
+        let Some(q) = cs.get(i).copied().filter(|c| *c == '"' || *c == '\'') else {
+            out.push((name, String::new()));
+            continue; // unquoted values do not occur in nmap/nikto output
+        };
+        i += 1;
+        let v0 = i;
+        while i < cs.len() && cs[i] != q {
+            i += 1;
+        }
+        out.push((name, xml_unescape(&cs[v0..i].iter().collect::<String>())));
+        if i < cs.len() {
+            i += 1;
+        }
+    }
+    out
+}
+
+fn xml_attr(tag: &str, name: &str) -> String {
+    xml_attrs(tag)
+        .into_iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v)
+        .unwrap_or_default()
+}
+
+fn xml_unescape(v: &str) -> String {
+    v.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&#39;", "'")
+        .replace("&amp;", "&")
+}
+
+/// `(attrs, inner)` for every `<name ...>` element, self-closed ones with empty inner.
+/// Non-greedy and non-nesting, like `parse_junit`'s element scan: enough for the flat
+/// reports these tools emit, wrong for arbitrary XML (by design, and never recursive).
+/// The closing tag must end exactly at the name, so `</host>` never swallows `</hostname>`.
+fn xml_elements(xml: &str, name: &str) -> Vec<(String, String)> {
+    let re =
+        regex::Regex::new(&format!(r"(?s)<{name}\b([^>]*?)(?:/>|>(.*?)</{name}(?:\s[^>]*)?>)"))
+            .unwrap();
+    re.captures_iter(xml)
+        .map(|c| {
+            (
+                c.get(1).map(|m| m.as_str()).unwrap_or("").to_string(),
+                c.get(2).map(|m| m.as_str()).unwrap_or("").to_string(),
+            )
+        })
+        .collect()
+}
+
+/// Text content of the first `<name>` element, CDATA unwrapped and trimmed.
+fn xml_text(xml: &str, name: &str) -> String {
+    let body = xml_elements(xml, name)
+        .into_iter()
+        .next()
+        .map(|(_, b)| b)
+        .unwrap_or_default();
+    let body = body.trim();
+    let inner = body
+        .strip_prefix("<![CDATA[")
+        .and_then(|b| b.strip_suffix("]]>"))
+        .unwrap_or(body);
+    xml_unescape(inner.trim()).trim().to_string()
+}
+
+/// Ports whose exposure is worth a step up from `low`: the classic cleartext/DB/admin
+/// surface. Kept deliberately short — nmap version probes are noisy, and `high` is
+/// intentionally unused so a port scan can never out-rank a real vulnerability.
+const RISKY_PORTS: &[u16] = &[
+    21, 23, 25, 110, 135, 136, 137, 138, 139, 445, 1433, 2049, 3306, 3389, 5432, 5900, 5901, 5902,
+    5903, 5904, 5905, 5906, 5907, 5908, 5909, 5910, 6379, 27017, 9200,
+];
+
+fn risky_port(p: u16) -> bool {
+    RISKY_PORTS.contains(&p)
+}
+
+/// nmap `-oX`: one finding per open port of every `<host status="up">`. Hosts that are
+/// down (they carry `<hostport>`/`<status state="down">` and no `<ports>`) are skipped,
+/// as are `<times>`/`<extrareasons>`, which carry no per-finding signal.
+pub(crate) fn parse_nmap(check: &str, xml: &str) -> Vec<Finding> {
+    let mut out = vec![];
+    for (_, host_body) in xml_elements(xml, "host") {
+        // `<status state="up"/>` and `<hostname name=".." type="PTR"/>` are attribute-only
+        // elements; a down host carries `<hostport>` instead of `<ports>`.
+        let status = xml_elements(&host_body, "status")
+            .into_iter()
+            .next()
+            .map(|(a, _)| xml_attr(&a, "state"))
+            .unwrap_or_default();
+        let up = (status.is_empty() || status == "up") && !host_body.contains("<hostport");
+        if !up {
+            continue;
+        }
+        let addr = xml_elements(&host_body, "address")
+            .into_iter()
+            .find(|(a, _)| {
+                let t = xml_attr(a, "addrtype");
+                t != "mac"
+            })
+            .map(|(a, _)| xml_attr(&a, "addr"))
+            .unwrap_or_default();
+        let ptr = xml_elements(&host_body, "hostname")
+            .into_iter()
+            .next()
+            .map(|(a, _)| xml_attr(&a, "name"))
+            .unwrap_or_default();
+        let host = if ptr.is_empty() {
+            addr.clone()
+        } else if addr.is_empty() {
+            ptr.clone()
+        } else {
+            format!("{ptr} ({addr})")
+        };
+        let host_key = if addr.is_empty() { &host } else { &addr };
+        for (port_attrs, port_body) in xml_elements(&host_body, "port") {
+            let proto = xml_attr(&port_attrs, "protocol");
+            let id_s = xml_attr(&port_attrs, "portid");
+            let Ok(num) = id_s.parse::<u16>() else {
+                continue;
+            };
+            let state_attrs = xml_elements(&port_body, "state")
+                .into_iter()
+                .next()
+                .map(|(a, _)| a)
+                .unwrap_or_default();
+            let state = xml_attr(&state_attrs, "state");
+            if state != "open" {
+                continue; // filtered/closed/updown are inventory noise, not findings
+            }
+            let svc_attrs = xml_elements(&port_body, "service")
+                .into_iter()
+                .next()
+                .map(|(a, _)| a)
+                .unwrap_or_default();
+            let service = xml_attr(&svc_attrs, "name");
+            let version = xml_attr(&svc_attrs, "version");
+            let product = xml_attr(&svc_attrs, "product");
+            let sev = if risky_port(num) {
+                crate::model::Severity::Medium
+            } else {
+                crate::model::Severity::Low
+            };
+            let label = if service.is_empty() {
+                format!("{proto}/{num}")
+            } else {
+                format!("{proto}/{num} {service}")
+            };
+            let state_reason = xml_attr(&state_attrs, "reason");
+            let detail = {
+                let mut d = vec![format!("state=open ({state_reason})")];
+                if !product.is_empty() {
+                    d.push(product.clone());
+                }
+                if !version.is_empty() {
+                    d.push(version.clone());
+                }
+                let ex = xml_attr(&svc_attrs, "extrainfo");
+                if !ex.is_empty() {
+                    d.push(ex);
+                }
+                d
+            };
+            out.push(
+                Finding::new(
+                    check,
+                    "nmap-open-port",
+                    Category::Security,
+                    sev,
+                    format!("Open port {label} on {host}"),
+                    format!("{host_key}:{num}"),
+                )
+                .fp_key(format!("{host_key}|{proto}|{num}"))
+                .detail({
+                    let mut d = vec![format!("host={host_key}")];
+                    d.extend(detail);
+                    d.join(" | ")
+                }),
+            );
+        }
+    }
+    out
+}
+
+/// Nikto `-Format xml`: `<item id>` with `<description>`/`<uri>` and optional
+/// `<osvdb>`/`<cve>`/`<edbid>` children. An item with a known vulnerability id gets
+/// `medium` (there is a published advisory to patch against); the rest is `low` info.
+pub(crate) fn parse_nikto(check: &str, xml: &str) -> Vec<Finding> {
+    let mut out = vec![];
+    for (attrs, body) in xml_elements(xml, "item") {
+        let id = xml_attr(&attrs, "id");
+        let description = xml_text(&body, "description");
+        let uri = xml_text(&body, "uri");
+        if description.is_empty() {
+            continue; // `<statistics>` and header blocks carry no `<description>`
+        }
+        let osvdb = xml_text(&body, "osvdb");
+        let cve = xml_text(&body, "cve");
+        let edb = xml_text(&body, "edbid");
+        let known = !osvdb.is_empty()
+            || !cve.is_empty()
+            || !edb.is_empty()
+            || description.contains("CVE-")
+            || body.to_ascii_lowercase().contains("<cve");
+        let sev = if known {
+            crate::model::Severity::Medium
+        } else {
+            crate::model::Severity::Low
+        };
+        let mut ids: Vec<String> = vec![];
+        for tag in [("CVE-", &cve), ("OSVDB-", &osvdb), ("EDB-ID-", &edb)] {
+            if !tag.1.is_empty() {
+                ids.push(format!("{}{}", tag.0, tag.1));
+            }
+        }
+        let location = if uri.is_empty() {
+            id.clone()
+        } else {
+            uri.clone()
+        };
+        let mut f = Finding::new(
+            check,
+            "nikto-item",
+            Category::Security,
+            sev,
+            super::parsers::first_line(&description, 200),
+            location,
+        )
+        .fp_key(format!(
+            "{}|{}",
+            if uri.is_empty() { "?" } else { &uri },
+            &sha256_hex(description.as_bytes())[..8]
+        ));
+        if !ids.is_empty() {
+            f = f.ids(ids);
+        }
+        out.push(f.detail(format!(
+            "nikto item id={}",
+            if id.is_empty() { "-" } else { &id }
+        )));
+    }
+    out
+}
+
+/// Top-level `{...}` objects in `text`, whether they arrive as one pretty-printed JSON
+/// array (testssl `--jsonfile`, sqlmap's report), newline-delimited objects (the
+/// `lines` shape) or concatenated objects. Brace depth alone is tracked — string
+/// contents and escapes never move it — and an unparseable chunk is dropped rather
+/// than failing the report, which is how a truncated tool run still yields findings.
+pub(crate) fn json_objects(text: &str) -> Vec<serde_json::Value> {
+    let mut out = vec![];
+    let cs: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < cs.len() {
+        if cs[i] != '{' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut depth = 0usize;
+        let mut in_str = false;
+        let mut escaped = false;
+        while i < cs.len() {
+            let c = cs[i];
+            if in_str {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    in_str = false;
+                }
+            } else if c == '"' {
+                in_str = true;
+            } else if c == '{' {
+                depth += 1;
+            } else if c == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            i += 1;
+        }
+        if depth != 0 {
+            break; // truncated tail: keep what parsed so far
+        }
+        let chunk: String = cs[start..=i].iter().collect();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&chunk) {
+            out.push(v);
+        }
+        i += 1;
+    }
+    out
+}
+
+/// testssl.sh `--jsonfile`: `{"section","id","severity","finding"}` per line. `OK`
+/// and `INFO` are the pass/noise lanes and are skipped, so a clean host yields zero
+/// findings. Severities cap at `high` (testssl's `CRITICAL` is a cipher-suite label,
+/// not an exploitable-vuln grade).
+pub(crate) fn parse_testssl(check: &str, text: &str) -> Result<Vec<Finding>> {
+    let objs = json_objects(text);
+    if objs.is_empty() {
+        bail!("testssl output has no JSON objects");
+    }
+    let mut out = vec![];
+    for o in &objs {
+        let severity = super::parsers::s(o, "severity");
+        let finding = super::parsers::first_line(super::parsers::s(o, "finding"), 300);
+        let section = super::parsers::s(o, "section");
+        let id = o.get("id").map(|x| match x {
+            serde_json::Value::String(t) => t.clone(),
+            other => other.to_string(),
+        });
+        let sev = match severity.trim().to_ascii_uppercase().as_str() {
+            "" | "OK" | "INFO" => continue,
+            "LOW" => crate::model::Severity::Low,
+            "MEDIUM" => crate::model::Severity::Medium,
+            "HIGH" | "CRITICAL" => crate::model::Severity::High,
+            _ => crate::model::Severity::Medium,
+        };
+        // Port-probe bookkeeping arrives without a finding; keep it out of the report.
+        if finding.is_empty() || (finding == "-" && section.starts_with("Testing on ports")) {
+            continue;
+        }
+        let id_s = match &id {
+            Some(v) if !v.is_empty() => v.clone(),
+            _ => super::parsers::first_line(section, 40).replace(' ', "_"),
+        };
+        let host = super::parsers::s(o, "host");
+        let port = super::parsers::s(o, "port");
+        out.push(
+            Finding::new(
+                check,
+                &format!("testssl.{id_s}"),
+                Category::Security,
+                sev,
+                if section.is_empty() {
+                    finding.clone()
+                } else {
+                    format!("{section}: {}", super::parsers::first_line(&finding, 160))
+                },
+                if port.is_empty() {
+                    host.to_string()
+                } else if host.is_empty() {
+                    port.to_string()
+                } else {
+                    format!("{host}:{port}")
+                },
+            )
+            .fp_key(format!("{}|{}", id_s, super::parsers::s(o, "finding")))
+            .detail(super::parsers::first_line(
+                super::parsers::s(o, "finding"),
+                300,
+            )),
+        );
+    }
+    Ok(out)
+}
+
+/// Parameter names and technique names named by sqlmap's prose (`parameter 'id'`,
+/// `Type: boolean-based blind`, `'Boolean-based blind' injectable`).
+fn sqlmap_names(text: &str) -> (Vec<String>, Vec<String>) {
+    let mut params = vec![];
+    let mut techs = vec![];
+    let push = |v: &mut Vec<String>, s: &str| {
+        let s = s.trim().trim_matches(['\'', '"', ',', '.', '\\']).to_string();
+        if !s.is_empty() && !v.contains(&s) {
+            v.push(s);
+        }
+    };
+    let param_re = regex::Regex::new(r"(?i)parameter\s+'([^']+)'").unwrap();
+    let type_re = regex::Regex::new(r"(?im)(?:^-|\s)Type:\s*([A-Za-z][^\n\r]*)").unwrap();
+    let tech_re = regex::Regex::new(r"'([^']{3,60})'\s+(?:is\s+)?injectable").unwrap();
+    for c in param_re.captures_iter(text) {
+        push(&mut params, &c[1]);
+    }
+    for re in [&type_re, &tech_re] {
+        for c in re.captures_iter(text) {
+            for part in c[1].split('+') {
+                push(&mut techs, part);
+            }
+        }
+    }
+    (params, techs)
+}
+
+/// Is this sqlmap message/value an actual injection rather than a probe note? sqlmap's
+/// JSON report has no single stable field across versions, so the yes-signals are the
+/// ones its own text commits to: a non-empty injection type, or wording that says the
+/// parameter *is* vulnerable/injectable.
+fn sqlmap_injectable(v: &serde_json::Value) -> bool {
+    let it = v.get("injection_type").or(v.get("injectionType"));
+    match it {
+        Some(serde_json::Value::String(t)) if !t.trim().is_empty() => return true,
+        Some(serde_json::Value::Array(a)) if !a.is_empty() => return true,
+        _ => {}
+    }
+    let mut text = String::new();
+    for k in ["message", "Message", "note", "info", "description"] {
+        if let Some(t) = v.get(k).and_then(|x| x.as_str()) {
+            text.push_str(t);
+            text.push('\n');
+        }
+    }
+    let t = text.to_ascii_lowercase();
+    // sqlmap's own negatives ("does not seem to be injectable", "not vulnerable",
+    // "might not be injectable") share the vocabulary of the positives, so veto on
+    // a `not` within the same sentence as the yes-word.
+    static NEG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let neg = NEG.get_or_init(|| regex::Regex::new(r"\b(?:not|never)[\s\S]{0,40}(?:injectab|vulnerab|exploit)").unwrap());
+    if neg.is_match(&t) || t.contains("no injection") {
+        return false;
+    }
+    t.contains("is vulnerable") || t.contains("injectable") || t.contains("is '")
+}
+
+/// sqlmap's JSON report (`--output-format=JSON`): injectable url/parameter pairs only,
+/// each `high` — a confirmed injection is the loudest thing a scanner in this set can say.
+pub(crate) fn parse_sqlmap(check: &str, text: &str) -> Result<Vec<Finding>> {
+    let objs = json_objects(text);
+    if objs.is_empty() {
+        bail!("sqlmap output has no JSON objects");
+    }
+    // One finding per (url, parameter): sqlmap repeats a payload line per technique.
+    let mut groups: std::collections::BTreeMap<(String, String), (Vec<String>, String)> =
+        std::collections::BTreeMap::new();
+    for o in &objs {
+        let url = ["url", "URI", "uri"]
+            .iter()
+            .find_map(|k| o.get(*k).and_then(|x| x.as_str()))
+            .unwrap_or("")
+            .to_string();
+        // Shape A: sqlmap's own report — `{url, messages[..], values[{parameter,type,payload}]}`.
+        if o.get("messages").is_some() || o.get("values").is_some() {
+            if let Some(msgs) = o.get("messages").and_then(|x| x.as_array()) {
+                for m in msgs {
+                    let body = m.get("message").and_then(|x| x.as_str()).unwrap_or("");
+                    if !sqlmap_injectable(m) {
+                        continue;
+                    }
+                    let (params, techs) = sqlmap_names(body);
+                    let param = params.first().cloned().unwrap_or_default();
+                    let e = groups
+                        .entry((url.clone(), param))
+                        .or_insert_with(|| (Vec::new(), super::parsers::first_line(body, 300)));
+                    for t in techs {
+                        if !e.0.contains(&t) {
+                            e.0.push(t);
+                        }
+                    }
+                }
+            }
+            if let Some(vals) = o.get("values").and_then(|x| x.as_array()) {
+                for v in vals {
+                    let typ = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                    if typ.is_empty() && !sqlmap_injectable(v) {
+                        continue;
+                    }
+                    let param = v
+                        .get("parameter")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let payload = v.get("payload").and_then(|x| x.as_str()).unwrap_or(typ);
+                    let e = groups
+                        .entry((url.clone(), param))
+                        .or_insert_with(|| (Vec::new(), super::parsers::first_line(payload, 300)));
+                    if !typ.is_empty() && !e.0.iter().any(|t| t == typ) {
+                        e.0.push(typ.to_string());
+                    }
+                }
+            }
+            continue;
+        }
+        // Shape B: a map keyed by url or parameter (`{"http://x/?a=1": {…}}`).
+        for (key, v) in o.as_object().into_iter().flatten() {
+            if !v.is_object() || !sqlmap_injectable(v) {
+                continue;
+            }
+            let blob = v.to_string();
+            let (params, mut techs) = sqlmap_names(&blob);
+            let key_url = key.contains("://");
+            let own_url = ["url", "uri", "URI"]
+                .iter()
+                .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    if key_url {
+                        key.clone()
+                    } else {
+                        url.clone()
+                    }
+                });
+            let own_param = if key_url {
+                params.first().cloned()
+            } else {
+                Some(key.clone())
+            };
+            // sqlmap's per-parameter report names the technique in `type`.
+            if let Some(t) = v.get("type").and_then(|x| x.as_str()) {
+                let trimmed = t.trim().trim_matches(['\'', '"', '.', '\\']);
+                let dup = trimmed.is_empty()
+                    || trimmed.eq_ignore_ascii_case("null")
+                    || techs
+                        .iter()
+                        .any(|x| x.eq_ignore_ascii_case(trimmed));
+                if !dup {
+                    techs.push(trimmed.to_string());
+                }
+            }
+            let e = groups
+                .entry((own_url.clone(), own_param.clone().unwrap_or_default()))
+                .or_insert((Vec::new(), String::new()));
+            techs.retain(|t| !e.0.contains(t));
+            e.0.extend(techs);
+            if e.1.is_empty() {
+                e.1 = super::parsers::first_line(&blob, 300);
+            }
+        }
+    }
+    let mut out = vec![];
+    for ((url, param), (techs, detail)) in groups {
+        let host = host_of(&url);
+        let title = match (param.is_empty(), techs.is_empty()) {
+            (true, true) => format!("SQL injection at {url}"),
+            (true, false) => format!("SQL injection at {url} ({})", techs.join(", ")),
+            (false, true) => format!("SQL injection in parameter '{param}'"),
+            (false, false) => {
+                format!(
+                    "SQL injection in parameter '{param}' ({})",
+                    techs.join(", ")
+                )
+            }
+        };
+        let mut f = Finding::new(
+            check,
+            "sqlmap-injection",
+            Category::Security,
+            crate::model::Severity::High,
+            title,
+            if url.is_empty() { host } else { url.clone() },
+        )
+        .fp_key(format!(
+            "{}|{}",
+            if url.is_empty() { "?" } else { &url },
+            param
+        ));
+        if !detail.is_empty() {
+            f = f.detail(detail);
+        }
+        out.push(f);
+    }
+    Ok(out)
+}
+
+/// rustscan-style stdout (`127.0.0.1:8080`, `Open (TCP) 10.0.0.1:22 Open`): every
+/// `host:port` token, deduped on `(host, port)`. Lines with no such token are ignored,
+/// so banners and progress bars cost nothing — and, like `lines`, an empty report with
+/// exit 0 is a clean scan rather than broken output.
+pub(crate) fn parse_portline(check: &str, text: &str) -> Vec<Finding> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = vec![];
+    let host_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':');
+    for line in text.lines() {
+        for tok in line.split_whitespace() {
+            let tok = tok.trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '<' | '>'
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | ','
+                        | ';'
+                        | '"'
+                        | '\''
+                        | '*'
+                        | '►'
+                        | '•'
+                        | '|'
+                )
+            });
+            let Some((host, port)) = tok.rsplit_once(':') else {
+                continue;
+            };
+            if host.is_empty() || host.contains(':') || !tok.starts_with(host) {
+                continue; // IPv6 forms and stray timestamps are not rustscan pairs
+            }
+            let Ok(num) = port.parse::<u16>() else {
+                continue;
+            };
+            if num == 0 || !host.contains('.') || !host.chars().all(host_char) {
+                continue; // `12:30` timestamps lack the dot an ip/hostname always has
+            }
+            if !seen.insert((host.to_string(), num)) {
+                continue;
+            }
+            out.push(
+                Finding::new(
+                    check,
+                    "rustscan-open-port",
+                    Category::Security,
+                    crate::model::Severity::Low,
+                    format!("Open port {host}:{num}"),
+                    format!("{host}:{num}"),
+                )
+                .fp_key(format!("{host}|{num}"))
+                .detail("open port from plugin output (portline format)"),
+            );
+        }
+    }
+    out
+}
+
 fn valid_user(u: &str) -> bool {
     let (uid, gid) = match u.split_once(':') {
         Some((a, b)) => (a, Some(b)),
@@ -154,7 +814,12 @@ fn valid_user(u: &str) -> bool {
 fn host_of(url: &str) -> String {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
-    host.rsplit_once('@').map_or(host, |(_, h)| h).split(':').next().unwrap_or("").to_string()
+    host.rsplit_once('@')
+        .map_or(host, |(_, h)| h)
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Non-zero exit with parseable output = a truncated run, not a clean one: the tool stopped
@@ -216,14 +881,13 @@ pub(crate) fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
         .iter()
         .filter_map(|k| std::env::var(k).ok().map(|v| (k.clone(), v)))
         .collect();
-    let missing_env: Vec<&String> = p
-        .env
-        .iter()
-        .filter(|k| std::env::var(k).is_err())
-        .collect();
+    let missing_env: Vec<&String> = p.env.iter().filter(|k| std::env::var(k).is_err()).collect();
     if let Some(u) = &p.user {
         if !valid_user(u) {
-            bail!("plugin {}: invalid user {u:?} (must be numeric uid[:gid])", p.id);
+            bail!(
+                "plugin {}: invalid user {u:?} (must be numeric uid[:gid])",
+                p.id
+            );
         }
         spec.user = Some(u.clone());
     }
@@ -256,10 +920,15 @@ pub(crate) fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
         read_out(ctx, name).map_err(|e| out_err(e, || tool_failed(&p.id, &r)))?
     };
     // An empty file for sarif/junit/readyhai-json is broken output, but for the
-    // line-oriented `lines` format empty simply means "the tool found nothing"
-    // (e.g. subfinder on an IP literal has no passive results) — as long as the
-    // tool itself exited successfully.
-    if txt.trim().is_empty() && !(p.format == "lines" && p.stdout && r.exit_code == 0) {
+    // line-oriented recon formats (`lines`, `portline`) empty simply means "the tool
+    // found nothing" (e.g. subfinder on an IP literal has no passive results, or
+    // rustscan saw no open ports) — as long as the tool itself exited successfully.
+    if txt.trim().is_empty()
+        && !matches!(
+            (p.format.as_str(), p.stdout, r.exit_code),
+            ("lines", true, 0) | ("portline", true, 0)
+        )
+    {
         return Err(tool_failed(&p.id, &r));
     }
     let mut sarif_notes = Vec::new();
@@ -277,6 +946,11 @@ pub(crate) fn run_plugin(ctx: &Ctx, p: &Plugin) -> Result<CheckOutput> {
         },
         "readyhai-json" => serde_json::from_str::<Vec<Finding>>(&txt)?,
         "lines" => parse_lines(&check, p, &txt),
+        "nmap" => parse_nmap(&check, &txt),
+        "nikto-xml" => parse_nikto(&check, &txt),
+        "testssl" => parse_testssl(&check, &txt)?,
+        "sqlmap" => parse_sqlmap(&check, &txt)?,
+        "portline" => parse_portline(&check, &txt),
         f => bail!("plugin {}: unknown format {f}", p.id),
     };
     for f in &mut findings {
@@ -438,6 +1112,135 @@ pub fn plugins_dir() -> PathBuf {
         Some(d) => PathBuf::from(d),
         None => crate::engine::data_dir().join("plugins"),
     }
+}
+
+/// On-the-go setup: pre-provision plugin packs a scan on `dir` would select but
+/// has not provisioned yet — `docker pull` of missing images and creation of
+/// writable `/cache` dirs — so the first check does not silently stall on a
+/// multi-hundred-MB pull inside its own time budget. Best-effort: every problem
+/// becomes an audit note and the scan proceeds. `pull`/`inspect`/`seed_cache`
+/// are injected (production: real docker + the shared cache dir; tests: recorders).
+pub fn ensure_packs(
+    dir: &Path,
+    settings: &crate::settings::Settings,
+    target_kind: TargetKind,
+    has_repo: bool,
+    profile: Profile,
+    offline: bool,
+    pull: &dyn Fn(&str) -> std::io::Result<super::types::Captured>,
+    inspect: &dyn Fn(&str) -> bool,
+    seed_cache: &dyn Fn() -> std::io::Result<bool>,
+) -> Vec<String> {
+    const SETUP_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
+    let mut notes = vec![];
+    if offline {
+        return notes;
+    }
+    // Exactly what `checks::all(Some(dir))` would select for this scan: valid pack,
+    // kind/profile match (same math as the orchestrator loop) and not silenced by
+    // operator settings (same skip() arguments as the loop computes). Intrusive
+    // packs still provision under nonprod gating: pulling an image harms nothing.
+    let mut seen: Vec<String> = vec![];
+    let packs: Vec<(String, String, bool)> = pack_dirs(dir)
+        .into_iter()
+        .filter_map(|d| load_plugin(&d).ok().flatten())
+        .filter(|p| {
+            let kind_ok = p.kinds.iter().any(|k| {
+                kind_matches(k, target_kind) || has_repo && kind_matches(k, TargetKind::Repo)
+            });
+            kind_ok
+                && profile >= min_profile(&p.profile)
+                && settings
+                    .skip(&format!("plugin.{}", p.id), true, true, p.intrusive)
+                    .is_none()
+        })
+        .filter(|p| {
+            !p.image.is_empty() && !seen.contains(&p.image) && {
+                seen.push(p.image.clone());
+                true
+            }
+        })
+        .map(|p| (p.id, p.image, p.cache_rw))
+        .collect();
+    let t0 = std::time::Instant::now();
+    let mut cache_seeded = false;
+    for (id, image, cache_rw) in &packs {
+        if !inspect(image) {
+            if !image.contains("@sha256:") {
+                notes.push(format!(
+                    "setup: {id} image is unpinned; provision it with a digest-pinned ref"
+                ));
+            }
+            if t0.elapsed() >= SETUP_BUDGET {
+                notes.push("setup: time budget reached; remaining images will pull on demand".into());
+                break;
+            }
+            match pull(image) {
+                Ok(c) if c.success() => notes.push(format!(
+                    "setup: pulled {id} image (first-run provisioning)"
+                )),
+                Ok(c) => notes.push(format!(
+                    "setup: pull failed for {id} ({}); scan will attempt it on demand",
+                    super::parsers::first_line(&c.stderr_lossy(), 160)
+                )),
+                Err(e) => notes.push(format!(
+                    "setup: pull failed for {id} ({e}); scan will attempt it on demand"
+                )),
+            }
+        }
+        // DB packs mount the shared <data>/cache as /cache; the runner would
+        // create it anyway — pre-creating and noting it makes the first scan's
+        // behavior auditable. Directory presence only; DB downloads are
+        // `tools update`'s job.
+        if *cache_rw && !cache_seeded {
+            match seed_cache() {
+                Ok(true) => notes.push(format!("setup: created cache dir for {id}")),
+                Ok(false) => {}
+                Err(e) => notes.push(format!("setup: cache dir unavailable ({e})")),
+            }
+            cache_seeded = true;
+        }
+    }
+    notes
+}
+
+fn kind_matches(k: &str, kind: TargetKind) -> bool {
+    match kind {
+        TargetKind::Repo => k == "repo",
+        TargetKind::Image => k == "image",
+        TargetKind::Web => k == "web",
+        // plugin_checks only maps repo/image/web kind strings; nothing else selects.
+        TargetKind::Host | TargetKind::Android => false,
+    }
+}
+
+fn min_profile(s: &str) -> Profile {
+    match s {
+        "quick" => Profile::Quick,
+        "deep" => Profile::Deep,
+        _ => Profile::Standard,
+    }
+}
+
+/// Production `pull` for [`ensure_packs`]: `docker pull`, wall-capped so one
+/// hung registry cannot eat the whole setup budget.
+pub fn setup_pull(reference: &str) -> std::io::Result<super::types::Captured> {
+    super::process::run_capped(
+        std::process::Command::new("docker").args(["pull", reference]),
+        std::time::Duration::from_secs(90),
+        8192,
+        None,
+    )
+}
+
+/// Production `seed_cache` for [`ensure_packs`]: ensures the shared tool cache
+/// dir exists (same creation + open mode as the container mount); true when new.
+pub fn setup_seed_cache(cache_dir: &Path) -> std::io::Result<bool> {
+    let fresh = !cache_dir.exists();
+    if fresh {
+        std::fs::create_dir_all(cache_dir)?;
+    }
+    Ok(fresh)
 }
 
 pub fn plugin_checks(dir: &Path) -> Vec<Check> {

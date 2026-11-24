@@ -40,6 +40,7 @@ mod settings;
 mod snapshot;
 mod supply;
 mod tools;
+mod vulndb;
 mod web;
 
 use clap::{Parser, Subcommand};
@@ -159,6 +160,24 @@ enum Cmd {
         #[command(subcommand)]
         cmd: BaselineCmd,
     },
+    /// Global vulnerability database: every warn/fail ReadyHai has seen on this machine.
+    /// With no subcommand it lists; default view is what is still `open`.
+    Vulns {
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+        /// Show only this status (open|accepted|forgotten)
+        #[arg(long, value_name = "STATUS")]
+        status: Option<String>,
+        /// Show only this target (URL as scanned, or a repo/image/host ref)
+        #[arg(long, value_name = "TARGET")]
+        target: Option<String>,
+        /// Include accepted and forgotten findings
+        #[arg(long)]
+        all: bool,
+        #[command(subcommand)]
+        cmd: Option<VulnsCmd>,
+    },
     /// List checks
     Checks,
     /// Scanner images and databases
@@ -253,6 +272,20 @@ enum BaselineCmd {
         /// Write here instead of the per-target default (e.g. .readyhai/baseline.json to commit it)
         #[arg(long)]
         out: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum VulnsCmd {
+    /// Mark a finding accepted: `readyhai vulns` stops listing it, `--all` still shows it
+    Accept {
+        /// Fingerprint from the list (a unique prefix of 6+ characters is enough)
+        fingerprint: String,
+    },
+    /// Mark a finding forgotten: it is no longer listed unless `--all`
+    Forget {
+        /// Fingerprint from the list (a unique prefix of 6+ characters is enough)
+        fingerprint: String,
     },
 }
 
@@ -479,6 +512,56 @@ fn run() -> anyhow::Result<u8> {
                     eprintln!("baseline: {line}");
                 }
             }
+            Ok(0)
+        }
+        Cmd::Vulns {
+            json,
+            status,
+            target,
+            all,
+            cmd,
+        } => {
+            let path = vulndb::path();
+            if let Some(c) = cmd {
+                let (fp, to) = match c {
+                    VulnsCmd::Accept { fingerprint } => (fingerprint, "accepted"),
+                    VulnsCmd::Forget { fingerprint } => (fingerprint, "forgotten"),
+                };
+                if !vulndb::set_status(&fp, to)? {
+                    anyhow::bail!(
+                        "no vulnerability with fingerprint {fp} (unique prefixes of 6+ characters work; see `readyhai vulns`)"
+                    );
+                }
+                println!("{to} {fp} · {path}", path = path.display());
+                println!(
+                    "{}",
+                    match to {
+                        "accepted" =>
+                            "it is still recorded on every scan but no longer listed without --status accepted",
+                        _ =>
+                            "it is still counted on every scan but no longer listed without --status forgotten",
+                    }
+                );
+                return Ok(0);
+            }
+            let status = match (status, all) {
+                (Some(s), _) if vulndb::valid_status(&s) => Some(s),
+                (Some(_), _) => {
+                    anyhow::bail!("--status must be one of {}", vulndb::STATUSES.join("|"))
+                }
+                (None, true) => None,
+                (None, false) => Some("open".into()),
+            };
+            let rows = vulndb::list(&vulndb::Filter {
+                target,
+                status: status.clone(),
+                severity: None,
+            });
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+                return Ok(0);
+            }
+            print_vulns(&rows, status.as_deref(), &path);
             Ok(0)
         }
         Cmd::Checks => {
@@ -767,6 +850,46 @@ fn run() -> anyhow::Result<u8> {
             Ok(if ok { 0 } else { 1 })
         }
     }
+}
+
+/// `readyhai vulns`: the plain table (severity desc, newest first), same column style as
+/// `readyhai checks`.
+fn print_vulns(rows: &[vulndb::VulnRecord], status: Option<&str>, path: &std::path::Path) {
+    if rows.is_empty() {
+        println!(
+            "no {}findings recorded in {}{}.",
+            status.map(|s| format!("{s} ")).unwrap_or_default(),
+            path.display(),
+            if status == Some("open") {
+                " (use --all to include accepted and forgotten)"
+            } else {
+                ""
+            }
+        );
+        return;
+    }
+    println!(
+        "{:24} {:8} {:<26} {:<24} {:>3} {:<10} RULE / RESOURCE",
+        "FINGERPRINT", "SEVERITY", "CHECK", "TARGET", "SEEN", "STATUS"
+    );
+    for r in rows {
+        println!(
+            "{:24} {:8} {:<26} {:<24} {:>3} {:<10} {}{}",
+            r.fingerprint,
+            r.severity,
+            r.kind,
+            r.target,
+            r.occurrences,
+            r.status,
+            r.rule,
+            if r.resource.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", r.resource)
+            }
+        );
+    }
+    println!("\n{} finding(s) · {}", rows.len(), path.display());
 }
 
 fn print_summary(run: &Run) {

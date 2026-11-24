@@ -262,6 +262,7 @@ pub fn detect_facts(snap: &Snapshot) -> Facts {
     let compose_re = Regex::new(r"^(docker-compose|compose)[^/]*\.ya?ml$").unwrap();
     let mut f = Facts::default();
     let (mut yamls, mut sources) = (vec![], vec![]);
+    let mut wg_candidates: Vec<String> = vec![];
     for rel in snap
         .files
         .iter()
@@ -273,6 +274,9 @@ pub fn detect_facts(snap: &Snapshot) -> Facts {
         let is_yaml = b.ends_with(".yaml") || b.ends_with(".yml");
         if b.starts_with("dockerfile") || b.ends_with(".dockerfile") {
             f.dockerfiles.push(own.clone());
+        }
+        if b.ends_with(".conf") || b.ends_with(".wgconfig") {
+            wg_candidates.push(own.clone());
         }
         if b.starts_with("jenkinsfile")
             || (rel.contains(".github/workflows/") && is_yaml)
@@ -323,11 +327,18 @@ pub fn detect_facts(snap: &Snapshot) -> Facts {
             f.k8s_files.push(y);
         }
     }
+    for c in wg_candidates {
+        let Some(t) = read(snap, &c) else { continue };
+        if super::wireguard::is_wireguard(&t) {
+            f.wg_files.push(c);
+        }
+    }
     for l in [
         &mut f.dockerfiles,
         &mut f.compose_files,
         &mut f.k8s_files,
         &mut f.ci_files,
+        &mut f.wg_files,
     ] {
         l.sort();
     }

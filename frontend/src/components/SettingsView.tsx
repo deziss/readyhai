@@ -57,6 +57,17 @@ export interface SettingsResponse {
   override_count: number;
   /** True when a READYHAI_SETTINGS env file is being overridden by the data-dir file. */
   shadowing_env: boolean;
+  /**
+   * Vulnerability database status (backend-sourced, display-only). Older
+   * backends omit the section entirely: treat it as not reported.
+   */
+  vulndb?: VulnDbInfo | null;
+}
+
+export interface VulnDbInfo {
+  enabled: boolean;
+  /** Absolute path, or null when the default data dir is used. */
+  path: string | null;
 }
 
 export interface SettingsCheckInfo {
@@ -255,6 +266,9 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
   const [rbacDenied, setRbacDenied] = useState(false);
   const [rbacError, setRbacError] = useState<string | null>(null);
 
+  // Open findings for the vuln database card. null = unknown (old backend, 404, or error).
+  const [openVulnCount, setOpenVulnCount] = useState<number | null>(null);
+
   /** Ids the saved document toggles explicitly; their "auto" drafts must survive serialization. */
   const savedToggleIds = useMemo(
     () => new Set((doc?.effective.toggle ?? []).map((e) => e.id)),
@@ -323,11 +337,27 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
     []
   );
 
+  const loadOpenVulns = useCallback(
+    () =>
+      apiRequest<{ count?: number; vulns?: unknown[] }>("/api/vulns?status=open", {
+        label: "Loading findings",
+      }).then((r) => {
+        // Any failure (404 on an older backend, 401, network) just means "unknown".
+        if (r.ok && r.data && typeof r.data.count === "number" && r.data.count >= 0) {
+          setOpenVulnCount(r.data.count);
+        } else {
+          setOpenVulnCount(null);
+        }
+      }),
+    []
+  );
+
   useEffect(() => {
     loadSettings();
     loadChecks();
     loadRbac();
-  }, [loadSettings, loadChecks, loadRbac, tokenVersion]);
+    loadOpenVulns();
+  }, [loadSettings, loadChecks, loadRbac, loadOpenVulns, tokenVersion]);
 
   const refresh = () => {
     setLoading(true);
@@ -336,6 +366,7 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
     loadSettings();
     loadChecks();
     loadRbac();
+    loadOpenVulns();
   };
 
   // Dirty tracking: compare the draft with the saved document in wire shape.
@@ -615,6 +646,45 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
                   Reset to defaults
                 </button>
               </div>
+            </SectionCard>
+
+            {/* Section 1b: Vulnerability database (display-only) */}
+            <SectionCard
+              title="Vulnerability database"
+              subtitle="Where recorded findings live and how many are open. Read-only: triage findings on the Vulns page or with the readyhai vulns CLI."
+            >
+              {doc.vulndb && typeof doc.vulndb.enabled === "boolean" ? (
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs">
+                    <span
+                      className={
+                        CHIP +
+                        (doc.vulndb.enabled ? " bg-rh-go/15 text-rh-go" : " bg-rh-raised text-rh-muted")
+                      }
+                    >
+                      {doc.vulndb.enabled ? "vuln database enabled" : "vuln database disabled"}
+                    </span>
+                    <span className="text-rh-muted">
+                      Path:{" "}
+                      <span className="font-mono text-rh-text">
+                        {doc.vulndb.path ?? "default data dir"}
+                      </span>
+                    </span>
+                  </div>
+                  <p className={MUTED_NOTE}>
+                    Open findings:{" "}
+                    <span className="tabular-nums text-rh-text">
+                      {openVulnCount === null ? "—" : openVulnCount}
+                    </span>
+                    {openVulnCount === null && " (not reported by this backend version)"}
+                  </p>
+                </div>
+              ) : (
+                <p className={MUTED_NOTE}>
+                  Vulnerability database status is not reported by this backend version. Update the
+                  server to see its path and open-finding count here.
+                </p>
+              )}
             </SectionCard>
 
             {/* Section 2: Checks & plugins */}

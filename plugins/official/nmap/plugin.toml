@@ -1,0 +1,26 @@
+# Insecure/OSS nmap - TCP/service scan -> open-port inventory from -oX XML.
+# Active scanning: marked intrusive like naabu, so the orchestrator only runs
+# it at deep profile + non-prod. `-top-ports 100 --version-light` bounds the
+# scan to well under the 600s tool timeout (nmap -sV on 100 ports is minutes).
+# The runner drops caps and runs as nobody (65534), so nmap uses connect()
+# scans instead of SYN - slower but fine for a 100-port bound; -Pn skips
+# discovery (ICMP echo would be unreliable unprivileged anyway).
+# Verified 2026-11-23 via docker inspect + functional run: Entrypoint
+# ["/usr/bin/nmap"] (no override needed), Nmap 7.98, `-oX /out/nmap.xml`
+# written world-readable by uid 65534 once /out is 0777 (runner mkdir_open).
+id = "nmap"
+title = "nmap TCP/service scan (inventory)"
+kinds = ["web"]
+profile = "deep"
+# digest verified 2026-11-23 via docker inspect --format='{{index .RepoDigests 0}}' instrumentisto/nmap:latest
+image = "instrumentisto/nmap@sha256:96f6ed194519b62421a1a1c57809e65a7f94d2aa1c8c25676f247e5e148c0827"
+network = true
+host_gateway = true
+intrusive = true
+output = "/out/nmap.xml"
+format = "nmap"
+rule = "nmap-open-port"
+severity = "low"
+title_prefix = "Nmap open port"
+# {domain} host target, same templating as naabu (nmap wants a host, not a URL).
+args = ["-Pn", "-T4", "-sV", "--version-light", "--top-ports", "100", "-oX", "/out/nmap.xml", "{domain}"]

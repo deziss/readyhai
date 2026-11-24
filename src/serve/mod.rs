@@ -11,6 +11,7 @@ mod settings_api;
 pub mod router;
 pub mod scans;
 pub mod types;
+pub mod vulns_api;
 pub mod worker;
 
 #[cfg(test)]
@@ -36,5 +37,7 @@ pub use self::router::*;
 pub use self::scans::*;
 #[allow(unused_imports)]
 pub use self::types::*;
+#[allow(unused_imports)]
+pub use self::vulns_api::*;
 #[allow(unused_imports)]
 pub use self::worker::*;

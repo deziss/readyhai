@@ -459,3 +459,116 @@ jobs:
         );
         assert!(has(&f, "no_sast") && has(&f, "no_secret_scan") && !has(&f, "no_dep_scan"));
     }
+
+    // ---------- wireguard ----------
+
+    const WG_PRIV: &str = "hAlu3NlEqZeF8lN4XWa8vRz5Cb6dEfGhIjKlMnOpQrU=";
+    const WG_PUB: &str = "q3G2YV3jP7cFq7U8ZB5oQeD8mH0rT1sX2vW9yLkMnAo=";
+    const WG_PUB2: &str = "lZ9tR4wY7kD2sA0tC6eU8bR1jM5vZ3xY0pF4gH7iN2c=";
+    const WG_PSK: &str = "0nxX3p1sTqL8c5hUf9E7bR2jM6vZ4wY1kD0sA8tC3eU=";
+
+    fn wg_findings(tag: &str, files: &[(&str, &str)]) -> Vec<Finding> {
+        let src = tmp_repo(tag, files);
+        let ctx = ctx_for(&src, tag, false);
+        out_of(&ctx, "wireguard").findings
+    }
+
+    #[test]
+    fn wireguard_server_roster_config_is_silent() {
+        // A server-side peer roster (public keys only, no private material) is clean.
+        let f = wg_findings(
+            "wgok",
+            &[(
+                "peers.conf",
+                &format!(
+                    "[Peer] # laptop\nPublicKey = {WG_PUB}\nAllowedIPs = 10.8.0.2/32\n\n[Peer] # phone\nPublicKey = {WG_PUB2}\nAllowedIPs = 10.8.0.3/32\n"
+                ),
+            )],
+        );
+        assert!(f.is_empty(), "public-key-only roster should be clean: {f:?}");
+    }
+
+    #[test]
+    fn wireguard_non_wg_conf_files_are_ignored() {
+        let f = wg_findings(
+            "wgnginx",
+            &[("nginx.conf", "worker_processes auto;\nevents { worker_connections 1024; }\n")],
+        );
+        assert!(f.is_empty(), "nginx.conf must not parse as WireGuard: {f:?}");
+    }
+
+    #[test]
+    fn wireguard_bad_config_fires_expected_rules_without_leaking_keys() {
+        let f = wg_findings(
+            "wgbad",
+            &[
+                (
+                    "wg0.conf",
+                    &format!(
+                        "[Interface]\nPrivateKey = {WG_PRIV}\nListenPort = 51820\n\n[Peer]\nPublicKey = not-base64!\nAllowedIPs = 0.0.0.0/0\nEndpoint = vpn.example.com:51820\n"
+                    ),
+                ),
+                ("nginx.conf", "user www;\n"),
+            ],
+        );
+        let rules: HashSet<&str> = f.iter().map(|x| x.rule.as_str()).collect();
+        for want in [
+            "wireguard.private-key-committed",
+            "wireguard.weak-key-material",
+            "wireguard.allowed-ips-overreach",
+            "wireguard.no-keepalive",
+            "wireguard.missing-address",
+        ] {
+            assert!(rules.contains(want), "missing {want}: {rules:?}");
+        }
+        for finding in &f {
+            assert!(
+                !finding.title.contains(WG_PRIV) && !finding.detail.contains(WG_PRIV),
+                "key material leaked into: {}",
+                finding.title
+            );
+        }
+        assert!(!f.iter().any(|x| x.location.contains("nginx")));
+    }
+
+    #[test]
+    fn wireguard_duplicate_listen_port_is_flagged() {
+        let f = wg_findings(
+            "wgport",
+            &[
+                ("a.conf", "[Interface]\nPrivateKey = PLACEHOLDER\nAddress = 10.0.0.1/24\nListenPort = 51820\n"),
+                ("b.conf", "[Interface]\nPrivateKey = PLACEHOLDER-OTHER\nAddress = 10.9.0.1/24\nListenPort = 51820\n"),
+            ],
+        );
+        assert!(
+            f.iter().any(|x| x.rule == "wireguard.listen-port-conflict"),
+            "{:?}",
+            f.iter().map(|x| x.rule.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn wireguard_reused_key_is_flagged() {
+        // The same PSK across two peers: one compromised key decrypts both channels.
+        let f = wg_findings(
+            "wgreuse",
+            &[(
+                "peers.conf",
+                &format!(
+                    "[Peer]\nPublicKey = {WG_PUB}\nPresharedKey = {WG_PSK}\n\n[Peer]\nPublicKey = {WG_PUB2}\nPresharedKey = {WG_PSK}\n"
+                ),
+            )],
+        );
+        assert!(
+            f.iter().any(|x| x.rule == "wireguard.key-reuse" && x.title.contains("redacted")),
+            "expected redacted key-reuse finding, got {:?}",
+            f.iter().map(|x| (x.rule.as_str(), x.title.as_str())).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn is_wireguard_detects_sections_and_directives() {
+        assert!(super::wireguard::is_wireguard("[Interface]\nPrivateKey = x\n"));
+        assert!(!super::wireguard::is_wireguard("[server]\nuser nginx;\n"));
+        assert!(!super::wireguard::is_wireguard("[Interface]\ntimeout = 5\n"));
+    }

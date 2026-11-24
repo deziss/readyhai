@@ -1,0 +1,25 @@
+# testssl.sh - read-only TLS probe -> TLS weakness findings from --jsonfile.
+# Non-intrusive like tlsx (a plain TLS handshake, no active probing): standard
+# profile. `--quiet` suppresses the usage-terms banner (needed non-TTY),
+# `--overwrite` avoids the interactive "file exists" prompt, `--jsonfile`
+# writes the flat JSON the `testssl` parser ingests (it is brace-tolerant of
+# the header/footer objects testssl embeds).
+# Verified 2026-11-23 via docker inspect + run as uid 65534: testssl.sh 3.2.5,
+# Entrypoint ["testssl.sh"] (pack args become CMD, no override needed); the
+# image's built-in `testssl` user is not required - it runs fine as nobody
+# with HOME=/tmp; --jsonfile/--overwrite/--quiet flags per `--help`.
+id = "testssl"
+title = "testssl.sh TLS configuration probe"
+kinds = ["web"]
+profile = "standard"
+# digest verified 2026-11-23 via docker inspect --format='{{index .RepoDigests 0}}' drwetter/testssl.sh:latest
+image = "drwetter/testssl.sh@sha256:e42cb1ba9445ea861e8b6eec96b97f6f293ce4e5908eebc75c28bdd96d66108e"
+network = true
+host_gateway = true
+output = "/out/testssl.json"
+format = "testssl"
+rule = "testssl-weakness"
+severity = "medium"
+title_prefix = "testssl.sh"
+# testssl.sh takes a URI (host or host:port; scheme ignored) - {url} works like tlsx.
+args = ["--quiet", "--overwrite", "--jsonfile", "/out/testssl.json", "{url}"]

@@ -1,0 +1,31 @@
+# sqlmap - OSS SQL injection scanner -> high-severity injection findings.
+# Active DBMS fingerprinting/probing: intrusive => deep profile + non-prod.
+# --level 2 --risk 1 --threads 2 --timeout 30 --batch bounds a run well under
+# the 600s tool timeout (sqlmap also honors these per-request timeouts).
+# Verified 2026-11-23 via docker inspect + functional run against a loopback
+# listener: Entrypoint ["sqlmap"], sqlmap 1.10.4#stable. IMPORTANT: 1.10.4 has
+# NO --output-format/--report-json (checked --help and -hh; JSON reports only
+# exist in upstream master) and writes text artifacts to /out/<host>/ plus a
+# results-<ts>.csv - no JSON at all. So the shim below runs sqlmap, then
+# copies any *.json sqlmap ever learns to write into /out/sqlmap.json, else
+# drops an empty {"messages": []} report -> the `sqlmap` parser always finds
+# parseable JSON (zero findings) instead of erroring on missing output.
+# Switch to native --report-json /out/sqlmap.json when the image ships such a
+# build. (kube-score is the existing /bin/sh -c precedent for this shim.)
+id = "sqlmap"
+title = "sqlmap SQL injection scan"
+kinds = ["web"]
+profile = "deep"
+# digest verified 2026-11-23 via docker inspect --format='{{index .RepoDigests 0}}' parrotsec/sqlmap:latest
+image = "parrotsec/sqlmap@sha256:a991ea2d1cbc828c5b205086724f20f6296c3b167e30b360bd802327ec5f25f6"
+network = true
+host_gateway = true
+intrusive = true
+entrypoint = "/bin/sh"
+output = "/out/sqlmap.json"
+format = "sqlmap"
+rule = "sqlmap-injection"
+severity = "high"
+title_prefix = "SQL injection"
+# {url} is templated inside the -c script too (per-arg replace in run_plugin).
+args = ["-c", 'sqlmap --batch --level 2 --risk 1 --threads 2 --timeout 30 --url "{url}" --output-dir /out; rc=$?; f=$(find /out -name "*.json" -type f 2>/dev/null | head -n1); if [ -n "$f" ]; then cp "$f" /out/sqlmap.json; else echo "{\"messages\": []}" > /out/sqlmap.json; fi; exit $rc']

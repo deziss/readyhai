@@ -342,7 +342,7 @@ Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.4.0).
 
 ## Round 9: Operator Settings, RBAC and Settings UI (2026-11-23)
 
-Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.5.0).
+Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.6.0).
 
 ### What landed
 - **Operator settings (`src/settings.rs`)**: `settings.toml` toggles plugin/tool classes (`tools`, `plugins`, `intrusive` — `auto|on|off`, `intrusive: on` refused) and individual checks (`[[toggle]] id/enabled`). Precedence: `--settings` > `READYHAI_SETTINGS` > `<data>/settings.toml`. Disabled checks are skipped with a `disabled by settings` note in reports; `readyhai scan` prints an override summary.
@@ -356,3 +356,22 @@ Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.5.0).
 - `cargo clippy -- -D warnings`: clean.
 - `vitest run`: 152 passed across 15 test files (up from 144).
 - Live smoke (release binary): RBAC role matrix (viewer/operator/admin/whoami/401/403) and settings-driven scan skips verified end to end; browser test of the Settings UI in this round's build.
+
+
+## Round 10: Network Attack Packs, Vulnerability Database and WireGuard Audit (2026-11-23)
+
+Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.6.0).
+
+### What landed
+- **Five native plugin output formats (`src/tools/plugins.rs`)**: `format = "nmap"` (nmap `-oX` XML → one deduped finding per open port/service/version, never high), `"nikto-xml"` (medium on items carrying a CVE/OSVDB/EDB-ID reference), `"testssl"` (brace-balanced multi-object JSON stream, `OK`/`INFO` skipped, severity capped at high), `"sqlmap"` (confirmed injection points, high), `"portline"` (deduped `ip:port` connect-sweep lines, low). Dispatched alongside `sarif`/`junit`/`readyhai-json`/`lines`, so any pack can opt in with one field.
+- **Five new official packs (`plugins/official/`)**, digest-pinned and sandboxed like the rest: `nmap` (recon, `nmap`, service/version sweep ⇒ `intrusive`, `-top-ports 100 --version-light` bounded for the 600 s budget), `rustscan` (recon, `portline`, connect-sweep ⇒ `intrusive`), `testssl` (posture, `testssl`, read-only TLS/protocol audit on the standard profile like `tlsx`), `sqlmap` (web attack, `sqlmap`, level 2 / risk 1 bounds ⇒ `intrusive`), `nikto` (web attack, `nikto-xml` ⇒ `intrusive`). masscan/zmap, thc-hydra and WiFi suites were researched and rejected (raw sockets vs `--cap-drop ALL`, unmaintained or untrusted images, monitor mode impossible in the sandbox) — rationale in [plugins/README.md](../plugins/README.md).
+- **WireGuard config audit (`src/rules/wireguard.rs`)**: a built-in repo check (`wireguard`, quick profile) for `*.conf` / `*.wgconfig` that actually parse as WireGuard. Seven rules — committed `PrivateKey`/`PresharedKey` (high, values redacted), key reuse across peers/files, `AllowedIPs = 0.0.0.0/0` or `::/0` overreach, non-32-byte/all-zero key material, duplicate `ListenPort`, `[Interface]` without `Address=`, NAT peer without `PersistentKeepalive`. Key material is never echoed into a finding.
+- **Vulnerability database (`src/vulndb.rs`)**: one JSONL at `<data>/vulns/vulns.jsonl` (`[vulndb] path` to override, `[vulndb] enabled = false` to stop recording) holding every warn/fail finding across targets after a scan (hook in `src/engine/orchestrator.rs`, surfaced as a `vulndb: …` run note). Fingerprint = 24-hex SHA-256 over target/kind/rule/resource; re-observation bumps `occurrences`/`last_seen`. Statuses `open`/`accepted`/`forgotten`; decisions survive re-scans, and `accepted` reverts to `open` when the severity changes. CLI `readyhai vulns [--json] [--status S] [--target T] [--all]` plus `vulns accept <fp>` / `vulns forget <fp>` (unique 6+-char prefixes), REST `GET /api/vulns` and `POST /api/vulns/{fingerprint}` (triage admin-only), `effective.vulndb` in `/api/settings`.
+- **Vulns view (`frontend/src/components/VulnsView.tsx`)**: the fifth top-level tab — severity/target/rule/status table with open/accepted/forgotten counts, status (default `open`) + severity + debounced target filters and per-row Accept/Forget, with a plain explanation instead of a raw 403 for non-admins.
+- **On-the-go setup**: at scan start the engine pre-pulls digest-pinned pack images that aren't local and creates pack cache dirs, reported as `setup:` notes; offline bundle mode skips it and a failed pre-pull falls back to on-demand pulling (`readyhai tools pull --plugins DIR` stays the eager option).
+
+### Verification status
+- Rust suite: 981 `#[test]` functions in `src/` (1 `#[ignore]`d) — 1000+ tests counting integration targets. Counts grepped from source in this round; the release `cargo test` run is recorded at release time (prior round: 946 passed).
+- `vitest run` target: 164 tests across 16 test files (up from 152 in 15), the new file covering the Vulns view table, filters and triage calls.
+- Browser: the Vulns view (filters, counts, Accept/Forget, non-admin 403 note) is covered by `VulnsView.test.tsx`; the manual browser pass on the running server is pending at the time of writing.
+- `readyhai doctor` with `READYHAI_PLUGINS=/app/plugins/official`: 19 plugins loaded, 0 skipped (14 in Round 8; the five v3.6.0 packs landed with native parsers).

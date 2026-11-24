@@ -8,16 +8,16 @@
 
 use super::guards::err;
 use super::types::App;
+use crate::engine;
+use crate::settings::{Integrations, Settings, TriState};
+use axum::Json;
 use axum::extract::{Extension, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::engine;
-use crate::settings::{Integrations, Settings, TriState};
 
 /// Data-dir file the UI edits. `<data>/settings.toml`.
 pub fn data_settings_path() -> PathBuf {
@@ -62,6 +62,10 @@ fn body(s: &Settings, path: Option<PathBuf>, version: u64, shadowing: bool) -> V
                 "tools": tri(s.integrations.tools),
                 "plugins": tri(s.integrations.plugins),
                 "intrusive": tri(s.integrations.intrusive),
+            },
+            "vulndb": {
+                "enabled": s.vulndb.enabled,
+                "path": s.vulndb.path.clone(),
             },
             "toggle": s.toggle.iter().map(|t| json!({"id": t.id, "enabled": tri(t.enabled)})).collect::<Vec<_>>(),
         },
@@ -113,11 +117,48 @@ struct TriIntegrations {
     intrusive: Option<String>,
 }
 
+/// A `[vulndb] path` in a PUT: a string sets it, `null` clears it, and an absent key
+/// leaves it alone. Deserialization is manual: `#[serde(default)]` on the field only
+/// fires when the key is absent, so an untagged/plain `Option` would collapse an
+/// explicit `null` and a `null` could never clear the path.
+#[derive(Default)]
+enum PathPut {
+    /// Key absent from the request — leave the stored path alone.
+    #[default]
+    Keep,
+    /// Explicit JSON null — clear the stored path. An `Option` field cannot express
+    /// this: serde turns null into "absent" before the inner type is consulted.
+    Clear,
+    Set(String),
+}
+
+impl<'de> Deserialize<'de> for PathPut {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let v = Value::deserialize(d)?;
+        match v {
+            Value::Null => Ok(PathPut::Clear),
+            Value::String(s) => Ok(PathPut::Set(s)),
+            _ => Err(serde::de::Error::custom("vulndb.path must be a string or null")),
+        }
+    }
+}
+
+/// Optional `[vulndb]` half of a PUT. Absent means "leave the section alone" — a Save
+/// from the integrations UI must not silently re-enable recording.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct VulnDbPut {
+    enabled: Option<bool>,
+    #[serde(default)]
+    path: PathPut,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SettingsPut {
     integrations: Option<TriIntegrations>,
     toggle: Option<Vec<TriToggle>>,
+    vulndb: Option<VulnDbPut>,
 }
 
 fn bad(e: impl std::fmt::Display) -> Response {
@@ -126,7 +167,10 @@ fn bad(e: impl std::fmt::Display) -> Response {
 
 pub async fn api_settings_put(Json(req): Json<SettingsPut>) -> Response {
     let parse = |s: &Option<String>| -> Result<Option<TriState>, String> {
-        s.as_deref().map(TriState::parse).transpose().map_err(|e| e.to_string())
+        s.as_deref()
+            .map(TriState::parse)
+            .transpose()
+            .map_err(|e| e.to_string())
     };
     let mut settings = Settings::default();
     if let Some(i) = req.integrations {
@@ -144,9 +188,27 @@ pub async fn api_settings_put(Json(req): Json<SettingsPut>) -> Response {
     if let Some(t) = req.toggle {
         for tt in t {
             match TriState::parse(&tt.enabled) {
-                Ok(enabled) => settings.toggle.push(crate::settings::Toggle { id: tt.id, enabled }),
+                Ok(enabled) => settings
+                    .toggle
+                    .push(crate::settings::Toggle { id: tt.id, enabled }),
                 Err(e) => return bad(e),
             }
+        }
+    }
+    // `[vulndb]` is carried over from the file this PUT replaces unless the request
+    // changes it, so saving integrations or toggles never re-enables recording on its own.
+    let file = data_settings_path();
+    settings.vulndb = Settings::load(file.is_file().then_some(&file))
+        .unwrap_or_default()
+        .vulndb;
+    if let Some(v) = req.vulndb {
+        if let Some(enabled) = v.enabled {
+            settings.vulndb.enabled = enabled;
+        }
+        match v.path {
+            PathPut::Keep => {}
+            PathPut::Clear => settings.vulndb.path = None,
+            PathPut::Set(p) => settings.vulndb.path = Some(p),
         }
     }
     if let Err(e) = settings.validate() {
@@ -204,7 +266,12 @@ pub async fn api_settings_checks(
         None | Some("") => None,
         Some(k) => match serde_json::from_str::<crate::model::TargetKind>(&format!("\"{k}\"")) {
             Ok(k) => Some(k),
-            Err(_) => return err(StatusCode::BAD_REQUEST, "kind must be repo|image|web|host|android"),
+            Err(_) => {
+                return err(
+                    StatusCode::BAD_REQUEST,
+                    "kind must be repo|image|web|host|android",
+                );
+            }
         },
     };
     let (settings, _) = effective();
@@ -217,8 +284,12 @@ pub async fn api_settings_checks(
                 .filter(|c| !c.qa)
                 .filter(|c| kind.is_none_or(|k| c.kinds.contains(&k)))
                 .map(|c| {
-                    let reason =
-                        settings.skip(&c.id, c.tool.is_some(), c.id.starts_with("plugin."), c.intrusive);
+                    let reason = settings.skip(
+                        &c.id,
+                        c.tool.is_some(),
+                        c.id.starts_with("plugin."),
+                        c.intrusive,
+                    );
                     let (enabled, decided_by) = match &reason {
                         Some(r) if r.contains("kill switch") => (false, "integrations"),
                         Some(_) => (false, "settings"),

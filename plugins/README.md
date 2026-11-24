@@ -18,7 +18,11 @@ The loader reads one level: `<dir>/<pack>/plugin.toml`. Directories without a
 ## Bundled packs
 
 **`official/` — verified E2E (Nov 2026), digest-pinned.** Enable with
-`--plugins plugins/official` (or copy packs you want).
+`--plugins plugins/official` (or copy packs you want). The five v3.6.0 packs
+(`nmap`, `rustscan`, `testssl`, `sqlmap`, `nikto`) use the new native formats and the
+same sandbox guarantees; each was flag-verified against its live image and smoke-run
+on loopback at release time. Digest-pin their images and check them with
+`readyhai doctor` (`READYHAI_PLUGINS=plugins/official` prints per-pack load/skip reasons).
 
 | Pack | Lane | Format | Notes |
 |---|---|---|---|
@@ -30,12 +34,26 @@ The loader reads one level: `<dir>/<pack>/plugin.toml`. Directories without a
 | `tlsx` | recon | `lines` (JSONL) | TLS/cert inventory of the web target |
 | `naabu` | recon | `lines` (JSONL) | active TCP port scan ⇒ `intrusive` (deep profile, nonprod only) |
 | `gau` | recon | `lines` | archived-URL collector (`lc/gau` lineage — `projectdiscovery/gau` was renamed `urlfinder`, no PD image exists) |
+| `nmap` | recon | `nmap` (-oX) | service/version sweep ⇒ `intrusive` (deep, nonprod only); `-top-ports 100 --version-light` bounded for the 600 s budget |
+| `rustscan` | recon | `portline` | connect-sweep ⇒ `intrusive`; dedup'd `ip:port` stdout |
 | `kube-linter` | posture | `sarif` | manifest/Helm lint of `/src` |
 | `kube-score` | posture | `sarif` | real exit-code semantics |
 | `conftest` | posture | `sarif` | ships ReadyHai's own rego pack (`policies/rego`) via cache |
 | `kubescape` | posture | recipe README | official image is server-only; build a CLI image first |
+| `testssl` | posture | `testssl` | TLS/protocol audit of the web target — read-only probe, standard profile (like tlsx) |
 | `grype` | supply chain | `sarif` | image lane; shares `cache_rw` `/cache/grype` DB (set `GRYPE_DB_CACHE_DIR`) seeded by `tools update` |
 | `osv-scanner` | supply chain | `sarif` | repo lane (`scan source -r /src`); `network` for the OSV API, `--allow-no-lockfiles` keeps clean repos at exit 0 |
+| `sqlmap` | web attack | `sqlmap` | SQLi confirmation ⇒ `intrusive`; level 2 / risk 1 bounds |
+| `nikto` | web attack | `nikto-xml` | attack-signature inventory ⇒ `intrusive`; XML stdout, medium on known CVE/OSVDB items |
+
+**Considered & rejected** (same vetting as everything above): **masscan / zmap** —
+raw-socket senders need `CAP_NET_RAW`, which collides with the `--cap-drop ALL`
+sandbox, and neither image is maintained; **thc-hydra** — no reputable maintained
+image, and credential brute-forcing is excluded by posture regardless; **WiFi
+suites** (aircrack et al.) — monitor mode and host networking are impossible in
+the sandbox by design; **WireGuard audit** — no OSS auditor image exists, so it
+shipped differently: a built-in repo check (`wireguard`, see
+[docs/configuration.md](../docs/configuration.md)).
 
 **`_example/` — templates** (loader ignores them; copy and adapt):
 
@@ -59,6 +77,19 @@ image = "org/img:v1@sha256:…"  # digest-pin or you get an "unpinned" note
 # host_gateway = true          # add host-gateway so containers can reach the host
 # stdout = true                # capture stdout as the report instead of /out file
 # format = "lines"             # sarif | junit | readyhai-json | lines (JSONL recon)
+                               # | nmap (nmap -oX XML) | nikto-xml (nikto -Format xml)
+                               # | testssl (testssl.sh --jsonfile) | sqlmap (sqlmap JSON report)
+                               # | portline (rustscan-style `ip:port` stdout lines)
+#   nmap      — one finding per <port> with state="open" on an up <host>; down hosts and
+#               <hostport> entries ignored; low, medium for risky ports
+#   nikto-xml — each <item> with a <description>; medium when it names OSVDB/CVE/EDB-ID,
+#               otherwise low; works with stdout = true
+#   testssl   — brace-balanced JSON objects; OK/INFO skipped,
+#               LOW→low, MEDIUM→medium, HIGH/CRITICAL→high; rule testssl.<id>
+#   sqlmap    — injectable url/parameter entries only (confirmed injection type or
+#               "is vulnerable"/"injectable" wording), always high
+#   portline  — `ip:port` tokens from any line, deduped on (host, port), low; lines
+#               without such a token are ignored; empty output + exit 0 = clean scan
 # output = "/out/x.sarif"      # required unless stdout = true
 # cache_rw = true              # writable /cache for scanner DBs/templates
 # env = ["TOKEN"]              # names only; values copied from ReadyHai's env, never argv
@@ -88,6 +119,12 @@ Behaviour the runner guarantees:
 - Sandboxes stay non-root (unless numeric `user`), read-only rootfs,
   `--cap-drop ALL`, tmpfs `/tmp`. `intrusive` (`profile = "deep"`) plugins run only
   against targets the scope file doesn't mark `prod`.
+- **On-the-go setup** (v3.6.0): at scan start ReadyHai pre-pulls the digest-pinned
+  plugin images that are not yet local and creates the pack cache dirs, so a fresh
+  machine with a plugin dir enabled works without a prep step. What was provisioned
+  shows up as `setup:` notes in the report. Offline bundle mode skips it; plugin
+  runs still fall back to pulling on demand, and `readyhai tools pull --plugins DIR`
+  remains the eager option (pull everything once, before the first scan).
 
 ## Feeds & data sources
 

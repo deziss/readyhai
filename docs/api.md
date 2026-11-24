@@ -101,11 +101,13 @@ All rows except `/health` require the bearer token.
 | POST | `/api/github/pr-comment` | PR comment markdown built only from the data supplied |
 | GET | `/api/badges/gate`, `/ledger`, `/network` | SVG badges |
 | GET | `/checks` | Array of `{id,title,kinds,min_profile,tool,intrusive}` (includes `READYHAI_PLUGINS`) |
-| GET | `/api/settings` | Effective operator settings: `{path,exists,editable,version,effective:{integrations,toggle},override_count,shadowing_env}`. Any authenticated role may read |
-| PUT | `/api/settings` | Admin only (RBAC on): save `{"integrations":{...},"toggle":[{"id","enabled"}]}` to `<data>/settings.toml` atomically; `version` field is the optimistic-concurrency token from GET. `400` on an invalid body (e.g. `intrusive: "on"`); `409` on a stale `version`. Takes effect on the next scan |
+| GET | `/api/settings` | Effective operator settings: `{path,exists,editable,version,effective:{integrations,toggle,vulndb:{enabled,path}},override_count,shadowing_env}` — `vulndb` reports the vulnerability-database state (`path: null` = default `<data>/vulns/vulns.jsonl`). Any authenticated role may read |
+| PUT | `/api/settings` | Admin only (RBAC on): save `{"integrations":{...},"toggle":[{"id","enabled"}],"vulndb":{"enabled","path"}}` to `<data>/settings.toml` atomically; `version` field is the optimistic-concurrency token from GET; an absent `vulndb` (or null `path`) keeps the stored values. `400` on an invalid body (e.g. `intrusive: "on"`, empty `vulndb.path`); `409` on a stale `version`. Takes effect on the next scan |
 | DELETE | `/api/settings` | Admin only: remove the `<data>/settings.toml` overrides (file-backed settings via `READYHAI_SETTINGS` are untouched) |
 | GET | `/api/settings/checks` | Check catalog with the effective decision per check: `{id,title,tool,intrusive,enabled,decided_by:"default"|"settings"|"integration"}` |
 | GET | `/api/rbac` | RBAC keyring summary (names, roles, key fingerprint prefixes — never full keys). Admin only when RBAC is on; any role in legacy single-token mode |
+| GET | `/api/vulns` | Vulnerability database (see [`readyhai vulns`](configuration.md#vulnerability-database-vulndb)): `{"count", "vulns":[{fingerprint, target, target_key, kind, rule, title, severity, resource, first_seen, last_seen, occurrences, status, message}]}` sorted severity desc then newest first; optional `status`/`severity` exact filters (invalid value → `400`) and `target` filter (canonical URL, stored raw target, or target key); any authenticated role may read |
+| POST | `/api/vulns/{fingerprint}` | Admin only (RBAC on): triage one record, body `{"status":"open"|"accepted"|"forgotten"}` → `{"ok":true}`; unique 6+ char fingerprint prefixes resolve; `400` invalid status, `404` unknown or ambiguous fingerprint. Re-recorded on every later scan; `accepted`/`forgotten` decisions survive re-scanning |
 | POST | `/runs` | Queue a scan; `202 {"id","state":"queued"}` |
 | GET | `/runs` | Last 50 runs, newest first: `{id,state,target,verdict}` |
 | GET | `/runs/{id}` | Status; when finished adds `verdict`, `reasons`, `categories`, `checks` and `run` (without `findings`) |

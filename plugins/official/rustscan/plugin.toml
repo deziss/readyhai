@@ -1,0 +1,26 @@
+# RustScan - fast TCP port scanner -> open-port inventory from stdout lines.
+# Active scanning: intrusive => deep profile + non-prod only (same rule as
+# naabu). `--top` scans the top ports (no config file needed - verified) and
+# `-b 5000 -t 1000` bounds the scan + per-connect timeout well under 600s.
+# `--scripts none` matters: the default runs nmap after discovery (not in the
+# image, exit noise), so we keep rustscan's own TCP-connect results only.
+# Verified 2026-11-23 via docker inspect + functional run as uid 65534:
+# RustScan 2.3.0, Entrypoint ["/usr/local/bin/rustscan"], flag set
+# (--addresses/--top/--scripts/--batch-size/--timeout) per `--help`; prints
+# `Open <ip>:<port>` lines (+ banner noise parse_portline ignores).
+id = "rustscan"
+title = "RustScan fast port scan (inventory)"
+kinds = ["web"]
+profile = "deep"
+# digest verified 2026-11-23 via docker inspect --format='{{index .RepoDigests 0}}' rustscan/rustscan:latest
+image = "rustscan/rustscan@sha256:1a0137749007f12880c7174c65e9f16835106a787ebc952118c2f9f4ff7a1309"
+network = true
+host_gateway = true
+intrusive = true
+stdout = true
+format = "portline"
+rule = "rustscan-open-port"
+severity = "low"
+title_prefix = "RustScan open port"
+# -a/--addresses takes the host; 2.3.0 has no positional address (verified via --help).
+args = ["--addresses", "{domain}", "--top", "--scripts", "none", "--batch-size", "5000", "--timeout", "1000"]

@@ -59,6 +59,12 @@ type PutBehavior =
 interface StubOptions {
   put?: PutBehavior;
   rbacStatus?: number;
+  /** Whole GET /api/settings payload override (e.g. with a vulndb section). */
+  settingsDoc?: unknown;
+  /** HTTP status for GET /api/vulns* (404 simulates a backend without the endpoint). */
+  vulnsStatus?: number;
+  /** open-count reported by GET /api/vulns when vulnsStatus is 200. */
+  vulnsCount?: number;
 }
 
 interface Call {
@@ -92,7 +98,9 @@ function stubBackend(opts: StubOptions = {}) {
   const calls: Call[] = [];
   const put = opts.put ?? { kind: "ok" };
   const rbacStatus = opts.rbacStatus ?? 200;
-  let saved: unknown = SETTINGS_V3;
+  const vulnsStatus = opts.vulnsStatus ?? 200;
+  const vulnsCount = opts.vulnsCount ?? 7;
+  let saved: unknown = opts.settingsDoc ?? SETTINGS_V3;
 
   vi.stubGlobal(
     "fetch",
@@ -127,6 +135,11 @@ function stubBackend(opts: StubOptions = {}) {
         return rbacStatus === 403
           ? new Response(JSON.stringify({ error: "role viewer needs admin to read rbac status" }), { status: 403 })
           : new Response(JSON.stringify(RBAC), { status: 200 });
+      }
+      if (url.startsWith("/api/vulns")) {
+        return vulnsStatus === 200
+          ? new Response(serializeLikeServer({ count: vulnsCount, vulns: [] }), { status: 200 })
+          : new Response(JSON.stringify({ error: "no such endpoint" }), { status: vulnsStatus });
       }
       return new Response("{}", { status: 200 });
     })
@@ -279,5 +292,29 @@ describe("SettingsView", () => {
     await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
     const putBody = JSON.parse(calls.find((c) => c.method === "PUT")!.body!);
     expect(putBody.toggle).toContainEqual({ id: "plugin.*", enabled: "on" });
+  });
+
+  it("shows the vuln database card with path and open count", async () => {
+    stubBackend({
+      settingsDoc: { ...SETTINGS_V3, vulndb: { enabled: true, path: "/data/vulns.db" } },
+      vulnsCount: 7,
+    });
+    render(<SettingsView />);
+
+    expect(await screen.findByText("Vulnerability database")).toBeTruthy();
+    expect(screen.getByText("vuln database enabled")).toBeTruthy();
+    expect(screen.getByText("/data/vulns.db")).toBeTruthy();
+    // live open count from the stubbed GET /api/vulns
+    const countLine = await screen.findByText(/Open findings/);
+    expect(countLine.textContent).toContain("7");
+  });
+
+  it("renders the vulndb fallback when the settings payload lacks the section", async () => {
+    // default SETTINGS_V3 has no vulndb key; also simulate a 404 on /api/vulns
+    stubBackend({ vulnsStatus: 404 });
+    render(<SettingsView />);
+
+    expect(await screen.findByText(/not reported by this backend version/)).toBeTruthy();
+    expect(screen.queryByText("vuln database enabled")).toBeNull();
   });
 });

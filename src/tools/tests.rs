@@ -124,9 +124,8 @@ fn fin(mut v: Vec<Finding>) -> Vec<Finding> {
 
 #[test]
 fn policy_rejects_bad_args() {
-    let v = |a: &[&str]| {
-        validate_create_policy(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>())
-    };
+    let v =
+        |a: &[&str]| validate_create_policy(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
     assert!(v(&["--privileged"]).is_err());
     assert!(v(&["--network", "host"]).is_err());
     assert!(v(&["--network=host"]).is_err());
@@ -447,7 +446,12 @@ format = "sarif"
 "#,
     );
     let c = plugin_checks(&dir);
-    assert_eq!(c.len(), 1, "only the valid plugin loads: {:?}", c.iter().map(|x| &x.id).collect::<Vec<_>>());
+    assert_eq!(
+        c.len(),
+        1,
+        "only the valid plugin loads: {:?}",
+        c.iter().map(|x| &x.id).collect::<Vec<_>>()
+    );
     assert_eq!(c[0].id, "plugin.ok");
     assert!(c[0].intrusive);
     assert_eq!(c[0].kinds, vec![TargetKind::Web]);
@@ -653,7 +657,10 @@ fn official_supply_chain_packs_load() {
     let all = plugin_checks(&root);
     let ids: Vec<&str> = all.iter().map(|c| c.id.as_str()).collect();
     for want in ["plugin.grype", "plugin.osv-scanner"] {
-        assert!(ids.contains(&want), "{want} missing from official packs: {ids:?}");
+        assert!(
+            ids.contains(&want),
+            "{want} missing from official packs: {ids:?}"
+        );
     }
     let g = all.iter().find(|c| c.id == "plugin.grype").unwrap();
     assert_eq!(g.kinds, vec![TargetKind::Image]);
@@ -665,11 +672,15 @@ fn official_supply_chain_packs_load() {
     let gtoml = std::fs::read_to_string(root.join("grype/plugin.toml")).unwrap();
     let otoml = std::fs::read_to_string(root.join("osv-scanner/plugin.toml")).unwrap();
     assert_eq!(
-        toml::from_str::<toml::Value>(&gtoml).unwrap()["image"].as_str().unwrap(),
+        toml::from_str::<toml::Value>(&gtoml).unwrap()["image"]
+            .as_str()
+            .unwrap(),
         "anchore/grype:v0.121.3@sha256:13113eeceab017260370cf540e1d25442c59665fd07d1b09b66d63bb0c282887"
     );
     assert_eq!(
-        toml::from_str::<toml::Value>(&otoml).unwrap()["image"].as_str().unwrap(),
+        toml::from_str::<toml::Value>(&otoml).unwrap()["image"]
+            .as_str()
+            .unwrap(),
         "ghcr.io/google/osv-scanner:v2.7.0@sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0"
     );
 }
@@ -921,4 +932,418 @@ fn builtin_checks_registered() {
     ] {
         assert!(ids.iter().any(|x| x == i), "{i}");
     }
+}
+
+// ------------------------------------------------- scanner-native output parsers
+
+#[test]
+fn parse_nmap_reports_open_ports_only_on_up_hosts() {
+    let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<nmaprun scanner="nmap" version="7.94">
+<start>1700000000</start>
+<host><status state="up" reason="arp-response" ttl="64"/>
+<address addr="10.0.0.5" addrtype="ipv4"/>
+<address addr="00:11:22:33:44:55" addrtype="mac"/>
+<hostname name="web01.internal" type="PTR"/>
+<ports><port protocol="tcp" portid="22"><state state="open" reason="syn-ack"/>
+<service name="ssh" product="OpenSSH" version="8.9" extrainfo="protocol 2.0"/></port>
+<port protocol="tcp" portid="443"><state state="open" reason="syn-ack"/>
+<service name="https" tunnel="ssl"/></port>
+<port protocol="tcp" portid="3306"><state state="closed" reason="reset"/>
+<service name="mysql"/></port>
+</ports>
+<times srtt="123"/></host>
+<host><status state="down" reason="arp-response"/>
+<address addr="10.0.0.9" addrtype="ipv4"/>
+<hostport>34567</hostport></host>
+<runstats><finished time="1700000060"/></runstats>
+</nmaprun>"#;
+    let fs = super::plugins::parse_nmap("plugin.nmap", xml);
+    assert_eq!(fs.len(), 2, "ssh+https open, mysql closed, down host ignored: {fs:?}");
+    assert_eq!(fs[0].rule, "nmap-open-port");
+    assert!(fs[0].title.contains("ssh") && fs[0].title.contains("web01.internal"));
+    assert!(fs[0].detail.contains("OpenSSH"));
+    // 22 is not on the risky list, but even so ssh here is only low; 443 is low too.
+    assert_eq!(fs[0].severity, Severity::Low);
+    assert_eq!(fs[1].severity, Severity::Low);
+    assert!(fs.iter().all(|f| f.severity != Severity::High), "nmap never reports high");
+}
+
+#[test]
+fn parse_nmap_escalates_risky_ports() {
+    let xml = r#"<nmaprun><host><status state="up"/>
+<address addr="192.168.1.10" addrtype="ipv4"/>
+<ports>
+<port protocol="tcp" portid="445"><state state="open"/><service name="microsoft-ds"/></port>
+<port protocol="tcp" portid="8080"><state state="open"/><service name="http-proxy"/></port>
+</ports></host></nmaprun>"#;
+    let fs = super::plugins::parse_nmap("plugin.nmap", xml);
+    assert_eq!(fs.len(), 2);
+    assert_eq!(fs[0].severity, Severity::Medium, "SMB 445 is a risky port");
+    assert_eq!(fs[1].severity, Severity::Low, "8080 is ordinary surface");
+    assert_eq!(fs[0].location, "192.168.1.10:445");
+}
+
+#[test]
+fn parse_nikto_flags_known_items_medium() {
+    let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<nikto>
+<item id="000000001">
+<description><![CDATA[/admin/ [200] Admin login page found]]></description>
+<uri>/admin/</uri>
+</item>
+<item id="000000002">
+<description>OSVDB-100851: /wp-admin/admin-ajax.php: WordPress Plugin TimThumb 1.34 - 'src' Script Bypass / Cross-Site Scripting</description>
+<uri>/wp-admin/admin-ajax.php?src=1</uri>
+<osvdb>100851</osvdb>
+</item>
+<item id="000000003">
+<description>Server tokens changed from previous request: 'x-powered-by: PHP/5.6'</description>
+</item>
+<statistics id="000000100">
+<item count="1189" time="1188.34"/>
+</statistics>
+</nikto>"#;
+    let fs = super::plugins::parse_nikto("plugin.nikto", xml);
+    // The statistics block holds id-less `<item count=..>` entries; they carry no
+    // `<description>` and are skipped, so only the 3 real server items remain.
+    assert_eq!(fs.len(), 3, "described items only: {fs:?}");
+    assert!(fs.iter().all(|f| !f.title.contains("items passed")));
+    let osvdb = fs.iter().find(|f| f.location.contains("admin-ajax")).unwrap();
+    assert_eq!(osvdb.severity, Severity::Medium);
+    assert_eq!(osvdb.rule, "nikto-item");
+    assert!(osvdb.title.contains("TimThumb"));
+    assert!(osvdb.ids.iter().any(|i| i == "OSVDB-100851"));
+    let plain = fs.iter().find(|f| f.location == "/admin/").unwrap();
+    assert_eq!(plain.severity, Severity::Low);
+}
+
+#[test]
+fn parse_testssl_maps_severity_and_skips_ok_info() {
+    let text = r#"[
+{"section":"Testing --supported/ciphers","id":100,"severity":"INFO","finding":"Supported 275 ciphers"},
+{"section":"Testing with loglevel LOW","id":52,"severity":"OK","finding":"Server does not support any export grade ciphers"},
+{"section":"Testing HTTP header response","id":0,"severity":"INFO","finding":"HTTP status code 200"},
+{"section":"Service Detection","id":55,"severity":"LOW","finding":"Testing on ports HTTP/8080: Server in use by: nginx"},
+{"section":"Testing cipher ordering","id":9, "severity": "MEDIUM", "finding": "server preferred order suspicious"},
+{"section":"Testing for vulnerable cipher suites","id":20001,"severity":"CRITICAL","finding":"Cipher suite with known weakness: DES-CBC3-SHA"},
+{"section":"Testing on ports","id":52,"severity":"LOW","finding":""},
+{"section":"Testing SWEET32","id":9003,"severity":"HIGH","finding":"TLS_RSA_WITH_3DES_EDE_CBC3_SHA tested (positive): accepted"}
+]"#;
+    let fs = super::plugins::parse_testssl("plugin.testssl", text).unwrap();
+    assert_eq!(fs.len(), 4, "OK/INFO skipped, empty port probe skipped: {fs:?}");
+    assert!(fs.iter().all(|f| f.rule.starts_with("testssl.")));
+    let f = fs.iter().find(|f| f.rule == "testssl.20001").unwrap();
+    assert_eq!(f.severity, Severity::High, "CRITICAL caps at high");
+    assert!(f.title.contains("known weakness"));
+    let m = fs.iter().find(|f| f.rule == "testssl.9").unwrap();
+    assert_eq!(m.severity, Severity::Medium);
+    let l = fs.iter().find(|f| f.rule == "testssl.55").unwrap();
+    assert_eq!(l.severity, Severity::Low);
+    assert_eq!(fs.iter().find(|f| f.rule == "testssl.9003").unwrap().severity, Severity::High);
+}
+
+#[test]
+fn parse_testssl_tolerates_concatenated_objects_and_fails_on_garbage() {
+    let text = "Testing * OK, got connection\n\n{\"section\":\"X\",\"id\":7,\"severity\":\"HIGH\",\"finding\":\"breach viable, see example\"}\n";
+    let fs = super::plugins::parse_testssl("plugin.testssl", text).unwrap();
+    assert_eq!(fs.len(), 1);
+    assert!(fs[0].title.contains("breach viable"));
+    assert!(super::plugins::parse_testssl("plugin.testssl", "no json at all").is_err());
+}
+
+#[test]
+fn parse_sqlmap_reports_only_injectable_entries() {
+    let text = r#"{"http://target.tld/vuln.php?id=1": {
+  "type": "BOOLEAN-BASED BLIND",
+  "title": "Parameter 'id': Boolean-based blind",
+  "message": "Parameter 'id' is vulnerable. Do you want to keep testing the others (if any) [y/N]",
+  "value": "id=1 AND 2632=2632"
+},
+"http://target.tld/safe.php?x=1": {
+  "type": null,
+  "message": "Parameter 'x' does not seem to be injectable here"
+}}"#;
+    let fs = super::plugins::parse_sqlmap("plugin.sqlmap", text).unwrap();
+    assert_eq!(fs.len(), 1, "only the vulnerable parameter is reported: {fs:?}");
+    let f = &fs[0];
+    assert_eq!(f.rule, "sqlmap-injection");
+    assert_eq!(f.severity, Severity::High);
+    assert!(f.title.contains("SQL injection"), "{}", f.title);
+    assert!(f.title.contains("id"), "parameter named in title: {}", f.title);
+    assert!(f.location.contains("target.tld"));
+}
+
+#[test]
+fn parse_sqlmap_messages_shape_reports_technique() {
+    let text = r#"{"url": "http://shop.local/search?q=a", "messages": [
+      {"type": "information", "message": "GET parameter 'q' is vulnerable. 'Error-based' injectable"},
+      {"type": "information", "message": "heuristic (basic) test shows that the reflective GET parameter 'q' might not be injectable"}
+    ], "values": [{"parameter": "q", "type": "Error-based", "payload": "q=a'"}]}"#;
+    let fs = super::plugins::parse_sqlmap("plugin.sqlmap", text).unwrap();
+    assert_eq!(fs.len(), 1, "grouped per (url, param): {fs:?}");
+    assert_eq!(fs[0].severity, Severity::High);
+    assert!(fs[0].title.contains("q"), "{}", fs[0].title);
+    assert!(fs[0].title.contains("Error-based"), "{}", fs[0].title);
+    assert!(super::plugins::parse_sqlmap("plugin.sqlmap", "not json").is_err());
+}
+
+#[test]
+fn parse_portline_dedupes_and_ignores_noise() {
+    let text = r#" rustscan v0.5.2
+⚒ Starting scans
+12:30:15 [INFO] opening sockets
+127.0.0.1:8080 Open
+0.0.0.0:22 Open
+127.0.0.1:8080 Open
+10.0.0.4:53 ,
+garbage line with no pair
+Open (TCP) 10.0.0.4:443 Open
+"#;
+    let fs = super::plugins::parse_portline("plugin.rustscan", text);
+    assert_eq!(fs.len(), 4, "deduped (ip,port), timestamp `12:30` ignored: {fs:?}");
+    assert!(fs.iter().all(|f| f.rule == "rustscan-open-port"));
+    assert!(fs.iter().all(|f| f.severity == Severity::Low));
+    assert_eq!(fs.iter().filter(|f| f.title.contains("127.0.0.1:8080")).count(), 1, "once");
+    assert!(fs.iter().any(|f| f.title.contains("10.0.0.4:53")), "trailing comma trimmed");
+    assert!(fs.iter().any(|f| f.title.contains("10.0.0.4:443")));
+    assert!(fs.iter().any(|f| f.title.contains("0.0.0.0:22")));
+}
+
+#[test]
+fn portline_empty_with_zero_exit_stays_a_note_not_zero_findings_error() {
+    // exercise the same rule the runner applies: empty txt + exit 0 + stdout = clean
+    let note = exit_incompleteness("portline", 0, "");
+    assert!(note.is_none());
+    let note = exit_incompleteness("portline", 2, "bind failed");
+    assert!(note.unwrap().contains("exited 2"));
+    assert!(exit_incompleteness("lines", 3, "").is_none(), "lines stays exempt");
+    assert!(exit_incompleteness("sarif", 3, "").is_some(), "other formats still warn");
+}
+
+// ---------- ensure_packs: on-the-go plugin provisioning ----------
+
+/// Mini pack fixture: `stdout = true` + `format` keep it past reject_reason.
+fn setup_pack(dir: &std::path::Path, id: &str, image: &str, kinds: &str, profile: &str, cache_rw: bool) {
+    let p = dir.join(id);
+    std::fs::create_dir_all(&p).unwrap();
+    std::fs::write(
+        p.join("plugin.toml"),
+        format!(
+            "id = \"{id}\"\nkinds = [{kinds}]\nprofile = \"{profile}\"\nimage = \"{image}\"\nstdout = true\nformat = \"json\"\ncache_rw = {cache_rw}\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// Captured with a real (spawned) exit status: tests never need a docker daemon.
+fn cap_ok() -> Captured {
+    Captured {
+        status: Command::new("true").status().ok(),
+        stdout: vec![],
+        stdout_tail: vec![],
+        stderr: vec![],
+        truncated: false,
+        timed_out: false,
+    }
+}
+fn cap_fail(stderr: &str) -> Captured {
+    Captured {
+        status: Command::new("false").status().ok(),
+        stdout: vec![],
+        stdout_tail: vec![],
+        stderr: stderr.as_bytes().to_vec(),
+        truncated: false,
+        timed_out: false,
+    }
+}
+
+fn setup_settings(tag: &str, body: &str) -> PathBuf {
+    let f = scratch(tag).join("settings.toml");
+    std::fs::write(&f, body).unwrap();
+    f
+}
+
+#[test]
+fn ensure_packs_pulls_only_selectable_unpulled_packs() {
+    let dir = scratch("setup-sel");
+    setup_pack(&dir, "a", "demo/a@sha256:aaa", "\"repo\"", "quick", false);
+    setup_pack(&dir, "b", "demo/b@sha256:bbb", "\"repo\"", "quick", false);
+    setup_pack(&dir, "c", "demo/c@sha256:ccc", "\"web\"", "quick", false);
+    let st = crate::settings::Settings::load(Some(&setup_settings(
+        "setup-sel-st",
+        "[[toggle]]\nid = \"plugin.b\"\nenabled = \"off\"\n",
+    )))
+    .unwrap();
+    let pulled = std::cell::RefCell::new(vec![]);
+    let notes = ensure_packs(
+        &dir,
+        &st,
+        TargetKind::Repo,
+        false,
+        Profile::Deep,
+        false,
+        &|r| {
+            pulled.borrow_mut().push(r.to_string());
+            Ok(cap_ok())
+        },
+        &|_| false, // nothing present locally
+        &|| Ok(false),
+    );
+    assert_eq!(pulled.borrow().as_slice(), ["demo/a@sha256:aaa"], "b silenced, c wrong kind");
+    assert_eq!(notes, ["setup: pulled a image (first-run provisioning)"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ensure_packs_missing_dir_is_quiet() {
+    let dir = scratch("setup-missing").join("nope");
+    let st = crate::settings::Settings::load(None).unwrap();
+    let called = std::cell::Cell::new(false);
+    let notes = ensure_packs(
+        &dir,
+        &st,
+        TargetKind::Repo,
+        false,
+        Profile::Deep,
+        false,
+        &|_| {
+            called.set(true);
+            Ok(cap_ok())
+        },
+        &|_| false,
+        &|| Ok(false),
+    );
+    assert!(notes.is_empty() && !called.get(), "no packs, no pulls, no notes");
+}
+
+#[test]
+fn ensure_packs_seeds_cache_dir_only_when_new_and_dedups_images() {
+    let dir = scratch("setup-cache");
+    setup_pack(&dir, "g", "demo/g@sha256:ggg", "\"repo\"", "quick", true);
+    setup_pack(&dir, "h", "demo/g@sha256:ggg", "\"repo\"", "quick", true);
+    let st = crate::settings::Settings::load(None).unwrap();
+    let seeds = std::cell::Cell::new(0);
+    let notes = ensure_packs(
+        &dir,
+        &st,
+        TargetKind::Repo,
+        false,
+        Profile::Deep,
+        false,
+        &|_| Ok(cap_ok()),
+        &|_| false,
+        &|| {
+            seeds.set(seeds.get() + 1);
+            Ok(true)
+        },
+    );
+    assert_eq!(
+        notes,
+        [
+            "setup: pulled g image (first-run provisioning)",
+            "setup: created cache dir for g"
+        ],
+        "same image once, cache seeded once and noted only when new"
+    );
+    assert_eq!(seeds.get(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ensure_packs_offline_short_circuits() {
+    let dir = scratch("setup-off");
+    setup_pack(&dir, "a", "demo/a@sha256:aaa", "\"repo\"", "quick", true);
+    let st = crate::settings::Settings::load(None).unwrap();
+    let called = std::cell::Cell::new(false);
+    let notes = ensure_packs(
+        &dir,
+        &st,
+        TargetKind::Repo,
+        false,
+        Profile::Deep,
+        true, // offline
+        &|_| {
+            called.set(true);
+            Ok(cap_ok())
+        },
+        &|_| false,
+        &|| Ok(false),
+    );
+    assert!(notes.is_empty() && !called.get(), "offline never pulls or seeds");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ensure_packs_reports_pull_failure_and_unpinned_ref() {
+    let dir = scratch("setup-fail");
+    setup_pack(&dir, "f", "demo/f@sha256:fff", "\"repo\"", "quick", false);
+    setup_pack(&dir, "u", "demo/u:latest", "\"repo\"", "quick", false);
+    let st = crate::settings::Settings::load(None).unwrap();
+    let notes = ensure_packs(
+        &dir,
+        &st,
+        TargetKind::Repo,
+        false,
+        Profile::Deep,
+        false,
+        &|r| {
+            if r.starts_with("demo/f") {
+                Ok(cap_fail("Error response from daemon: toomanyrequests: rate limit"))
+            } else {
+                Ok(cap_ok())
+            }
+        },
+        &|_| false,
+        &|| Ok(false),
+    );
+    assert_eq!(notes.len(), 3, "{notes:?}");
+    assert!(
+        notes[0].starts_with("setup: pull failed for f (Error response from daemon")
+            && notes[0].ends_with("); scan will attempt it on demand"),
+        "{:?}",
+        notes[0]
+    );
+    assert_eq!(notes[1], "setup: u image is unpinned; provision it with a digest-pinned ref");
+    assert_eq!(notes[2], "setup: pulled u image (first-run provisioning)", "unpinned still pulls");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn ensure_packs_present_images_skipped_and_profile_gate_holds() {
+    let dir = scratch("setup-present");
+    setup_pack(&dir, "p", "demo/p@sha256:ppp", "\"repo\"", "deep", false);
+    let st = crate::settings::Settings::load(None).unwrap();
+    static PULLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    fn recorder(_r: &str) -> std::io::Result<Captured> {
+        PULLED.store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(cap_ok())
+    }
+    // standard profile < pack's deep profile: not selectable, nothing pulled.
+    let notes = ensure_packs(
+        &dir,
+        &st,
+        TargetKind::Repo,
+        false,
+        Profile::Standard,
+        false,
+        &recorder,
+        &|_| false,
+        &|| Ok(false),
+    );
+    assert!(notes.is_empty() && !PULLED.load(std::sync::atomic::Ordering::SeqCst), "deep pack not selected under standard");
+    // present image: selected but already local -> no pull, no notes.
+    let notes = ensure_packs(
+        &dir,
+        &st,
+        TargetKind::Repo,
+        false,
+        Profile::Deep,
+        false,
+        &recorder,
+        &|_| true,
+        &|| Ok(false),
+    );
+    assert!(notes.is_empty() && !PULLED.load(std::sync::atomic::Ordering::SeqCst), "present image is never re-pulled");
+    let _ = std::fs::remove_dir_all(&dir);
 }

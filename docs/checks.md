@@ -1,6 +1,6 @@
 # Check catalog
 
-List the live registry with `readyhai checks` (columns: id, kinds, min profile, tool or `native`, title, `[intrusive]`). 45 built-in checks (2 `[intrusive]`: `tool.zap_active` and `qa.resilience`); plugins add more. Columns below: **Tool** is the container image key in `tools.lock.toml`, or `native`.
+List the live registry with `readyhai checks` (columns: id, kinds, min profile, tool or `native`, title, `[intrusive]`). 46 built-in checks (2 `[intrusive]`: `tool.zap_active` and `qa.resilience`); plugins add more. Columns below: **Tool** is the container image key in `tools.lock.toml`, or `native`.
 
 ## Check index
 
@@ -12,6 +12,7 @@ List the live registry with `readyhai checks` (columns: id, kinds, min profile, 
 | `readiness.k8s` | repo | quick | native | Plaintext Secret manifests, privileged, host network, missing probes/limits, run-as-root, `:latest` images |
 | `readiness.ci` | repo | quick | native | Missing CI, scanners that can never fail or are skipped, missing SAST/secret/dependency scan stages |
 | `readiness.repo` | repo | quick | native | Tracked secret-bearing files, no README, no tests, no `/health`, no OpenTelemetry |
+| `wireguard` | repo | quick | native | Committed wg-quick keys, key reuse, default-route `AllowedIPs`, weak keys, ListenPort conflicts, missing `Address=`, missing keepalive |
 | `security.code_audit` | repo | quick | native | Native Tree-sitter AST & cross-file (up to 3 hops) taint tracking (SQLi, CMDi, SSRF, path traversal, SSTI) and sibling auth middleware inconsistencies (Python, JS/TS, Go, PHP) |
 | `tool.gitleaks` | repo | quick | gitleaks | Secrets in the snapshot (redacted) |
 | `tool.sbom_cve` | repo, image | quick | syft + grype | SBOM, known CVEs with EPSS and KEV |

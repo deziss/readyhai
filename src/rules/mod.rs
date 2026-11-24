@@ -7,6 +7,7 @@ pub mod dockerfile;
 pub mod facts;
 pub mod k8s;
 pub mod repo;
+pub mod wireguard;
 
 #[cfg(test)]
 mod tests;
@@ -81,5 +82,10 @@ pub fn checks() -> Vec<Check> {
         ),
         repo_check("readiness.ci", "CI pipeline security stages", ci::ci_check),
         repo_check("readiness.repo", "Repository hygiene", repo::repo_check_fn),
+        repo_check(
+            "wireguard",
+            "WireGuard config audit",
+            wireguard::wireguard_check,
+        ),
     ]
 }

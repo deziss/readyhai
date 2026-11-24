@@ -15,6 +15,9 @@ pub struct Facts {
     pub lockfiles: Vec<String>,
     /// Jenkinsfile*, .github/workflows/*.y*ml, .gitlab-ci.yml
     pub ci_files: Vec<String>,
+    /// wg-quick style WireGuard configs (*.conf / *.wgconfig whose content parses
+    /// with an [Interface]/[Peer] section plus a WG directive).
+    pub wg_files: Vec<String>,
     pub has_readme: bool,
     pub has_tests: bool,
     pub has_health_route: bool,

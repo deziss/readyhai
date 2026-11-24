@@ -82,6 +82,16 @@ Principles:
   `readyhai doctor` prints a `plugins:` section with per-pack loaded/skipped reasons
   from a single validator shared with the loader (`plugin_diags`). `cargo test
   --all-targets` green (932) + clippy adds no new errors on touched files.
+- **Next (v3.6.0, Nov 23) — Network attack lane + finding memory:** ✅ shipped —
+  `nmap`, `rustscan`, `testssl`, `sqlmap`, `nikto` official packs (digest-pinned;
+  five new native output formats `nmap`/`portline`/`testssl`/`sqlmap`/`nikto-xml`,
+  since these tools emit no SARIF), plus lazy on-the-go provisioning of pack images
+  (`setup:` notes) and the built-in `wireguard` repo check in place of a WiFi/WG
+  image (impossible in the `--cap-drop ALL` sandbox). Cross-target vulnerability
+  database (`readyhai vulns`, `GET/POST /api/vulns`, Vulns tab, `[vulndb]`) is the
+  first slice of items 8/9 below: deterministic fingerprint dedupe
+  (rule×target×resource) with `open`/`accepted`/`forgotten` lifecycle. DefectDojo and
+ Finding v2 projections still pending.
 
 ## Orchestrator 0.x backlog (research-validated, effort-sized)
 

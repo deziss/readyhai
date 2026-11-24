@@ -12,6 +12,7 @@
 | `rbac.toml` | `READYHAI_RBAC_FILE` (serve) | none = RBAC off |
 | `tools.lock.toml` | `READYHAI_TOOLS_LOCK` | copy embedded in the binary at build time |
 | plugins | `--plugins DIR` or `READYHAI_PLUGINS` | none |
+| vuln database | `[vulndb] path` in `settings.toml` | `<data>/vulns/vulns.jsonl` (written on the first recorded finding) |
 
 Unknown keys in `readyhai.toml` are ignored (serde defaults), but a TOML syntax error aborts the scan with exit 3. In server mode (REST/MCP) `--policy` and `--config` cannot be passed: the default policy is used, and the target's own `readyhai.toml` is read.
 
@@ -183,6 +184,8 @@ title_prefix = "HTTP surface"      # finding title becomes "<prefix>: <value>"
 
 Plugins marked `intrusive = true` (or `profile = "deep"`) run only on targets the scope file does not mark `prod`, like built-in intrusive checks. ReadyHai's own verified plugin pack lives in [`../plugins/official/`](../plugins/README.md).
 
+**On-the-go setup** (v3.6.0): `readyhai tools pull --plugins DIR` is optional. At scan start the engine provisions the packs it is about to run — digest-pinned images that aren't in the local Docker store are pulled, pack cache dirs are created — and every action is reported as a `setup:` note in the run notes. Offline bundle mode skips provisioning. A failed pre-pull is never fatal: the plugin run still pulls on demand, and a missing image degrades to the usual `tool_failed`/partial status instead of failing the run.
+
 ## Settings (tool/plugin toggles)
 
 `--settings <file>` (or `READYHAI_SETTINGS`) points at an operator-owned TOML file that switches integrations on or off per check, per glob, or per category. Start from [`../settings.example.toml`](../settings.example.toml). A file that fails to parse or validate is a hard error — a silently-ignored settings file must never flip an integration the operator meant to keep off. A scanned repo's own files are **never** consulted for settings.
@@ -199,6 +202,52 @@ enabled = "off"
 ```
 
 Resolution per check: exact `[[toggle]]` id > last matching glob > category switch > `auto`. `off` produces a normal `Skipped` status with a visible reason in the report — a toggle never hides coverage. `on` only protects a check from *settings*; the profile, scope-nonprod, `--no-tools` and Docker gates keep their authority. The precedence mirrors how tools like Trivy and Nuclei layer config (flag > env > file > defaults), same as the rest of ReadyHai: `--settings` > `READYHAI_SETTINGS` > none. Design choices follow verified OSS precedents: tri-state mirrors Wazuh's `<disabled>` wodle switch (auto answers "why didn't it run"); the kill-switch-that-can-only-narrow mirrors github-mcp-server's `--read-only` beating explicit `--tools`; per-file-not-per-flag selectors with hard-fail on an unparseable file follow Trivy's `trivy.yaml`; opaque plugin option pass-through follows DefectDojo's `Tool_Configuration.extras`.
+
+The same file carries the vulnerability-database section:
+
+```toml
+[vulndb]
+enabled = true    # scans record warn/fail findings into the DB (default true)
+# path = "/var/lib/readyhai/vulns/vulns.jsonl"   # default <data>/vulns/vulns.jsonl
+```
+
+`enabled = false` stops recording; existing rows and `readyhai vulns` keep working. An empty/whitespace `path` is rejected at load like any other bad setting. `GET`/`PUT /api/settings` expose the same two fields (`effective.vulndb`); an absent `vulndb` in a `PUT` body carries the stored values over, `path: null` clears the override.
+
+## Vulnerability database (vulndb)
+
+One local JSONL file — `<data>/vulns/vulns.jsonl`, or `[vulndb] path` — holds every warn/fail finding ReadyHai has recorded across all targets, so triage isn't redone scan after scan. After a scan (any target kind) finishes, findings with status warn/fail are appended: one row per `target + kind + rule + resource`, keyed by a 24-hex-char **fingerprint** (SHA-256 prefix). Re-observing a finding bumps `occurrences` and `last_seen` instead of duplicating the row. The run notes say what happened: `vulndb: N finding(s) recorded in <path> (X new, Y seen again)`. Recording is on by default and never changes a verdict or exit code; the file lives in the data dir, is capped at 10 MB (a rewrite beyond the cap is refused with a note), and needs no database server.
+
+Each row carries `fingerprint, target, target_key, kind, rule, title, severity, resource, first_seen, last_seen, occurrences, status, message`. Statuses are `open`, `accepted`, `forgotten`:
+
+- `accepted` and `forgotten` survive re-observation — the counters move, the decision stands. An `accepted` finding re-recorded at a *different severity* falls back to `open` (a High that became Critical is a new decision).
+- Setting `open` again is allowed (re-open) from CLI, API or UI.
+
+```bash
+readyhai vulns                                  # open findings (table)
+readyhai vulns --json                           # machine-readable
+readyhai vulns --status accepted --target https://staging.example.com
+readyhai vulns --all                            # no status filter
+readyhai vulns accept 4f2a91c7d3                # 6+ chars, unique prefix is enough
+readyhai vulns forget 4f2a91c7d3
+```
+
+`readyhai vulns` reads only the file — no scan, no Docker, no network. The columns are `FINGERPRINT SEVERITY CHECK TARGET SEEN STATUS RULE/RESOURCE`. The same rows are served by `GET /api/vulns` and triaged by `POST /api/vulns/{fingerprint}` ([api.md](api.md)), and the web **Vulns** view renders them.
+
+## WireGuard config audit (`wireguard`)
+
+A built-in repo check (v3.6.0) that reads `*.conf` / `*.wgconfig` files in the repo — no container. A file is only parsed as WireGuard when it has an `[Interface]` or `[Peer]` section *and* a WireGuard directive (`PrivateKey`, `AllowedIPs`, `Endpoint`, …), so an unrelated `nginx.conf` is left alone. Findings never echo key material: values are redacted to length/shape, and keys are compared by value, not printed.
+
+| Rule | Severity | Detection |
+|---|---|---|
+| `wireguard.private-key-committed` | high | `PrivateKey=` / `PresharedKey=` value committed to the repo (redacted in the finding) |
+| `wireguard.key-reuse` | medium | the same key value used by more than one peer or file (identity collision / blast radius) |
+| `wireguard.allowed-ips-overreach` | medium | `AllowedIPs = 0.0.0.0/0` or `::/0` — full-tunnel default route on a peer |
+| `wireguard.weak-key-material` | medium | key material that isn't 32 bytes of base64, or all-zero |
+| `wireguard.listen-port-conflict` | medium | the same `ListenPort` on more than one `[Interface]` in the tree |
+| `wireguard.missing-address` | medium | `[Interface]` without `Address=` (tunnel comes up unroutable) |
+| `wireguard.no-keepalive` | low | a peer with `Endpoint=` and no `PersistentKeepalive` (NAT drops the mapping) |
+
+It runs as a quick-profile repo check, so it's part of a plain `readyhai scan .`; it appears as the `wireguard` check and is togglable like any other check.
 
 ## RBAC (rbac.toml)
 

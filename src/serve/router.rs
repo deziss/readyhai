@@ -8,6 +8,7 @@ use super::guards::err;
 use super::network_api::*;
 use super::scans::*;
 use super::settings_api::{api_rbac_get, api_settings_checks, api_settings_delete, api_settings_get, api_settings_put};
+use super::vulns_api::{api_vulns_get, api_vulns_status_post};
 use super::types::{App, FORCED_SHUTDOWN, MAX_CONCURRENT_PROBES, SHUTDOWN_REAP_PER_CALL};
 use super::worker::{claims_run, handle_startup_runs, init_server_id, run_timeout, worker, worker_count, write_status};
 use anyhow::Result;
@@ -206,6 +207,8 @@ pub fn build_router(app: Arc<App>) -> Router {
         .route("/api/settings", get(api_settings_get).put(api_settings_put).delete(api_settings_delete))
         .route("/api/settings/checks", get(api_settings_checks))
         .route("/api/rbac", get(api_rbac_get))
+        .route("/api/vulns", get(api_vulns_get))
+        .route("/api/vulns/{fp}", post(api_vulns_status_post))
         .route("/checks", get(list_checks))
         .route("/runs", post(create_run).get(list_runs))
         .route("/runs/{id}", get(get_run))

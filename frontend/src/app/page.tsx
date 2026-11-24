@@ -11,6 +11,7 @@ import { ScansHistoryView } from "@/components/ScansHistoryView";
 import { AgentHistoryView } from "@/components/AgentHistoryView";
 import { NetworkLabView } from "@/components/NetworkLabView";
 import { SettingsView } from "@/components/SettingsView";
+import { VulnsView } from "@/components/VulnsView";
 import { FloatingTaskWidget, ActiveTaskItem, newTaskInstanceId } from "@/components/FloatingTaskWidget";
 import { apiRequest, errorText, notify, useApiTokenVersion } from "@/lib/api";
 import {
@@ -622,12 +623,17 @@ export default function Home() {
         />
       </div>
 
-      {/* 5. Settings (persistent background mount) */}
+      {/* 5. Vulns (persistent background mount) */}
+      <div className={`flex-1 min-h-0 overflow-hidden ${activeView === "vulns" ? "flex flex-col" : "hidden"}`}>
+        <VulnsView />
+      </div>
+
+      {/* 6. Settings (persistent background mount) */}
       <div className={`flex-1 min-h-0 overflow-hidden ${activeView === "settings" ? "flex flex-col" : "hidden"}`}>
         <SettingsView onBackToStudio={() => setActiveView("studio")} />
       </div>
 
-      {/* 6. Floating task status window */}
+      {/* 7. Floating task status window */}
       <FloatingTaskWidget
         tasks={activeTasks}
         currentView={activeView}

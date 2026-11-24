@@ -1,11 +1,11 @@
 //! Core scan orchestrator pipeline.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Instant;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
-use super::deadline::{deadline_passed, DeadlineGuard};
+use super::deadline::{DeadlineGuard, deadline_passed};
 use super::git::{clone_url, git_clone, git_timeout};
 use super::storage::{data_dir, default_baseline_path, now, run_dir, today, write_atomic};
 use super::target_parser::parse_target;
@@ -241,6 +241,22 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
             p.display()
         ));
     }
+    // On-the-go setup: pre-provision plugin packs this scan would select
+    // (digest-pinned image pull + cache dir seeding) so the first plugin check
+    // doesn't stall on a big pull inside its own budget. Best-effort notes only.
+    if !opts.no_tools && ctx.docker.available && let Some(pdir) = &opts.plugins {
+        notes.extend(crate::tools::ensure_packs(
+            pdir,
+            &settings,
+            target.kind,
+            has_repo,
+            profile,
+            crate::bundle::offline(),
+            &crate::tools::setup_pull,
+            &|r| crate::tools::local_image_id(r).is_some(),
+            &|| crate::tools::setup_seed_cache(&ctx.docker.cache_dir),
+        ));
+    }
     for c in checks::all(opts.plugins.as_deref()) {
         let kind_ok =
             c.kinds.contains(&target.kind) || has_repo && c.kinds.contains(&TargetKind::Repo);
@@ -337,6 +353,13 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
             .then(b.severity.cmp(&a.severity))
             .then(a.rule.cmp(&b.rule))
     });
+    // Global vulnerability database: remember this run's actionable findings across targets
+    // (`readyhai vulns`). Advisory on purpose — the hook cannot fail, and its outcome is a
+    // note in the report like any other side effect. Suppressions are already applied, so a
+    // suppressed finding is not recorded.
+    if let Some(note) = crate::vulndb::record_run(&settings, &target.raw, &findings) {
+        notes.push(note);
+    }
     let pol = Policy::load(opts.policy.as_deref())?;
     let (verdict, reasons) = policy::verdict(&pol, &findings, &results);
 
