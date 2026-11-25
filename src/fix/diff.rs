@@ -10,9 +10,7 @@ pub fn compute_unified_diff(file_path: &str, old_src: &str, new_src: &str) -> St
     let new_lines: Vec<&str> = new_src.lines().collect();
 
     let mut start = 0;
-    while start < old_lines.len()
-        && start < new_lines.len()
-        && old_lines[start] == new_lines[start]
+    while start < old_lines.len() && start < new_lines.len() && old_lines[start] == new_lines[start]
     {
         start += 1;
     }

@@ -70,7 +70,10 @@ pub(crate) fn is_walled(r: &DiscoveredRoute) -> bool {
 /// FIRST hop) in discovery. A redirect the executor follows (`redirected`: discovery recorded the
 /// chain) is expected to end on a 2xx page; one with no recorded chain is expected to redirect
 /// again (and the executor then does not follow it).
-pub(crate) fn liveness_expectation(status: Option<u16>, redirected: bool) -> (Option<u16>, &'static str) {
+pub(crate) fn liveness_expectation(
+    status: Option<u16>,
+    redirected: bool,
+) -> (Option<u16>, &'static str) {
     match status {
         Some(200..=299) => (Some(200), "HTTP 200 OK with a valid response"),
         Some(300..=399) if redirected => (

@@ -1,5 +1,5 @@
-use std::path::Path;
 use serde_json::{Value, json};
+use std::path::Path;
 
 use super::html_analyzer::looks_like_api_or_static;
 use super::models::{BrowserSecReport, target_url_for_component};

@@ -2,11 +2,11 @@ use std::collections::HashSet;
 
 use anyhow::{Context, Result};
 
+use super::client::container_url;
+use super::smoke::gate;
 use crate::ctx::Ctx;
 use crate::model::*;
 use crate::tools::ToolSpec;
-use super::client::container_url;
-use super::smoke::gate;
 
 pub fn is_missing_image(s: &str) -> bool {
     let l = s.to_lowercase();

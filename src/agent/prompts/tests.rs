@@ -28,9 +28,12 @@ fn test_prompt_fencing_escapes_closing_tags() {
         assert!(fenced.ends_with(TARGET_CONTENT_TAG_CLOSE));
 
         // The inner body must not contain any un-neutralized target content tags
-        let inner = &fenced[TARGET_CONTENT_TAG_OPEN.len()..fenced.len() - TARGET_CONTENT_TAG_CLOSE.len()];
+        let inner =
+            &fenced[TARGET_CONTENT_TAG_OPEN.len()..fenced.len() - TARGET_CONTENT_TAG_CLOSE.len()];
         assert!(
-            !inner.to_ascii_lowercase().contains("target_untrusted_content"),
+            !inner
+                .to_ascii_lowercase()
+                .contains("target_untrusted_content"),
             "Failed to neutralize tag in inner: '{inner}' (from payload '{payload}')"
         );
         assert!(inner.contains("[target-content-tag]"));
@@ -55,7 +58,10 @@ fn test_prompt_builder_system_and_user() {
         .with_canary("CANARY_12345678")
         .with_schema(r#"{"status": "ok"}"#)
         .with_fenced_target("SERVER BANNER", "Apache/2.4.41 (Ubuntu)")
-        .with_fenced_json("STATUS DATA", &serde_json::json!({"code": 200, "status": "active"}));
+        .with_fenced_json(
+            "STATUS DATA",
+            &serde_json::json!({"code": 200, "status": "active"}),
+        );
 
     let sys = builder.build_system();
     assert!(sys.contains("You are a test agent."));
@@ -65,7 +71,11 @@ fn test_prompt_builder_system_and_user() {
     let user = builder.build_user();
     assert!(user.contains("Perform test analysis."));
     assert!(user.contains("=== SERVER BANNER ==="));
-    assert!(user.contains("<target_untrusted_content>Apache/2.4.41 (Ubuntu)</target_untrusted_content>"));
+    assert!(
+        user.contains(
+            "<target_untrusted_content>Apache/2.4.41 (Ubuntu)</target_untrusted_content>"
+        )
+    );
     assert!(user.contains("=== STATUS DATA ==="));
     assert!(user.contains("<target_untrusted_content>"));
     assert!(user.contains("=== OPERATIONAL GUIDELINES ==="));
@@ -165,13 +175,8 @@ fn test_react_mutator_prompt_contract() {
     })];
     let routes = vec![serde_json::json!({"path": "/api/items", "method": "GET"})];
 
-    let user = build_adaptive_mutator_user_prompt(
-        2,
-        &routes,
-        &anomalies,
-        Some("CANARY_TEST_123"),
-        6,
-    );
+    let user =
+        build_adaptive_mutator_user_prompt(2, &routes, &anomalies, Some("CANARY_TEST_123"), 6);
 
     assert!(user.contains("In wave 2, execution observed HTTP anomalies"));
     assert!(user.contains("OBSERVED ANOMALIES & RAW ERROR RESPONSES"));

@@ -92,22 +92,20 @@ pub fn doctor() -> Result<()> {
 
     println!("tools:");
     for (name, e) in tools::lock_entries() {
-        let by_id = e
-            .id
-            .as_deref()
-            .filter(|i| tools::local_image_id(i).is_some());
+        let by_id =
+            e.id.as_deref()
+                .filter(|i| tools::local_image_id(i).is_some());
         let present = dv.is_some() && tools::image_present(&name);
         let pinned = by_id.is_some() || e.digest.starts_with("sha256:");
-        let id = e
-            .id
-            .as_deref()
-            .map(|i| {
-                i.trim_start_matches("sha256:")
-                    .chars()
-                    .take(12)
-                    .collect::<String>()
-            })
-            .unwrap_or_else(|| "-".into());
+        let id =
+            e.id.as_deref()
+                .map(|i| {
+                    i.trim_start_matches("sha256:")
+                        .chars()
+                        .take(12)
+                        .collect::<String>()
+                })
+                .unwrap_or_else(|| "-".into());
         let mark = if present { " " } else { "!" };
         println!(
             "{mark} {:<12} present={:<5} pinned={:<5} id={id}  {}",

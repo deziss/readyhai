@@ -1,6 +1,6 @@
 //! Specification file parsing and validation for evaluation test suites.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 
 use super::types::{EvalOpts, SuiteKind, SuiteSpec};

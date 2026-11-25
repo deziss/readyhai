@@ -2,7 +2,6 @@
 
 #![allow(unused_imports)]
 
-use super::*;
 use super::baseline::*;
 use super::directives::*;
 use super::helpers::*;
@@ -10,6 +9,7 @@ use super::llm::*;
 use super::openapi::*;
 use super::surface::*;
 use super::types::*;
+use super::*;
 
 use crate::agent::change::ChangeSet;
 use crate::agent::discover::{Discovery, SpecDoc};
@@ -22,7 +22,6 @@ use crate::llm::{Budget, LlmConfig};
 use crate::qa::api::spec::Op as ApiOp;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
-
 
 fn route(path: &str, status: u16) -> DiscoveredRoute {
     DiscoveredRoute {
@@ -51,9 +50,9 @@ fn empty_discovery_yields_a_grounded_root_plan_and_never_panics() {
     let out = plan_cases(None, "http://h", "standard", &d, None, &Credentials::none());
     assert!(!out.cases.is_empty());
     assert!(
-        out.cases.iter().all(|c| c.component == "/"
-            || c.component == "/.env"
-            || c.component == "/.git/config"),
+        out.cases
+            .iter()
+            .all(|c| c.component == "/" || c.component == "/.env" || c.component == "/.git/config"),
         "{:?}",
         out.cases.iter().map(|c| &c.component).collect::<Vec<_>>()
     );
@@ -120,9 +119,11 @@ fn crawl_plan_is_grounded_on_real_routes() {
         && c.role.as_deref() == Some("forged")
         && c.component == "/admin"
         && c.secured == Some(true)));
-    assert!(out.cases.iter().any(|c| c.technique == "boundary"
-        && c.method == "POST"
-        && c.component == "/events.php"));
+    assert!(
+        out.cases.iter().any(|c| c.technique == "boundary"
+            && c.method == "POST"
+            && c.component == "/events.php")
+    );
     // GET payloads are plain k=v (the executor puts them in the query string)
     assert!(
         out.cases
@@ -291,9 +292,7 @@ fn openapi_plan_uses_ops_from_doc_secured_and_contract_info() {
             c.component == "/orders/1" && c.method == "GET" && c.technique == "state_transition"
         })
         .expect("contract case");
-    assert!(
-        ord.expect_fields.iter().any(|f| f == "total") && ord.role.as_deref() == Some("user")
-    );
+    assert!(ord.expect_fields.iter().any(|f| f == "total") && ord.role.as_deref() == Some("user"));
 }
 
 #[test]
@@ -301,8 +300,7 @@ fn llm_raw_cases_are_validated_against_discovered_routes() {
     let routes = vec![route("/", 200), route("/orders/{id}", 0)];
     let known = Known::new(&routes);
     let creds = Credentials::none();
-    let ok =
-        |j: &str| validate_raw(&serde_json::from_str::<RawCase>(j).unwrap(), &known, &creds);
+    let ok = |j: &str| validate_raw(&serde_json::from_str::<RawCase>(j).unwrap(), &known, &creds);
     assert!(ok(r#"{"title":"t","component":"/","method":"post","technique":"boundary","payload":{"a":1},"expected_status":422}"#).is_ok());
     assert_eq!(
         ok(r#"{"title":"t","component":"/orders/42","technique":"authz"}"#)
@@ -566,9 +564,8 @@ fn openapi_bola_pairs_a_post_only_with_the_get_of_the_same_resource() {
     };
     let body = serde_json::json!({"requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"name": {"type": "string"}}}}}}});
     // unrelated POST /orders and GET /users/{id}: no stateful case
-    let out = build(
-        serde_json::json!({"/orders": {"post": body.clone()}, "/users/{id}": {"get": {}}}),
-    );
+    let out =
+        build(serde_json::json!({"/orders": {"post": body.clone()}, "/users/{id}": {"get": {}}}));
     assert!(
         out.cases.iter().all(|c| c.stateful_steps.is_none()),
         "unrelated resources must not be paired"
@@ -589,9 +586,8 @@ fn openapi_bola_pairs_a_post_only_with_the_get_of_the_same_resource() {
     );
     assert_eq!(c.component, "/orders");
     // GET /orders/{id}/items is a different resource
-    let out = build(
-        serde_json::json!({"/orders": {"post": body}, "/orders/{id}/items": {"get": {}}}),
-    );
+    let out =
+        build(serde_json::json!({"/orders": {"post": body}, "/orders/{id}/items": {"get": {}}}));
     assert!(out.cases.iter().all(|c| c.stateful_steps.is_none()));
     assert!(
         is_item_path_of("/orders", "/orders/{id}")
@@ -628,8 +624,7 @@ fn write_cases_never_target_id_one_and_the_stateful_body_follows_the_schema() {
     }
     let spec = d.spec.as_ref().unwrap();
     let body: Value =
-        serde_json::from_str(&synth_request_body(&spec.doc, "/orders", "POST").unwrap())
-            .unwrap();
+        serde_json::from_str(&synth_request_body(&spec.doc, "/orders", "POST").unwrap()).unwrap();
     assert!(body["item"].is_string() && body["qty"].is_i64(), "{body}");
     assert!(synth_request_body(&spec.doc, "/orders/{id}", "GET").is_none());
 }
@@ -1318,9 +1313,7 @@ fn quick_plans_no_contract_reads_and_no_probes() {
         "{:?}",
         out.cases
     );
-    assert!(
-        plans_from_spec("standard") && plans_from_spec("deep") && !plans_from_spec("Quick")
-    );
+    assert!(plans_from_spec("standard") && plans_from_spec("deep") && !plans_from_spec("Quick"));
 }
 
 #[test]
@@ -1341,7 +1334,8 @@ fn a_spec_that_is_not_openapi_3_falls_back_to_the_legacy_plan() {
 
 #[test]
 fn oversized_response_schemas_are_not_carried_and_the_plan_says_so() {
-    let big: Value = serde_json::json!({"type": "object", "description": "x".repeat(MAX_CONTRACT_SCHEMA + 1)});
+    let big: Value =
+        serde_json::json!({"type": "object", "description": "x".repeat(MAX_CONTRACT_SCHEMA + 1)});
     let doc = serde_json::json!({"openapi": "3.0.0", "paths": {"/a": {"get": {"responses": {
         "200": {"description": "ok", "content": {"application/json": {"schema": big}}},
         "404": {"description": "nf"}}}}}});
@@ -1888,8 +1882,7 @@ fn a_login_redirect_blocks_the_input_techniques_instead_of_calling_them_not_appl
     assert_eq!(rows.len(), 3);
     assert!(
         rows.iter()
-            .all(|c| c.source.as_deref() == Some(SRC_AUTH_WALL)
-                && c.title.contains("login wall")),
+            .all(|c| c.source.as_deref() == Some(SRC_AUTH_WALL) && c.title.contains("login wall")),
         "{:?}",
         rows.iter().map(|c| &c.title).collect::<Vec<_>>()
     );
@@ -2301,16 +2294,16 @@ fn empty_discovery_with_operator_instructions_fallbacks_to_root_and_instruction_
         expected_status: Some(401),
         risk_level: Some("high".into()),
     };
-    let c = validate_raw(&raw_url, &effective_known, &creds)
-        .expect("full URL should resolve to path");
+    let c =
+        validate_raw(&raw_url, &effective_known, &creds).expect("full URL should resolve to path");
     assert_eq!(c.component, "/api/auth/session");
 
     let raw_slash = RawCase {
         component: "/api/auth/session/".into(),
         ..raw_url.clone()
     };
-    let c2 = validate_raw(&raw_slash, &effective_known, &creds)
-        .expect("trailing slash should resolve");
+    let c2 =
+        validate_raw(&raw_slash, &effective_known, &creds).expect("trailing slash should resolve");
     assert_eq!(c2.component, "/api/auth/session");
 
     let raw_query = RawCase {
@@ -2383,10 +2376,19 @@ fn test_attack_dag_resolution() {
     use super::dag::{AttackDag, AttackDagNode};
     let mut dag = AttackDag::new();
     dag.add_node(AttackDagNode::new("setup_user", vec![]));
-    dag.add_node(AttackDagNode::new("escalate_role", vec!["setup_user".into()]));
-    dag.add_node(AttackDagNode::new("exfiltrate_tenant", vec!["escalate_role".into()]));
+    dag.add_node(AttackDagNode::new(
+        "escalate_role",
+        vec!["setup_user".into()],
+    ));
+    dag.add_node(AttackDagNode::new(
+        "exfiltrate_tenant",
+        vec!["escalate_role".into()],
+    ));
     let sorted = dag.topological_order().expect("cycle detected");
-    assert_eq!(sorted, vec!["setup_user", "escalate_role", "exfiltrate_tenant"]);
+    assert_eq!(
+        sorted,
+        vec!["setup_user", "escalate_role", "exfiltrate_tenant"]
+    );
 }
 
 #[test]
@@ -2454,7 +2456,10 @@ fn test_synthesize_attack_dag_deterministic() {
     );
     assert_eq!(dag.nodes.len(), 3);
     let order = dag.topological_order().expect("valid topological order");
-    assert_eq!(order, vec!["setup_user", "escalate_role", "exfiltrate_tenant"]);
+    assert_eq!(
+        order,
+        vec!["setup_user", "escalate_role", "exfiltrate_tenant"]
+    );
 }
 
 #[test]
@@ -2473,7 +2478,10 @@ fn test_dynamic_directives_json_parsing_and_synthesis() {
         "canary_token": "CANARY_RECON_7A3B"
     }"#;
     let cases = super::directives::plan_directives(directives_json, &d, &Credentials::none());
-    assert!(!cases.is_empty(), "expected synthesized cases from dynamic directives");
+    assert!(
+        !cases.is_empty(),
+        "expected synthesized cases from dynamic directives"
+    );
     assert!(
         cases
             .iter()
@@ -2501,7 +2509,9 @@ fn test_dynamic_directives_json_parsing_and_synthesis() {
 
 #[test]
 fn test_attack_dag_prerequisite_guard_execution_and_clean_defect_metrics() {
-    use super::dag::{is_prerequisite_skipped, AttackDag, AttackDagNode, SKIPPED_PREREQUISITE_FAILED};
+    use super::dag::{
+        AttackDag, AttackDagNode, SKIPPED_PREREQUISITE_FAILED, is_prerequisite_skipped,
+    };
     use crate::agent::triage::derive_defects;
 
     let mut dag = AttackDag::new();
@@ -2556,22 +2566,26 @@ fn test_attack_dag_prerequisite_guard_execution_and_clean_defect_metrics() {
     assert_eq!(results[1].status, SKIPPED_PREREQUISITE_FAILED);
     assert!(is_prerequisite_skipped(&results[1]));
     assert!(!results[1].was_sent());
-    assert!(results[1]
-        .failure_reason
-        .as_ref()
-        .unwrap()
-        .contains("node 'setup_login' did not succeed"));
+    assert!(
+        results[1]
+            .failure_reason
+            .as_ref()
+            .unwrap()
+            .contains("node 'setup_login' did not succeed")
+    );
 
     // 3. Downstream dependent step 3 marked SKIPPED (prerequisite failed)
     assert_eq!(results[2].case_id, "exfiltrate_tenant");
     assert_eq!(results[2].status, SKIPPED_PREREQUISITE_FAILED);
     assert!(is_prerequisite_skipped(&results[2]));
     assert!(!results[2].was_sent());
-    assert!(results[2]
-        .failure_reason
-        .as_ref()
-        .unwrap()
-        .contains("node 'escalate_role' did not succeed"));
+    assert!(
+        results[2]
+            .failure_reason
+            .as_ref()
+            .unwrap()
+            .contains("node 'escalate_role' did not succeed")
+    );
 
     // 4. Defect metrics verification: exactly 1 defect from setup_login, 0 from downstream skipped nodes
     let defects = derive_defects(&results);
@@ -2592,11 +2606,17 @@ fn test_attack_dag_partition_independent_branches() {
     // Branch 1: User privilege escalation chain
     dag.add_node(AttackDagNode::new("user_reg", vec![]));
     dag.add_node(AttackDagNode::new("user_auth", vec!["user_reg".into()]));
-    dag.add_node(AttackDagNode::new("user_escalate", vec!["user_auth".into()]));
+    dag.add_node(AttackDagNode::new(
+        "user_escalate",
+        vec!["user_auth".into()],
+    ));
 
     // Branch 2: Admin settings injection chain (independent of Branch 1)
     dag.add_node(AttackDagNode::new("admin_login", vec![]));
-    dag.add_node(AttackDagNode::new("admin_inject", vec!["admin_login".into()]));
+    dag.add_node(AttackDagNode::new(
+        "admin_inject",
+        vec!["admin_login".into()],
+    ));
 
     // Branch 3: Health probe (independent single-node branch)
     dag.add_node(AttackDagNode::new("ping_health", vec![]));

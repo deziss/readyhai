@@ -1,11 +1,11 @@
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
 use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse};
 use axum::routing::get;
 use serde_json::{Value, json};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 use tokio::net::TcpListener;
 
 use super::models::BrowserSecReport;
@@ -16,7 +16,8 @@ use crate::agent::pipeline::{LlmMode, RunOptions, run_with};
 use crate::agent::types::AgentRunRequest;
 
 #[test]
-fn parses_playwright_browser_sec_report_with_dom_xss_storage_secrets_sourcemaps_cookies_and_clickjacking() {
+fn parses_playwright_browser_sec_report_with_dom_xss_storage_secrets_sourcemaps_cookies_and_clickjacking()
+ {
     let raw_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiIsInNlY3JldCI6Imh1bnRlcjIifQ.sig1234567890";
     let rep: BrowserSecReport = serde_json::from_value(json!({
         "base_url": "https://app.example.test",

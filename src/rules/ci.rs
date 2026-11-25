@@ -1,6 +1,6 @@
 //! CI/CD pipeline security stage validation.
 
-use super::facts::{read_checked, Skips};
+use super::facts::{Skips, read_checked};
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, Finding, Severity};
 use crate::snapshot::Snapshot;

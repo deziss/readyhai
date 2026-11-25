@@ -347,16 +347,16 @@ pub(crate) fn wireguard_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
                         .iter()
                         .any(|o| o.key == "persistentkeepalive" && !o.value.is_empty())
                 {
-                        out.push(mk(
-                            "no-keepalive",
-                            Category::Reliability,
-                            Severity::Low,
-                            "Peer has an Endpoint but no PersistentKeepalive".to_string(),
-                            ep.line,
-                            "NAT state can time out and silently drop the pinhole; \
+                    out.push(mk(
+                        "no-keepalive",
+                        Category::Reliability,
+                        Severity::Low,
+                        "Peer has an Endpoint but no PersistentKeepalive".to_string(),
+                        ep.line,
+                        "NAT state can time out and silently drop the pinhole; \
                              PersistentKeepalive = 25 keeps the mapping alive.",
-                            "",
-                        ));
+                        "",
+                    ));
                 }
             }
         }

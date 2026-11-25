@@ -4,9 +4,7 @@ use std::time::Duration;
 use super::analyze::{analyze, coverage, coverage_totals};
 use super::git::{git_changed_files, read_repo_file};
 use super::matcher::resource_names;
-use super::models::{
-    APPLIED, FAILED, NO_CHANGES, Retriever, SKIPPED,
-};
+use super::models::{APPLIED, FAILED, NO_CHANGES, Retriever, SKIPPED};
 use super::retriever::{retrieve_context, retriever_from_env};
 use super::testkit::{git, repo_with, tmp, write};
 use super::validation::{validate_diff_base, validate_request};
@@ -67,9 +65,7 @@ fn request_validation_confines_the_repo_to_the_allowed_roots() {
     std::fs::create_dir_all(&inside).unwrap();
     let other = tmp("roots-other");
     let roots = vec![d.clone()];
-    assert!(
-        validate_request(inside.to_str().unwrap(), Some("origin/main"), Some(&roots)).is_ok()
-    );
+    assert!(validate_request(inside.to_str().unwrap(), Some("origin/main"), Some(&roots)).is_ok());
     assert!(
         validate_request(other.to_str().unwrap(), None, Some(&roots))
             .unwrap_err()
@@ -240,8 +236,7 @@ fn a_subdirectory_checkout_sees_only_its_own_files() {
         &[("svc/a.py", "x=1\n"), ("other/b.py", "x=1\n")],
         &[("svc/a.py", "x=2\n"), ("other/b.py", "x=2\n")],
     );
-    let (files, _) =
-        git_changed_files(&d.join("svc"), "base", Duration::from_secs(20)).unwrap();
+    let (files, _) = git_changed_files(&d.join("svc"), "base", Duration::from_secs(20)).unwrap();
     assert_eq!(files, ["a.py"]);
 }
 

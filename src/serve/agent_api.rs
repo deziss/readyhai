@@ -3,21 +3,21 @@
 use super::guards::{blocking, err, guard, guard_repo, guard_spec, offload, same_target};
 use super::types::{
     App, ApprovalPayload, CancelOutcome, CrawlBody, CrawlQuery, DirectivesSynthesizeBody,
-    DiscoverBody, DiscoverQuery, MemoryAccept, MemoryQuery, Principal, RetestError, RetestPayload,
-    clamp_pages, clip_notes, MAX_LISTED_RUNS, MAX_RUN_JSON_BYTES, MODEL_TIERS, PROFILES,
+    DiscoverBody, DiscoverQuery, MAX_LISTED_RUNS, MAX_RUN_JSON_BYTES, MODEL_TIERS, MemoryAccept,
+    MemoryQuery, PROFILES, Principal, RetestError, RetestPayload, clamp_pages, clip_notes,
 };
 use super::worker::run_in_progress;
-use crate::{network, scope};
 use super::worker::{max_custom_instructions_bytes, worker_count};
+use crate::engine;
+use crate::{network, scope};
 use anyhow::Result;
 use axum::Json;
 use axum::extract::{Extension, Path, Query, State};
-use axum::http::{StatusCode, header, HeaderMap};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::Arc;
-use crate::engine;
 
 pub async fn api_index() -> impl IntoResponse {
     (
@@ -194,7 +194,6 @@ pub async fn agent_run_get(Path(id): Path<String>) -> Response {
         Err(r) => r,
     }
 }
-
 
 /// Ask a running agent run to stop (blocking: reads the run's checkpoint). A run of this process
 /// is flagged directly; a run whose checkpoint says `running` gets a `CANCEL` marker that a run in
@@ -440,8 +439,6 @@ pub async fn agent_reject(
 
 // ------------------------------------------------------------------ agent memory
 
-
-
 /// The memory of a target is per http(s) URL. Reading or changing it sends nothing to the target,
 /// so no scope check applies; the bearer token does.
 pub(crate) fn memory_target(raw: &str) -> Result<String, Response> {
@@ -530,8 +527,6 @@ pub async fn agent_memory_forget(Query(q): Query<MemoryQuery>) -> Response {
     }
 }
 
-
-
 /// A discovery scan runs no tests, so it has no readiness score. `agent::run_discovery_scan`
 /// still stamps a ledger with every score at 100 and verdict "SCANNED" (agent.rs owns that);
 /// until it stops, the API does not repeat the number: scores go out as null.
@@ -597,11 +592,17 @@ async fn discover(app: &App, target: String, spec: Option<String>) -> Response {
     }
 }
 
-pub async fn agent_discover(State(app): State<Arc<App>>, Query(q): Query<DiscoverQuery>) -> Response {
+pub async fn agent_discover(
+    State(app): State<Arc<App>>,
+    Query(q): Query<DiscoverQuery>,
+) -> Response {
     discover(&app, q.target, q.spec).await
 }
 
-pub async fn agent_discover_post(State(app): State<Arc<App>>, Json(b): Json<DiscoverBody>) -> Response {
+pub async fn agent_discover_post(
+    State(app): State<Arc<App>>,
+    Json(b): Json<DiscoverBody>,
+) -> Response {
     discover(&app, b.target, b.spec_url).await
 }
 
@@ -622,7 +623,12 @@ pub async fn agent_directives_post(
         let llm_cfg = crate::llm::LlmConfig::from_env().ok();
         let mut budget = crate::llm::Budget::new(3, std::time::Duration::from_secs(30));
         let directives = if let Some(ref cfg) = llm_cfg {
-            crate::agent::recon::synthesize_directives(Some((cfg, &mut budget)), &url, spec.as_deref(), None)
+            crate::agent::recon::synthesize_directives(
+                Some((cfg, &mut budget)),
+                &url,
+                spec.as_deref(),
+                None,
+            )
         } else {
             crate::agent::recon::synthesize_directives(None, &url, spec.as_deref(), None)
         };
@@ -649,8 +655,6 @@ pub async fn agent_directives_post(
         Err(r) => r,
     }
 }
-
-
 
 async fn crawl(app: &App, target: String, max_pages: Option<usize>) -> Response {
     let eg = match guard(app, &target, false).await {
@@ -686,7 +690,6 @@ pub async fn agent_crawl_post(State(app): State<Arc<App>>, Json(b): Json<CrawlBo
     crawl(&app, b.target, b.max_pages).await
 }
 
-
 pub(crate) fn retest_blocking(
     case: crate::agent::PlannedCase,
     url: String,
@@ -716,7 +719,10 @@ pub(crate) fn retest_blocking(
     Ok(results.into_iter().next())
 }
 
-pub async fn agent_retest(State(app): State<Arc<App>>, Json(body): Json<RetestPayload>) -> Response {
+pub async fn agent_retest(
+    State(app): State<Arc<App>>,
+    Json(body): Json<RetestPayload>,
+) -> Response {
     // A planned case with a write method, a payload or an injection technique is intrusive.
     // Stateful chains and concurrency bursts send writes too.
     let intrusive = !network::is_safe_method(&body.case.method)
@@ -758,4 +764,3 @@ pub async fn agent_retest(State(app): State<Arc<App>>, Json(body): Json<RetestPa
         Err(r) => r,
     }
 }
-

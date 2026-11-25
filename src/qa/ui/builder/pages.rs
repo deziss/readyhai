@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
-use crate::model::{Category, Severity};
-use crate::qa::model::*;
 use super::super::model::{UiReport, UiShot, UiViewport};
 use super::{B, ev};
+use crate::model::{Category, Severity};
+use crate::qa::model::*;
+use std::collections::BTreeMap;
 
 pub fn process_pages(
     b: &mut B,

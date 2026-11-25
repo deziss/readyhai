@@ -63,18 +63,17 @@ def purge_all(conn):
         inv.findings
     );
     assert!(
-        inv.findings.iter().any(
-            |f| f.rule == "security.auth.missing_guard" && f.location.contains("routes.py")
-        ),
+        inv.findings
+            .iter()
+            .any(|f| f.rule == "security.auth.missing_guard" && f.location.contains("routes.py")),
         "expected missing auth guard finding on /api/admin/purge: {:?}",
         inv.findings
     );
     // Parameterized helper should not trigger SQLi on find_user_safe
     assert!(
-        !inv.findings
-            .iter()
-            .any(|f| f.rule == "security.taint.sql_injection"
-                && f.detail.contains("find_user_safe")),
+        !inv.findings.iter().any(
+            |f| f.rule == "security.taint.sql_injection" && f.detail.contains("find_user_safe")
+        ),
         "parameterized query must not false-positive: {:?}",
         inv.findings
     );

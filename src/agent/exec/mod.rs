@@ -19,8 +19,8 @@ pub(crate) mod fixture;
 #[cfg(test)]
 mod tests;
 
-pub use auth::{Auth, Bearer, ResolvedAuth, auth_for, resolve_auth};
 pub(crate) use auth::role_of;
+pub use auth::{Auth, Bearer, ResolvedAuth, auth_for, resolve_auth};
 pub use bootstrap::{LoginBootstrap, LoginMode};
 pub use builder::{
     RequestSpec, body_and_type, build_request, curl_auth_arg, curl_auth_args_for, curl_for,
@@ -28,8 +28,7 @@ pub use builder::{
     payload_pairs, sanitize_custom_headers, validate_content_type,
 };
 pub use clients::{
-    Clients, Followed, MAX_REDIRECTS, METHODS, OutReq, Seen, follows_redirects,
-    needs_validated_tls,
+    Clients, Followed, MAX_REDIRECTS, METHODS, OutReq, Seen, follows_redirects, needs_validated_tls,
 };
 pub use credentials::Credentials;
 pub use delete::{DeleteCheck, confirm_deleted, confirm_deleted_as, confirm_deleted_resolved};

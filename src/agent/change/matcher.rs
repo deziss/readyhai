@@ -1,6 +1,6 @@
+use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use regex::Regex;
 
 use super::git::read_repo_file;
 use super::models::{MAX_FILES_PER_OP, MAX_SCANNED};

@@ -1,9 +1,9 @@
 use std::io::Read;
 use std::time::{Duration, Instant};
 
+use super::auth::{Auth, Bearer, ResolvedAuth, auth_for};
 use crate::agent::oracle::{self, Technique};
 use crate::agent::types::{PlannedCase, ProbeOracle, RedirectHop};
-use super::auth::{Auth, Bearer, ResolvedAuth, auth_for};
 
 pub const METHODS: [&str; 7] = ["GET", "HEAD", "OPTIONS", "POST", "PUT", "PATCH", "DELETE"];
 pub const MAX_REDIRECTS: usize = 5;

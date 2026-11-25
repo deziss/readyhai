@@ -1,6 +1,8 @@
 //! API QA logic against an in-process fixture server (`testsrv`, a port of
 //! tests/fixtures/qa-api/server.py): functional (coverage, budget, flaky re-run, crash, leak),
 //! auth matrix, stateful lifecycle, spec baselines.
+use super::spec::Op;
+use super::synth::Expect;
 use super::testsrv::*;
 use super::*;
 use crate::ctx::Ctx;
@@ -13,8 +15,6 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, Once};
-use super::spec::Op;
-use super::synth::Expect;
 
 const FIXTURE_SPEC: &str = include_str!("../../../tests/fixtures/qa-api/openapi.json");
 const FIXTURE_ROLES: &str = include_str!("../../../tests/fixtures/qa-api/roles.toml");

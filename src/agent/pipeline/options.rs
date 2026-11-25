@@ -11,9 +11,7 @@ use super::super::memory;
 use super::super::store::{checkpoint_agent_run_in, now_iso};
 use super::super::types::*;
 use super::super::verify;
-use crate::llm::{
-    Budget, LatencyReport, LlmConfig, latency_report, probe, probe_latency,
-};
+use crate::llm::{Budget, LatencyReport, LlmConfig, latency_report, probe, probe_latency};
 
 /// How the run decides whether to use an LLM.
 #[derive(Debug, Clone, Default)]
@@ -186,7 +184,12 @@ pub(crate) fn ip_fields(
     )
 }
 
-pub(crate) fn blank_report(run_id: &str, target: &str, profile: &str, dry_run: bool) -> AgentRunReport {
+pub(crate) fn blank_report(
+    run_id: &str,
+    target: &str,
+    profile: &str,
+    dry_run: bool,
+) -> AgentRunReport {
     AgentRunReport {
         id: run_id.to_string(),
         target: target.to_string(),

@@ -28,10 +28,10 @@ pub use fs::{default_out, write_secret_file};
 #[allow(unused_imports)]
 pub use render::render;
 
-use std::path::{Path, PathBuf};
-use anyhow::{Context, Result, bail};
 use crate::qa::api::spec::{MAX_SPEC_BYTES, parse_text};
+use anyhow::{Context, Result, bail};
 use render::auth_str;
+use std::path::{Path, PathBuf};
 
 /// `readyhai roles init --spec FILE [--out FILE|-] [--force]`. Returns the path written (None
 /// for stdout).

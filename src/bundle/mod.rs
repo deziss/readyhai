@@ -14,11 +14,11 @@ pub mod tar;
 mod tests;
 
 pub use doctor::doctor;
-pub use env::offline;
 #[cfg(test)]
 pub use env::ENV_LOCK;
+pub use env::offline;
 pub use eol::{endoflife, fetch_endoflife};
 pub use export::export;
 pub use import::import;
-pub use manifest::{build_files, sha256_file, verify_manifest, FileEntry, ImageEntry, Manifest};
+pub use manifest::{FileEntry, ImageEntry, Manifest, build_files, sha256_file, verify_manifest};
 pub use tar::check_tar_safe;

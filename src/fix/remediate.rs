@@ -53,11 +53,8 @@ pub fn synthesize_remediation(
             let prefix = caps.get(1).map(|m| m.as_str()).unwrap_or("");
             let handler = caps.get(2).map(|m| m.as_str()).unwrap_or("");
             let replacement = format!("{prefix} {default_guard}, {handler}");
-            patched_lines[line_idx] = box_str(&target_line.replacen(
-                &format!("{prefix} {handler}"),
-                &replacement,
-                1,
-            ));
+            patched_lines[line_idx] =
+                box_str(&target_line.replacen(&format!("{prefix} {handler}"), &replacement, 1));
             rationale = format!(
                 "Injected `{default_guard}` middleware into route definition adhering to sibling endpoint security conventions."
             );
@@ -78,15 +75,12 @@ pub fn synthesize_remediation(
     }
     // 2. SQL Injection
     else if defect.rule.contains("sql_injection") || defect.rule == "qa.api.sqli" {
-        let re_py_fsql = regex::Regex::new(
-            r#"execute\s*\(\s*f["'](.*?)\{([a-zA-Z0-9_]+)\}(.*?)["']\s*\)"#,
-        )?;
-        let re_py_pct = regex::Regex::new(
-            r#"execute\s*\(\s*["'](.*?)(?:'%s'|%s)["']\s*%\s*([a-zA-Z0-9_]+)"#,
-        )?;
-        let re_js_query = regex::Regex::new(
-            r#"query\s*\(\s*`([^`]*)(\$\{[a-zA-Z0-9_]+\})([^`]*)`\s*\)"#,
-        )?;
+        let re_py_fsql =
+            regex::Regex::new(r#"execute\s*\(\s*f["'](.*?)\{([a-zA-Z0-9_]+)\}(.*?)["']\s*\)"#)?;
+        let re_py_pct =
+            regex::Regex::new(r#"execute\s*\(\s*["'](.*?)(?:'%s'|%s)["']\s*%\s*([a-zA-Z0-9_]+)"#)?;
+        let re_js_query =
+            regex::Regex::new(r#"query\s*\(\s*`([^`]*)(\$\{[a-zA-Z0-9_]+\})([^`]*)`\s*\)"#)?;
         let re_exec_ident = regex::Regex::new(r#"execute\s*\(\s*([a-zA-Z0-9_]+)\s*\)"#)?;
 
         if let Some(caps) = re_py_fsql.captures(target_line) {
@@ -205,7 +199,8 @@ pub fn synthesize_remediation(
                 );
             patched_lines[line_idx] = box_str(&patched);
             rationale =
-                "Replaced wildcard CORS `*` with environment-configurable origin whitelist.".to_string();
+                "Replaced wildcard CORS `*` with environment-configurable origin whitelist."
+                    .to_string();
         }
     }
     // 6. Hardcoded Secrets
@@ -214,8 +209,7 @@ pub fn synthesize_remediation(
             r#"["'](?:ghp_[a-zA-Z0-9]{36}|sk-[a-zA-Z0-9]{32,}|rh_[a-zA-Z0-9]{20,})["']"#,
         )?;
         if let Some(m) = re_secret.find(target_line) {
-            let patched =
-                target_line.replace(m.as_str(), "process.env.API_SECRET_KEY || \"\"");
+            let patched = target_line.replace(m.as_str(), "process.env.API_SECRET_KEY || \"\"");
             patched_lines[line_idx] = box_str(&patched);
             rationale =
                 "Extracted hardcoded secret credential into environment variable lookup (`process.env.API_SECRET_KEY`).".to_string();

@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use crate::model::{HostSpec, Os, Target, TargetKind};
 use crate::scope;

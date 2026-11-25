@@ -1,7 +1,7 @@
 //! Core types for the typed assertion oracle: verdicts, severities, techniques, checks, and observations.
 
-use serde::{Deserialize, Serialize};
 use super::super::types::PlannedCase;
+use serde::{Deserialize, Serialize};
 
 /// Snapshot of a companion request sent by the executor/verifier (`baseline` or `false` control).
 #[derive(Debug, Clone, Default)]
@@ -225,4 +225,3 @@ pub(crate) fn outcome(checks: Vec<OracleCheck>, warnings: Vec<String>) -> Oracle
         exploratory: false,
     }
 }
-

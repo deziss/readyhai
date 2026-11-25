@@ -1,13 +1,13 @@
 use std::time::Duration;
 
-use crate::agent::budget::RunBudget;
-use crate::agent::types::{CaseExecutionResult, PlannedCase, ProbeOracle};
 use super::auth::resolve_auth;
 use super::builder::{build_request, curl_for, curl_for_auth, is_mutating};
 use super::clients::Clients;
 use super::credentials::Credentials;
 use super::http::{exec_http, ledger_row_result, skeleton, skipped};
 use super::subcases::{run_burst, run_mutation, run_stateful_case};
+use crate::agent::budget::RunBudget;
+use crate::agent::types::{CaseExecutionResult, PlannedCase, ProbeOracle};
 
 /// What to do about an auth wall; shared by the BLOCKED results, the ledger's blockers and the report.
 pub const NEXT_STEP_AUTH_WALL: &str = "provide test accounts: `readyhai roles init --spec <openapi.json>` writes a roles.toml skeleton; set RH_<ROLE>_TOKEN (e.g. RH_USER_TOKEN) or use a storageState login, then re-run";
@@ -165,7 +165,11 @@ pub fn execute_cases_gated(
         .collect()
 }
 
-pub(crate) fn run_case(ctx: &Ctx, c: &PlannedCase, budget: &mut RunBudget) -> Vec<CaseExecutionResult> {
+pub(crate) fn run_case(
+    ctx: &Ctx,
+    c: &PlannedCase,
+    budget: &mut RunBudget,
+) -> Vec<CaseExecutionResult> {
     if let Some(row) = ledger_row_result(c) {
         return vec![row];
     }

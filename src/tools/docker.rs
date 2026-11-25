@@ -438,10 +438,7 @@ pub(crate) fn rewrite_scrubbed(ctx: &Ctx, name: &str, f: impl Fn(&str) -> Option
     }
 }
 
-pub(crate) fn walk_mut(
-    v: &mut Value,
-    f: &mut dyn FnMut(&mut serde_json::Map<String, Value>),
-) {
+pub(crate) fn walk_mut(v: &mut Value, f: &mut dyn FnMut(&mut serde_json::Map<String, Value>)) {
     match v {
         Value::Object(m) => {
             f(m);

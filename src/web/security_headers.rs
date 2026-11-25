@@ -1,5 +1,5 @@
-use reqwest::header::{HeaderMap, SET_COOKIE};
 use crate::model::*;
+use reqwest::header::{HeaderMap, SET_COOKIE};
 
 pub fn hdr(h: &HeaderMap, name: &str) -> Option<String> {
     h.get(name)

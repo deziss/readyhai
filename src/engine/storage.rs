@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use rand::RngExt;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
-use crate::model::{sha256_hex, Run, Target};
+use crate::model::{Run, Target, sha256_hex};
 
 pub fn data_dir() -> PathBuf {
     if let Ok(d) = std::env::var("READYHAI_DATA") {

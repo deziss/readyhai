@@ -1,6 +1,6 @@
 //! Advisory LLM readiness gate prose, summary, and Software Factory Attestation.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -11,7 +11,7 @@ pub use super::super::types::{
     TriagedDefect,
 };
 use crate::llm::untrusted::{self, clean_output, fence_capped};
-use crate::llm::{ask_typed, Budget, LlmConfig};
+use crate::llm::{Budget, LlmConfig, ask_typed};
 
 const GATE_ROLE: &str = "You are a production-readiness reviewer. You receive facts that deterministic code computed from real HTTP test results. \
 Write a short summary for a release manager and give an advisory opinion. Your opinion is advisory: it is recorded separately and never changes the verdict. \

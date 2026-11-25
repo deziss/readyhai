@@ -78,6 +78,11 @@ fn test_adversarial_safety_detection() {
     assert!(check.prompt_injection_detected);
     assert!(check.sensitive_data_leak);
     assert!(check.safety_score < 0.50);
-    assert!(check.findings.iter().any(|f| f.contains("prompt injection")));
+    assert!(
+        check
+            .findings
+            .iter()
+            .any(|f| f.contains("prompt injection"))
+    );
     assert!(check.findings.iter().any(|f| f.contains("secret API key")));
 }

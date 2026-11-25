@@ -110,7 +110,11 @@ pub fn find_mutable_files(repo: &Path, target_filter: Option<&str>) -> Vec<PathB
         .into_iter()
         .filter_entry(|e| {
             let n = e.file_name().to_string_lossy();
-            !n.starts_with('.') && n != "node_modules" && n != "target" && n != "dist" && n != "runs"
+            !n.starts_with('.')
+                && n != "node_modules"
+                && n != "target"
+                && n != "dist"
+                && n != "runs"
         });
 
     for entry in walker.flatten() {
@@ -135,7 +139,11 @@ pub fn find_mutable_files(repo: &Path, target_filter: Option<&str>) -> Vec<PathB
 }
 
 /// Synthesize semantic code mutants for a file.
-pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usize) -> Vec<CodeMutant> {
+pub fn generate_file_mutants(
+    file_path: &Path,
+    rel_path: &str,
+    max_per_file: usize,
+) -> Vec<CodeMutant> {
     let mut mutants = Vec::new();
     let Ok(content) = fs::read_to_string(file_path) else {
         return mutants;
@@ -164,7 +172,10 @@ pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usi
                 mutated_line: mutated,
                 verdict: MutantVerdict::Survived,
                 execution_duration_ms: 0,
-                recommended_test_assertion: Some(format!("assert_ne!(actual, expected) on {rel_path}:{}", idx + 1)),
+                recommended_test_assertion: Some(format!(
+                    "assert_ne!(actual, expected) on {rel_path}:{}",
+                    idx + 1
+                )),
             });
         } else if trimmed.contains(" != ") {
             let mutated = line.replace(" != ", " == ");
@@ -177,7 +188,10 @@ pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usi
                 mutated_line: mutated,
                 verdict: MutantVerdict::Survived,
                 execution_duration_ms: 0,
-                recommended_test_assertion: Some(format!("assert_eq!(actual, expected) on {rel_path}:{}", idx + 1)),
+                recommended_test_assertion: Some(format!(
+                    "assert_eq!(actual, expected) on {rel_path}:{}",
+                    idx + 1
+                )),
             });
         } else if trimmed.contains(" < ") && !trimmed.contains("<T>") && !trimmed.contains(" < ") {
             let mutated = line.replace(" < ", " >= ");
@@ -190,7 +204,10 @@ pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usi
                 mutated_line: mutated,
                 verdict: MutantVerdict::Survived,
                 execution_duration_ms: 0,
-                recommended_test_assertion: Some(format!("assert!(val < threshold) on {rel_path}:{}", idx + 1)),
+                recommended_test_assertion: Some(format!(
+                    "assert!(val < threshold) on {rel_path}:{}",
+                    idx + 1
+                )),
             });
         } else if trimmed.contains(" > ") {
             let mutated = line.replace(" > ", " <= ");
@@ -203,7 +220,10 @@ pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usi
                 mutated_line: mutated,
                 verdict: MutantVerdict::Survived,
                 execution_duration_ms: 0,
-                recommended_test_assertion: Some(format!("assert!(val > threshold) on {rel_path}:{}", idx + 1)),
+                recommended_test_assertion: Some(format!(
+                    "assert!(val > threshold) on {rel_path}:{}",
+                    idx + 1
+                )),
             });
         }
 
@@ -219,7 +239,10 @@ pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usi
                 mutated_line: mutated,
                 verdict: MutantVerdict::Survived,
                 execution_duration_ms: 0,
-                recommended_test_assertion: Some(format!("assert!(flag == true) on {rel_path}:{}", idx + 1)),
+                recommended_test_assertion: Some(format!(
+                    "assert!(flag == true) on {rel_path}:{}",
+                    idx + 1
+                )),
             });
         } else if trimmed.contains("false") && !trimmed.contains("\"false\"") {
             let mutated = line.replace("false", "true");
@@ -232,13 +255,20 @@ pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usi
                 mutated_line: mutated,
                 verdict: MutantVerdict::Survived,
                 execution_duration_ms: 0,
-                recommended_test_assertion: Some(format!("assert!(flag == false) on {rel_path}:{}", idx + 1)),
+                recommended_test_assertion: Some(format!(
+                    "assert!(flag == false) on {rel_path}:{}",
+                    idx + 1
+                )),
             });
         }
 
         // 3. Authorization Bypass Mutant
-        if trimmed.contains("is_admin") || trimmed.contains("is_authorized") || trimmed.contains("is_valid") {
-            let mutated = line.replace("is_admin", "true")
+        if trimmed.contains("is_admin")
+            || trimmed.contains("is_authorized")
+            || trimmed.contains("is_valid")
+        {
+            let mutated = line
+                .replace("is_admin", "true")
                 .replace("is_authorized", "true")
                 .replace("is_valid", "true");
             if mutated != *line {
@@ -251,7 +281,10 @@ pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usi
                     mutated_line: mutated,
                     verdict: MutantVerdict::Survived,
                     execution_duration_ms: 0,
-                    recommended_test_assertion: Some(format!("assert_unauthorized! when role is not admin on {rel_path}:{}", idx + 1)),
+                    recommended_test_assertion: Some(format!(
+                        "assert_unauthorized! when role is not admin on {rel_path}:{}",
+                        idx + 1
+                    )),
                 });
             }
         }
@@ -268,7 +301,10 @@ pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usi
                 mutated_line: mutated,
                 verdict: MutantVerdict::Survived,
                 execution_duration_ms: 0,
-                recommended_test_assertion: Some(format!("assert!(res.is_ok()) on {rel_path}:{}", idx + 1)),
+                recommended_test_assertion: Some(format!(
+                    "assert!(res.is_ok()) on {rel_path}:{}",
+                    idx + 1
+                )),
             });
         } else if trimmed.starts_with("return true") {
             let mutated = line.replace("return true", "return false");
@@ -281,7 +317,10 @@ pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usi
                 mutated_line: mutated,
                 verdict: MutantVerdict::Survived,
                 execution_duration_ms: 0,
-                recommended_test_assertion: Some(format!("assert_eq!(result, true) on {rel_path}:{}", idx + 1)),
+                recommended_test_assertion: Some(format!(
+                    "assert_eq!(result, true) on {rel_path}:{}",
+                    idx + 1
+                )),
             });
         }
 
@@ -297,7 +336,10 @@ pub fn generate_file_mutants(file_path: &Path, rel_path: &str, max_per_file: usi
                 mutated_line: mutated,
                 verdict: MutantVerdict::Survived,
                 execution_duration_ms: 0,
-                recommended_test_assertion: Some(format!("assert_eq!(sum, a + b) on {rel_path}:{}", idx + 1)),
+                recommended_test_assertion: Some(format!(
+                    "assert_eq!(sum, a + b) on {rel_path}:{}",
+                    idx + 1
+                )),
             });
         }
     }
@@ -330,7 +372,8 @@ pub fn evaluate_mutant(
     let mut cmd = Command::new(runner.0);
     cmd.args(runner.1).current_dir(repo).env("CI", "true");
 
-    let captured = crate::tools::run_capped(&mut cmd, Duration::from_secs(timeout_secs), 64 * 1024, None);
+    let captured =
+        crate::tools::run_capped(&mut cmd, Duration::from_secs(timeout_secs), 64 * 1024, None);
 
     // Revert file immediately
     let _ = fs::write(&full_path, &original);
@@ -366,18 +409,25 @@ pub fn run(opts: MutateOpts) -> Result<u8> {
     let files = find_mutable_files(&repo, opts.target.as_deref());
 
     if files.is_empty() {
-        println!("No eligible source files found for mutation in {}", repo.display());
+        println!(
+            "No eligible source files found for mutation in {}",
+            repo.display()
+        );
         return Ok(0);
     }
 
-    let runner = crate::fix::detect_test_runner(&repo)
-        .unwrap_or(("cargo", &["test", "--", "--quiet"]));
+    let runner =
+        crate::fix::detect_test_runner(&repo).unwrap_or(("cargo", &["test", "--", "--quiet"]));
 
     let mut all_mutants = Vec::new();
     let max_per_file = (opts.max_mutants / files.len().max(1)).max(2);
 
     for f in &files {
-        let rel = f.strip_prefix(&repo).unwrap_or(f).to_string_lossy().to_string();
+        let rel = f
+            .strip_prefix(&repo)
+            .unwrap_or(f)
+            .to_string_lossy()
+            .to_string();
         let file_mutants = generate_file_mutants(f, &rel, max_per_file);
         all_mutants.extend(file_mutants);
         if all_mutants.len() >= opts.max_mutants {
@@ -404,7 +454,14 @@ pub fn run(opts: MutateOpts) -> Result<u8> {
     let mut timed_out = 0;
 
     for (i, m) in all_mutants.iter_mut().enumerate() {
-        print!("  [{}/{}] Evaluating mutant {} in {}:{} ... ", i + 1, total, m.id, m.file_path, m.line);
+        print!(
+            "  [{}/{}] Evaluating mutant {} in {}:{} ... ",
+            i + 1,
+            total,
+            m.id,
+            m.file_path,
+            m.line
+        );
         let _ = evaluate_mutant(&repo, m, runner, opts.timeout_secs);
         match m.verdict {
             MutantVerdict::Killed => {
@@ -464,9 +521,16 @@ pub fn run(opts: MutateOpts) -> Result<u8> {
             println!("  ──────────────────────────────────────────────────────────────────\n");
             if survived > 0 {
                 println!("  🚨 Recommended Negative Test Assertions for Survived Mutants:");
-                for m in report.mutants.iter().filter(|m| m.verdict == MutantVerdict::Survived) {
+                for m in report
+                    .mutants
+                    .iter()
+                    .filter(|m| m.verdict == MutantVerdict::Survived)
+                {
                     if let Some(recom) = &m.recommended_test_assertion {
-                        println!("    • [{}] {}:{} -> Add `{}`", m.id, m.file_path, m.line, recom);
+                        println!(
+                            "    • [{}] {}:{} -> Add `{}`",
+                            m.id, m.file_path, m.line, recom
+                        );
                     }
                 }
                 println!();
@@ -481,21 +545,48 @@ pub fn run(opts: MutateOpts) -> Result<u8> {
 pub fn generate_mutation_markdown(report: &MutationReport) -> String {
     let mut md = String::new();
     md.push_str("# 🧬 ReadyHai Mutation Testing Report\n\n");
-    md.push_str("> Automated test oracle sensitivity calibration and mutant survivability audit.\n\n");
+    md.push_str(
+        "> Automated test oracle sensitivity calibration and mutant survivability audit.\n\n",
+    );
     md.push_str("### 📊 Oracle Calibration Metrics\n");
     md.push_str("| Metric | Value |\n|---|---|\n");
-    md.push_str(&format!("| **Mutation Score** | **{:.1}%** |\n", report.mutation_score));
-    md.push_str(&format!("| **Oracle Assessment** | `{}` |\n", report.oracle_quality));
-    md.push_str(&format!("| **Total Mutants Injected** | `{}` |\n", report.total_mutants));
-    md.push_str(&format!("| **Killed (Caught by Tests)** | `{} ✅` |\n", report.killed_mutants));
-    md.push_str(&format!("| **Survived (Missed by Tests)** | `{} ⚠️` |\n", report.survived_mutants));
-    md.push_str(&format!("| **Timed Out** | `{}` |\n", report.timed_out_mutants));
+    md.push_str(&format!(
+        "| **Mutation Score** | **{:.1}%** |\n",
+        report.mutation_score
+    ));
+    md.push_str(&format!(
+        "| **Oracle Assessment** | `{}` |\n",
+        report.oracle_quality
+    ));
+    md.push_str(&format!(
+        "| **Total Mutants Injected** | `{}` |\n",
+        report.total_mutants
+    ));
+    md.push_str(&format!(
+        "| **Killed (Caught by Tests)** | `{} ✅` |\n",
+        report.killed_mutants
+    ));
+    md.push_str(&format!(
+        "| **Survived (Missed by Tests)** | `{} ⚠️` |\n",
+        report.survived_mutants
+    ));
+    md.push_str(&format!(
+        "| **Timed Out** | `{}` |\n",
+        report.timed_out_mutants
+    ));
     md.push_str("\n---\n\n");
 
     if report.survived_mutants > 0 {
         md.push_str("### ⚠️ Survived Mutants & Recommended Test Assertions\n\n");
-        for m in report.mutants.iter().filter(|m| m.verdict == MutantVerdict::Survived) {
-            md.push_str(&format!("#### Mutant `{}` at `{}:{}`\n", m.id, m.file_path, m.line));
+        for m in report
+            .mutants
+            .iter()
+            .filter(|m| m.verdict == MutantVerdict::Survived)
+        {
+            md.push_str(&format!(
+                "#### Mutant `{}` at `{}:{}`\n",
+                m.id, m.file_path, m.line
+            ));
             md.push_str(&format!("- **Operator:** {}\n", m.kind.label()));
             md.push_str(&format!("- **Original:** `{}`\n", m.original_line.trim()));
             md.push_str(&format!("- **Mutated:** `{}`\n", m.mutated_line.trim()));
@@ -524,7 +615,9 @@ mod tests {
 
         let mutants = generate_file_mutants(&file, "auth.rs", 10);
         assert!(!mutants.is_empty());
-        let has_comp = mutants.iter().any(|m| m.kind == MutantKind::InvertComparison);
+        let has_comp = mutants
+            .iter()
+            .any(|m| m.kind == MutantKind::InvertComparison);
         let has_bool = mutants.iter().any(|m| m.kind == MutantKind::FlipBoolean);
         let has_auth = mutants.iter().any(|m| m.kind == MutantKind::BypassAuth);
         assert!(has_comp, "should generate comparison mutant");

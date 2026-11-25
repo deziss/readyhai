@@ -5,7 +5,7 @@ use std::process::Command;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use super::deadline::run_deadline;
 

@@ -9,8 +9,8 @@ pub mod rules;
 #[cfg(test)]
 mod tests;
 
+pub use super::verify::juror::{JurorVerdict, audit_defects_with_juror};
 pub use derivation::*;
 pub use grouping::*;
 pub use llm_advisory::*;
 pub use rules::*;
-pub use super::verify::juror::{audit_defects_with_juror, JurorVerdict};

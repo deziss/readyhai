@@ -11,7 +11,11 @@ use super::helpers::{mk, user_or_anon};
 use super::surface::{describe_route, is_walled, ledger_row, liveness_expectation, surface_of};
 use super::types::{SQLI, XSS};
 
-pub(crate) fn baseline(d: &Discovery, creds: &Credentials, notes: &mut Vec<String>) -> Vec<PlannedCase> {
+pub(crate) fn baseline(
+    d: &Discovery,
+    creds: &Credentials,
+    notes: &mut Vec<String>,
+) -> Vec<PlannedCase> {
     let routes: Vec<&DiscoveredRoute> = d.routes.iter().filter(|r| r.source != "openapi").collect();
     let tech: &TargetTechProfile = &d.tech;
     let user = user_or_anon(creds);

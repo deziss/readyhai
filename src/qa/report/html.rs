@@ -1,12 +1,10 @@
-use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use minijinja::value::Serde;
 use minijinja::{AutoEscape, Environment};
 use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 
-use super::helpers::{
-    b64, defects_sorted, lc, looks_like_code, prio_str, rec_text, status_label,
-};
+use super::helpers::{b64, defects_sorted, lc, looks_like_code, prio_str, rec_text, status_label};
 use crate::model::{FindingStatus, Run};
 use crate::qa::model::{Cell, CoverageMatrix, Evidence, EvidenceKind, ResultCounts};
 

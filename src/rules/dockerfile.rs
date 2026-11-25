@@ -1,6 +1,6 @@
 //! Dockerfile hardening and stage inspection rules.
 
-use super::facts::{dir, read_checked, Skips};
+use super::facts::{Skips, dir, read_checked};
 use super::na;
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, Finding, Severity};

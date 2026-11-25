@@ -1,5 +1,5 @@
-use serde_json::Value;
 use crate::model::{Severity, TargetKind};
+use serde_json::Value;
 
 pub(crate) fn repo() -> Vec<TargetKind> {
     vec![TargetKind::Repo]

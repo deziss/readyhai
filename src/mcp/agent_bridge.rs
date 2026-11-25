@@ -4,9 +4,9 @@ use anyhow::{Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::engine;
 use super::protocol::{MAX_AGENT_JOBS, jobs};
 use super::scanner::{mcp_allowed_roots, trunc};
+use crate::engine;
 
 /// Arguments of `readyhai_agent_swarm`. Unknown fields are an error (a model that invents a
 /// parameter such as `skip_scope` must be told, not silently ignored).

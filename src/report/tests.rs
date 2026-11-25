@@ -5,7 +5,7 @@ use crate::model::*;
 use super::common::{is_component, uri_escape};
 use super::html::html;
 use super::junit::junit;
-use super::pr::{pr_comment, PR_COMMENT_MARKER};
+use super::pr::{PR_COMMENT_MARKER, pr_comment};
 use super::sarif::sarif;
 
 fn sample() -> Run {
@@ -209,9 +209,7 @@ fn junit_includes_qa_defects_by_check_and_orphans() {
     );
     let ui = suite("qa.ui");
     assert!(
-        ui.contains("failures=\"1\"")
-            && ui.contains("qa.ui.a11y")
-            && !ui.contains("visual_change")
+        ui.contains("failures=\"1\"") && ui.contains("qa.ui.a11y") && !ui.contains("visual_change")
     );
     assert!(suite("web.smoke").contains("failures=\"0\""));
     let o = suite("unattributed");
@@ -281,9 +279,7 @@ fn sarif_artifact_uris_are_valid_for_qa_components_and_odd_paths() {
             && !u.contains(' ')
     };
     for x in r {
-        if let Some(u) =
-            x["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].as_str()
-        {
+        if let Some(u) = x["locations"][0]["physicalLocation"]["artifactLocation"]["uri"].as_str() {
             assert!(legal(u), "invalid artifact uri {u:?}");
         }
     }
@@ -304,7 +300,5 @@ fn sarif_artifact_uris_are_valid_for_qa_components_and_odd_paths() {
     // a path that was already percent-encoded is not double-encoded
     assert_eq!(uri_escape("a%20b"), "a%20b");
     assert_eq!(uri_escape("100%"), "100%25");
-    assert!(
-        is_component("POST /x") && !is_component("src/GET /x") && !is_component("GETTING /x")
-    );
+    assert!(is_component("POST /x") && !is_component("src/GET /x") && !is_component("GETTING /x"));
 }

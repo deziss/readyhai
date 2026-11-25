@@ -1,9 +1,7 @@
-use std::collections::HashSet;
 use serde_json::{Value, json};
+use std::collections::HashSet;
 
-use super::models::{
-    BrowserSecReport, path_of_url, target_url_for_component,
-};
+use super::models::{BrowserSecReport, path_of_url, target_url_for_component};
 use super::redact::redact_secret_preview;
 use crate::agent::exec::evidence_rel_path;
 use crate::agent::oracle::{OracleCheck, OracleOutcome, Severity, Verdict};

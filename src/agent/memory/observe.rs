@@ -52,7 +52,10 @@ pub fn op_of_case(c: &PlannedCase) -> String {
 
 /// The case class a result belongs to: that of its planned case (a mutation or burst sub-case
 /// belongs to its parent), the teardown's own class for a `CLEANUP-n` result.
-pub(crate) fn result_class(r: &CaseExecutionResult, by_id: &BTreeMap<&str, &PlannedCase>) -> String {
+pub(crate) fn result_class(
+    r: &CaseExecutionResult,
+    by_id: &BTreeMap<&str, &PlannedCase>,
+) -> String {
     if r.case_id.starts_with("CLEANUP-") {
         return format!("cleanup|DELETE|{}|", clean_endpoint(&r.component));
     }

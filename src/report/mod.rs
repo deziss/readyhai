@@ -15,6 +15,6 @@ mod tests;
 pub use common::{esc, is_component, sev_order, status_str, uri_escape};
 pub use html::html;
 pub use junit::{junit, junit_failure, junit_failure_case};
-pub use pr::{pr_comment, PR_COMMENT_MARKER, PR_COMMENT_MAX};
+pub use pr::{PR_COMMENT_MARKER, PR_COMMENT_MAX, pr_comment};
 pub use sarif::sarif;
 pub use writer::write;

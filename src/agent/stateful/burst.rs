@@ -4,8 +4,7 @@ use super::models::BurstRun;
 use crate::agent::budget::RunBudget;
 use crate::agent::exec::role_of;
 use crate::agent::exec::{
-    Bearer, Clients, OutReq, RequestSpec, ResolvedAuth, Seen, is_safe_method,
-    needs_validated_tls,
+    Bearer, Clients, OutReq, RequestSpec, ResolvedAuth, Seen, is_safe_method, needs_validated_tls,
 };
 use crate::agent::oracle::BurstResponse;
 use crate::agent::types::{current_ledger, record_creation_response};

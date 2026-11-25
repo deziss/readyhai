@@ -4,9 +4,7 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 use std::time::Duration;
 
-use super::catalog::{
-    CHAT_MAX_TOKENS, ENV_API_KEY, MAX_SERVER_ERROR_RETRIES, Transport,
-};
+use super::catalog::{CHAT_MAX_TOKENS, ENV_API_KEY, MAX_SERVER_ERROR_RETRIES, Transport};
 use super::config::LlmConfig;
 
 #[derive(Debug, Clone)]
@@ -70,7 +68,12 @@ pub(crate) fn openai_body(model: &str, system: &str, messages: &[Msg], tools: &[
     b
 }
 
-pub(crate) fn anthropic_body(model: &str, system: &str, messages: &[Msg], tools: &[ToolDef]) -> Value {
+pub(crate) fn anthropic_body(
+    model: &str,
+    system: &str,
+    messages: &[Msg],
+    tools: &[ToolDef],
+) -> Value {
     let mut b = json!({
         "model": model,
         "max_tokens": 4096,
@@ -128,7 +131,10 @@ pub(crate) fn key(cfg: &LlmConfig) -> Result<Option<String>> {
     key_with(cfg, |k| std::env::var(k).ok())
 }
 
-pub(crate) fn key_with(cfg: &LlmConfig, get: impl Fn(&str) -> Option<String>) -> Result<Option<String>> {
+pub(crate) fn key_with(
+    cfg: &LlmConfig,
+    get: impl Fn(&str) -> Option<String>,
+) -> Result<Option<String>> {
     let found = match (&cfg.api_key, cfg.provider.api_key_env) {
         (Some(k), _) => Some(k.expose().to_string()),
         (None, Some(e)) => match get(e).map(|v| v.trim().to_string()) {

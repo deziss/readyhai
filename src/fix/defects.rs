@@ -37,10 +37,7 @@ pub fn collect_target_defects(
                     .and_then(|t| t.as_str())
                     .unwrap_or("")
                     .to_string();
-                let sev_str = f
-                    .get("severity")
-                    .and_then(|s| s.as_str())
-                    .unwrap_or("high");
+                let sev_str = f.get("severity").and_then(|s| s.as_str()).unwrap_or("high");
                 let severity = match sev_str {
                     "critical" => Severity::Critical,
                     "high" => Severity::High,
@@ -51,7 +48,10 @@ pub fn collect_target_defects(
 
                 let parts: Vec<&str> = target.split(':').collect();
                 let file = parts.first().unwrap_or(&"").to_string();
-                let line = parts.get(1).and_then(|l| l.parse::<usize>().ok()).unwrap_or(1);
+                let line = parts
+                    .get(1)
+                    .and_then(|l| l.parse::<usize>().ok())
+                    .unwrap_or(1);
 
                 targets.push(TargetDefect {
                     id: format!("D-{:03}", i + 1),
@@ -71,7 +71,10 @@ pub fn collect_target_defects(
         for (i, f) in inv.findings.iter().enumerate() {
             let parts: Vec<&str> = f.location.split(':').collect();
             let file = parts.first().unwrap_or(&"").to_string();
-            let line = parts.get(1).and_then(|l| l.parse::<usize>().ok()).unwrap_or(1);
+            let line = parts
+                .get(1)
+                .and_then(|l| l.parse::<usize>().ok())
+                .unwrap_or(1);
 
             targets.push(TargetDefect {
                 id: format!("D-{:03}", i + 1),

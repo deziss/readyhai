@@ -48,7 +48,11 @@ pub fn extract_proper_nouns(text: &str) -> HashSet<String> {
         for w in words {
             let clean = w.trim_matches(|c: char| !c.is_alphanumeric());
             if clean.len() >= 3
-                && clean.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                && clean
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
                 && !is_stop_word(clean)
             {
                 set.insert(clean.to_ascii_lowercase());

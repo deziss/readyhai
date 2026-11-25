@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use regex::Regex;
+use std::collections::BTreeSet;
 
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, CheckStatus, Severity};

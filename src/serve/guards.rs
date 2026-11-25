@@ -1,13 +1,13 @@
 //! Egress guards, scope verification, DNS preflight, and blocking pool executors.
 
 use super::types::{App, GUARD_TIMEOUT};
+use crate::scope::{self, Scope};
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::path::Path as FsPath;
 use std::time::Duration;
-use crate::scope::{self, Scope};
 
 pub fn err(code: StatusCode, msg: impl Into<String>) -> Response {
     (code, Json(json!({"error": msg.into()}))).into_response()
@@ -121,7 +121,9 @@ pub async fn guard_spec(app: &App, spec: Option<String>) -> Result<Option<String
 }
 
 /// Run quick blocking work (file reads, listings, report generation) off the async workers.
-pub async fn offload<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, Response> {
+pub async fn offload<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Response> {
     tokio::task::spawn_blocking(f)
         .await
         .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "worker failed"))

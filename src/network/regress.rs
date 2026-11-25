@@ -3,12 +3,11 @@
 use super::curl::generate_curl;
 use super::ip::detect_requester_public_ip;
 use super::types::{
-    AgentDiagnosis, IterationResult, RegressReport, RegressRequest, BODY_READ_CAP,
-    BODY_SNIPPET_CHARS, MAX_ITERATIONS, MAX_REGRESS_BUDGET_MS,
+    AgentDiagnosis, BODY_READ_CAP, BODY_SNIPPET_CHARS, IterationResult, MAX_ITERATIONS,
+    MAX_REGRESS_BUDGET_MS, RegressReport, RegressRequest,
 };
 use super::utils::{
-    has_header, host_of, hostport, http_client, parse_method, port_of, read_capped,
-    truncate_chars,
+    has_header, host_of, hostport, http_client, parse_method, port_of, read_capped, truncate_chars,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -471,5 +470,3 @@ pub fn diagnose(
         ],
     }
 }
-
-

@@ -107,11 +107,7 @@ pub struct BrowserPostMessageIssue {
 pub(crate) fn path_of_url(raw: &str) -> String {
     if let Ok(u) = reqwest::Url::parse(raw) {
         let p = u.path();
-        if p.is_empty() {
-            "/".into()
-        } else {
-            p.into()
-        }
+        if p.is_empty() { "/".into() } else { p.into() }
     } else {
         let p = raw.split(['?', '#']).next().unwrap_or("/");
         if p.starts_with('/') {

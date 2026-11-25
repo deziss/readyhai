@@ -1,6 +1,6 @@
 //! Memory recall checks, git fixture repository creation, and change impact assertions.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;

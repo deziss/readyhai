@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use super::sanitize::{clean_ident, clean_text, days_between, file_date};
 use super::types::{
-    Accepted, Acceptance, BaselineState, BaselinesInEffect, DefectStatus, Loaded, Memory,
-    MAX_FILE_BYTES, MAX_TEXT, SCHEMA,
+    Acceptance, Accepted, BaselineState, BaselinesInEffect, DefectStatus, Loaded, MAX_FILE_BYTES,
+    MAX_TEXT, Memory, SCHEMA,
 };
 use crate::agent::store::RunLock;
 use crate::llm::write_atomic;

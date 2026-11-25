@@ -140,9 +140,7 @@ fn mask_header(k: &str, v: &str) -> String {
             Some(i) => format!("[REDACTED]{}", &v[i..]),
             None => "[REDACTED]".into(),
         },
-        "authorization" | "cookie" | "proxy-authorization" | "x-api-key" => {
-            "[REDACTED]".into()
-        }
+        "authorization" | "cookie" | "proxy-authorization" | "x-api-key" => "[REDACTED]".into(),
         _ => v.to_string(),
     }
 }

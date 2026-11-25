@@ -78,7 +78,12 @@ pub(crate) struct Remembered {
 
 impl Remembered {
     /// Write the memory (a completed run only) and return the "since last run" section.
-    pub(crate) fn finish(self, verdict: &str, commit: bool, mut notes: Vec<String>) -> SinceLastRun {
+    pub(crate) fn finish(
+        self,
+        verdict: &str,
+        commit: bool,
+        mut notes: Vec<String>,
+    ) -> SinceLastRun {
         let Remembered {
             dir,
             target,

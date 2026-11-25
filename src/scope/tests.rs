@@ -2,11 +2,11 @@
 
 use std::path::Path;
 
-use super::config::{load_configured, Scope};
+use super::config::{Scope, load_configured};
 use super::decision::{check, check_host, egress_guard};
 use super::dns::test_dns;
 use super::git_guard::check_git_host;
-use super::ip::{classify_host, is_internal_ip, HostClass};
+use super::ip::{HostClass, classify_host, is_internal_ip};
 use super::url::url_host;
 
 fn scope(toml_text: &str) -> Scope {
@@ -47,9 +47,8 @@ fn internal_hosts_need_an_entry() {
     assert!(check("http://169.254.169.254/latest/meta-data/", None).is_err());
     assert!(check("http://10.0.0.5:8080/", None).is_err());
     // but a listed internal host is allowed with its env
-    let s = scope(
-        "[[hosts]]\nhost='10.0.0.5'\nenv='nonprod'\n[[hosts]]\nhost='127.0.0.1'\nenv='prod'",
-    );
+    let s =
+        scope("[[hosts]]\nhost='10.0.0.5'\nenv='nonprod'\n[[hosts]]\nhost='127.0.0.1'\nenv='prod'");
     assert!(check("http://10.0.0.5:8080/", Some(&s)).unwrap());
     assert!(!check("http://127.0.0.1/", Some(&s)).unwrap()); // listed prod → read-only
 }
@@ -343,8 +342,9 @@ fn a_prod_listed_host_stays_read_only_next_to_the_wildcard() {
     assert!(egress_guard("https://app.shop.example/", Some(&s), true).is_err());
     assert!(egress_guard("https://app.shop.example/", Some(&s), false).is_ok());
 
-    let ex = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scope.example.toml"))
-        .unwrap();
+    let ex =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("scope.example.toml"))
+            .unwrap();
     let s = scope(&format!(
         "{ex}\n[[hosts]]\nhost='app.example.com'\nenv='prod'\n"
     ));

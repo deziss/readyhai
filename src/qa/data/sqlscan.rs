@@ -6,7 +6,7 @@ use crate::model::{Category, CheckOutput, CheckStatus, Severity};
 use crate::qa::model::{Area, ResultStatus};
 
 use super::data_files;
-use crate::qa::suite::common::{Def, MAX_ITEM_DEFECTS, no_snapshot, out, read, record, re};
+use crate::qa::suite::common::{Def, MAX_ITEM_DEFECTS, no_snapshot, out, re, read, record};
 
 pub(crate) fn sql_fixture(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     let Some(snap) = &ctx.snapshot else {
@@ -67,7 +67,11 @@ pub(crate) fn sql_fixture(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     }
     let n = defs.len();
     defs.truncate(MAX_ITEM_DEFECTS);
-    let status = if n > 0 { ResultStatus::Fail } else { ResultStatus::Pass };
+    let status = if n > 0 {
+        ResultStatus::Fail
+    } else {
+        ResultStatus::Pass
+    };
     Ok(out(record(
         ctx,
         "qa.data.sql-fixture",

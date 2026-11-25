@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
+use std::path::{Path, PathBuf};
 
 use super::exporters::{gitlab_json, jira_csv, testrail_csv, xray_csv};
 use super::html::qa_html;

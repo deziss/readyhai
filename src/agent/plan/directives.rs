@@ -74,19 +74,24 @@ pub(crate) fn plan_directives(
                     .and_then(|c| c.get(1))
                     .map(|m| m.as_str().to_string())
                     .unwrap_or_else(|| {
-                    d.routes
-                        .iter()
-                        .find(|r| {
-                            let p = r.path.to_ascii_lowercase();
-                            p.contains("tenant") || p.contains("user") || p.contains("item") || p.contains("account")
-                        })
-                        .map(|r| r.path.clone())
-                        .unwrap_or_else(|| "/api/v1/tenant".to_string())
-                });
+                        d.routes
+                            .iter()
+                            .find(|r| {
+                                let p = r.path.to_ascii_lowercase();
+                                p.contains("tenant")
+                                    || p.contains("user")
+                                    || p.contains("item")
+                                    || p.contains("account")
+                            })
+                            .map(|r| r.path.clone())
+                            .unwrap_or_else(|| "/api/v1/tenant".to_string())
+                    });
 
                 let mut c = mk(
                     "authz",
-                    format!("Directives BOLA/IDOR tenant boundary isolation probe on {target_path}"),
+                    format!(
+                        "Directives BOLA/IDOR tenant boundary isolation probe on {target_path}"
+                    ),
                     "GET",
                     target_path,
                     "Tamper with tenant and object identifiers across authorization boundaries",
@@ -106,12 +111,19 @@ pub(crate) fn plan_directives(
             }
 
             // JWT algorithm confusion / Auth boundary
-            if f_low.contains("jwt") || f_low.contains("algorithm confusion") || f_low.contains("auth session") {
+            if f_low.contains("jwt")
+                || f_low.contains("algorithm confusion")
+                || f_low.contains("auth session")
+            {
                 generated_auth_session = true;
                 let target_path = d
                     .routes
                     .iter()
-                    .find(|r| r.path.contains("/auth") || r.path.contains("/session") || r.path.contains("/api"))
+                    .find(|r| {
+                        r.path.contains("/auth")
+                            || r.path.contains("/session")
+                            || r.path.contains("/api")
+                    })
                     .map(|r| r.path.clone())
                     .unwrap_or_else(|| "/api/auth/session".to_string());
 
@@ -137,7 +149,8 @@ pub(crate) fn plan_directives(
             }
 
             // Prompt injection / Canary focus
-            if (f_low.contains("canary") || f_low.contains("prompt injection")) && !generated_canary {
+            if (f_low.contains("canary") || f_low.contains("prompt injection")) && !generated_canary
+            {
                 let chat_target = d
                     .routes
                     .iter()
@@ -300,7 +313,10 @@ pub(crate) fn plan_directives(
             .iter()
             .find(|r| {
                 let p = r.path.to_ascii_lowercase();
-                p.contains("tenant") || p.contains("user") || p.contains("item") || p.contains("account")
+                p.contains("tenant")
+                    || p.contains("user")
+                    || p.contains("item")
+                    || p.contains("account")
             })
             .map(|r| r.path.clone())
             .unwrap_or_else(|| "/api/v1/tenant".to_string());

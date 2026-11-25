@@ -7,7 +7,9 @@ use super::area::{Area, AreaNeed, MAX_WORKERS, case_weight, request_demand};
 use super::followup::base_id;
 use super::schedule::{LeadConfig, Task, bump};
 use crate::agent::budget::BudgetUsage;
-use crate::agent::types::{AgentsReport, AreaReport, CaseExecutionResult, PlannedCase, Quota, TriagedDefect};
+use crate::agent::types::{
+    AgentsReport, AreaReport, CaseExecutionResult, PlannedCase, Quota, TriagedDefect,
+};
 
 pub(super) fn quota_of(u: &BudgetUsage) -> Quota {
     Quota {

@@ -1,5 +1,5 @@
-use std::collections::BTreeSet;
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, CheckStatus, Finding, Severity};

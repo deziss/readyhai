@@ -401,7 +401,6 @@ impl SinceLastRun {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Accepted {
     pub fingerprint: String,

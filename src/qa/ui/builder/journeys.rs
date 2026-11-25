@@ -1,7 +1,7 @@
-use crate::model::{Category, Severity};
-use crate::qa::model::*;
 use super::super::model::UiReport;
 use super::{B, ev};
+use crate::model::{Category, Severity};
+use crate::qa::model::*;
 
 pub fn process_forms(
     b: &mut B,
@@ -108,7 +108,10 @@ pub fn process_journeys(b: &mut B, rep: &UiReport, m: &mut CoverageMatrix) {
                 let note = if j.healed_locators.is_empty() {
                     "all steps passed".to_string()
                 } else {
-                    format!("all steps passed ({} locator(s) self-healed)", j.healed_locators.len())
+                    format!(
+                        "all steps passed ({} locator(s) self-healed)",
+                        j.healed_locators.len()
+                    )
                 };
                 b.result(&id, None, note, vec![]);
                 m.set(&j.name, &j.role, Cell::Pass);

@@ -65,6 +65,7 @@ pub use oracle::{OracleCheck, OracleOutcome, Severity, Verdict};
 pub use pipeline::{
     LlmMode, RunOptions, run_agentic_loop, run_agentic_loop_with, run_discovery_scan,
 };
+pub use recon::*;
 pub use report::{
     generate_agent_html_report, generate_agent_junit_report, generate_agent_markdown_report,
     generate_agent_report_formats, generate_agent_sarif_report,
@@ -76,4 +77,3 @@ pub use store::{
 };
 #[allow(unused_imports)]
 pub use types::*;
-pub use recon::*;

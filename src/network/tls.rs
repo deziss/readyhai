@@ -275,4 +275,3 @@ pub fn audit_tls_chain(
         diagnosis,
     }
 }
-

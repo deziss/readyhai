@@ -1,8 +1,8 @@
 //! Planning domain models, depths, PRNG seed generation, and limits.
 
+use super::super::types::PlannedCase;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use super::super::types::PlannedCase;
 
 pub(crate) static NULL: Value = Value::Null;
 

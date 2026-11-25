@@ -7,13 +7,15 @@ mod tests {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
-    use super::super::deadline::{deadline_passed, run_deadline, DeadlineGuard};
-    use super::super::git::{clone_url, git_clone, git_clone_command, redact_url_credentials, remote_repo_host};
+    use super::super::ENV_LOCK;
+    use super::super::deadline::{DeadlineGuard, deadline_passed, run_deadline};
+    use super::super::git::{
+        clone_url, git_clone, git_clone_command, redact_url_credentials, remote_repo_host,
+    };
     use super::super::orchestrator::scan;
     use super::super::storage::{new_run_id, run_dir, valid_run_id, write_atomic};
     use super::super::target_parser::parse_target;
     use super::super::types::ScanOpts;
-    use super::super::ENV_LOCK;
 
     #[test]
     fn run_ids_carry_64_random_bits() {

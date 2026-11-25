@@ -2024,7 +2024,12 @@ fn vulns_api_lists_filters_and_triages() {
     // invalid filter values are a 400 with a message, never a silent empty list
     let (st, v) = get("?status=bogus");
     assert_eq!(st, 400);
-    assert!(v["error"].as_str().unwrap().contains("status must be one of"));
+    assert!(
+        v["error"]
+            .as_str()
+            .unwrap()
+            .contains("status must be one of")
+    );
     let (st, _) = get("?severity=nope");
     assert_eq!(st, 400);
 

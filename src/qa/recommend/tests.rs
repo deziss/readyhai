@@ -7,12 +7,12 @@ mod tests {
     use crate::model::{
         Category, Finding, FindingStatus, Profile, Run, Severity, Target, TargetKind, Verdict,
     };
+    use crate::qa::QaCtx;
     use crate::qa::model::{
         Area, CaseSource, Defect, ExitCriterion, Priority, QaCollector, QaReport, Recommendation,
-        ResultStatus, TestCase, TestResult, Technique,
+        ResultStatus, Technique, TestCase, TestResult,
     };
     use crate::qa::roles::Roles;
-    use crate::qa::QaCtx;
 
     fn run(v: Verdict, findings: Vec<Finding>) -> Run {
         Run {

@@ -526,8 +526,7 @@ fn a_cancelled_run_sends_no_replay() {
     });
     let mut c = case("TC-001", "injection", "GET", "/search");
     c.payload = Some("q='".into());
-    let mut results =
-        execute_cases_with(&[c.clone()], &srv.base, &exec_opts(), &mut budget(50));
+    let mut results = execute_cases_with(&[c.clone()], &srv.base, &exec_opts(), &mut budget(50));
     assert_eq!(results[0].status, "FAIL");
     let sent_before = srv.total();
     let token = crate::agent::types::CancelToken::new();
@@ -1200,9 +1199,7 @@ fn results_chain_steps() -> Option<Vec<crate::agent::types::StatefulStep>> {
 
 #[test]
 fn verify_replays_blind_timing_open_redirect_and_oast_k_times() {
-    use axum::{
-        Router, extract::Query, http::StatusCode, response::IntoResponse, routing::get,
-    };
+    use axum::{Router, extract::Query, http::StatusCode, response::IntoResponse, routing::get};
     use std::collections::HashMap;
     use std::net::SocketAddr;
 
@@ -1391,6 +1388,12 @@ fn test_audit_defects_with_juror() {
     assert_eq!(eliminated, 1, "false positive defect should be eliminated");
     assert_eq!(kept.len(), 1, "only true positive should be retained");
     assert_eq!(kept[0].id, "DEF-001");
-    assert!(kept[0].remediation_patch.as_ref().unwrap().contains("cursor.execute"));
+    assert!(
+        kept[0]
+            .remediation_patch
+            .as_ref()
+            .unwrap()
+            .contains("cursor.execute")
+    );
     assert!(kept[0].remediation_explanation.is_some());
 }

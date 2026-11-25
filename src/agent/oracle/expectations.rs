@@ -2,7 +2,7 @@
 
 use super::super::triage::severity_for;
 use super::super::types::PlannedCase;
-use super::types::{chk, Observation, OracleCheck, Technique, Verdict};
+use super::types::{Observation, OracleCheck, Technique, Verdict, chk};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expect {

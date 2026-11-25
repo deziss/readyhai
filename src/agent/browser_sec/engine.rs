@@ -13,7 +13,9 @@ use crate::agent::discover::Discovery;
 use crate::agent::exec::{ExecOptions, execute_cases_with};
 use crate::agent::oracle::{Verdict, has_dom_xss_sink_flow, is_login_location};
 use crate::agent::plan::Depth;
-use crate::agent::types::{CaseExecutionResult, CreatedLedger, PlannedCase, ProbeOracle, StatefulStep};
+use crate::agent::types::{
+    CaseExecutionResult, CreatedLedger, PlannedCase, ProbeOracle, StatefulStep,
+};
 
 const MAX_SYNTHETIC_CASES: usize = 8;
 const STORED_XSS_CANARY: &str = "<img src=x onerror=\"window.__rh_xss_hit('sxss')\">";

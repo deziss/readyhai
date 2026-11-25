@@ -3,19 +3,17 @@ use std::collections::HashMap;
 use anyhow::{Context, Result};
 use regex::Regex;
 
+use super::client::{container_url, discover_openapi, origin_of};
+use super::smoke::gate;
 use crate::ctx::Ctx;
 use crate::model::*;
 use crate::tools::{ToolSpec, parse_junit};
-use super::client::{container_url, discover_openapi, origin_of};
-use super::smoke::gate;
 
 /// testcase name -> text of its first failure/error element (Schemathesis puts the prose there).
 pub fn junit_failure_text(xml: &str) -> HashMap<String, String> {
     let case_re =
-        Regex::new(r#"(?s)<testcase\b[^>]*?\bname="([^"]*)"[^>/]*>(.*?)</testcase>"#)
-            .unwrap();
-    let body_re =
-        Regex::new(r"(?s)<(?:failure|error)\b[^>]*>(.*?)</(?:failure|error)>").unwrap();
+        Regex::new(r#"(?s)<testcase\b[^>]*?\bname="([^"]*)"[^>/]*>(.*?)</testcase>"#).unwrap();
+    let body_re = Regex::new(r"(?s)<(?:failure|error)\b[^>]*>(.*?)</(?:failure|error)>").unwrap();
     let un = |t: &str| {
         t.replace("&lt;", "<")
             .replace("&gt;", ">")

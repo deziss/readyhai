@@ -1,6 +1,6 @@
 //! Fixture server lifecycle, process execution isolation, and test runner dispatch.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};

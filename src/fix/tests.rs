@@ -50,7 +50,11 @@ fn test_remediate_missing_guard_express() {
 
     assert_eq!(patch.file_path, "server.js");
     assert!(patch.patched_snippet.contains("requireAuth, listUsers"));
-    assert!(patch.unified_diff.contains("+app.get('/users', requireAuth, listUsers);"));
+    assert!(
+        patch
+            .unified_diff
+            .contains("+app.get('/users', requireAuth, listUsers);")
+    );
 }
 
 #[test]
@@ -75,8 +79,16 @@ fn test_remediate_sql_injection_python() {
         .unwrap()
         .expect("should synthesize patch");
 
-    assert!(patch.patched_snippet.contains("execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))"));
-    assert!(patch.unified_diff.contains("+    cursor.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))"));
+    assert!(
+        patch
+            .patched_snippet
+            .contains("execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))")
+    );
+    assert!(
+        patch
+            .unified_diff
+            .contains("+    cursor.execute(\"SELECT * FROM users WHERE id = %s\", (user_id,))")
+    );
 }
 
 #[test]
@@ -126,7 +138,11 @@ fn test_remediate_cors_wildcard() {
         .unwrap()
         .expect("should synthesize patch");
 
-    assert!(patch.patched_snippet.contains("process.env.ALLOWED_ORIGINS"));
+    assert!(
+        patch
+            .patched_snippet
+            .contains("process.env.ALLOWED_ORIGINS")
+    );
 }
 
 #[test]

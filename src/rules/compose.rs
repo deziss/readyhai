@@ -1,7 +1,7 @@
 //! Docker Compose hardening and configuration auditing.
 
 use super::dockerfile::{has_healthcheck, parse_stages};
-use super::facts::{base, dir, normalize, read, read_checked, Skips};
+use super::facts::{Skips, base, dir, normalize, read, read_checked};
 use super::{na, non_empty_map, path, truthy};
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, Finding, Severity};
@@ -22,7 +22,12 @@ pub(crate) fn test_string(v: &Value) -> String {
 
 /// True when the service's `build:` Dockerfile (context + dockerfile) or, for `image:` services, a
 /// repo Dockerfile in a directory named like the image, defines a HEALTHCHECK.
-pub(crate) fn image_dockerfile_has_healthcheck(ctx: &Ctx, snap: &Snapshot, svc: &Value, file: &str) -> bool {
+pub(crate) fn image_dockerfile_has_healthcheck(
+    ctx: &Ctx,
+    snap: &Snapshot,
+    svc: &Value,
+    file: &str,
+) -> bool {
     let hc = |p: &str| {
         read(snap, p).is_some_and(|t| parse_stages(&t).last().is_some_and(has_healthcheck))
     };

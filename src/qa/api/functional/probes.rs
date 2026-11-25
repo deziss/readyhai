@@ -97,11 +97,7 @@ pub fn pagination(r: &mut Runner, op: &Op, role: Option<&Role>, reserve: usize) 
     }
 }
 
-pub fn rate_limit_probe(
-    r: &mut Runner,
-    cheapest: Option<(String, u128)>,
-    roles: &[&Role],
-) {
+pub fn rate_limit_probe(r: &mut Runner, cheapest: Option<(String, u128)>, roles: &[&Role]) {
     let Some((key, _)) = cheapest else { return };
     let Some(op) = r.spec.ops.iter().find(|o| o.key() == key).cloned() else {
         return;

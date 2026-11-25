@@ -3,7 +3,7 @@
 use std::fs;
 use std::time::Instant;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::dataset::load_cases;
 use super::evaluator::evaluate_cases;

@@ -1,20 +1,27 @@
 use serde_json::{Value, json};
 
-use crate::agent::budget::RunBudget;
-use crate::agent::oracle::{self, Observation, OracleOutcome, Severity, Technique, Verdict, is_cors_case};
-use crate::agent::types::{
-    AttemptRecord, BlockReason, CaseExecutionResult, PlannedCase, RedirectHop,
-    SRC_AUTH_WALL, SRC_NOT_APPLICABLE,
-};
-use crate::llm::{is_sensitive_key, redact_for_llm};
 use super::auth::{Auth, ResolvedAuth};
 use super::builder::{RequestSpec, is_safe_method};
 use super::clients::{Seen, follow_curl, follows_redirects};
 use super::delete::note_creation;
 use super::dispatch::{Ctx, NEXT_STEP_AUTH_WALL, evidence_rel_path};
 use super::probe::{ProbeOutcome, send_with_probe_oracle};
+use crate::agent::budget::RunBudget;
+use crate::agent::oracle::{
+    self, Observation, OracleOutcome, Severity, Technique, Verdict, is_cors_case,
+};
+use crate::agent::types::{
+    AttemptRecord, BlockReason, CaseExecutionResult, PlannedCase, RedirectHop, SRC_AUTH_WALL,
+    SRC_NOT_APPLICABLE,
+};
+use crate::llm::{is_sensitive_key, redact_for_llm};
 
-pub(crate) fn skeleton(c: &PlannedCase, status: &str, reason: String, curl: String) -> CaseExecutionResult {
+pub(crate) fn skeleton(
+    c: &PlannedCase,
+    status: &str,
+    reason: String,
+    curl: String,
+) -> CaseExecutionResult {
     CaseExecutionResult {
         blocked_reason: None,
         redirect_chain: vec![],
@@ -45,7 +52,11 @@ pub(crate) fn skeleton(c: &PlannedCase, status: &str, reason: String, curl: Stri
     }
 }
 
-pub(crate) fn skipped(c: &PlannedCase, reason: impl Into<String>, curl: String) -> CaseExecutionResult {
+pub(crate) fn skipped(
+    c: &PlannedCase,
+    reason: impl Into<String>,
+    curl: String,
+) -> CaseExecutionResult {
     skeleton(c, "SKIPPED", reason.into(), curl)
 }
 

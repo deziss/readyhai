@@ -1,12 +1,12 @@
 //! Contract validation, schema enforcement, latency checks, and JSON structure oracles.
 
-use std::sync::OnceLock;
 use regex::Regex;
+use std::sync::OnceLock;
 
 use super::super::triage::severity_for;
 use super::super::types::{PlannedCase, ProbeOracle, ResponseContract};
 use super::expectations::{is_rejection, not_exercised};
-use super::types::{chk, Observation, OracleCheck, Technique, Verdict};
+use super::types::{Observation, OracleCheck, Technique, Verdict, chk};
 use crate::qa::api::{contract, latency};
 
 pub(crate) fn json_of(body: &str) -> Option<serde_json::Value> {

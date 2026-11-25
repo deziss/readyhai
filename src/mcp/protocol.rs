@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use crate::engine;
 use super::tools::{call_tool, tool_defs};
+use crate::engine;
 
 pub const SUPPORTED: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 /// Prefixed to every tool result that carries text from the scanned target (finding titles, route

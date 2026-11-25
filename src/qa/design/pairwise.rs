@@ -1,6 +1,8 @@
 //! Pairwise (all-pairs) combination, decision-table derivation from boolean flags, and the
 //! operation x technique coverage matrix.
-use super::common::{CASE_CAP, case, classes, inputs, no_spec, ops, propose, schema_type, spec, valid_value};
+use super::common::{
+    CASE_CAP, case, classes, inputs, no_spec, ops, propose, schema_type, spec, valid_value,
+};
 use crate::ctx::Ctx;
 use crate::model::{CheckOutput, CheckStatus};
 use crate::qa::model::*;
@@ -44,8 +46,8 @@ pub(crate) fn all_pairs(factors: &[(String, Vec<(String, Value)>)]) -> Vec<Vec<u
         // candidate rows: fix each surviving uncovered pair and extend greedily
         let seed = *uncovered.iter().next().expect("non-empty");
         let mut row = vec![usize::MAX; factors.len()];
-        row[seed.0 .0] = seed.0 .1;
-        row[seed.1 .0] = seed.1 .1;
+        row[seed.0.0] = seed.0.1;
+        row[seed.1.0] = seed.1.1;
         // fill remaining factors with the level covering the most uncovered pairs vs assigned ones
         for f in 0..factors.len() {
             if row[f] != usize::MAX {
@@ -128,7 +130,11 @@ pub(crate) fn pairwise(ctx: &Ctx) -> Result<CheckOutput> {
                 vec![format!("Send {} {} with {parts}", op.method, op.path)],
                 "each value combination behaves per its class: valid combos accepted, invalid rejected with 4xx".into(),
             );
-            propose(qa, tc, "design-generated pairwise case; execute manually or via API runner");
+            propose(
+                qa,
+                tc,
+                "design-generated pairwise case; execute manually or via API runner",
+            );
             proposed += 1;
             ops_hit += 1;
         }
@@ -168,7 +174,10 @@ pub(crate) fn decision_table(ctx: &Ctx) -> Result<CheckOutput> {
                     l => format!("{l}.{name}"),
                 };
                 let vals: Vec<(String, Value)> = if schema_type(&schema) == "boolean" {
-                    vec![("true".into(), serde_json::json!(true)), ("false".into(), serde_json::json!(false))]
+                    vec![
+                        ("true".into(), serde_json::json!(true)),
+                        ("false".into(), serde_json::json!(false)),
+                    ]
                 } else if let Some(vals) = schema.get("enum").and_then(|v| v.as_array())
                     && vals.len() <= 4
                 {
@@ -205,14 +214,21 @@ pub(crate) fn decision_table(ctx: &Ctx) -> Result<CheckOutput> {
                 Technique::DecisionTable,
                 "dt",
                 format!("{}: rule [{parts}]", op.key()),
-                vec![format!("Send {} {} with {parts} (other inputs valid)", op.method, op.path)],
+                vec![format!(
+                    "Send {} {} with {parts} (other inputs valid)",
+                    op.method, op.path
+                )],
                 if total_combos <= 8 {
                     "one of a complete decision table: each rule's documented action; undeclared combination must be rejected, not guessed".into()
                 } else {
                     "one rule of a truncated decision table (16 of {total_combos} combos); business rules must define each".into()
                 },
             );
-            propose(qa, tc, "design-generated decision-table rule; confirm expected action with business rules, then execute");
+            propose(
+                qa,
+                tc,
+                "design-generated decision-table rule; confirm expected action with business rules, then execute",
+            );
             proposed += 1;
         }
     }
@@ -241,7 +257,13 @@ pub(crate) fn matrix(ctx: &Ctx) -> Result<CheckOutput> {
         return Ok(no_spec());
     };
     let qa = ctx.qa.as_ref().unwrap();
-    let cols = ["Positive", "Boundary", "Equivalence", "Pairwise", "DecisionTable"];
+    let cols = [
+        "Positive",
+        "Boundary",
+        "Equivalence",
+        "Pairwise",
+        "DecisionTable",
+    ];
     let mut untested = 0usize;
     let mut total = 0usize;
     let op_list = ops(&spec);
@@ -271,7 +293,12 @@ pub(crate) fn matrix(ctx: &Ctx) -> Result<CheckOutput> {
         let executed: BTreeSet<(String, String)> = c
             .results
             .iter()
-            .filter(|r| matches!(r.status, ResultStatus::Pass | ResultStatus::Fail | ResultStatus::Flaky))
+            .filter(|r| {
+                matches!(
+                    r.status,
+                    ResultStatus::Pass | ResultStatus::Fail | ResultStatus::Flaky
+                )
+            })
             .filter_map(|r| {
                 c.cases
                     .iter()
@@ -320,20 +347,24 @@ pub(crate) fn matrix(ctx: &Ctx) -> Result<CheckOutput> {
             .iter()
             .filter(|r| r.status == ResultStatus::Fail)
             .filter_map(|r| {
-                c.cases.iter().find(|tc| tc.id == r.case_id).filter(|tc| tc.area == Area::Design || tc.area == Area::Api).map(|tc| {
-                    (
-                        tc.component.clone(),
-                        match tc.technique {
-                            Technique::Positive => "Positive",
-                            Technique::Boundary => "Boundary",
-                            Technique::Equivalence => "Equivalence",
-                            Technique::Pairwise => "Pairwise",
-                            Technique::DecisionTable => "DecisionTable",
-                            _ => "",
-                        }
-                        .to_string(),
-                    )
-                })
+                c.cases
+                    .iter()
+                    .find(|tc| tc.id == r.case_id)
+                    .filter(|tc| tc.area == Area::Design || tc.area == Area::Api)
+                    .map(|tc| {
+                        (
+                            tc.component.clone(),
+                            match tc.technique {
+                                Technique::Positive => "Positive",
+                                Technique::Boundary => "Boundary",
+                                Technique::Equivalence => "Equivalence",
+                                Technique::Pairwise => "Pairwise",
+                                Technique::DecisionTable => "DecisionTable",
+                                _ => "",
+                            }
+                            .to_string(),
+                        )
+                    })
             })
             .filter(|(_, t)| !t.is_empty())
             .collect::<Vec<_>>()
@@ -372,7 +403,9 @@ mod tests {
     fn f(name: &str, n: usize) -> (String, Vec<(String, Value)>) {
         (
             name.to_string(),
-            (0..n).map(|i| (format!("l{i}"), Value::from(i as i64))).collect(),
+            (0..n)
+                .map(|i| (format!("l{i}"), Value::from(i as i64)))
+                .collect(),
         )
     }
 

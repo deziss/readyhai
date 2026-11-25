@@ -9,13 +9,13 @@ use crate::agent::types::{DiscoveredRoute, InputSurface, TargetTechProfile};
 
 mod crawler;
 mod harvest;
+pub mod semantic;
 mod soft404;
 mod spa;
 mod spec;
 mod surface;
 mod tech;
 mod xhr;
-pub mod semantic;
 
 #[cfg(test)]
 mod tests;

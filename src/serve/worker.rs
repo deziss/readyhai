@@ -1,9 +1,8 @@
 //! Background job worker, execution queue, and server lifecycle crash recovery.
 
 use super::guards::err;
-use super::types::{
-    App, DEFAULT_MAX_CUSTOM_INSTRUCTIONS_BYTES, GUARD_TIMEOUT, MAX_RUN_JSON_BYTES,
-};
+use super::types::{App, DEFAULT_MAX_CUSTOM_INSTRUCTIONS_BYTES, GUARD_TIMEOUT, MAX_RUN_JSON_BYTES};
+use crate::engine::{self, ScanOpts};
 use anyhow::Result;
 use axum::http::StatusCode;
 use axum::response::Response;
@@ -11,7 +10,6 @@ use serde_json::json;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use crate::engine::{self, ScanOpts};
 
 pub static SERVER_ID: OnceLock<String> = OnceLock::new();
 
@@ -190,7 +188,9 @@ pub async fn worker(
             let mut lock = rx.lock().await;
             lock.recv().await
         };
-        let Some((id, mut opts)) = item else { break; };
+        let Some((id, mut opts)) = item else {
+            break;
+        };
         if !engine::run_dir(&id).join("status.json").exists() {
             continue;
         }

@@ -4,8 +4,7 @@ use tree_sitter::Node;
 use crate::model::{Category, Finding, Severity};
 
 use super::ast::{
-    is_dynamic_expr, is_public_utility_route, is_sensitive_or_mutating_endpoint, node_text,
-    unquote,
+    is_dynamic_expr, is_public_utility_route, is_sensitive_or_mutating_endpoint, node_text, unquote,
 };
 use super::types::{DiscoveredEndpoint, SinkKind};
 

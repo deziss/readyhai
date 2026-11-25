@@ -1,7 +1,7 @@
-use crate::agent::types::record_creation_response;
 use super::auth::{Bearer, ResolvedAuth, role_of};
 use super::builder::{RequestSpec, normalize_component};
 use super::clients::{Clients, OutReq, Seen, needs_validated_tls};
+use crate::agent::types::record_creation_response;
 
 /// What a read-back after a DELETE found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

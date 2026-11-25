@@ -9,9 +9,7 @@ use super::models::{
     UNMAPPED,
 };
 use crate::agent::discover::SpecDoc;
-use crate::agent::types::{
-    CaseExecutionResult, ChangeImpact, ChangedOpCoverage, PlannedCase,
-};
+use crate::agent::types::{CaseExecutionResult, ChangeImpact, ChangedOpCoverage, PlannedCase};
 use crate::qa::suite::is_test_path;
 
 /// Analyse the diff between `base` and HEAD of `repo` against the spec's operations. Never fails

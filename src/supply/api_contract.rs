@@ -5,9 +5,7 @@ use serde_json::Value;
 use super::helpers::{src_rel, sv};
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, CheckStatus, Finding, Severity};
-use crate::tools::{
-    ToolSpec, gate, is_oversize, missing_image, partial, read_out, tool_failed,
-};
+use crate::tools::{ToolSpec, gate, is_oversize, missing_image, partial, read_out, tool_failed};
 
 pub(crate) const MAX_SPECS: usize = 20;
 pub(crate) const MAX_READ: u64 = 4 * 1024 * 1024;

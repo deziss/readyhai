@@ -30,13 +30,15 @@ pub mod url;
 #[cfg(test)]
 mod tests;
 
-pub use config::{active, from_env, set_active, GitCfg, PerfLimits, ResilienceCfg, Scope, ScopeHost};
 pub(crate) use config::load_configured;
-pub use decision::{check, check_host, egress_guard, Egress};
-pub(crate) use decision::{decide, Decision};
-pub use dns::{host_is_internal, host_matches, resolve_name};
+pub use config::{
+    GitCfg, PerfLimits, ResilienceCfg, Scope, ScopeHost, active, from_env, set_active,
+};
+pub(crate) use decision::{Decision, decide};
+pub use decision::{Egress, check, check_host, egress_guard};
 #[cfg(test)]
 pub use dns::test_dns;
-pub use git_guard::{check_git_host, DEFAULT_GIT_HOSTS};
-pub use ip::{classify_host, is_internal_ip, is_internal_name, HostClass};
+pub use dns::{host_is_internal, host_matches, resolve_name};
+pub use git_guard::{DEFAULT_GIT_HOSTS, check_git_host};
+pub use ip::{HostClass, classify_host, is_internal_ip, is_internal_name};
 pub use url::{norm_host, parse_web_url, url_host};

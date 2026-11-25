@@ -1,11 +1,11 @@
-use std::path::Path;
 use anyhow::{Context, Result};
+use std::path::Path;
 
+use super::client::{container_url, has_shell_unsafe_chars};
+use super::smoke::gate;
 use crate::ctx::Ctx;
 use crate::model::*;
 use crate::tools::ToolSpec;
-use super::client::{container_url, has_shell_unsafe_chars};
-use super::smoke::gate;
 
 fn dir_has_entries(dir: &Path) -> bool {
     std::fs::read_dir(dir)

@@ -222,9 +222,10 @@ fn xml_unescape(v: &str) -> String {
 /// reports these tools emit, wrong for arbitrary XML (by design, and never recursive).
 /// The closing tag must end exactly at the name, so `</host>` never swallows `</hostname>`.
 fn xml_elements(xml: &str, name: &str) -> Vec<(String, String)> {
-    let re =
-        regex::Regex::new(&format!(r"(?s)<{name}\b([^>]*?)(?:/>|>(.*?)</{name}(?:\s[^>]*)?>)"))
-            .unwrap();
+    let re = regex::Regex::new(&format!(
+        r"(?s)<{name}\b([^>]*?)(?:/>|>(.*?)</{name}(?:\s[^>]*)?>)"
+    ))
+    .unwrap();
     re.captures_iter(xml)
         .map(|c| {
             (
@@ -551,7 +552,10 @@ fn sqlmap_names(text: &str) -> (Vec<String>, Vec<String>) {
     let mut params = vec![];
     let mut techs = vec![];
     let push = |v: &mut Vec<String>, s: &str| {
-        let s = s.trim().trim_matches(['\'', '"', ',', '.', '\\']).to_string();
+        let s = s
+            .trim()
+            .trim_matches(['\'', '"', ',', '.', '\\'])
+            .to_string();
         if !s.is_empty() && !v.contains(&s) {
             v.push(s);
         }
@@ -595,7 +599,9 @@ fn sqlmap_injectable(v: &serde_json::Value) -> bool {
     // "might not be injectable") share the vocabulary of the positives, so veto on
     // a `not` within the same sentence as the yes-word.
     static NEG: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let neg = NEG.get_or_init(|| regex::Regex::new(r"\b(?:not|never)[\s\S]{0,40}(?:injectab|vulnerab|exploit)").unwrap());
+    let neg = NEG.get_or_init(|| {
+        regex::Regex::new(r"\b(?:not|never)[\s\S]{0,40}(?:injectab|vulnerab|exploit)").unwrap()
+    });
     if neg.is_match(&t) || t.contains("no injection") {
         return false;
     }
@@ -672,13 +678,7 @@ pub(crate) fn parse_sqlmap(check: &str, text: &str) -> Result<Vec<Finding>> {
                 .iter()
                 .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
                 .map(str::to_string)
-                .unwrap_or_else(|| {
-                    if key_url {
-                        key.clone()
-                    } else {
-                        url.clone()
-                    }
-                });
+                .unwrap_or_else(|| if key_url { key.clone() } else { url.clone() });
             let own_param = if key_url {
                 params.first().cloned()
             } else {
@@ -689,9 +689,7 @@ pub(crate) fn parse_sqlmap(check: &str, text: &str) -> Result<Vec<Finding>> {
                 let trimmed = t.trim().trim_matches(['\'', '"', '.', '\\']);
                 let dup = trimmed.is_empty()
                     || trimmed.eq_ignore_ascii_case("null")
-                    || techs
-                        .iter()
-                        .any(|x| x.eq_ignore_ascii_case(trimmed));
+                    || techs.iter().any(|x| x.eq_ignore_ascii_case(trimmed));
                 if !dup {
                     techs.push(trimmed.to_string());
                 }
@@ -1172,13 +1170,15 @@ pub fn ensure_packs(
                 ));
             }
             if t0.elapsed() >= SETUP_BUDGET {
-                notes.push("setup: time budget reached; remaining images will pull on demand".into());
+                notes.push(
+                    "setup: time budget reached; remaining images will pull on demand".into(),
+                );
                 break;
             }
             match pull(image) {
-                Ok(c) if c.success() => notes.push(format!(
-                    "setup: pulled {id} image (first-run provisioning)"
-                )),
+                Ok(c) if c.success() => {
+                    notes.push(format!("setup: pulled {id} image (first-run provisioning)"))
+                }
                 Ok(c) => notes.push(format!(
                     "setup: pull failed for {id} ({}); scan will attempt it on demand",
                     super::parsers::first_line(&c.stderr_lossy(), 160)

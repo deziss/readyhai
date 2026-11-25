@@ -1,6 +1,6 @@
 //! OASIS SARIF 2.1.0 report serialization.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::model::*;
 

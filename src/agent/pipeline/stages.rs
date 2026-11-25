@@ -7,11 +7,11 @@ use std::sync::Mutex;
 
 use super::super::change;
 use super::super::discover::{discover, harvest_ids};
-use super::super::exec::{auth_for, Auth, Clients, Credentials, ExecOptions};
+use super::super::exec::{Auth, Clients, Credentials, ExecOptions, auth_for};
 use super::super::lead;
 use super::super::ledger::{self, LedgerInput};
 use super::super::plan::{
-    plan_cases_remembered_with_whitebox, plans_from_spec, seed_from_run_id, Depth,
+    Depth, plan_cases_remembered_with_whitebox, plans_from_spec, seed_from_run_id,
 };
 use super::super::store::{checkpoint_agent_run_in, now_iso, save_agent_run_in, save_cleanup_in};
 use super::super::triage::{add_llm_notes, derive_defects_verified};
@@ -21,16 +21,15 @@ use super::change::analyze_change;
 use super::cleanup::{delete_check_results, harvest_created, target_is_nonprod, teardown};
 use super::gate::llm_gate;
 use super::gates::{
-    validate_discovery_gate, validate_execution_gate, validate_plan_gate,
-    validate_recon_gate, validate_release_gate_verdict, validate_verify_gate,
-    DiscoveryGate, DiscoveryGateInput, ExecutionGate, ExecutionGateInput,
-    PlanGate, PlanGateInput, ReconGate, ReconGateInput, ReleaseGateInput,
-    VerifyGate, VerifyGateInput,
+    DiscoveryGate, DiscoveryGateInput, ExecutionGate, ExecutionGateInput, PlanGate, PlanGateInput,
+    ReconGate, ReconGateInput, ReleaseGateInput, VerifyGate, VerifyGateInput,
+    validate_discovery_gate, validate_execution_gate, validate_plan_gate, validate_recon_gate,
+    validate_release_gate_verdict, validate_verify_gate,
 };
 use super::graph::{PipelineState, RoutingCondition, StationNode};
 use super::memory::{recall, remember};
 use super::options::{
-    cap_if_slow, checkpoint, ip_fields, log, measure_llm, resolve_llm, take_llm_notes, RunOptions,
+    RunOptions, cap_if_slow, checkpoint, ip_fields, log, measure_llm, resolve_llm, take_llm_notes,
 };
 use super::order::order_and_trim;
 use crate::llm::{call_params, clamp_thinking_budget};
@@ -140,7 +139,11 @@ pub(crate) fn agent_stages(
             &mut rep.steps,
             "SoftwareFactory",
             "Recon Entrance Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
             "completed",
             Some("deterministic"),
         );
@@ -193,7 +196,11 @@ pub(crate) fn agent_stages(
             recon_directives.canary_token
         ),
         "completed",
-        Some(if llm_cfg.is_some() { "llm" } else { "deterministic" }),
+        Some(if llm_cfg.is_some() {
+            "llm"
+        } else {
+            "deterministic"
+        }),
     );
 
     let recon_gate_in = ReconGateInput {
@@ -206,8 +213,16 @@ pub(crate) fn agent_stages(
             &mut rep.steps,
             "SoftwareFactory",
             "Recon Quality Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
-            if verdict.passed { "completed" } else { "warning" },
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
+            if verdict.passed {
+                "completed"
+            } else {
+                "warning"
+            },
             Some("deterministic"),
         );
     }
@@ -219,7 +234,11 @@ pub(crate) fn agent_stages(
             &mut rep.steps,
             "SoftwareFactory",
             "Discovery Entrance Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
             "completed",
             Some("deterministic"),
         );
@@ -324,7 +343,10 @@ pub(crate) fn agent_stages(
         rep.notes.extend(notes);
     }
     // Semantic shadow route & parameter boundary prediction using LLM reasoning and directives
-    if let Some(cfg) = llm_cfg.as_ref().filter(|_| !budget.is_cancelled() && !disc.routes.is_empty()) {
+    if let Some(cfg) = llm_cfg
+        .as_ref()
+        .filter(|_| !budget.is_cancelled() && !disc.routes.is_empty())
+    {
         let semantic_routes = super::super::discover::semantic::discover_semantic_routes(
             Some((cfg, &mut llm_budget)),
             &req.target,
@@ -336,7 +358,11 @@ pub(crate) fn agent_stages(
         if !semantic_routes.is_empty() {
             let sem_n = semantic_routes.len();
             for r in semantic_routes {
-                if !disc.routes.iter().any(|existing| existing.path == r.path && existing.method == r.method) {
+                if !disc
+                    .routes
+                    .iter()
+                    .any(|existing| existing.path == r.path && existing.method == r.method)
+                {
                     disc.routes.push(r);
                 }
             }
@@ -344,7 +370,10 @@ pub(crate) fn agent_stages(
                 &mut rep.steps,
                 "Discovery",
                 "Semantic Shadow Discovery",
-                &format!("Predicted and injected {} shadow endpoint(s) and parameter boundaries", sem_n),
+                &format!(
+                    "Predicted and injected {} shadow endpoint(s) and parameter boundaries",
+                    sem_n
+                ),
                 "completed",
                 Some("llm"),
             );
@@ -361,8 +390,16 @@ pub(crate) fn agent_stages(
             &mut rep.steps,
             "SoftwareFactory",
             "Discovery Quality Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
-            if verdict.passed { "completed" } else { "warning" },
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
+            if verdict.passed {
+                "completed"
+            } else {
+                "warning"
+            },
             Some("deterministic"),
         );
     }
@@ -387,7 +424,11 @@ pub(crate) fn agent_stages(
             &mut rep.steps,
             "SoftwareFactory",
             "Plan Entrance Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
             "completed",
             Some("deterministic"),
         );
@@ -417,7 +458,10 @@ pub(crate) fn agent_stages(
 
     // Stateful multi-step adversarial Attack DAG synthesis (when LLM is configured)
     let mut dag_acyclic = true;
-    if let Some(cfg) = llm_cfg.as_ref().filter(|_| !budget.is_cancelled() && !disc.routes.is_empty()) {
+    if let Some(cfg) = llm_cfg
+        .as_ref()
+        .filter(|_| !budget.is_cancelled() && !disc.routes.is_empty())
+    {
         let attack_dag = super::super::plan::synthesize_attack_dag(
             Some((cfg, &mut llm_budget)),
             &req.target,
@@ -428,7 +472,8 @@ pub(crate) fn agent_stages(
         dag_acyclic = !attack_dag.is_cyclic();
         if dag_acyclic
             && !attack_dag.nodes.is_empty()
-            && let Ok(mut dag_case) = attack_dag.to_planned_case("Attack DAG Adversarial Workflow", "/api")
+            && let Ok(mut dag_case) =
+                attack_dag.to_planned_case("Attack DAG Adversarial Workflow", "/api")
         {
             dag_case.id = format!("DAG{:03}", plan.cases.len() + 1);
             dag_case.area = "stateful".into();
@@ -526,8 +571,16 @@ pub(crate) fn agent_stages(
             &mut rep.steps,
             "SoftwareFactory",
             "Plan Quality Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
-            if verdict.passed { "completed" } else { "warning" },
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
+            if verdict.passed {
+                "completed"
+            } else {
+                "warning"
+            },
             Some("deterministic"),
         );
     }
@@ -555,7 +608,11 @@ pub(crate) fn agent_stages(
             &mut rep.steps,
             "SoftwareFactory",
             "Execution Entrance Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
             "completed",
             Some("deterministic"),
         );
@@ -829,8 +886,16 @@ pub(crate) fn agent_stages(
             &mut rep.steps,
             "SoftwareFactory",
             "Execution Quality Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
-            if verdict.passed { "completed" } else { "warning" },
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
+            if verdict.passed {
+                "completed"
+            } else {
+                "warning"
+            },
             Some("deterministic"),
         );
     }
@@ -842,7 +907,11 @@ pub(crate) fn agent_stages(
             &mut rep.steps,
             "SoftwareFactory",
             "Verify Entrance Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
             "completed",
             Some("deterministic"),
         );
@@ -1166,8 +1235,16 @@ pub(crate) fn agent_stages(
             &mut rep.steps,
             "SoftwareFactory",
             "Verify Quality Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
-            if verdict.passed { "completed" } else { "warning" },
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
+            if verdict.passed {
+                "completed"
+            } else {
+                "warning"
+            },
             Some("deterministic"),
         );
     }
@@ -1222,7 +1299,9 @@ pub(crate) fn agent_stages(
     let attestation_llm = llm_cfg.as_ref().filter(|_| !budget.is_cancelled());
     let attestation = super::gate::software_factory_attestation(
         attestation_llm.map(|c| (c, &mut llm_budget)),
-        rep.evidence_ledger.as_ref().expect("evidence ledger present"),
+        rep.evidence_ledger
+            .as_ref()
+            .expect("evidence ledger present"),
         &rep.triaged_defects,
     );
     log(
@@ -1244,21 +1323,49 @@ pub(crate) fn agent_stages(
     );
 
     let release_gate_in = ReleaseGateInput {
-        value_score: rep.evidence_ledger.as_ref().and_then(|l| l.value_score).unwrap_or(80),
-        authority_score: rep.evidence_ledger.as_ref().and_then(|l| l.authority_score).unwrap_or(80),
-        safety_score: rep.evidence_ledger.as_ref().and_then(|l| l.safety_score).unwrap_or(80),
-        evidence_score: rep.evidence_ledger.as_ref().and_then(|l| l.evidence_score).unwrap_or(80),
+        value_score: rep
+            .evidence_ledger
+            .as_ref()
+            .and_then(|l| l.value_score)
+            .unwrap_or(80),
+        authority_score: rep
+            .evidence_ledger
+            .as_ref()
+            .and_then(|l| l.authority_score)
+            .unwrap_or(80),
+        safety_score: rep
+            .evidence_ledger
+            .as_ref()
+            .and_then(|l| l.safety_score)
+            .unwrap_or(80),
+        evidence_score: rep
+            .evidence_ledger
+            .as_ref()
+            .and_then(|l| l.evidence_score)
+            .unwrap_or(80),
         min_threshold: 70,
         asvs_l1_compliant: attestation.asvs_breakdown.overall_coverage_pct >= 50,
-        critical_defects: rep.triaged_defects.iter().filter(|d| d.severity == "critical").count(),
+        critical_defects: rep
+            .triaged_defects
+            .iter()
+            .filter(|d| d.severity == "critical")
+            .count(),
     };
     if let Ok(verdict) = validate_release_gate_verdict(&release_gate_in) {
         log(
             &mut rep.steps,
             "SoftwareFactory",
             "Release Quality Gate",
-            &format!("Verdict: {} ({})", if verdict.passed { "PASS" } else { "FAIL" }, verdict.summary),
-            if verdict.passed { "completed" } else { "warning" },
+            &format!(
+                "Verdict: {} ({})",
+                if verdict.passed { "PASS" } else { "FAIL" },
+                verdict.summary
+            ),
+            if verdict.passed {
+                "completed"
+            } else {
+                "warning"
+            },
             Some("deterministic"),
         );
     }

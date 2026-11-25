@@ -1,6 +1,6 @@
 //! Git remote host verification against built-in and scope allowlists.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::config::Scope;
 use super::dns::{host_is_internal, host_matches};

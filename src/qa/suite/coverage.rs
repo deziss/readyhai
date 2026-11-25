@@ -1,5 +1,5 @@
-use std::fs;
 use regex::Regex;
+use std::fs;
 
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, CheckStatus, Severity};

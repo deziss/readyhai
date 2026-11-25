@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 use super::clients::{Clients, OutReq};
 use super::credentials::strip_ctl;
@@ -54,7 +54,10 @@ impl std::fmt::Debug for LoginBootstrap {
     }
 }
 
-pub(crate) fn extract_set_cookies(headers: &[(String, String)], jar: &mut BTreeMap<String, String>) {
+pub(crate) fn extract_set_cookies(
+    headers: &[(String, String)],
+    jar: &mut BTreeMap<String, String>,
+) {
     for (k, v) in headers {
         if k.eq_ignore_ascii_case("set-cookie")
             && let Some(nv) = v.split(';').next()
@@ -76,7 +79,10 @@ pub(crate) fn format_cookie_jar(jar: &BTreeMap<String, String>) -> String {
         .join("; ")
 }
 
-pub(crate) fn extract_csrf_from_html(html: &str, custom_field: Option<&str>) -> Option<(String, String)> {
+pub(crate) fn extract_csrf_from_html(
+    html: &str,
+    custom_field: Option<&str>,
+) -> Option<(String, String)> {
     // Match hidden inputs or meta csrf-token without allocating huge captures.
     let input_re = regex::Regex::new(r#"(?is)<input\b[^>]*>"#).ok()?;
     let attr_name = regex::Regex::new(r#"(?i)\bname\s*=\s*["']([^"']+)["']"#).ok()?;

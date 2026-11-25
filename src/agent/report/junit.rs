@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::agent::types::{AgentRunReport, CaseExecutionResult};
 use super::helpers::{verdict_of, xml_escape};
+use crate::agent::types::{AgentRunReport, CaseExecutionResult};
 
 pub fn generate_agent_junit_report(rep: &AgentRunReport) -> String {
     let rs = &rep.executed_results;

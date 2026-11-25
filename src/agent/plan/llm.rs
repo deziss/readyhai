@@ -1,8 +1,5 @@
 //! LLM-assisted adversarial test case synthesis, validation against discovered routes, and JSON schema guards.
 
-use serde::Deserialize;
-use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
 use super::super::discover::Discovery;
 use super::super::exec::{Credentials, normalize_method};
 use super::super::oracle::Technique;
@@ -14,6 +11,9 @@ use super::types::SeededRng;
 use crate::agent::prompts::plan::{build_dag_planner_system_prompt, build_dag_planner_user_prompt};
 use crate::llm::untrusted::{self, clean, fence_capped};
 use crate::llm::{Budget, LlmConfig, ask_typed, clamp_thinking_budget};
+use serde::Deserialize;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
 
 const PLANNER_ROLE: &str = "You are a senior adversarial QA planner and principal security researcher. \
 Propose creative, randomized, non-repetitive test cases for a web application exploring modern OWASP API Security 2023 vectors, \
@@ -446,26 +446,14 @@ pub fn synthesize_attack_dag(
             .collect();
 
         let system = build_dag_planner_system_prompt();
-        let prompt = build_dag_planner_user_prompt(
-            target,
-            &endpoints,
-            directives,
-            &[],
-            6,
-        );
+        let prompt = build_dag_planner_user_prompt(target, &endpoints, directives, &[], 6);
 
-        let res = ask_typed::<AttackDagOutput>(
-            cfg,
-            budget,
-            &system,
-            &prompt,
-            |out| {
-                if out.nodes.is_empty() {
-                    anyhow::bail!("empty nodes in attack dag output");
-                }
-                Ok(())
-            },
-        );
+        let res = ask_typed::<AttackDagOutput>(cfg, budget, &system, &prompt, |out| {
+            if out.nodes.is_empty() {
+                anyhow::bail!("empty nodes in attack dag output");
+            }
+            Ok(())
+        });
 
         if let Ok(out) = res {
             let mut dag = AttackDag::new();

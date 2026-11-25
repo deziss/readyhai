@@ -244,7 +244,10 @@ pub fn scan(opts: &ScanOpts, run_id: &str) -> Result<Run> {
     // On-the-go setup: pre-provision plugin packs this scan would select
     // (digest-pinned image pull + cache dir seeding) so the first plugin check
     // doesn't stall on a big pull inside its own budget. Best-effort notes only.
-    if !opts.no_tools && ctx.docker.available && let Some(pdir) = &opts.plugins {
+    if !opts.no_tools
+        && ctx.docker.available
+        && let Some(pdir) = &opts.plugins
+    {
         notes.extend(crate::tools::ensure_packs(
             pdir,
             &settings,

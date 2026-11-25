@@ -1,16 +1,16 @@
 //! Tracking, harvest, teardown, and defect emission for resources created during agent execution.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 use super::super::exec::{
-    auth_for, confirm_deleted_resolved, curl_auth_arg, evidence_rel_path, resolve_auth, Auth,
-    Clients, Credentials, DeleteCheck, OutReq,
+    Auth, Clients, Credentials, DeleteCheck, OutReq, auth_for, confirm_deleted_resolved,
+    curl_auth_arg, evidence_rel_path, resolve_auth,
 };
 use super::super::oracle::{OracleCheck, OracleOutcome, Severity, Verdict};
 use super::super::types::{
-    id_from_body, is_creation, path_of_url, CaseExecutionResult, CleanupReport, CreatedLedger,
-    CreatedResource, Leftover, PlannedCase,
+    CaseExecutionResult, CleanupReport, CreatedLedger, CreatedResource, Leftover, PlannedCase,
+    id_from_body, is_creation, path_of_url,
 };
 
 pub(crate) const TEARDOWN_MAX: usize = 200;

@@ -82,7 +82,10 @@ pub fn populate_recon_from_headers(
 ) {
     recon.status_code = status;
 
-    if let Some(srv) = headers.get(reqwest::header::SERVER).and_then(|v| v.to_str().ok()) {
+    if let Some(srv) = headers
+        .get(reqwest::header::SERVER)
+        .and_then(|v| v.to_str().ok())
+    {
         recon.server = Some(srv.to_string());
         recon.tech_signals.push(format!("Server: {srv}"));
     }
@@ -105,7 +108,10 @@ pub fn populate_recon_from_headers(
     let expected_sec_headers = [
         ("content-security-policy", "Content-Security-Policy (CSP)"),
         ("x-content-type-options", "X-Content-Type-Options"),
-        ("strict-transport-security", "Strict-Transport-Security (HSTS)"),
+        (
+            "strict-transport-security",
+            "Strict-Transport-Security (HSTS)",
+        ),
         ("x-frame-options", "X-Frame-Options"),
         ("referrer-policy", "Referrer-Policy"),
         ("permissions-policy", "Permissions-Policy"),
@@ -113,7 +119,9 @@ pub fn populate_recon_from_headers(
 
     for (header_key, header_label) in expected_sec_headers {
         if !headers.contains_key(header_key) {
-            recon.security_headers_missing.push(header_label.to_string());
+            recon
+                .security_headers_missing
+                .push(header_label.to_string());
         }
     }
 }
@@ -164,8 +172,8 @@ pub fn parse_directives_response(raw: &str) -> Result<SynthesizedDirectives> {
         cleaned
     };
 
-    let directives: SynthesizedDirectives =
-        serde_json::from_str(json_str.trim()).context("failed to deserialize SynthesizedDirectives")?;
+    let directives: SynthesizedDirectives = serde_json::from_str(json_str.trim())
+        .context("failed to deserialize SynthesizedDirectives")?;
 
     if directives.focus_areas.is_empty() {
         anyhow::bail!("synthesized directives contain empty focus_areas");
@@ -223,7 +231,10 @@ pub fn synthesize_directives(
             &untrusted::system(DIRECTIVES_SYNTHESIZER_ROLE),
             &prompt,
             |d| {
-                if d.focus_areas.is_empty() || d.boundary_rules.is_empty() || d.rules_of_engagement.is_empty() {
+                if d.focus_areas.is_empty()
+                    || d.boundary_rules.is_empty()
+                    || d.rules_of_engagement.is_empty()
+                {
                     anyhow::bail!("incomplete directives synthesized by LLM");
                 }
                 Ok(())
@@ -255,11 +266,15 @@ pub fn synthesize_directives(
     }
 
     if !recon.cookies.is_empty() {
-        focus_areas.push("Session cookie security, SameSite enforcement, and CSRF protection".to_string());
+        focus_areas
+            .push("Session cookie security, SameSite enforcement, and CSRF protection".to_string());
     }
 
     if spec_url.is_some() {
-        focus_areas.push("OpenAPI specification schema conformance and unexpected parameter injection".to_string());
+        focus_areas.push(
+            "OpenAPI specification schema conformance and unexpected parameter injection"
+                .to_string(),
+        );
     }
 
     focus_areas.push("Prompt injection canary and LLM interface boundaries".to_string());
@@ -267,7 +282,10 @@ pub fn synthesize_directives(
     boundary_rules.push("Stay strictly within target origin and API path prefixes".to_string());
     boundary_rules.push("Do not fuzz destructive deletion or unconfirmed data purging".to_string());
     boundary_rules.push("Honor rate limits and abort on consecutive 429/503 responses".to_string());
-    boundary_rules.push(format!("Use canary token {} for input taint tracking", default_canary));
+    boundary_rules.push(format!(
+        "Use canary token {} for input taint tracking",
+        default_canary
+    ));
 
     let rules_of_engagement = format!(
         "Autonomous adversarial QA assessment targeting authorization boundaries, input sanitization, and state integrity on {target}"

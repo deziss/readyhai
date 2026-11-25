@@ -41,7 +41,10 @@ pub fn severity_for(code: &str, tech: Technique) -> Severity {
     }
 }
 
-pub(crate) fn class_meta(code: &str, technique: &str) -> (&'static str, &'static str, &'static str) {
+pub(crate) fn class_meta(
+    code: &str,
+    technique: &str,
+) -> (&'static str, &'static str, &'static str) {
     // (title template, owasp category, recommended fix)
     match code {
         "authz" => (

@@ -91,7 +91,11 @@ pub fn validate(schema: &Value, v: &Value, path: &str) -> Option<String> {
         } else if let Some(t_arr) = t.as_array() {
             let types: Vec<&str> = t_arr.iter().filter_map(|x| x.as_str()).collect();
             if !types.is_empty() && !types.iter().any(|&one_t| type_ok(one_t, v)) {
-                return Some(format!("{path}: expected one of {:?}, got {}", types, kind(v)));
+                return Some(format!(
+                    "{path}: expected one of {:?}, got {}",
+                    types,
+                    kind(v)
+                ));
             }
         }
     } else if s.get("properties").is_some() {
@@ -137,7 +141,11 @@ pub fn validate(schema: &Value, v: &Value, path: &str) -> Option<String> {
             }
         }
         if let Some(items) = s.get("items") {
-            let start = s.get("prefixItems").and_then(|p| p.as_array()).map(|p| p.len()).unwrap_or(0);
+            let start = s
+                .get("prefixItems")
+                .and_then(|p| p.as_array())
+                .map(|p| p.len())
+                .unwrap_or(0);
             for (i, x) in a.iter().enumerate().skip(start).take(20) {
                 if let Some(m) = validate(items, x, &format!("{path}[{i}]")) {
                     return Some(m);
@@ -612,8 +620,20 @@ mod tests {
             "items": { "type": "boolean" }
         });
         assert!(validate(&tuple_schema, &json!(["first", 100, true, false]), "$").is_none());
-        assert!(validate(&tuple_schema, &json!([123, 100]), "$").unwrap().contains("$[0]"));
-        assert!(validate(&tuple_schema, &json!(["ok", "not_int"]), "$").unwrap().contains("$[1]"));
-        assert!(validate(&tuple_schema, &json!(["ok", 1, "not_bool"]), "$").unwrap().contains("$[2]"));
+        assert!(
+            validate(&tuple_schema, &json!([123, 100]), "$")
+                .unwrap()
+                .contains("$[0]")
+        );
+        assert!(
+            validate(&tuple_schema, &json!(["ok", "not_int"]), "$")
+                .unwrap()
+                .contains("$[1]")
+        );
+        assert!(
+            validate(&tuple_schema, &json!(["ok", 1, "not_bool"]), "$")
+                .unwrap()
+                .contains("$[2]")
+        );
     }
 }

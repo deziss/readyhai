@@ -35,7 +35,16 @@ const INTROSPECTION_QUERY: &str = r#"query IntrospectionQuery {
 }"#;
 
 const SENSITIVE_KEYWORDS: &[&str] = &[
-    "admin", "users", "account", "token", "secret", "permission", "billing", "audit", "creditcard", "credential"
+    "admin",
+    "users",
+    "account",
+    "token",
+    "secret",
+    "permission",
+    "billing",
+    "audit",
+    "creditcard",
+    "credential",
 ];
 
 pub fn checks() -> Vec<Check> {
@@ -53,15 +62,20 @@ pub fn checks() -> Vec<Check> {
 
 pub fn run(ctx: &Ctx) -> Result<CheckOutput> {
     let Some(qa) = &ctx.qa else {
-        return Ok(CheckOutput::status(CheckStatus::Skipped("only under readyhai qa".into())));
+        return Ok(CheckOutput::status(CheckStatus::Skipped(
+            "only under readyhai qa".into(),
+        )));
     };
 
     let target_url = ctx.target.raw.trim_end_matches('/');
     let Some(graphql_ep) = discover_endpoint(qa, target_url)? else {
         qa.with(|c| {
-            c.notes.push("GraphQL check: no active GraphQL endpoint discovered on target".into());
+            c.notes
+                .push("GraphQL check: no active GraphQL endpoint discovered on target".into());
         });
-        return Ok(CheckOutput::status(CheckStatus::Skipped("no GraphQL endpoint found".into())));
+        return Ok(CheckOutput::status(CheckStatus::Skipped(
+            "no GraphQL endpoint found".into(),
+        )));
     };
 
     let mut findings = Vec::new();
@@ -86,8 +100,15 @@ pub fn run(ctx: &Ctx) -> Result<CheckOutput> {
     });
 
     let intro_body = json!({ "query": INTROSPECTION_QUERY });
-    let intro_resp = exec::send(qa, None, "POST", &graphql_ep, Some(&intro_body), &[("Content-Type", "application/json")])?;
-    
+    let intro_resp = exec::send(
+        qa,
+        None,
+        "POST",
+        &graphql_ep,
+        Some(&intro_body),
+        &[("Content-Type", "application/json")],
+    )?;
+
     let schema_data = if intro_resp.status == 200 && intro_resp.parsed.is_some() {
         let root = intro_resp.parsed.as_deref().unwrap();
         root.get("data").and_then(|d| d.get("__schema")).cloned()
@@ -147,7 +168,10 @@ pub fn run(ctx: &Ctx) -> Result<CheckOutput> {
             c.results.push(TestResult {
                 case_id: intro_case_id.clone(),
                 status: ResultStatus::Pass,
-                actual: format!("Introspection query returned HTTP status {}", intro_resp.status),
+                actual: format!(
+                    "Introspection query returned HTTP status {}",
+                    intro_resp.status
+                ),
                 duration_ms: intro_resp.ms,
                 attempts: 1,
                 evidence: vec![],
@@ -163,7 +187,9 @@ pub fn run(ctx: &Ctx) -> Result<CheckOutput> {
     cases_run += check_malformed_syntax_robustness(qa, &graphql_ep, &mut findings)?;
 
     qa.with(|c| {
-        c.notes.push(format!("GraphQL QA completed on {graphql_ep} ({cases_run} cases executed)"));
+        c.notes.push(format!(
+            "GraphQL QA completed on {graphql_ep} ({cases_run} cases executed)"
+        ));
     });
 
     Ok(CheckOutput::findings(findings))
@@ -184,7 +210,14 @@ fn discover_endpoint(qa: &QaCtx, base: &str) -> Result<Option<String>> {
 
     let probe_body = json!({ "query": "query { __typename }" });
     for cand in candidates {
-        if let Ok(resp) = exec::send(qa, None, "POST", &cand, Some(&probe_body), &[("Content-Type", "application/json")]) {
+        if let Ok(resp) = exec::send(
+            qa,
+            None,
+            "POST",
+            &cand,
+            Some(&probe_body),
+            &[("Content-Type", "application/json")],
+        ) {
             if resp.status == 200 && resp.body.contains("__typename") {
                 return Ok(Some(cand));
             }
@@ -217,7 +250,14 @@ fn check_query_depth_dos(qa: &QaCtx, ep: &str, findings: &mut Vec<Finding>) -> R
     // Synthesize deeply nested query
     let deep_query = "query DeepNest { __schema { types { fields { type { ofType { ofType { ofType { ofType { ofType { ofType { name } } } } } } } } } } }";
     let body = json!({ "query": deep_query });
-    let resp = exec::send(qa, None, "POST", ep, Some(&body), &[("Content-Type", "application/json")])?;
+    let resp = exec::send(
+        qa,
+        None,
+        "POST",
+        ep,
+        Some(&body),
+        &[("Content-Type", "application/json")],
+    )?;
 
     let is_fail = resp.status >= 500 || resp.timed_out;
     if is_fail {
@@ -278,19 +318,26 @@ fn check_query_depth_dos(qa: &QaCtx, ep: &str, findings: &mut Vec<Finding>) -> R
 }
 
 /// Identifies sensitive schema fields and validates field-level authorization.
-fn check_field_authz(qa: &QaCtx, ep: &str, schema: &Value, findings: &mut Vec<Finding>) -> Result<usize> {
+fn check_field_authz(
+    qa: &QaCtx,
+    ep: &str,
+    schema: &Value,
+    findings: &mut Vec<Finding>,
+) -> Result<usize> {
     let mut cases = 0;
     let Some(types) = schema.get("types").and_then(|t| t.as_array()) else {
         return Ok(0);
     };
 
     // Find Query root type fields
-    let query_type_name = schema.get("queryType")
+    let query_type_name = schema
+        .get("queryType")
         .and_then(|q| q.get("name"))
         .and_then(|n| n.as_str())
         .unwrap_or("Query");
 
-    let query_fields = types.iter()
+    let query_fields = types
+        .iter()
         .find(|t| t.get("name").and_then(|n| n.as_str()) == Some(query_type_name))
         .and_then(|t| t.get("fields"))
         .and_then(|f| f.as_array());
@@ -301,9 +348,15 @@ fn check_field_authz(qa: &QaCtx, ep: &str, schema: &Value, findings: &mut Vec<Fi
 
     // Check for sensitive field names
     for field in fields {
-        let Some(name) = field.get("name").and_then(|n| n.as_str()) else { continue };
-        let is_sensitive = SENSITIVE_KEYWORDS.iter().any(|k| name.to_lowercase().contains(k));
-        if !is_sensitive { continue; }
+        let Some(name) = field.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let is_sensitive = SENSITIVE_KEYWORDS
+            .iter()
+            .any(|k| name.to_lowercase().contains(k));
+        if !is_sensitive {
+            continue;
+        }
 
         cases += 1;
         let case_id = format!("graphql.authz.{name}");
@@ -316,7 +369,9 @@ fn check_field_authz(qa: &QaCtx, ep: &str, schema: &Value, findings: &mut Vec<Fi
                 priority: Priority::P1,
                 component: format!("GraphQL query.{name}"),
                 role: Some("anonymous".into()),
-                steps: vec![format!("Query sensitive field `{name}` without authentication token")],
+                steps: vec![format!(
+                    "Query sensitive field `{name}` without authentication token"
+                )],
                 expected: "HTTP 401/403 or GraphQL errors indicating access denied".into(),
                 source: CaseSource::Deterministic,
             });
@@ -324,17 +379,26 @@ fn check_field_authz(qa: &QaCtx, ep: &str, schema: &Value, findings: &mut Vec<Fi
 
         let query = format!("query {{ {name} {{ __typename }} }}");
         let body = json!({ "query": query });
-        let resp = exec::send(qa, None, "POST", ep, Some(&body), &[("Content-Type", "application/json")])?;
+        let resp = exec::send(
+            qa,
+            None,
+            "POST",
+            ep,
+            Some(&body),
+            &[("Content-Type", "application/json")],
+        )?;
 
         // If anonymous caller got 200 OK with actual data and no auth errors, flag BFLA/Authz gap
-        let has_data = resp.parsed.as_deref()
+        let has_data = resp
+            .parsed
+            .as_deref()
             .and_then(|p| p.get("data"))
             .and_then(|d| d.get(name))
             .map(|v| !v.is_null())
             .unwrap_or(false);
 
-        let has_auth_error = resp.body.contains("Unauthorized") 
-            || resp.body.contains("Forbidden") 
+        let has_auth_error = resp.body.contains("Unauthorized")
+            || resp.body.contains("Forbidden")
             || resp.body.contains("unauthenticated")
             || resp.body.contains("access denied");
 
@@ -347,18 +411,31 @@ fn check_field_authz(qa: &QaCtx, ep: &str, schema: &Value, findings: &mut Vec<Fi
                 severity: Severity::High,
                 priority: Priority::P1,
                 area: Area::Api,
-                title: format!("Sensitive GraphQL query `{name}` accessible without authentication"),
+                title: format!(
+                    "Sensitive GraphQL query `{name}` accessible without authentication"
+                ),
                 component: format!("GraphQL query.{name}"),
-                environment: if qa.nonprod { "nonprod".into() } else { "prod".into() },
-                expected: "Sensitive fields require valid authenticated session and permissions".into(),
-                actual: format!("Anonymous query returned HTTP 200 and data: {}", resp.redacted_body().chars().take(200).collect::<String>()),
-                steps_to_reproduce: vec![
-                    format!("curl -X POST -H 'Content-Type: application/json' -d '{{\"query\":\"{}\"}}' {}", query, ep)
-                ],
+                environment: if qa.nonprod {
+                    "nonprod".into()
+                } else {
+                    "prod".into()
+                },
+                expected: "Sensitive fields require valid authenticated session and permissions"
+                    .into(),
+                actual: format!(
+                    "Anonymous query returned HTTP 200 and data: {}",
+                    resp.redacted_body().chars().take(200).collect::<String>()
+                ),
+                steps_to_reproduce: vec![format!(
+                    "curl -X POST -H 'Content-Type: application/json' -d '{{\"query\":\"{}\"}}' {}",
+                    query, ep
+                )],
                 evidence: vec![],
                 reproduced: (1, 1),
                 cases: vec![case_id.clone()],
-                remediation: format!("Enforce authentication and field-level authorization directives (@auth/@requires) on `{name}`."),
+                remediation: format!(
+                    "Enforce authentication and field-level authorization directives (@auth/@requires) on `{name}`."
+                ),
                 fp_key: format!("qa.graphql.authz_missing|{ep}|{name}"),
                 fingerprint: String::new(),
                 status: Default::default(),
@@ -392,14 +469,20 @@ fn check_field_authz(qa: &QaCtx, ep: &str, schema: &Value, findings: &mut Vec<Fi
             });
         }
 
-        if cases >= 5 { break; } // Cap at 5 sensitive fields to conserve request budget
+        if cases >= 5 {
+            break;
+        } // Cap at 5 sensitive fields to conserve request budget
     }
 
     Ok(cases)
 }
 
 /// Sends malformed syntax and checks for proper error handling and stack trace leaks.
-fn check_malformed_syntax_robustness(qa: &QaCtx, ep: &str, findings: &mut Vec<Finding>) -> Result<usize> {
+fn check_malformed_syntax_robustness(
+    qa: &QaCtx,
+    ep: &str,
+    findings: &mut Vec<Finding>,
+) -> Result<usize> {
     let case_id = "graphql.robustness.syntax_error".to_string();
     qa.with(|c| {
         c.cases.push(TestCase {
@@ -411,22 +494,39 @@ fn check_malformed_syntax_robustness(qa: &QaCtx, ep: &str, findings: &mut Vec<Fi
             component: "GraphQL".into(),
             role: None,
             steps: vec!["Submit malformed GraphQL query string `query { broken (`".into()],
-            expected: "HTTP 400 with standard GraphQL error object, no stack trace or internal leak".into(),
+            expected:
+                "HTTP 400 with standard GraphQL error object, no stack trace or internal leak"
+                    .into(),
             source: CaseSource::Deterministic,
         });
     });
 
     let malformed_body = json!({ "query": "query { broken (" });
-    let resp = exec::send(qa, None, "POST", ep, Some(&malformed_body), &[("Content-Type", "application/json")])?;
+    let resp = exec::send(
+        qa,
+        None,
+        "POST",
+        ep,
+        Some(&malformed_body),
+        &[("Content-Type", "application/json")],
+    )?;
 
     // Check for stack trace leak
     let has_leak = crate::qa::api::contract::leak_kind(&resp.body).is_some();
     if has_leak || resp.status >= 500 {
         let def_id = format!("D-GQ-{:03}", SEQ.fetch_add(1, Ordering::SeqCst));
         let (rule, title, sev) = if has_leak {
-            ("qa.graphql.error_leak", "GraphQL syntax error leaks internal stack trace or debug information", Severity::Medium)
+            (
+                "qa.graphql.error_leak",
+                "GraphQL syntax error leaks internal stack trace or debug information",
+                Severity::Medium,
+            )
         } else {
-            ("qa.graphql.server_error", "GraphQL malformed syntax triggers unhandled 5xx server error", Severity::High)
+            (
+                "qa.graphql.server_error",
+                "GraphQL malformed syntax triggers unhandled 5xx server error",
+                Severity::High,
+            )
         };
 
         let d = Defect {
@@ -490,10 +590,26 @@ mod tests {
 
     #[test]
     fn test_sensitive_keywords_matching() {
-        assert!(SENSITIVE_KEYWORDS.iter().any(|k| "adminStats".to_lowercase().contains(k)));
-        assert!(SENSITIVE_KEYWORDS.iter().any(|k| "listUsers".to_lowercase().contains(k)));
-        assert!(SENSITIVE_KEYWORDS.iter().any(|k| "userToken".to_lowercase().contains(k)));
-        assert!(!SENSITIVE_KEYWORDS.iter().any(|k| "publicArticles".to_lowercase().contains(k)));
+        assert!(
+            SENSITIVE_KEYWORDS
+                .iter()
+                .any(|k| "adminStats".to_lowercase().contains(k))
+        );
+        assert!(
+            SENSITIVE_KEYWORDS
+                .iter()
+                .any(|k| "listUsers".to_lowercase().contains(k))
+        );
+        assert!(
+            SENSITIVE_KEYWORDS
+                .iter()
+                .any(|k| "userToken".to_lowercase().contains(k))
+        );
+        assert!(
+            !SENSITIVE_KEYWORDS
+                .iter()
+                .any(|k| "publicArticles".to_lowercase().contains(k))
+        );
     }
 
     #[test]
@@ -519,7 +635,8 @@ mod tests {
             ]
         });
 
-        let query_fields = schema_json.get("types")
+        let query_fields = schema_json
+            .get("types")
             .and_then(|t| t.as_array())
             .unwrap()
             .iter()
@@ -531,7 +648,11 @@ mod tests {
         let sensitive_fields: Vec<&str> = query_fields
             .iter()
             .filter_map(|f| f.get("name").and_then(|n| n.as_str()))
-            .filter(|name| SENSITIVE_KEYWORDS.iter().any(|k| name.to_lowercase().contains(k)))
+            .filter(|name| {
+                SENSITIVE_KEYWORDS
+                    .iter()
+                    .any(|k| name.to_lowercase().contains(k))
+            })
             .collect();
 
         assert_eq!(sensitive_fields, vec!["adminUsers", "secretTokens"]);

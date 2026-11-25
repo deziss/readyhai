@@ -1,9 +1,7 @@
 //! Scoring engine: matches observations against expectations and calculates precision, recall, and suite statistics.
 
+use super::types::{Allow, Check, Expect, Observed, RunScore, SuiteResult, SuiteSpec, round3};
 use std::collections::BTreeMap;
-use super::types::{
-    round3, Allow, Check, Expect, Observed, RunScore, SuiteResult, SuiteSpec,
-};
 
 /// `*` is the only wildcard; everything else is literal and case-sensitive.
 pub fn glob_match(pat: &str, text: &str) -> bool {

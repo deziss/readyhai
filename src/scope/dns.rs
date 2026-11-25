@@ -2,7 +2,7 @@
 
 use std::net::IpAddr;
 
-use super::ip::{classify_host, HostClass};
+use super::ip::{HostClass, classify_host};
 use super::url::norm_host;
 
 /// Resolve a name to its addresses with the system resolver (blocking getaddrinfo). Unit tests

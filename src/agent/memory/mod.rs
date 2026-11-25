@@ -21,16 +21,16 @@ pub use render::render_text;
 pub use sanitize::{
     clean_class, clean_endpoint, clean_ident, clean_text, days_between, fingerprint, parse_date,
 };
+pub(crate) use store::write_memory;
 pub use store::{
     accept, canonical_target, default_dir, dir, forget, inspect, load, memory_path,
     observe_baselines, peek, read_strict, target_key,
 };
-pub(crate) use store::write_memory;
 pub use types::{
-    Acceptance, Accepted, BaselineState, BaselinesInEffect, DefectLine, DefectStatus,
-    FlakyHistory, FlakyLine, KnownDefect, Loaded, Memory, OperationMemory, ProbeLine,
-    RunAggregate, SinceLastRun, FLAKY_WINDOW, MAX_CLASSES, MAX_DEFECTS, MAX_ENDPOINT,
-    MAX_FILE_BYTES, MAX_IDENT, MAX_OPERATIONS, MAX_REPRO, MAX_RUNS, MAX_TEXT, RECENT_FIX_DAYS,
-    RETENTION_DAYS, SCHEMA,
+    Acceptance, Accepted, BaselineState, BaselinesInEffect, DefectLine, DefectStatus, FLAKY_WINDOW,
+    FlakyHistory, FlakyLine, KnownDefect, Loaded, MAX_CLASSES, MAX_DEFECTS, MAX_ENDPOINT,
+    MAX_FILE_BYTES, MAX_IDENT, MAX_OPERATIONS, MAX_REPRO, MAX_RUNS, MAX_TEXT, Memory,
+    OperationMemory, ProbeLine, RECENT_FIX_DAYS, RETENTION_DAYS, RunAggregate, SCHEMA,
+    SinceLastRun,
 };
 pub use update::Update;

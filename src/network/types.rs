@@ -1,10 +1,12 @@
 //! Domain models, request/response DTOs, audit structures, and diagnostic types for network testing.
 
+use super::utils::{
+    is_safe_method, parse_method, parse_target, validate_headers, validate_payload,
+};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::time::Duration;
-use super::utils::{is_safe_method, parse_method, parse_target, validate_headers, validate_payload};
 
 pub const MAX_ITERATIONS: usize = 100;
 pub const READONLY_MAX_ITERATIONS: usize = 25;
@@ -24,7 +26,8 @@ pub const MAX_SUBRESOURCES: usize = 12;
 pub const SUBRESOURCE_BYTES_CAP: usize = 2 * 1024 * 1024;
 pub const HTML_BYTES_CAP: usize = 1024 * 1024;
 pub const NOT_MEASURED: &str = "not measured";
-pub const NOT_MEASURED_REGIONS: [&str; 4] = ["us-east-1", "eu-west-1", "ap-south-1", "ap-southeast-1"];
+pub const NOT_MEASURED_REGIONS: [&str; 4] =
+    ["us-east-1", "eu-west-1", "ap-south-1", "ap-southeast-1"];
 
 pub const IP_CACHE_OK_TTL: Duration = Duration::from_secs(600);
 pub const IP_CACHE_FAIL_TTL: Duration = Duration::from_secs(30);
@@ -475,4 +478,3 @@ impl MultiRegionRequest {
 // ============================================================================
 // Continuous Regression Test Runner
 // ============================================================================
-

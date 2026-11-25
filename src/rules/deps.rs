@@ -1,7 +1,7 @@
 //! Dependency pinning and lockfile verification rules.
 
 use super::dockerfile::parse_stages;
-use super::facts::{base, dir, manifest_deps, read, Dep, Skips};
+use super::facts::{Dep, Skips, base, dir, manifest_deps, read};
 use super::na;
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, Finding, Severity};

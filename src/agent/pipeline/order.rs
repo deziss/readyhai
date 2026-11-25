@@ -1,6 +1,6 @@
 //! Plan ordering and truncation logic.
 
-use super::super::types::{any_prioritised, plan_order, PlannedCase};
+use super::super::types::{PlannedCase, any_prioritised, plan_order};
 
 /// Order the plan so the cases that matter most are the ones that run, then cut it to `hard_limit`.
 /// Returns (kept, dropped); ids are renumbered over kept-then-dropped. The plan is only reordered

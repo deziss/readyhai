@@ -258,7 +258,10 @@ impl PromptBuilder {
         }
 
         if let Some(canary) = &self.canary_token {
-            out.push_str(&format!("=== CANARY VERIFICATION TOKEN ===\n{}\n\n", canary));
+            out.push_str(&format!(
+                "=== CANARY VERIFICATION TOKEN ===\n{}\n\n",
+                canary
+            ));
         }
 
         out.trim_end().to_string()

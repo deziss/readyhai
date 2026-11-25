@@ -2,8 +2,8 @@
 
 use std::collections::BTreeSet;
 
-use super::evidence::EVIDENCE_CRITERION;
 use super::super::model::{ExitCriterion, ResultCounts};
+use super::evidence::EVIDENCE_CRITERION;
 use crate::model::Verdict;
 
 pub fn crit(name: &str, met: bool, blocking: bool, detail: String) -> ExitCriterion {

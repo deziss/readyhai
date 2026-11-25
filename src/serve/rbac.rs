@@ -36,7 +36,9 @@ impl Role {
             "viewer" => Ok(Self::Viewer),
             "operator" => Ok(Self::Operator),
             "admin" => Ok(Self::Admin),
-            _ => Err(anyhow!("unknown role {s:?} (expected viewer|operator|admin)")),
+            _ => Err(anyhow!(
+                "unknown role {s:?} (expected viewer|operator|admin)"
+            )),
         }
     }
     pub fn as_str(&self) -> &'static str {
@@ -167,7 +169,10 @@ fn sha(s: &str) -> [u8; 32] {
 }
 
 fn const_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
-    a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.iter()
+        .zip(b.iter())
+        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+        == 0
 }
 
 fn unhex32(s: &str) -> Option<[u8; 32]> {
@@ -249,9 +254,8 @@ impl Rbac {
                     }
                     sha(&k.key)
                 }
-                (true, false) => unhex32(&k.key_sha256).ok_or_else(|| {
-                    anyhow!("key {:?}: key_sha256 must be 64 hex chars", k.name)
-                })?,
+                (true, false) => unhex32(&k.key_sha256)
+                    .ok_or_else(|| anyhow!("key {:?}: key_sha256 must be 64 hex chars", k.name))?,
                 _ => {
                     return Err(anyhow!(
                         "key {:?}: set exactly one of key / key_sha256",
@@ -265,7 +269,11 @@ impl Rbac {
             if keys.iter().any(|i| i.name == k.name) {
                 return Err(anyhow!("key {:?}: duplicate name", k.name));
             }
-            keys.push(Identity { name: k.name, role, digest });
+            keys.push(Identity {
+                name: k.name,
+                role,
+                digest,
+            });
         }
         if enabled && keys.is_empty() {
             return Err(anyhow!(
@@ -362,7 +370,9 @@ mod tests {
 
     #[test]
     fn load_toggle_matrix_and_key_validation() {
-        let _g = crate::engine::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::engine::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("READYHAI_RBAC") };
         // auto + no file = off, legacy
         let r = Rbac::load(None).unwrap();
@@ -385,12 +395,18 @@ mod tests {
         assert!(Rbac::load(None).is_err());
         unsafe { std::env::remove_var("READYHAI_RBAC") };
         // file-side toggle: [rbac] enabled = false under auto
-        let off = write_tmp("off", "[rbac]\nenabled = false\n[[key]]\nname = \"a\"\nrole = \"viewer\"\nkey = \"aaaa-0123456789abcdef\"\n");
+        let off = write_tmp(
+            "off",
+            "[rbac]\nenabled = false\n[[key]]\nname = \"a\"\nrole = \"viewer\"\nkey = \"aaaa-0123456789abcdef\"\n",
+        );
         assert!(!Rbac::load(Some(&off)).unwrap().enabled);
         let _ = std::fs::remove_file(off);
 
         // short key rejected
-        let bad = write_tmp("short", "[[key]]\nname = \"a\"\nrole = \"viewer\"\nkey = \"short\"\n");
+        let bad = write_tmp(
+            "short",
+            "[[key]]\nname = \"a\"\nrole = \"viewer\"\nkey = \"short\"\n",
+        );
         assert!(Rbac::load(Some(&bad)).is_err());
         // empty keyring with enabled = error
         let empty = write_tmp("empty", "[rbac]\nenabled = true\n");
@@ -402,7 +418,10 @@ mod tests {
         );
         assert!(Rbac::load(Some(&dup)).is_err());
         // unknown field rejected
-        let unk = write_tmp("unk", "[[key]]\nname = \"a\"\nrole = \"viewer\"\nkey = \"aaaa-0123456789abcdef\"\nextra = 1\n");
+        let unk = write_tmp(
+            "unk",
+            "[[key]]\nname = \"a\"\nrole = \"viewer\"\nkey = \"aaaa-0123456789abcdef\"\nextra = 1\n",
+        );
         assert!(Rbac::load(Some(&unk)).is_err());
         for p in [f, bad, empty, dup, unk] {
             let _ = std::fs::remove_file(p);
@@ -411,7 +430,9 @@ mod tests {
 
     #[test]
     fn authenticate_keyring_and_break_glass() {
-        let _g = crate::engine::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::engine::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("READYHAI_RBAC_BOOT_ADMIN") };
         let legacy = Sha256::digest(b"boot-token-0123456789abcdef").into();
         let f = write_tmp(
@@ -428,10 +449,16 @@ mod tests {
             r.authenticate("boot-token-0123456789abcdef", &legacy, "boot"),
             Some(("boot".into(), Role::Admin))
         );
-        assert_eq!(r.authenticate("nope-nope-nope-nope-1234", &legacy, "boot"), None);
+        assert_eq!(
+            r.authenticate("nope-nope-nope-nope-1234", &legacy, "boot"),
+            None
+        );
         // boot admin can be disabled
         unsafe { std::env::set_var("READYHAI_RBAC_BOOT_ADMIN", "0") };
-        assert_eq!(r.authenticate("boot-token-0123456789abcdef", &legacy, "boot"), None);
+        assert_eq!(
+            r.authenticate("boot-token-0123456789abcdef", &legacy, "boot"),
+            None
+        );
         unsafe {
             std::env::remove_var("READYHAI_RBAC_BOOT_ADMIN");
             std::env::remove_var("READYHAI_RBAC");
@@ -441,7 +468,9 @@ mod tests {
 
     #[test]
     fn legacy_mode_authenticates_only_boot_token() {
-        let _g = crate::engine::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = crate::engine::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe { std::env::remove_var("READYHAI_RBAC") };
         let r = Rbac::load(None).unwrap();
         assert!(!r.enabled);

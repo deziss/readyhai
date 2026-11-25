@@ -4,14 +4,14 @@ use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 
 use crate::engine;
 use crate::tools::{self, Docker};
 
 use super::env::offline;
 use super::eol::fetch_endoflife;
-use super::manifest::{build_files, ImageEntry, Manifest};
+use super::manifest::{ImageEntry, Manifest, build_files};
 use super::tar::{copy_cache_dir, human, run, tmp_name};
 
 /// `readyhai bundle export` — run on a network-capable machine.

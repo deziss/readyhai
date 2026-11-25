@@ -1,12 +1,12 @@
-use std::sync::OnceLock;
 use regex::Regex;
 use serde_json::Value;
+use std::sync::OnceLock;
 
-use crate::agent::oracle::{CORS_PROBE_ORIGIN, is_cors_case};
-use crate::agent::types::PlannedCase;
 use super::auth::{Auth, FORGED_TOKEN, auth_for};
 use super::clients::METHODS;
 use super::credentials::{Credentials, HeaderEnvKind, role_key};
+use crate::agent::oracle::{CORS_PROBE_ORIGIN, is_cors_case};
+use crate::agent::types::PlannedCase;
 
 /// Canonical upper-case method if (and only if) it is on the allow-list.
 pub fn normalize_method(m: &str) -> Option<&'static str> {

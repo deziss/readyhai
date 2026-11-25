@@ -1,331 +1,330 @@
 use super::*;
-use std::collections::{HashSet, VecDeque};
-use std::time::Duration;
-use serde_json::Value;
 use crate::agent::Credentials;
 use crate::agent::types::RedirectHop;
+use serde_json::Value;
+use std::collections::{HashSet, VecDeque};
+use std::time::Duration;
 
-    use super::*;
+use super::*;
 
-    #[test]
-    fn extract_title_survives_multibyte_and_case_expansion() {
-        // 'İ' (U+0130) lowercases to two chars: the old to_lowercase()-based offsets shifted and sliced mid-char
-        assert_eq!(
-            extract_title("<html><head><TITLE>İstanbul — Ünï</TITLE></head>").as_deref(),
-            Some("İstanbul — Ünï")
-        );
-        assert_eq!(extract_title("İİİİİ<title>x</title>").as_deref(), Some("x"));
-        assert_eq!(extract_title("<title>never closed"), None);
-        assert_eq!(extract_title("no title"), None);
-        let long = format!("<title>{}</title>", "é".repeat(200));
-        assert_eq!(extract_title(&long).unwrap().chars().count(), 80);
-    }
+#[test]
+fn extract_title_survives_multibyte_and_case_expansion() {
+    // 'İ' (U+0130) lowercases to two chars: the old to_lowercase()-based offsets shifted and sliced mid-char
+    assert_eq!(
+        extract_title("<html><head><TITLE>İstanbul — Ünï</TITLE></head>").as_deref(),
+        Some("İstanbul — Ünï")
+    );
+    assert_eq!(extract_title("İİİİİ<title>x</title>").as_deref(), Some("x"));
+    assert_eq!(extract_title("<title>never closed"), None);
+    assert_eq!(extract_title("no title"), None);
+    let long = format!("<title>{}</title>", "é".repeat(200));
+    assert_eq!(extract_title(&long).unwrap().chars().count(), 80);
+}
 
-    #[test]
-    fn link_parser_keeps_same_host_and_drops_assets() {
-        let html = r##"<a href="/events.php">E</a><a href="history.php">H</a><form action="/enquiry.php"></form>
+#[test]
+fn link_parser_keeps_same_host_and_drops_assets() {
+    let html = r##"<a href="/events.php">E</a><a href="history.php">H</a><form action="/enquiry.php"></form>
             <a href="https://myvapi.com/x?y=1#z">abs</a><a href="https://evil.test/x">ext</a><a href="/logo.png">img</a><a href="#top">t</a><a href="mailto:a@b">m</a>"##;
-        let mut seen = HashSet::new();
-        let mut q = VecDeque::new();
-        seen.insert("/".to_string());
-        parse_internal_links_from_html(html, "myvapi.com", &mut seen, &mut q, 50);
-        let got: Vec<&str> = q.iter().map(|s| s.as_str()).collect();
-        assert_eq!(
-            got,
-            ["/events.php", "/history.php", "/enquiry.php", "/x?y=1"]
-        );
-    }
+    let mut seen = HashSet::new();
+    let mut q = VecDeque::new();
+    seen.insert("/".to_string());
+    parse_internal_links_from_html(html, "myvapi.com", &mut seen, &mut q, 50);
+    let got: Vec<&str> = q.iter().map(|s| s.as_str()).collect();
+    assert_eq!(
+        got,
+        ["/events.php", "/history.php", "/enquiry.php", "/x?y=1"]
+    );
+}
 
-    #[test]
-    fn spec_base_path() {
-        let d: Value = serde_json::json!({"servers": [{"url": "/api/v1/"}]});
-        assert_eq!(servers_base_path(&d, "h"), "/api/v1");
-        let d: Value = serde_json::json!({"servers": [{"url": "https://other.test/x"}]});
-        assert_eq!(servers_base_path(&d, "h"), "");
-        let d: Value = serde_json::json!({"servers": [{"url": "/"}]});
-        assert_eq!(servers_base_path(&d, "h"), "");
-        let d: Value = serde_json::json!({"servers": [{"url": "https://{host}/v1"}]});
-        assert_eq!(servers_base_path(&d, "h"), "");
-    }
+#[test]
+fn spec_base_path() {
+    let d: Value = serde_json::json!({"servers": [{"url": "/api/v1/"}]});
+    assert_eq!(servers_base_path(&d, "h"), "/api/v1");
+    let d: Value = serde_json::json!({"servers": [{"url": "https://other.test/x"}]});
+    assert_eq!(servers_base_path(&d, "h"), "");
+    let d: Value = serde_json::json!({"servers": [{"url": "/"}]});
+    assert_eq!(servers_base_path(&d, "h"), "");
+    let d: Value = serde_json::json!({"servers": [{"url": "https://{host}/v1"}]});
+    assert_eq!(servers_base_path(&d, "h"), "");
+}
 
-    #[test]
-    fn non_http_target_discovers_nothing() {
-        let mut b = RunBudget::default();
-        let d = discover("ftp://x", None, 10, &mut b);
-        assert!(d.routes.is_empty() && !d.notes.is_empty());
-        assert!(discover("/etc/passwd", None, 10, &mut b).routes.is_empty());
-    }
+#[test]
+fn non_http_target_discovers_nothing() {
+    let mut b = RunBudget::default();
+    let d = discover("ftp://x", None, 10, &mut b);
+    assert!(d.routes.is_empty() && !d.notes.is_empty());
+    assert!(discover("/etc/passwd", None, 10, &mut b).routes.is_empty());
+}
 
-    // ---- spec_url as a local file
+// ---- spec_url as a local file
 
-    /// A closed port: the crawl finds nothing and fails fast, so only the spec can supply routes.
-    const DEAD_TARGET: &str = "http://127.0.0.1:1";
+/// A closed port: the crawl finds nothing and fails fast, so only the spec can supply routes.
+const DEAD_TARGET: &str = "http://127.0.0.1:1";
 
-    fn temp_dir(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("rh-spec-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
-    }
+fn temp_dir(tag: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("rh-spec-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    d
+}
 
-    fn discover_with(spec: &str) -> Discovery {
-        let mut b = RunBudget::default();
-        discover(DEAD_TARGET, Some(spec), 5, &mut b)
-    }
+fn discover_with(spec: &str) -> Discovery {
+    let mut b = RunBudget::default();
+    discover(DEAD_TARGET, Some(spec), 5, &mut b)
+}
 
-    #[test]
-    fn a_local_json_spec_path_is_read_like_a_spec_url() {
-        let fixture = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/qa-api/openapi.json"
-        );
-        let d = discover_with(fixture);
-        let spec = d
-            .spec
-            .as_ref()
-            .unwrap_or_else(|| panic!("no spec: {:?}", d.notes));
-        assert_eq!(spec.source, fixture);
-        assert!(
-            spec.ops
-                .iter()
-                .any(|o| o.method == "POST" && o.path == "/orders")
-        );
-        assert!(
-            d.routes
-                .iter()
-                .any(|r| r.source == "openapi" && r.path == "/orders" && r.method == "POST")
-        );
-        assert!(
-            d.notes
-                .iter()
-                .any(|n| n.contains("OpenAPI spec loaded from")),
-            "{:?}",
-            d.notes
-        );
-    }
+#[test]
+fn a_local_json_spec_path_is_read_like_a_spec_url() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/qa-api/openapi.json"
+    );
+    let d = discover_with(fixture);
+    let spec = d
+        .spec
+        .as_ref()
+        .unwrap_or_else(|| panic!("no spec: {:?}", d.notes));
+    assert_eq!(spec.source, fixture);
+    assert!(
+        spec.ops
+            .iter()
+            .any(|o| o.method == "POST" && o.path == "/orders")
+    );
+    assert!(
+        d.routes
+            .iter()
+            .any(|r| r.source == "openapi" && r.path == "/orders" && r.method == "POST")
+    );
+    assert!(
+        d.notes
+            .iter()
+            .any(|n| n.contains("OpenAPI spec loaded from")),
+        "{:?}",
+        d.notes
+    );
+}
 
-    #[test]
-    fn a_local_yaml_spec_and_a_file_url_are_read_too() {
-        let dir = temp_dir("yaml");
-        let f = dir.join("api.yaml");
-        std::fs::write(
+#[test]
+fn a_local_yaml_spec_and_a_file_url_are_read_too() {
+    let dir = temp_dir("yaml");
+    let f = dir.join("api.yaml");
+    std::fs::write(
             &f,
             "openapi: 3.0.0\nservers:\n  - url: /api/v1\npaths:\n  /things:\n    get:\n      responses:\n        '200': {description: ok}\n",
         )
         .unwrap();
-        for spec in [f.display().to_string(), format!("file://{}", f.display())] {
-            let d = discover_with(&spec);
-            let s = d
-                .spec
-                .as_ref()
-                .unwrap_or_else(|| panic!("{spec}: {:?}", d.notes));
-            assert_eq!(
-                (s.base_path.as_str(), s.ops.len()),
-                ("/api/v1", 1),
-                "{spec}"
-            );
-            assert!(
-                d.routes.iter().any(|r| r.path == "/api/v1/things"),
-                "{spec}"
-            );
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_local_spec_that_cannot_be_used_is_reported_never_guessed() {
-        let dir = temp_dir("bad");
-        let big = dir.join("big.json");
-        std::fs::write(&big, vec![b' '; LOCAL_SPEC_CAP + 1]).unwrap();
-        let junk = dir.join("junk.json");
-        std::fs::write(&junk, "{\"no\": \"paths\"}").unwrap();
-        let text = dir.join("text.yaml");
-        std::fs::write(&text, ": : :\n\t- [").unwrap();
-        // at the cap exactly is accepted by the size check (the content just is not a spec)
-        let at_cap = dir.join("cap.json");
-        std::fs::write(&at_cap, vec![b' '; LOCAL_SPEC_CAP]).unwrap();
-        for (spec, want) in [
-            (big.display().to_string(), "5 MB limit"),
-            (junk.display().to_string(), "no `paths`"),
-            (text.display().to_string(), "neither valid JSON nor YAML"),
-            (
-                dir.display().to_string(),
-                "neither an http(s) URL nor an existing file",
-            ),
-            (
-                dir.join("missing.json").display().to_string(),
-                "neither an http(s) URL nor an existing file",
-            ),
-            (
-                "ftp://example.test/openapi.json".into(),
-                "neither an http(s) URL nor an existing file",
-            ),
-        ] {
-            let d = discover_with(&spec);
-            assert!(d.spec.is_none(), "{spec}");
-            assert!(
-                d.notes.iter().any(|n| n.contains(want)),
-                "{spec}: {:?}",
-                d.notes
-            );
-        }
-        assert!(read_local_spec(&at_cap).is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn http_urls_are_never_treated_as_paths() {
-        assert!(local_spec_path("http://x/openapi.json").is_none());
-        assert!(local_spec_path("https://x/openapi.json").is_none());
-        let fixture = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/qa-api/openapi.json"
-        );
-        assert!(local_spec_path(fixture).is_some());
-        assert!(
-            local_spec_path(&format!("  {fixture}  ")).is_some(),
-            "surrounding blanks are trimmed"
-        );
-    }
-    // ---- harvest_ids
-
-    /// A server answering every request with `answer(method, path, authorization)`; returns its
-    /// base URL and the log of "METHOD path" lines.
-    fn stub(
-        answer: impl Fn(&str, &str, Option<&str>) -> (u16, String) + Send + Sync + 'static,
-    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-        use std::io::{Read, Write};
-        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let base = format!("http://{}", l.local_addr().unwrap());
-        let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
-        let (lg, answer) = (log.clone(), std::sync::Arc::new(answer));
-        std::thread::spawn(move || {
-            for mut s in l.incoming().flatten() {
-                let mut buf = [0u8; 4096];
-                let n = s.read(&mut buf).unwrap_or(0);
-                let head = String::from_utf8_lossy(&buf[..n]).into_owned();
-                let mut first = head.lines().next().unwrap_or("").split_whitespace();
-                let (m, t) = (first.next().unwrap_or(""), first.next().unwrap_or(""));
-                let auth = head.lines().find_map(|l| {
-                    l.to_ascii_lowercase()
-                        .starts_with("authorization:")
-                        .then(|| l["authorization:".len()..].trim().to_string())
-                });
-                lg.lock().unwrap().push(format!("{m} {t}"));
-                let (code, body) = answer(m, t, auth.as_deref());
-                let _ = write!(
-                    s,
-                    "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-            }
-        });
-        (base, log)
-    }
-
-    fn fixture_spec_doc() -> SpecDoc {
-        let text = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/qa-api/openapi.json"
-        ))
-        .unwrap();
-        let doc: Value = serde_json::from_str(&text).unwrap();
-        let ops = crate::qa::plan::ops_from_doc(&doc);
-        SpecDoc {
-            doc,
-            ops,
-            base_path: String::new(),
-            source: "t".into(),
-        }
-    }
-
-    #[test]
-    fn the_ids_of_existing_records_are_read_from_the_collection_as_the_acting_role() {
-        let (base, log) = stub(|m, t, auth| match (m, t, auth) {
-            ("GET", "/orders", Some("Bearer alice-token")) => (
-                200,
-                r#"[{"id":1,"item":"a"},{"id":2,"item":"b"},{"id":3},{"id":4},{"id":5}]"#.into(),
-            ),
-            _ => (401, r#"{"error":"unauthorized"}"#.into()),
-        });
-        let creds = Credentials::none()
-            .with("alice", "alice-token")
-            .with("admin", "admin-token");
-        let mut b = RunBudget::default().with_rate(0.0);
-        let (ids, notes) = harvest_ids(
-            &fixture_spec_doc(),
-            &base,
-            &creds,
-            Duration::from_secs(5),
-            &mut b,
-        );
+    for spec in [f.display().to_string(), format!("file://{}", f.display())] {
+        let d = discover_with(&spec);
+        let s = d
+            .spec
+            .as_ref()
+            .unwrap_or_else(|| panic!("{spec}: {:?}", d.notes));
         assert_eq!(
-            ids.get("/orders").map(Vec::as_slice),
-            Some(&["1".to_string(), "2".to_string(), "3".to_string()][..]),
-            "a few ids, never the whole collection"
+            (s.base_path.as_str(), s.ops.len()),
+            ("/api/v1", 1),
+            "{spec}"
         );
-        assert!(notes.iter().any(|n| n.contains("/orders")), "{notes:?}");
-        // exactly one read-only request, the collection (the item path is not guessed)
-        assert_eq!(*log.lock().unwrap(), ["GET /orders"]);
-        assert_eq!(b.requests_used(), 1, "charged to the run budget");
+        assert!(
+            d.routes.iter().any(|r| r.path == "/api/v1/things"),
+            "{spec}"
+        );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
 
-    #[test]
-    fn nothing_is_harvested_without_a_credential_for_a_secured_collection_or_when_it_answers_badly()
-    {
-        let (base, log) = stub(|_, _, _| (500, "boom".into()));
-        let mut b = RunBudget::default().with_rate(0.0);
-        // no credential: not worth a 401, so no request at all
-        let (ids, _) = harvest_ids(
-            &fixture_spec_doc(),
-            &base,
-            &Credentials::none(),
-            Duration::from_secs(5),
-            &mut b,
+#[test]
+fn a_local_spec_that_cannot_be_used_is_reported_never_guessed() {
+    let dir = temp_dir("bad");
+    let big = dir.join("big.json");
+    std::fs::write(&big, vec![b' '; LOCAL_SPEC_CAP + 1]).unwrap();
+    let junk = dir.join("junk.json");
+    std::fs::write(&junk, "{\"no\": \"paths\"}").unwrap();
+    let text = dir.join("text.yaml");
+    std::fs::write(&text, ": : :\n\t- [").unwrap();
+    // at the cap exactly is accepted by the size check (the content just is not a spec)
+    let at_cap = dir.join("cap.json");
+    std::fs::write(&at_cap, vec![b' '; LOCAL_SPEC_CAP]).unwrap();
+    for (spec, want) in [
+        (big.display().to_string(), "5 MB limit"),
+        (junk.display().to_string(), "no `paths`"),
+        (text.display().to_string(), "neither valid JSON nor YAML"),
+        (
+            dir.display().to_string(),
+            "neither an http(s) URL nor an existing file",
+        ),
+        (
+            dir.join("missing.json").display().to_string(),
+            "neither an http(s) URL nor an existing file",
+        ),
+        (
+            "ftp://example.test/openapi.json".into(),
+            "neither an http(s) URL nor an existing file",
+        ),
+    ] {
+        let d = discover_with(&spec);
+        assert!(d.spec.is_none(), "{spec}");
+        assert!(
+            d.notes.iter().any(|n| n.contains(want)),
+            "{spec}: {:?}",
+            d.notes
         );
-        assert!(ids.is_empty() && log.lock().unwrap().is_empty());
-        // an administrator token is not an acting role either
-        let admin = Credentials::none().with("admin", "t");
-        let (ids, _) = harvest_ids(
-            &fixture_spec_doc(),
-            &base,
-            &admin,
-            Duration::from_secs(5),
-            &mut b,
-        );
-        assert!(ids.is_empty() && log.lock().unwrap().is_empty());
-        // a failing collection yields no ids and no note
-        let alice = Credentials::none().with("alice", "t");
-        let (ids, notes) = harvest_ids(
-            &fixture_spec_doc(),
-            &base,
-            &alice,
-            Duration::from_secs(5),
-            &mut b,
-        );
-        assert!(ids.is_empty() && notes.is_empty());
-        assert_eq!(log.lock().unwrap().len(), 1);
-        // an exhausted request budget stops it
-        let mut spent = RunBudget::default().with_max_requests(0);
-        let (ids, _) = harvest_ids(
-            &fixture_spec_doc(),
-            &base,
-            &alice,
-            Duration::from_secs(5),
-            &mut spent,
-        );
-        assert!(ids.is_empty());
-        assert_eq!(log.lock().unwrap().len(), 1, "no request over the budget");
     }
+    assert!(read_local_spec(&at_cap).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn http_urls_are_never_treated_as_paths() {
+    assert!(local_spec_path("http://x/openapi.json").is_none());
+    assert!(local_spec_path("https://x/openapi.json").is_none());
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/qa-api/openapi.json"
+    );
+    assert!(local_spec_path(fixture).is_some());
+    assert!(
+        local_spec_path(&format!("  {fixture}  ")).is_some(),
+        "surrounding blanks are trimmed"
+    );
+}
+// ---- harvest_ids
+
+/// A server answering every request with `answer(method, path, authorization)`; returns its
+/// base URL and the log of "METHOD path" lines.
+fn stub(
+    answer: impl Fn(&str, &str, Option<&str>) -> (u16, String) + Send + Sync + 'static,
+) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::{Read, Write};
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    let log: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+    let (lg, answer) = (log.clone(), std::sync::Arc::new(answer));
+    std::thread::spawn(move || {
+        for mut s in l.incoming().flatten() {
+            let mut buf = [0u8; 4096];
+            let n = s.read(&mut buf).unwrap_or(0);
+            let head = String::from_utf8_lossy(&buf[..n]).into_owned();
+            let mut first = head.lines().next().unwrap_or("").split_whitespace();
+            let (m, t) = (first.next().unwrap_or(""), first.next().unwrap_or(""));
+            let auth = head.lines().find_map(|l| {
+                l.to_ascii_lowercase()
+                    .starts_with("authorization:")
+                    .then(|| l["authorization:".len()..].trim().to_string())
+            });
+            lg.lock().unwrap().push(format!("{m} {t}"));
+            let (code, body) = answer(m, t, auth.as_deref());
+            let _ = write!(
+                s,
+                "HTTP/1.1 {code} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (base, log)
+}
+
+fn fixture_spec_doc() -> SpecDoc {
+    let text = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/qa-api/openapi.json"
+    ))
+    .unwrap();
+    let doc: Value = serde_json::from_str(&text).unwrap();
+    let ops = crate::qa::plan::ops_from_doc(&doc);
+    SpecDoc {
+        doc,
+        ops,
+        base_path: String::new(),
+        source: "t".into(),
+    }
+}
+
+#[test]
+fn the_ids_of_existing_records_are_read_from_the_collection_as_the_acting_role() {
+    let (base, log) = stub(|m, t, auth| match (m, t, auth) {
+        ("GET", "/orders", Some("Bearer alice-token")) => (
+            200,
+            r#"[{"id":1,"item":"a"},{"id":2,"item":"b"},{"id":3},{"id":4},{"id":5}]"#.into(),
+        ),
+        _ => (401, r#"{"error":"unauthorized"}"#.into()),
+    });
+    let creds = Credentials::none()
+        .with("alice", "alice-token")
+        .with("admin", "admin-token");
+    let mut b = RunBudget::default().with_rate(0.0);
+    let (ids, notes) = harvest_ids(
+        &fixture_spec_doc(),
+        &base,
+        &creds,
+        Duration::from_secs(5),
+        &mut b,
+    );
+    assert_eq!(
+        ids.get("/orders").map(Vec::as_slice),
+        Some(&["1".to_string(), "2".to_string(), "3".to_string()][..]),
+        "a few ids, never the whole collection"
+    );
+    assert!(notes.iter().any(|n| n.contains("/orders")), "{notes:?}");
+    // exactly one read-only request, the collection (the item path is not guessed)
+    assert_eq!(*log.lock().unwrap(), ["GET /orders"]);
+    assert_eq!(b.requests_used(), 1, "charged to the run budget");
+}
+
+#[test]
+fn nothing_is_harvested_without_a_credential_for_a_secured_collection_or_when_it_answers_badly() {
+    let (base, log) = stub(|_, _, _| (500, "boom".into()));
+    let mut b = RunBudget::default().with_rate(0.0);
+    // no credential: not worth a 401, so no request at all
+    let (ids, _) = harvest_ids(
+        &fixture_spec_doc(),
+        &base,
+        &Credentials::none(),
+        Duration::from_secs(5),
+        &mut b,
+    );
+    assert!(ids.is_empty() && log.lock().unwrap().is_empty());
+    // an administrator token is not an acting role either
+    let admin = Credentials::none().with("admin", "t");
+    let (ids, _) = harvest_ids(
+        &fixture_spec_doc(),
+        &base,
+        &admin,
+        Duration::from_secs(5),
+        &mut b,
+    );
+    assert!(ids.is_empty() && log.lock().unwrap().is_empty());
+    // a failing collection yields no ids and no note
+    let alice = Credentials::none().with("alice", "t");
+    let (ids, notes) = harvest_ids(
+        &fixture_spec_doc(),
+        &base,
+        &alice,
+        Duration::from_secs(5),
+        &mut b,
+    );
+    assert!(ids.is_empty() && notes.is_empty());
+    assert_eq!(log.lock().unwrap().len(), 1);
+    // an exhausted request budget stops it
+    let mut spent = RunBudget::default().with_max_requests(0);
+    let (ids, _) = harvest_ids(
+        &fixture_spec_doc(),
+        &base,
+        &alice,
+        Duration::from_secs(5),
+        &mut spent,
+    );
+    assert!(ids.is_empty());
+    assert_eq!(log.lock().unwrap().len(), 1, "no request over the budget");
+}
 
 /// Discovery against local sites: redirect chains, login walls, soft-404 calibration, SPA
 /// extraction, scope, spec locations. No network beyond 127.0.0.1.
 #[cfg(test)]
 mod site_tests {
     use super::*;
+    use crate::agent::types::RedirectHop;
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
-    use crate::agent::types::RedirectHop;
 
     struct Reply {
         code: u16,

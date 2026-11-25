@@ -4,7 +4,9 @@ use super::helpers::{
     STYLE, budget_line, cites, defect_verification, html_escape, llm_line, opt, score_text,
     status_code_text, verdict_of,
 };
-use super::html_sections::{html_agents, html_change_impact, html_ledger, html_since_last_run, html_verification};
+use super::html_sections::{
+    html_agents, html_change_impact, html_ledger, html_since_last_run, html_verification,
+};
 
 pub fn generate_agent_html_report(rep: &AgentRunReport) -> String {
     let (verdict, score) = verdict_of(rep);

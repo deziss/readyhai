@@ -1,21 +1,17 @@
 //! Discovery scan runner for URL discovery, attack-surface probing, and test case synthesis without execution.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 
-use super::options::{
-    blank_report, checkpoint, ip_fields, log, measure_llm, require_http, resolve_llm, RunOptions,
-};
-use super::run_guarded;
 use super::super::discover::discover;
 use super::super::ledger;
 use super::super::plan::{plan_cases_seeded, seed_from_run_id};
-use super::super::store::{
-    agent_runs_dir, checkpoint_agent_run_in, now_iso, save_agent_run_in,
+use super::super::store::{agent_runs_dir, checkpoint_agent_run_in, now_iso, save_agent_run_in};
+use super::super::types::{AgentRunReport, ExitCheckItem, default_model_tier, register_run};
+use super::options::{
+    RunOptions, blank_report, checkpoint, ip_fields, log, measure_llm, require_http, resolve_llm,
 };
-use super::super::types::{
-    default_model_tier, register_run, AgentRunReport, ExitCheckItem,
-};
+use super::run_guarded;
 
 /// Discovery + planning only (no case is executed). The ledger says so instead of inventing scores.
 pub fn run_discovery_scan(target: &str, spec_url: Option<&str>) -> Result<AgentRunReport> {
@@ -160,7 +156,11 @@ pub(crate) fn run_discovery_in(
             ExitCheckItem {
                 criterion: "Attack surface discovered".into(),
                 met: !disc.routes.is_empty(),
-                status: Some(if !disc.routes.is_empty() { "met".into() } else { "unmet".into() }),
+                status: Some(if !disc.routes.is_empty() {
+                    "met".into()
+                } else {
+                    "unmet".into()
+                }),
                 details: format!(
                     "{} route(s), {} ({})",
                     disc.routes.len(),
@@ -173,7 +173,11 @@ pub(crate) fn run_discovery_in(
             ExitCheckItem {
                 criterion: "Test scenarios synthesized".into(),
                 met: !plan.cases.is_empty(),
-                status: Some(if !plan.cases.is_empty() { "met".into() } else { "unmet".into() }),
+                status: Some(if !plan.cases.is_empty() {
+                    "met".into()
+                } else {
+                    "unmet".into()
+                }),
                 details: format!("{} planned scenario(s)", plan.cases.len()),
                 case_ids: plan.cases.iter().map(|c| c.id.clone()).collect(),
                 evidence_files: vec![],

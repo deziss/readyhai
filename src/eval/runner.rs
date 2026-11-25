@@ -1,12 +1,10 @@
 //! Evaluation runner orchestrator: runs suites in loop, manages temp directories, and evaluates passes.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::path::Path;
 use std::time::Instant;
 
-use super::fixture::{
-    exec_agent, exec_qa, exec_repo, rel, role_env, EnvGuard, Fixture, ENV_LOCK,
-};
+use super::fixture::{ENV_LOCK, EnvGuard, Fixture, exec_agent, exec_qa, exec_repo, rel, role_env};
 use super::parser::{load_suites, resolve_root};
 use super::report::{pct, render_markdown};
 use super::scoring::{score_run, summarize_suite};

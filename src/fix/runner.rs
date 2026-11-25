@@ -48,12 +48,13 @@ pub fn run(opts: FixOpts) -> Result<u8> {
             let file_path = repo.join(&patch.file_path);
             let original_content = fs::read_to_string(&file_path).unwrap_or_default();
 
-            if opts.verify && let Some(runner) = test_runner {
+            if opts.verify
+                && let Some(runner) = test_runner
+            {
                 // Apply patch to disk temporarily for sandbox verification
                 if let Err(e) = fs::write(&file_path, &patch.patched_snippet) {
                     patch.status = PatchStatus::VerificationFailed;
-                    patch.error_log =
-                        Some(format!("failed to write patch for verification: {e}"));
+                    patch.error_log = Some(format!("failed to write patch for verification: {e}"));
                     remediations.push(patch);
                     continue;
                 }

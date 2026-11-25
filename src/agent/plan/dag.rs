@@ -169,13 +169,22 @@ impl AttackDag {
             in_degree.entry(node.id.as_str()).or_insert(0);
             for dep in &node.dependencies {
                 if dep == &node.id {
-                    return Err(format!("self-dependency cycle detected on node '{}'", node.id));
+                    return Err(format!(
+                        "self-dependency cycle detected on node '{}'",
+                        node.id
+                    ));
                 }
                 if !all_ids.contains(dep.as_str()) {
-                    return Err(format!("missing dependency '{}' for node '{}'", dep, node.id));
+                    return Err(format!(
+                        "missing dependency '{}' for node '{}'",
+                        dep, node.id
+                    ));
                 }
                 *in_degree.entry(node.id.as_str()).or_insert(0) += 1;
-                dependents.entry(dep.as_str()).or_default().push(node.id.as_str());
+                dependents
+                    .entry(dep.as_str())
+                    .or_default()
+                    .push(node.id.as_str());
             }
         }
 
@@ -216,7 +225,10 @@ impl AttackDag {
         for (idx, node_id) in order.iter().enumerate() {
             if let Some(node) = self.get_node(node_id) {
                 let method = node.method.clone().unwrap_or_else(|| "GET".into());
-                let path = node.component.clone().unwrap_or_else(|| format!("/{node_id}"));
+                let path = node
+                    .component
+                    .clone()
+                    .unwrap_or_else(|| format!("/{node_id}"));
                 let payload = node.payload.as_ref().map(|p| p.to_string());
                 steps.push(StatefulStep {
                     step_number: (idx + 1) as u32,
@@ -401,7 +413,10 @@ impl AttackDag {
                     let mut r = CaseExecutionResult::default();
                     r.case_id = node.id.clone();
                     r.title = node.action.clone().unwrap_or_else(|| node.id.clone());
-                    r.component = node.component.clone().unwrap_or_else(|| format!("/{}", node.id));
+                    r.component = node
+                        .component
+                        .clone()
+                        .unwrap_or_else(|| format!("/{}", node.id));
                     r.method = node.method.clone().unwrap_or_else(|| "GET".into());
                     r.failure_reason = Some(reason.clone());
                     r
@@ -442,7 +457,10 @@ impl AttackDag {
                     let mut r = CaseExecutionResult::default();
                     r.case_id = node.id.clone();
                     r.title = node.action.clone().unwrap_or_else(|| node.id.clone());
-                    r.component = node.component.clone().unwrap_or_else(|| format!("/{}", node.id));
+                    r.component = node
+                        .component
+                        .clone()
+                        .unwrap_or_else(|| format!("/{}", node.id));
                     r.method = node.method.clone().unwrap_or_else(|| "GET".into());
                     r.failure_reason = Some(reason);
                     r

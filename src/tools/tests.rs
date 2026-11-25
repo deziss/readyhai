@@ -959,14 +959,21 @@ fn parse_nmap_reports_open_ports_only_on_up_hosts() {
 <runstats><finished time="1700000060"/></runstats>
 </nmaprun>"#;
     let fs = super::plugins::parse_nmap("plugin.nmap", xml);
-    assert_eq!(fs.len(), 2, "ssh+https open, mysql closed, down host ignored: {fs:?}");
+    assert_eq!(
+        fs.len(),
+        2,
+        "ssh+https open, mysql closed, down host ignored: {fs:?}"
+    );
     assert_eq!(fs[0].rule, "nmap-open-port");
     assert!(fs[0].title.contains("ssh") && fs[0].title.contains("web01.internal"));
     assert!(fs[0].detail.contains("OpenSSH"));
     // 22 is not on the risky list, but even so ssh here is only low; 443 is low too.
     assert_eq!(fs[0].severity, Severity::Low);
     assert_eq!(fs[1].severity, Severity::Low);
-    assert!(fs.iter().all(|f| f.severity != Severity::High), "nmap never reports high");
+    assert!(
+        fs.iter().all(|f| f.severity != Severity::High),
+        "nmap never reports high"
+    );
 }
 
 #[test]
@@ -1009,7 +1016,10 @@ fn parse_nikto_flags_known_items_medium() {
     // `<description>` and are skipped, so only the 3 real server items remain.
     assert_eq!(fs.len(), 3, "described items only: {fs:?}");
     assert!(fs.iter().all(|f| !f.title.contains("items passed")));
-    let osvdb = fs.iter().find(|f| f.location.contains("admin-ajax")).unwrap();
+    let osvdb = fs
+        .iter()
+        .find(|f| f.location.contains("admin-ajax"))
+        .unwrap();
     assert_eq!(osvdb.severity, Severity::Medium);
     assert_eq!(osvdb.rule, "nikto-item");
     assert!(osvdb.title.contains("TimThumb"));
@@ -1031,7 +1041,11 @@ fn parse_testssl_maps_severity_and_skips_ok_info() {
 {"section":"Testing SWEET32","id":9003,"severity":"HIGH","finding":"TLS_RSA_WITH_3DES_EDE_CBC3_SHA tested (positive): accepted"}
 ]"#;
     let fs = super::plugins::parse_testssl("plugin.testssl", text).unwrap();
-    assert_eq!(fs.len(), 4, "OK/INFO skipped, empty port probe skipped: {fs:?}");
+    assert_eq!(
+        fs.len(),
+        4,
+        "OK/INFO skipped, empty port probe skipped: {fs:?}"
+    );
     assert!(fs.iter().all(|f| f.rule.starts_with("testssl.")));
     let f = fs.iter().find(|f| f.rule == "testssl.20001").unwrap();
     assert_eq!(f.severity, Severity::High, "CRITICAL caps at high");
@@ -1040,7 +1054,13 @@ fn parse_testssl_maps_severity_and_skips_ok_info() {
     assert_eq!(m.severity, Severity::Medium);
     let l = fs.iter().find(|f| f.rule == "testssl.55").unwrap();
     assert_eq!(l.severity, Severity::Low);
-    assert_eq!(fs.iter().find(|f| f.rule == "testssl.9003").unwrap().severity, Severity::High);
+    assert_eq!(
+        fs.iter()
+            .find(|f| f.rule == "testssl.9003")
+            .unwrap()
+            .severity,
+        Severity::High
+    );
 }
 
 #[test]
@@ -1065,12 +1085,20 @@ fn parse_sqlmap_reports_only_injectable_entries() {
   "message": "Parameter 'x' does not seem to be injectable here"
 }}"#;
     let fs = super::plugins::parse_sqlmap("plugin.sqlmap", text).unwrap();
-    assert_eq!(fs.len(), 1, "only the vulnerable parameter is reported: {fs:?}");
+    assert_eq!(
+        fs.len(),
+        1,
+        "only the vulnerable parameter is reported: {fs:?}"
+    );
     let f = &fs[0];
     assert_eq!(f.rule, "sqlmap-injection");
     assert_eq!(f.severity, Severity::High);
     assert!(f.title.contains("SQL injection"), "{}", f.title);
-    assert!(f.title.contains("id"), "parameter named in title: {}", f.title);
+    assert!(
+        f.title.contains("id"),
+        "parameter named in title: {}",
+        f.title
+    );
     assert!(f.location.contains("target.tld"));
 }
 
@@ -1101,11 +1129,24 @@ garbage line with no pair
 Open (TCP) 10.0.0.4:443 Open
 "#;
     let fs = super::plugins::parse_portline("plugin.rustscan", text);
-    assert_eq!(fs.len(), 4, "deduped (ip,port), timestamp `12:30` ignored: {fs:?}");
+    assert_eq!(
+        fs.len(),
+        4,
+        "deduped (ip,port), timestamp `12:30` ignored: {fs:?}"
+    );
     assert!(fs.iter().all(|f| f.rule == "rustscan-open-port"));
     assert!(fs.iter().all(|f| f.severity == Severity::Low));
-    assert_eq!(fs.iter().filter(|f| f.title.contains("127.0.0.1:8080")).count(), 1, "once");
-    assert!(fs.iter().any(|f| f.title.contains("10.0.0.4:53")), "trailing comma trimmed");
+    assert_eq!(
+        fs.iter()
+            .filter(|f| f.title.contains("127.0.0.1:8080"))
+            .count(),
+        1,
+        "once"
+    );
+    assert!(
+        fs.iter().any(|f| f.title.contains("10.0.0.4:53")),
+        "trailing comma trimmed"
+    );
     assert!(fs.iter().any(|f| f.title.contains("10.0.0.4:443")));
     assert!(fs.iter().any(|f| f.title.contains("0.0.0.0:22")));
 }
@@ -1117,14 +1158,27 @@ fn portline_empty_with_zero_exit_stays_a_note_not_zero_findings_error() {
     assert!(note.is_none());
     let note = exit_incompleteness("portline", 2, "bind failed");
     assert!(note.unwrap().contains("exited 2"));
-    assert!(exit_incompleteness("lines", 3, "").is_none(), "lines stays exempt");
-    assert!(exit_incompleteness("sarif", 3, "").is_some(), "other formats still warn");
+    assert!(
+        exit_incompleteness("lines", 3, "").is_none(),
+        "lines stays exempt"
+    );
+    assert!(
+        exit_incompleteness("sarif", 3, "").is_some(),
+        "other formats still warn"
+    );
 }
 
 // ---------- ensure_packs: on-the-go plugin provisioning ----------
 
 /// Mini pack fixture: `stdout = true` + `format` keep it past reject_reason.
-fn setup_pack(dir: &std::path::Path, id: &str, image: &str, kinds: &str, profile: &str, cache_rw: bool) {
+fn setup_pack(
+    dir: &std::path::Path,
+    id: &str,
+    image: &str,
+    kinds: &str,
+    profile: &str,
+    cache_rw: bool,
+) {
     let p = dir.join(id);
     std::fs::create_dir_all(&p).unwrap();
     std::fs::write(
@@ -1190,7 +1244,11 @@ fn ensure_packs_pulls_only_selectable_unpulled_packs() {
         &|_| false, // nothing present locally
         &|| Ok(false),
     );
-    assert_eq!(pulled.borrow().as_slice(), ["demo/a@sha256:aaa"], "b silenced, c wrong kind");
+    assert_eq!(
+        pulled.borrow().as_slice(),
+        ["demo/a@sha256:aaa"],
+        "b silenced, c wrong kind"
+    );
     assert_eq!(notes, ["setup: pulled a image (first-run provisioning)"]);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1214,7 +1272,10 @@ fn ensure_packs_missing_dir_is_quiet() {
         &|_| false,
         &|| Ok(false),
     );
-    assert!(notes.is_empty() && !called.get(), "no packs, no pulls, no notes");
+    assert!(
+        notes.is_empty() && !called.get(),
+        "no packs, no pulls, no notes"
+    );
 }
 
 #[test]
@@ -1270,7 +1331,10 @@ fn ensure_packs_offline_short_circuits() {
         &|_| false,
         &|| Ok(false),
     );
-    assert!(notes.is_empty() && !called.get(), "offline never pulls or seeds");
+    assert!(
+        notes.is_empty() && !called.get(),
+        "offline never pulls or seeds"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1289,7 +1353,9 @@ fn ensure_packs_reports_pull_failure_and_unpinned_ref() {
         false,
         &|r| {
             if r.starts_with("demo/f") {
-                Ok(cap_fail("Error response from daemon: toomanyrequests: rate limit"))
+                Ok(cap_fail(
+                    "Error response from daemon: toomanyrequests: rate limit",
+                ))
             } else {
                 Ok(cap_ok())
             }
@@ -1304,8 +1370,14 @@ fn ensure_packs_reports_pull_failure_and_unpinned_ref() {
         "{:?}",
         notes[0]
     );
-    assert_eq!(notes[1], "setup: u image is unpinned; provision it with a digest-pinned ref");
-    assert_eq!(notes[2], "setup: pulled u image (first-run provisioning)", "unpinned still pulls");
+    assert_eq!(
+        notes[1],
+        "setup: u image is unpinned; provision it with a digest-pinned ref"
+    );
+    assert_eq!(
+        notes[2], "setup: pulled u image (first-run provisioning)",
+        "unpinned still pulls"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1331,7 +1403,10 @@ fn ensure_packs_present_images_skipped_and_profile_gate_holds() {
         &|_| false,
         &|| Ok(false),
     );
-    assert!(notes.is_empty() && !PULLED.load(std::sync::atomic::Ordering::SeqCst), "deep pack not selected under standard");
+    assert!(
+        notes.is_empty() && !PULLED.load(std::sync::atomic::Ordering::SeqCst),
+        "deep pack not selected under standard"
+    );
     // present image: selected but already local -> no pull, no notes.
     let notes = ensure_packs(
         &dir,
@@ -1344,6 +1419,9 @@ fn ensure_packs_present_images_skipped_and_profile_gate_holds() {
         &|_| true,
         &|| Ok(false),
     );
-    assert!(notes.is_empty() && !PULLED.load(std::sync::atomic::Ordering::SeqCst), "present image is never re-pulled");
+    assert!(
+        notes.is_empty() && !PULLED.load(std::sync::atomic::Ordering::SeqCst),
+        "present image is never re-pulled"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

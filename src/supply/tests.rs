@@ -1,13 +1,9 @@
 use serde_json::Value;
 
 use super::api_contract::{parse_oasdiff, parse_spectral};
-use super::mutation::{
-    parse_cargo_mutants, parse_mutmut_meta, parse_stryker,
-};
+use super::mutation::{parse_cargo_mutants, parse_mutmut_meta, parse_stryker};
 use super::osv::{enrich_osv_with_ast, parse_osv};
-use super::scorecard::{
-    github_slug, parse_scorecard, remote_url, slug_from_target_raw,
-};
+use super::scorecard::{github_slug, parse_scorecard, remote_url, slug_from_target_raw};
 use super::*;
 use crate::model::{Category, Finding, Severity};
 
@@ -74,8 +70,7 @@ fn osv_any_called_is_reachable_and_empty_is_unknown() {
     let a = f.iter().find(|x| x.rule == "CVE-2022-32149").unwrap();
     assert!(a.title.contains("(reachable)"));
     assert_eq!(a.severity, Severity::High);
-    v["results"][0]["packages"][0]["groups"][0]["experimental_analysis"] =
-        serde_json::json!({});
+    v["results"][0]["packages"][0]["groups"][0]["experimental_analysis"] = serde_json::json!({});
     let f = parse_osv(&v.to_string()).unwrap();
     let a = f.iter().find(|x| x.rule == "CVE-2022-32149").unwrap();
     assert!(a.title.contains("(unknown)"));
@@ -171,8 +166,7 @@ fn mutation_scores() {
     assert!(parse_stryker("{").is_none());
     let m = parse_mutmut_meta(r#"{"exit_code_by_key":{"a":1,"b":0,"c":null,"d":36}}"#).unwrap();
     assert_eq!((m.detected, m.total), (2, 3));
-    let top =
-        parse_cargo_mutants(r#"{"caught":8,"missed":2,"timeout":0,"unviable":5}"#).unwrap();
+    let top = parse_cargo_mutants(r#"{"caught":8,"missed":2,"timeout":0,"unviable":5}"#).unwrap();
     assert_eq!((top.detected, top.total), (8, 10));
 }
 

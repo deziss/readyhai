@@ -13,8 +13,8 @@ use super::javascript::analyze_js_ts;
 use super::php::analyze_php;
 use super::python::analyze_python;
 use super::types::{
-    CodeInventory, DiscoveredEndpoint, FunctionInfo, Lang, RawEndpoint, SinkHit, MAX_FILES,
-    MAX_FILE_BYTES, remediation_for,
+    CodeInventory, DiscoveredEndpoint, FunctionInfo, Lang, MAX_FILE_BYTES, MAX_FILES, RawEndpoint,
+    SinkHit, remediation_for,
 };
 
 pub fn should_skip_dir(name: &str) -> bool {

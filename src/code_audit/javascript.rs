@@ -1,9 +1,7 @@
 use std::collections::BTreeSet;
 use tree_sitter::Node;
 
-use super::ast::{
-    is_dynamic_expr, looks_like_guard_name, node_text, unquote, walk_nodes,
-};
+use super::ast::{is_dynamic_expr, looks_like_guard_name, node_text, unquote, walk_nodes};
 use super::classify::classify_sink;
 use super::types::{FunctionInfo, RawEndpoint, SinkHit};
 

@@ -130,8 +130,8 @@ pub(crate) fn null_violation(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                     component: file.clone(),
                     expected: "Every row carries a value in a required column".into(),
                     actual: format!("Empty at line(s) {}{}", shown.join(", "), more),
-                    remediation:
-                        "Backfill the fixture or rename the column to mark it optional".into(),
+                    remediation: "Backfill the fixture or rename the column to mark it optional"
+                        .into(),
                     fp_key: format!("{file}|{col}"),
                     steps: vec![format!("Open {file}"), format!("Check column {col}")],
                 });
@@ -140,7 +140,11 @@ pub(crate) fn null_violation(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     }
     let n = defs.len();
     defs.truncate(MAX_ITEM_DEFECTS);
-    let status = if n > 0 { ResultStatus::Fail } else { ResultStatus::Pass };
+    let status = if n > 0 {
+        ResultStatus::Fail
+    } else {
+        ResultStatus::Pass
+    };
     Ok(out(record(
         ctx,
         "qa.data.null-violation",
@@ -149,9 +153,7 @@ pub(crate) fn null_violation(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
         "Required CSV columns have no null/empty values",
         "fixtures",
         status,
-        &format!(
-            "{n}/{cols} required column(s) violated across {cells} scanned data row(s)"
-        ),
+        &format!("{n}/{cols} required column(s) violated across {cells} scanned data row(s)"),
         defs,
     )))
 }
@@ -217,7 +219,11 @@ pub(crate) fn duplicate_key(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     }
     let n = defs.len();
     defs.truncate(MAX_ITEM_DEFECTS);
-    let status = if n > 0 { ResultStatus::Fail } else { ResultStatus::Pass };
+    let status = if n > 0 {
+        ResultStatus::Fail
+    } else {
+        ResultStatus::Pass
+    };
     Ok(out(record(
         ctx,
         "qa.data.duplicate-key",

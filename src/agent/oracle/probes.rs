@@ -3,7 +3,7 @@
 use super::super::triage::severity_for;
 use super::super::types::{PlannedCase, ProbeOracle};
 use super::signatures::has_dom_xss_sink_flow;
-use super::types::{chk, Observation, OracleCheck, Severity, Technique, Verdict};
+use super::types::{Observation, OracleCheck, Severity, Technique, Verdict, chk};
 
 /// Normalize volatile digits and whitespace so timestamps/request IDs don't masquerade as boolean diffs.
 pub(crate) fn normalize_diff_body(s: &str) -> String {

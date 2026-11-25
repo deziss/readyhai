@@ -98,9 +98,8 @@ fn run_incompleteness(run: &Value, i: usize) -> Vec<String> {
         .get("invocations")
         .and_then(|x| x.as_array())
         .is_some_and(|invs| {
-            invs.iter().any(|inv| {
-                inv.get("executionSuccessful").and_then(|x| x.as_bool()) == Some(false)
-            })
+            invs.iter()
+                .any(|inv| inv.get("executionSuccessful").and_then(|x| x.as_bool()) == Some(false))
         });
     if failed_run {
         notes.push(match &fatal_note {
@@ -108,7 +107,9 @@ fn run_incompleteness(run: &Value, i: usize) -> Vec<String> {
             None => format!("run {i}: tool reported executionSuccessful=false"),
         });
     } else if let Some(m) = &fatal_note {
-        notes.push(format!("run {i}: tool reported an error notification ({m})"));
+        notes.push(format!(
+            "run {i}: tool reported an error notification ({m})"
+        ));
     }
     notes
 }
@@ -188,4 +189,3 @@ pub fn parse_sarif_report(json: &str, check: &str) -> Result<(Vec<Finding>, Vec<
     }
     Ok((out, notes))
 }
-

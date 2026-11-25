@@ -1,6 +1,6 @@
 //! WHATWG URL parsing and host normalization.
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 
 /// Lowercase, no IPv6 brackets, no trailing dot: the form hosts are compared in.
 pub fn norm_host(h: &str) -> String {

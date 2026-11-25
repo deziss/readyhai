@@ -175,9 +175,10 @@ fn lynis_parse() {
 fn scripts_embedded() {
     assert!(LINUX_SH.starts_with("#!/bin/sh"));
     assert!(WINDOWS_PS1.contains("ConvertTo-Json -Depth 8 -Compress"));
-    assert!(checks().iter().map(|c| c.id.as_str()).eq([
-        "host.probe",
-        "host.cve",
-        "host.lynis"
-    ]));
+    assert!(
+        checks()
+            .iter()
+            .map(|c| c.id.as_str())
+            .eq(["host.probe", "host.cve", "host.lynis"])
+    );
 }

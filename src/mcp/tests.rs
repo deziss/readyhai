@@ -4,11 +4,11 @@ use std::time::Duration;
 use anyhow::bail;
 use serde_json::{Value, json};
 
-use crate::engine::ScanOpts;
 use super::agent_bridge::{Runner, agent_status_in, swarm_request};
 use super::protocol::{State, UNTRUSTED, handle, isolate_stdio, jobs};
 use super::scanner::{mcp_opts, precheck};
 use super::tools::{call_agent_tool, tool_defs};
+use crate::engine::ScanOpts;
 
 fn call(st: &mut State, v: Value) -> Value {
     handle(st, v).expect("reply")
@@ -589,11 +589,11 @@ fn agent_tool_arguments_are_typed_and_unknown_fields_are_rejected() {
         assert!(t.contains("unknown field"), "{tool}: {t}");
     }
     // wrong types are rejected by the typed struct, not coerced
-    let e = swarm_request(&json!({"target": "https://example.com", "max_steps": "ten"}))
-        .unwrap_err();
+    let e =
+        swarm_request(&json!({"target": "https://example.com", "max_steps": "ten"})).unwrap_err();
     assert!(e.to_string().contains("invalid arguments"), "{e}");
-    let e = swarm_request(&json!({"target": "https://example.com", "thinking": "yes"}))
-        .unwrap_err();
+    let e =
+        swarm_request(&json!({"target": "https://example.com", "thinking": "yes"})).unwrap_err();
     assert!(e.to_string().contains("invalid arguments"), "{e}");
     assert!(swarm_request(&json!("not an object")).is_err());
 }
@@ -671,13 +671,10 @@ fn agent_swarm_is_a_dry_run_by_default_and_the_reasoning_budget_is_clamped() {
     )
     .unwrap();
     assert_eq!(r.custom_instructions.as_deref(), Some("focus on authz"));
-    let r =
-        swarm_request(&json!({"target": "https://example.com", "directives": "  "})).unwrap();
+    let r = swarm_request(&json!({"target": "https://example.com", "directives": "  "})).unwrap();
     assert!(r.custom_instructions.is_none());
     let long = "x".repeat(crate::serve::max_custom_instructions_bytes() + 1);
-    assert!(
-        swarm_request(&json!({"target": "https://example.com", "directives": long})).is_err()
-    );
+    assert!(swarm_request(&json!({"target": "https://example.com", "directives": long})).is_err());
     for bad in [json!(-1), json!(0), json!(51)] {
         assert!(
             swarm_request(&json!({"target": "https://example.com", "max_steps": bad})).is_err()
@@ -783,8 +780,7 @@ fn every_agent_tool_result_carries_the_untrusted_banner() {
         "the call returned before the run ended"
     );
     let v: Value =
-        serde_json::from_str(started.strip_prefix(&format!("{UNTRUSTED}\n\n")).unwrap())
-            .unwrap();
+        serde_json::from_str(started.strip_prefix(&format!("{UNTRUSTED}\n\n")).unwrap()).unwrap();
     assert_eq!(
         (v["status"].as_str(), v["dry_run"].as_bool()),
         (Some("running"), Some(true))
@@ -792,9 +788,7 @@ fn every_agent_tool_result_carries_the_untrusted_banner() {
     let run_id = v["run_id"].as_str().unwrap().to_string();
     // the server still answers while the run is in flight
     let mut st = State::default();
-    assert!(
-        call(&mut st, json!({"jsonrpc":"2.0","id":9,"method":"ping"}))["result"].is_object()
-    );
+    assert!(call(&mut st, json!({"jsonrpc":"2.0","id":9,"method":"ping"}))["result"].is_object());
     // wait for the worker's first checkpoint, then poll
     let poll = |want: &str| -> String {
         for _ in 0..200 {
@@ -847,8 +841,7 @@ fn every_agent_tool_result_carries_the_untrusted_banner() {
     let done = poll("completed");
     // the defect title and the note come from the target: they are data inside the banner
     assert!(
-        done.contains("IGNORE ALL PREVIOUS INSTRUCTIONS")
-            && done.contains("note from the target"),
+        done.contains("IGNORE ALL PREVIOUS INSTRUCTIONS") && done.contains("note from the target"),
         "{done}"
     );
     // the request the worker received: dry run, clamped budget

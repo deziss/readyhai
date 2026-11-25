@@ -1,6 +1,6 @@
+use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use anyhow::{Context, Result, bail};
 
 /// Where the file goes without `--out`: `<config>/readyhai/secrets/roles.toml`
 /// (`$XDG_CONFIG_HOME`, else `~/.config`): outside any repo, next to the other test secrets.
@@ -11,10 +11,7 @@ pub fn default_out() -> Result<PathBuf> {
     )
 }
 
-pub fn default_out_in(
-    xdg: Option<OsString>,
-    home: Option<OsString>,
-) -> Result<PathBuf> {
+pub fn default_out_in(xdg: Option<OsString>, home: Option<OsString>) -> Result<PathBuf> {
     let base = match xdg.filter(|v| !v.is_empty()) {
         Some(x) => PathBuf::from(x),
         None => PathBuf::from(

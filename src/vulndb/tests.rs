@@ -131,8 +131,14 @@ fn a_repeat_finding_updates_the_row_instead_of_adding_one() {
     assert_eq!(rows[0].target_key, target_key("http://h:9"));
     assert_eq!(rows[0].severity, "medium");
     assert_eq!(rows[0].resource, "/");
-    assert_eq!(rows[0].first_seen, first_stamp, "the first sighting is never rewritten");
-    assert!(rows[0].last_seen >= first_stamp, "the repeat refreshed last_seen");
+    assert_eq!(
+        rows[0].first_seen, first_stamp,
+        "the first sighting is never rewritten"
+    );
+    assert!(
+        rows[0].last_seen >= first_stamp,
+        "the repeat refreshed last_seen"
+    );
     assert_eq!(
         rows[0].fingerprint,
         fingerprint("http://h:9", "plugin.nmap", "tcp/2222", "/")
@@ -323,7 +329,10 @@ fn list_filters_by_target_and_status_and_sorts_by_severity_then_recency() {
     assert!(set_status_at(&p, &rows[0].fingerprint, "accepted").unwrap());
     let rows = open(&p);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].rule, "low-one", "high-one is the row that was accepted");
+    assert_eq!(
+        rows[0].rule, "low-one",
+        "high-one is the row that was accepted"
+    );
 
     // severity outranks recency even for an old high and a brand new medium
     let mut rows = rows_at(&p);
@@ -363,7 +372,10 @@ fn equal_severity_rows_are_ordered_newest_first() {
     record_findings_at(
         &p,
         "http://h:9",
-        &[entry("tool.a", "older", "medium", ""), entry("tool.a", "newer", "medium", "")],
+        &[
+            entry("tool.a", "older", "medium", ""),
+            entry("tool.a", "newer", "medium", ""),
+        ],
     )
     .unwrap();
     let mut rows = rows_at(&p);

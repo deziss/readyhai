@@ -23,34 +23,32 @@ pub mod stages;
 #[cfg(test)]
 pub(crate) mod tests;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::path::Path;
 
-pub use discovery::run_discovery_scan;
+pub(crate) use cleanup::{
+    DELETE_NOT_EFFECTIVE, TEARDOWN_MAX, TEARDOWN_WALL, delete_check_results, harvest_created,
+    teardown,
+};
 pub(crate) use discovery::run_discovery_in;
-pub use gate::{software_factory_attestation, OwaspAsvsBreakdown, SoftwareFactoryAttestation};
+pub use discovery::run_discovery_scan;
+pub use gate::{OwaspAsvsBreakdown, SoftwareFactoryAttestation, software_factory_attestation};
 pub use gates::{
-    validate_discovery_gate, validate_execution_gate, validate_plan_gate, validate_recon_gate,
-    validate_release_gate, validate_release_gate_verdict, validate_verify_gate, DiscoveryGate,
-    DiscoveryGateInput, ExecutionGate, ExecutionGateInput, GateCheck, GateType, GateVerdict,
-    PlanGate, PlanGateInput, QualityGate, ReconGate, ReconGateInput, ReleaseGate, ReleaseGateInput,
-    VerifyGate, VerifyGateInput,
+    DiscoveryGate, DiscoveryGateInput, ExecutionGate, ExecutionGateInput, GateCheck, GateType,
+    GateVerdict, PlanGate, PlanGateInput, QualityGate, ReconGate, ReconGateInput, ReleaseGate,
+    ReleaseGateInput, VerifyGate, VerifyGateInput, validate_discovery_gate,
+    validate_execution_gate, validate_plan_gate, validate_recon_gate, validate_release_gate,
+    validate_release_gate_verdict, validate_verify_gate,
 };
 pub use graph::{GraphTelemetry, PipelineState, RoutingCondition, StationNode, TransitionRecord};
 pub use options::{LlmMode, RunOptions};
-pub(crate) use cleanup::{
-    delete_check_results, harvest_created, teardown, DELETE_NOT_EFFECTIVE, TEARDOWN_MAX,
-    TEARDOWN_WALL,
-};
 pub(crate) use options::{blank_report, checkpoint, log, panic_text, require_http};
 pub(crate) use order::order_and_trim;
 pub(crate) use stages::agent_stages;
 
 use super::ledger;
-use super::store::{
-    agent_runs_dir, checkpoint_agent_run_in, now_iso, save_agent_run_in,
-};
-use super::types::{register_run, AgentRunReport, AgentRunRequest, RunRegistration};
+use super::store::{agent_runs_dir, checkpoint_agent_run_in, now_iso, save_agent_run_in};
+use super::types::{AgentRunReport, AgentRunRequest, RunRegistration, register_run};
 
 pub fn run_agentic_loop(req: &AgentRunRequest, run_id: &str) -> Result<AgentRunReport> {
     run_agentic_loop_with(req, run_id, RunOptions::default())

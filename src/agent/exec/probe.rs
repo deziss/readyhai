@@ -1,12 +1,12 @@
 use std::time::Duration;
 
-use crate::agent::budget::RunBudget;
-use crate::agent::oracle;
-use crate::agent::types::{PlannedCase, ProbeOracle, RedirectHop};
 use super::auth::ResolvedAuth;
 use super::builder::{RequestSpec, build_request};
 use super::clients::{Clients, Followed, MAX_REDIRECTS, Seen};
 use super::delete::{note_creation, out_req};
+use crate::agent::budget::RunBudget;
+use crate::agent::oracle;
+use crate::agent::types::{PlannedCase, ProbeOracle, RedirectHop};
 
 /// Output of sending one primary case along with any companion baseline/control/OAST probes.
 pub struct ProbeOutcome {

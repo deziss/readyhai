@@ -2,7 +2,7 @@
 
 use super::super::triage::severity_for;
 use super::expectations::not_exercised;
-use super::types::{chk, outcome, OracleOutcome, Severity, Technique, Verdict};
+use super::types::{OracleOutcome, Severity, Technique, Verdict, chk, outcome};
 
 /// What a two-actor stateful chain observed. The executor reports facts; the verdict (and its
 /// severity, from `triage::severity_for`) is decided here.

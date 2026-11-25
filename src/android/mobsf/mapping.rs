@@ -1,6 +1,6 @@
 //! MobSF report scrubbing and finding mapping.
-use std::collections::BTreeSet;
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 
 use crate::android::util::{redact, slug, vs};
 use crate::model::{Category, Finding, Severity};

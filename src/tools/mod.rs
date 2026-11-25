@@ -29,12 +29,12 @@ pub use parsers::{
 #[allow(unused_imports)]
 pub use parsers::{parse_opengrep, parse_semgrep};
 #[allow(unused_imports)]
+pub(crate) use pinning::missing_image;
+#[allow(unused_imports)]
 pub use pinning::{
-    add_warning, image_for, image_present, lock_entries, local_image_id, pin_warnings, tools_pull,
+    add_warning, image_for, image_present, local_image_id, lock_entries, pin_warnings, tools_pull,
     tools_pull_filtered, tools_update,
 };
-#[allow(unused_imports)]
-pub(crate) use pinning::missing_image;
 #[allow(unused_imports)]
 pub use plugins::{
     PluginDiag, PluginLoad, ensure_packs, plugin_checks, plugin_diags, plugin_image_refs,

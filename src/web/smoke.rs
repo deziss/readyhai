@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 
+use super::client::{client, host_of, is_local, origin_of};
 use crate::ctx::Ctx;
 use crate::model::*;
-use super::client::{client, host_of, is_local, origin_of};
 
 pub fn gate(ctx: &Ctx) -> Option<CheckOutput> {
     if !ctx.docker.available {

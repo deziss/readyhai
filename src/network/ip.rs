@@ -181,5 +181,3 @@ pub fn is_private_ip(ip: &str) -> bool {
         .map(crate::scope::is_internal_ip)
         .unwrap_or(false)
 }
-
-

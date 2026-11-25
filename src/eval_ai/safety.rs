@@ -29,7 +29,9 @@ pub fn evaluate_safety(query: &str, context: Option<&str>, response: &str) -> Re
     for pat in injection_patterns {
         if combined_input.contains(pat) {
             prompt_injection = true;
-            findings.push(format!("Indirect prompt injection marker detected: '{pat}'"));
+            findings.push(format!(
+                "Indirect prompt injection marker detected: '{pat}'"
+            ));
         }
     }
 

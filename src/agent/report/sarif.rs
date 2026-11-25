@@ -1,7 +1,7 @@
 use serde_json::json;
 
-use crate::agent::types::AgentRunReport;
 use super::helpers::verdict_of;
+use crate::agent::types::AgentRunReport;
 
 pub fn sarif_level(sev: &str) -> &'static str {
     match sev.to_ascii_lowercase().as_str() {

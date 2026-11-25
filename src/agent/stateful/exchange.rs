@@ -5,8 +5,8 @@ use super::violation::Actor;
 use crate::agent::budget::RunBudget;
 use crate::agent::exec::role_of;
 use crate::agent::exec::{
-    Bearer, Clients, Credentials, OutReq, RequestSpec, Seen, body_and_type,
-    curl_for_auth, normalize_component, resolve_auth,
+    Bearer, Clients, Credentials, OutReq, RequestSpec, Seen, body_and_type, curl_for_auth,
+    normalize_component, resolve_auth,
 };
 use crate::agent::oracle::{StatefulFacts, Verdict, judge_stateful};
 use crate::agent::types::{StatefulStepExecution, record_creation_response};

@@ -3,12 +3,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use crate::engine;
 use super::agent_bridge::{
     Runner, agent_cancel, agent_discover, agent_status_in, run_id_arg, start_swarm, swarm_request,
 };
 use super::protocol::untrusted;
 use super::scanner::{summarize, tool_findings, tool_scan};
+use crate::engine;
 
 pub fn tool_defs() -> Value {
     json!([

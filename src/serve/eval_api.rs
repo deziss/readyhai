@@ -93,7 +93,9 @@ pub fn pr_comment_markdown(p: &PrCommentPayload) -> (String, String) {
 }
 
 pub async fn api_eval_ai(Json(p): Json<ApiEvalAiPayload>) -> Response {
-    let cases = if let Some(cs) = p.cases && !cs.is_empty() {
+    let cases = if let Some(cs) = p.cases
+        && !cs.is_empty()
+    {
         cs
     } else if let (Some(q), Some(r)) = (p.query, p.response) {
         vec![crate::eval_ai::AiTestCase {
@@ -151,7 +153,11 @@ pub async fn api_mutate(Json(p): Json<ApiMutatePayload>) -> Response {
     let mut all_mutants = Vec::new();
     let max_per_file = (p.max_mutants / files.len().max(1)).max(2);
     for f in &files {
-        let rel = f.strip_prefix(&repo).unwrap_or(f).to_string_lossy().to_string();
+        let rel = f
+            .strip_prefix(&repo)
+            .unwrap_or(f)
+            .to_string_lossy()
+            .to_string();
         let file_mutants = crate::mutate::generate_file_mutants(f, &rel, max_per_file);
         all_mutants.extend(file_mutants);
         if all_mutants.len() >= p.max_mutants {

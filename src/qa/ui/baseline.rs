@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use anyhow::Result;
+use std::path::{Path, PathBuf};
 
 pub fn copy_dir_pngs(from: &Path, to: &Path, skip_diff: bool) -> usize {
     let Ok(rd) = std::fs::read_dir(from) else {

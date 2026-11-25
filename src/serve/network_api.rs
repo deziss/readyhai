@@ -2,6 +2,7 @@
 
 use super::guards::{blocking, err, guard};
 use super::types::App;
+use crate::network;
 use anyhow::Result;
 use axum::Json;
 use axum::extract::State;
@@ -9,7 +10,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::sync::Arc;
-use crate::network;
 
 pub async fn get_requester_ip(headers: HeaderMap) -> Response {
     let Ok(info) = tokio::task::spawn_blocking(network::detect_requester_public_ip).await else {

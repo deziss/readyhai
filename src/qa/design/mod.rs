@@ -10,7 +10,7 @@ mod pairwise;
 
 pub fn checks() -> Vec<crate::checks::Check> {
     use crate::checks::Check;
-use crate::model::{Profile, TargetKind};
+    use crate::model::{Profile, TargetKind};
     vec![
         Check::new(
             "qa.design.boundary",

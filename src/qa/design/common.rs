@@ -3,9 +3,9 @@
 //! runner internals).
 use crate::ctx::Ctx;
 use crate::model::{CheckOutput, CheckStatus};
+use crate::qa::QaCtx;
 use crate::qa::api::spec::{Op, Spec};
 use crate::qa::model::*;
-use crate::qa::QaCtx;
 use anyhow::Result;
 use serde_json::Value;
 
@@ -22,7 +22,8 @@ pub(crate) fn spec(ctx: &Ctx) -> Result<Option<Spec>> {
 /// No spec = the check cannot propose anything: report NotApplicable, never a silent pass.
 pub(crate) fn no_spec() -> CheckOutput {
     CheckOutput::status(CheckStatus::NotApplicable(
-        "no OpenAPI spec (--spec or a discoverable openapi.json); test-design generation needs one".into(),
+        "no OpenAPI spec (--spec or a discoverable openapi.json); test-design generation needs one"
+            .into(),
     ))
 }
 
@@ -115,7 +116,11 @@ pub(crate) fn schema_type(s: &Value) -> &str {
 
 /// Representative valid value for a schema (used as the equivalence "valid class" input).
 pub(crate) fn valid_value(s: &Value) -> Value {
-    if let Some(e) = s.get("enum").and_then(|v| v.as_array()).and_then(|a| a.first()) {
+    if let Some(e) = s
+        .get("enum")
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.first())
+    {
         return e.clone();
     }
     match schema_type(s) {
@@ -178,19 +183,35 @@ pub(crate) fn boundaries(s: &Value) -> Vec<(String, Value, bool)> {
             };
             v.push(("maximum - 1".into(), d(m - 1.0), true));
             v.push((format!("maximum {m}"), d(m), true));
-            v.push((format!("maximum + 1 (above maximum {m})"), d(m + 1.0), false));
+            v.push((
+                format!("maximum + 1 (above maximum {m})"),
+                d(m + 1.0),
+                false,
+            ));
         }
         if let Some(m) = num(s, "exclusiveMinimum") {
-            v.push((format!("exactly exclusiveMinimum {m}"), d_edge(m, int), false));
+            v.push((
+                format!("exactly exclusiveMinimum {m}"),
+                d_edge(m, int),
+                false,
+            ));
         }
         if let Some(m) = num(s, "multipleOf")
             && m > 1.0
         {
-            v.push((format!("{} (not a multiple of {m})", m + 1.0), d_edge(m + 1.0, int), false));
+            v.push((
+                format!("{} (not a multiple of {m})", m + 1.0),
+                d_edge(m + 1.0, int),
+                false,
+            ));
         }
     }
     if matches!(t, "string" | "array") {
-        let (lo_k, hi_k) = if t == "string" { ("minLength", "maxLength") } else { ("minItems", "maxItems") };
+        let (lo_k, hi_k) = if t == "string" {
+            ("minLength", "maxLength")
+        } else {
+            ("minItems", "maxItems")
+        };
         let unit = |n: f64| -> Value {
             if t == "string" {
                 Value::String("a".repeat(n.max(0.0) as usize))
@@ -200,7 +221,11 @@ pub(crate) fn boundaries(s: &Value) -> Vec<(String, Value, bool)> {
         };
         if let Some(m) = num(s, lo_k) {
             if m > 0.0 {
-                v.push((format!("{} {t} items/chars (below {lo_k} {m})", m - 1.0), unit(m - 1.0), false));
+                v.push((
+                    format!("{} {t} items/chars (below {lo_k} {m})", m - 1.0),
+                    unit(m - 1.0),
+                    false,
+                ));
             }
             v.push((format!("{lo_k} {m} exactly"), unit(m), true));
             v.push((format!("{lo_k} + 1"), unit(m + 1.0), true));
@@ -209,7 +234,11 @@ pub(crate) fn boundaries(s: &Value) -> Vec<(String, Value, bool)> {
             v.push((format!("{hi_k} - 1"), unit(m - 1.0), true));
             v.push((format!("{hi_k} {m} exactly",), unit(m), true));
             if (m as usize) < 300 {
-                v.push((format!("{} {t} items/chars (above {hi_k} {m})", m + 1.0), unit(m + 1.0), false));
+                v.push((
+                    format!("{} {t} items/chars (above {hi_k} {m})", m + 1.0),
+                    unit(m + 1.0),
+                    false,
+                ));
             }
         }
     }
@@ -230,9 +259,14 @@ pub(crate) fn classes(s: &Value) -> Vec<(String, Value)> {
     let t = schema_type(s);
     let mut v = vec![("wrong type".to_string(), wrong_type(t))];
     if let Some(vals) = s.get("enum").and_then(|v| v.as_array())
-        && !vals.iter().any(|x| x.as_str() == Some("readyhai-not-in-enum"))
+        && !vals
+            .iter()
+            .any(|x| x.as_str() == Some("readyhai-not-in-enum"))
     {
-        v.push((format!("not among {} enum values", vals.len()), serde_json::json!("readyhai-not-in-enum")));
+        v.push((
+            format!("not among {} enum values", vals.len()),
+            serde_json::json!("readyhai-not-in-enum"),
+        ));
     }
     for (label, value, valid) in boundaries(s) {
         if !valid {
@@ -299,7 +333,10 @@ pub(crate) fn boundary(ctx: &Ctx) -> Result<CheckOutput> {
                     Technique::Boundary,
                     "bva",
                     format!("{}: {where_} = {label}", op.key()),
-                    vec![format!("Send {} {} with {where_} = {value}", op.method, op.path)],
+                    vec![format!(
+                        "Send {} {} with {where_} = {value}",
+                        op.method, op.path
+                    )],
                     if valid {
                         "accepted (on/inside the boundary)".into()
                     } else {
@@ -376,10 +413,17 @@ pub(crate) fn equivalence(ctx: &Ctx) -> Result<CheckOutput> {
                 Technique::Equivalence,
                 "eq valid",
                 format!("{}: {where_} = valid {}", op.key(), schema_type(&schema)),
-                vec![format!("Send {} {} with {where_} = {valid}", op.method, op.path)],
+                vec![format!(
+                    "Send {} {} with {where_} = {valid}",
+                    op.method, op.path
+                )],
                 "accepted (representative of the valid partition)".into(),
             );
-            propose(ctx.qa.as_ref().unwrap(), tc, "design-generated equivalence case; execute manually or via API runner");
+            propose(
+                ctx.qa.as_ref().unwrap(),
+                tc,
+                "design-generated equivalence case; execute manually or via API runner",
+            );
             proposed += 1;
             // invalid classes
             for (label, value) in classes(&schema) {
@@ -391,10 +435,17 @@ pub(crate) fn equivalence(ctx: &Ctx) -> Result<CheckOutput> {
                     Technique::Equivalence,
                     "eq invalid",
                     format!("{}: {where_} invalid ({label})", op.key()),
-                    vec![format!("Send {} {} with {where_} = {value}", op.method, op.path)],
+                    vec![format!(
+                        "Send {} {} with {where_} = {value}",
+                        op.method, op.path
+                    )],
                     format!("rejected with 4xx ({label}), never 5xx or silent accept"),
                 );
-                propose(ctx.qa.as_ref().unwrap(), tc, "design-generated equivalence case; execute manually or via API runner");
+                propose(
+                    ctx.qa.as_ref().unwrap(),
+                    tc,
+                    "design-generated equivalence case; execute manually or via API runner",
+                );
                 proposed += 1;
             }
         }
@@ -410,9 +461,12 @@ pub(crate) fn equivalence(ctx: &Ctx) -> Result<CheckOutput> {
         let qa = ctx.qa.as_ref().unwrap();
         let comps: Vec<String> = ops(&spec).iter().map(|o| o.key()).collect();
         qa.with(|c| {
-            c.notes.push(format!("qa.design.equivalence: {proposed} equivalence-partition cases added to the plan."));
+            c.notes.push(format!(
+                "qa.design.equivalence: {proposed} equivalence-partition cases added to the plan."
+            ));
             for k in comps {
-                c.coverage.set(&k, "Equivalence", crate::qa::model::Cell::Untested);
+                c.coverage
+                    .set(&k, "Equivalence", crate::qa::model::Cell::Untested);
             }
         });
     }
@@ -428,8 +482,14 @@ mod tests {
     fn boundaries_for_numeric_range() {
         let s = json!({"type": "integer", "minimum": 1, "maximum": 10});
         let b = boundaries(&s);
-        assert!(b.iter().any(|(l, v, ok)| l.contains("minimum") && *v == json!(1) && *ok));
-        assert!(b.iter().any(|(l, v, ok)| l.contains("maximum") && *v == json!(10) && *ok));
+        assert!(
+            b.iter()
+                .any(|(l, v, ok)| l.contains("minimum") && *v == json!(1) && *ok)
+        );
+        assert!(
+            b.iter()
+                .any(|(l, v, ok)| l.contains("maximum") && *v == json!(10) && *ok)
+        );
         assert!(b.iter().any(|(_, v, ok)| *v == json!(0) && !*ok));
         assert!(b.iter().any(|(_, v, ok)| *v == json!(11) && !*ok));
     }
@@ -459,10 +519,19 @@ mod tests {
 
     #[test]
     fn valid_value_shapes() {
-        assert_eq!(valid_value(&json!({"type": "integer", "enum": [7]})), json!(7));
+        assert_eq!(
+            valid_value(&json!({"type": "integer", "enum": [7]})),
+            json!(7)
+        );
         assert!(valid_value(&json!({"type": "boolean"})).is_boolean());
-        assert_eq!(valid_value(&json!({"type": "string", "minLength": 3})), json!("aaa"));
-        assert_eq!(valid_value(&json!({"type": "array", "minItems": 1})), json!(["x"]));
+        assert_eq!(
+            valid_value(&json!({"type": "string", "minLength": 3})),
+            json!("aaa")
+        );
+        assert_eq!(
+            valid_value(&json!({"type": "array", "minItems": 1})),
+            json!(["x"])
+        );
         assert!(valid_value(&json!({"type": "object"})).is_object());
     }
 }

@@ -1,8 +1,8 @@
 use serde_json::{Value, json};
 
 use super::helpers::{
-    csv_row, defects_sorted, jira_code, jira_priority, jira_text, lc, looks_like_code,
-    md_fence, md_inline, md_lines, prio_str,
+    csv_row, defects_sorted, jira_code, jira_priority, jira_text, lc, looks_like_code, md_fence,
+    md_inline, md_lines, prio_str,
 };
 use crate::qa::model::{Defect, QaReport};
 

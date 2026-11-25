@@ -3,11 +3,13 @@
 use super::ip::detect_requester_public_ip;
 use super::tls::audit_tls_chain;
 use super::types::{
-    CorsAudit, DeepAuditReport, DeepAuditRequest, DualStackAudit, MtuSweepAudit, MtuSweepItem,
-    ProtocolItem, ProtocolMatrixAudit, SubresourceAudit, SubresourceItem, HTML_BYTES_CAP,
-    MAX_SUBRESOURCES, SUBRESOURCE_BYTES_CAP,
+    CorsAudit, DeepAuditReport, DeepAuditRequest, DualStackAudit, HTML_BYTES_CAP, MAX_SUBRESOURCES,
+    MtuSweepAudit, MtuSweepItem, ProtocolItem, ProtocolMatrixAudit, SUBRESOURCE_BYTES_CAP,
+    SubresourceAudit, SubresourceItem,
 };
-use super::utils::{count_capped, host_of, hostport, http_client, port_of, read_capped, truncate_chars};
+use super::utils::{
+    count_capped, host_of, hostport, http_client, port_of, read_capped, truncate_chars,
+};
 use crate::tools::run_capped;
 use anyhow::Result;
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -424,7 +426,11 @@ pub(crate) fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> Su
 
 /// One curl protocol probe. Returns (negotiated HTTP version, status code), or None when curl
 /// could not be run or reached nothing.
-pub(crate) fn curl_protocol_probe(flag: &str, target: &str, timeout_s: u64) -> Option<(String, u16)> {
+pub(crate) fn curl_protocol_probe(
+    flag: &str,
+    target: &str,
+    timeout_s: u64,
+) -> Option<(String, u16)> {
     let mut cmd = Command::new("curl");
     cmd.args([
         "-q",
@@ -536,7 +542,6 @@ pub(crate) fn audit_protocol_matrix(target: &str, timeout_ms: u64) -> ProtocolMa
         diagnosis,
     }
 }
-
 
 pub(crate) fn audit_cors_preflight(target: &str, timeout_ms: u64) -> CorsAudit {
     let client = http_client(timeout_ms, false);
@@ -746,4 +751,3 @@ pub(crate) fn audit_mtu_sweep(target: &str, timeout_ms: u64) -> MtuSweepAudit {
         diagnosis,
     }
 }
-

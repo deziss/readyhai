@@ -8,13 +8,13 @@
 //! `PUT /api/settings`.
 
 use super::guards::{err, offload};
+use crate::vulndb;
 use axum::Json;
 use axum::extract::{Path as AxPath, Query};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::json;
-use crate::vulndb;
 
 /// The five severity words the database stores (lowercase [`crate::model::Severity`]).
 const SEVERITIES: [&str; 5] = ["info", "low", "medium", "high", "critical"];
@@ -72,7 +72,11 @@ pub async fn api_vulns_get(Query(q): Query<VulnsQuery>) -> Response {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let filter = vulndb::Filter { target, status, severity };
+    let filter = vulndb::Filter {
+        target,
+        status,
+        severity,
+    };
     match offload(move || vulndb::list(&filter)).await {
         Ok(rows) => Json(json!({"count": rows.len(), "vulns": rows})).into_response(),
         Err(r) => r,
@@ -83,7 +87,10 @@ pub async fn api_vulns_get(Query(q): Query<VulnsQuery>) -> Response {
 /// `forgotten`). Unique 6+ character fingerprint prefixes resolve as in the CLI.
 /// `400` on an unknown status, `404` on no (or ambiguous) match, `403` for a
 /// viewer when RBAC is on.
-pub async fn api_vulns_status_post(AxPath(fp): AxPath<String>, Json(body): Json<VulnsStatusPut>) -> Response {
+pub async fn api_vulns_status_post(
+    AxPath(fp): AxPath<String>,
+    Json(body): Json<VulnsStatusPut>,
+) -> Response {
     let status = body.status.trim().to_ascii_lowercase();
     if !vulndb::valid_status(&status) {
         return err(

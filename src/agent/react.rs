@@ -92,7 +92,11 @@ pub fn detect_ooda_anomaly(r: &CaseExecutionResult) -> Option<OodaAnomaly> {
         .unwrap_or_else(|| body_excerpt(r));
     let low_body = body.to_ascii_lowercase();
     let low_ev = r.evidence.to_ascii_lowercase();
-    let low_fail = r.failure_reason.as_deref().unwrap_or("").to_ascii_lowercase();
+    let low_fail = r
+        .failure_reason
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
 
     let is_500 = status.is_some_and(|s| s >= 500);
     let is_403 = status.is_some_and(|s| s == 403);
@@ -164,7 +168,9 @@ pub fn detect_ooda_anomaly(r: &CaseExecutionResult) -> Option<OodaAnomaly> {
     ];
     let has_sql_kw = low_ev.contains("sql")
         || low_fail.contains("sql")
-        || sql_indicators.iter().any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+        || sql_indicators
+            .iter()
+            .any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
     let is_sql = has_sql_oracle || ((is_500 || r.status == "FAIL") && has_sql_kw);
 
     // AuthZ leak detection (403 authorization leak or created auth tokens)
@@ -184,7 +190,9 @@ pub fn detect_ooda_anomaly(r: &CaseExecutionResult) -> Option<OodaAnomaly> {
         "access denied",
         "principal",
     ];
-    let has_auth_kw = auth_indicators.iter().any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+    let has_auth_kw = auth_indicators
+        .iter()
+        .any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
     let is_auth_token_created = status.is_some_and(|s| matches!(s, 200 | 201))
         && matches!(r.method.as_str(), "POST" | "PUT" | "PATCH")
         && !r.is_spa_shell
@@ -194,7 +202,9 @@ pub fn detect_ooda_anomaly(r: &CaseExecutionResult) -> Option<OodaAnomaly> {
             || low_body.contains("\"access_token\"")
             || low_body.contains("\"jwt\"")
             || low_body.contains("\"role\""));
-    let is_auth = (is_403 && (has_auth_kw || !body.trim().is_empty())) || has_auth_oracle || is_auth_token_created;
+    let is_auth = (is_403 && (has_auth_kw || !body.trim().is_empty()))
+        || has_auth_oracle
+        || is_auth_token_created;
 
     // Schema leak detection (422/400 validation leaks)
     let schema_indicators = [
@@ -211,7 +221,9 @@ pub fn detect_ooda_anomaly(r: &CaseExecutionResult) -> Option<OodaAnomaly> {
         "invalid parameter",
         "loc",
     ];
-    let has_schema_kw = schema_indicators.iter().any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
+    let has_schema_kw = schema_indicators
+        .iter()
+        .any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind));
     let is_schema = is_422 && (has_schema_kw || !body.trim().is_empty());
 
     // 500 stack trace indicators
@@ -232,7 +244,9 @@ pub fn detect_ooda_anomaly(r: &CaseExecutionResult) -> Option<OodaAnomaly> {
     ];
     let has_stack_trace = is_500
         || ((is_500 || r.status == "FAIL")
-            && stack_trace_indicators.iter().any(|ind| low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind)));
+            && stack_trace_indicators.iter().any(|ind| {
+                low_body.contains(ind) || low_ev.contains(ind) || low_fail.contains(ind)
+            }));
 
     let has_oracle_fail = has_fail_check(
         r,
@@ -310,7 +324,13 @@ pub fn detect_ooda_anomaly(r: &CaseExecutionResult) -> Option<OodaAnomaly> {
     }
 
     let norm_path = path_of(&r.component);
-    let dedup_key = format!("{}:{}:{}:{}", anomaly_type, r.method, norm_path, signals.join(","));
+    let dedup_key = format!(
+        "{}:{}:{}:{}",
+        anomaly_type,
+        r.method,
+        norm_path,
+        signals.join(",")
+    );
     let hinted_params = extract_hinted_params(body, r.request_payload.as_deref());
     let hinted_routes = extract_hinted_routes(body, &r.component);
 
@@ -376,7 +396,10 @@ pub fn synthesize_mutation_probe(anomaly: &OodaAnomaly, target: &str) -> Planned
     let role = Some("anon".to_string());
     let mut secured = None;
 
-    let (technique, title, input_hint, payload, expected_behavior) = match anomaly.anomaly_type.as_str() {
+    let (technique, title, input_hint, payload, expected_behavior) = match anomaly
+        .anomaly_type
+        .as_str()
+    {
         "authz_leak" => {
             secured = Some(true);
             expected_status = Some(403);
@@ -389,13 +412,21 @@ pub fn synthesize_mutation_probe(anomaly: &OodaAnomaly, target: &str) -> Planned
             (
                 "authz".to_string(),
                 format!("OODA AuthZ privilege escalation mutation probe on {method} {component}"),
-                format!("Precision mutation derived from 403 authorization leak anomaly: {}", anomaly.signals.join(", ")),
+                format!(
+                    "Precision mutation derived from 403 authorization leak anomaly: {}",
+                    anomaly.signals.join(", ")
+                ),
                 Some(json!({"role": "admin", "tenant_id": "tenant-001"}).to_string()),
-                "Server must reject unauthorized role tampering and enforce tenant isolation".to_string(),
+                "Server must reject unauthorized role tampering and enforce tenant isolation"
+                    .to_string(),
             )
         }
         "schema_leak" => {
-            let param = anomaly.hinted_params.first().map(String::as_str).unwrap_or("id");
+            let param = anomaly
+                .hinted_params
+                .first()
+                .map(String::as_str)
+                .unwrap_or("id");
             expected_status = Some(400);
             risk_level = "medium".into();
             content_type = Some("application/json".into());
@@ -406,14 +437,22 @@ pub fn synthesize_mutation_probe(anomaly: &OodaAnomaly, target: &str) -> Planned
             };
             (
                 "boundary".to_string(),
-                format!("OODA Schema boundary mutation probe on {method} {component} via `{param}`"),
-                format!("Precision mutation derived from 422/400 schema leak anomaly via parameter `{param}`"),
+                format!(
+                    "OODA Schema boundary mutation probe on {method} {component} via `{param}`"
+                ),
+                format!(
+                    "Precision mutation derived from 422/400 schema leak anomaly via parameter `{param}`"
+                ),
                 Some(p),
                 "Server must gracefully reject or validate out-of-bound parameter".to_string(),
             )
         }
         "ssti_reflection" => {
-            let param = anomaly.hinted_params.first().map(String::as_str).unwrap_or("q");
+            let param = anomaly
+                .hinted_params
+                .first()
+                .map(String::as_str)
+                .unwrap_or("q");
             probe_oracle = Some(ProbeOracle::Ssti {
                 expected_eval: "105623".into(),
             });
@@ -425,14 +464,23 @@ pub fn synthesize_mutation_probe(anomaly: &OodaAnomaly, target: &str) -> Planned
             (
                 "injection".to_string(),
                 format!("OODA SSTI mutation probe on {method} {component} via `{param}`"),
-                format!("Precision mutation derived from template rendering anomaly via param `{param}`"),
+                format!(
+                    "Precision mutation derived from template rendering anomaly via param `{param}`"
+                ),
                 Some(p),
                 "Server must not evaluate template syntax in user input".to_string(),
             )
         }
         "canary_reflection" => {
-            let param = anomaly.hinted_params.first().map(String::as_str).unwrap_or("q");
-            let canary = anomaly.reflection_signature.as_deref().unwrap_or("<rh-canary-01>");
+            let param = anomaly
+                .hinted_params
+                .first()
+                .map(String::as_str)
+                .unwrap_or("q");
+            let canary = anomaly
+                .reflection_signature
+                .as_deref()
+                .unwrap_or("<rh-canary-01>");
             let p = if method == "GET" {
                 format!("{param}={canary}")
             } else {
@@ -441,14 +489,20 @@ pub fn synthesize_mutation_probe(anomaly: &OodaAnomaly, target: &str) -> Planned
             (
                 "injection".to_string(),
                 format!("OODA Canary reflection XSS probe on {method} {component} via `{param}`"),
-                format!("Precision mutation derived from canary string reflection anomaly via `{param}`"),
+                format!(
+                    "Precision mutation derived from canary string reflection anomaly via `{param}`"
+                ),
                 Some(p),
                 "Input must be sanitized and HTML-encoded before reflection".to_string(),
             )
         }
         _ => {
             // "sql_leak" and default database/server errors
-            let param = anomaly.hinted_params.first().map(String::as_str).unwrap_or("q");
+            let param = anomaly
+                .hinted_params
+                .first()
+                .map(String::as_str)
+                .unwrap_or("q");
             expected_status = Some(400);
             let p = if method == "GET" {
                 format!("{param}=' OR '1'='1--")
@@ -459,7 +513,10 @@ pub fn synthesize_mutation_probe(anomaly: &OodaAnomaly, target: &str) -> Planned
             (
                 "injection".to_string(),
                 format!("OODA SQL injection mutation probe on {method} {component} via `{param}`"),
-                format!("Precision mutation derived from SQL error leak: {}", anomaly.body_excerpt),
+                format!(
+                    "Precision mutation derived from SQL error leak: {}",
+                    anomaly.body_excerpt
+                ),
                 Some(p),
                 "Database query must be parameterized and not disclose syntax errors".to_string(),
             )
@@ -693,7 +750,9 @@ fn extract_anomalies(
             continue;
         }
 
-        if seen_anomalies.contains(&anomaly.dedup_key) || !seen_this_wave.insert(anomaly.dedup_key.clone()) {
+        if seen_anomalies.contains(&anomaly.dedup_key)
+            || !seen_this_wave.insert(anomaly.dedup_key.clone())
+        {
             continue;
         }
 
@@ -795,12 +854,13 @@ fn propose_via_llm(
         cases: Vec<RawCase>,
     }
 
-    let res = crate::llm::ask_typed::<AdaptiveMutatorOutput>(cfg, llm_budget, &system, &prompt, |p| {
-        if p.cases.len() > MAX_REACT_CASES_PER_WAVE * 2 {
-            anyhow::bail!("too many cases returned by ReAct planner");
-        }
-        Ok(())
-    });
+    let res =
+        crate::llm::ask_typed::<AdaptiveMutatorOutput>(cfg, llm_budget, &system, &prompt, |p| {
+            if p.cases.len() > MAX_REACT_CASES_PER_WAVE * 2 {
+                anyhow::bail!("too many cases returned by ReAct planner");
+            }
+            Ok(())
+        });
 
     match res {
         Ok(out) => {
@@ -1015,7 +1075,9 @@ pub fn run_adaptive_waves(
         }
 
         if wave_cases.is_empty() {
-            outcome.notes.push(format!("ooda wave {wave}: all candidate probes damped; exiting loop early"));
+            outcome.notes.push(format!(
+                "ooda wave {wave}: all candidate probes damped; exiting loop early"
+            ));
             break;
         }
 
@@ -1334,19 +1396,22 @@ mod tests {
         let mut result = CaseExecutionResult::default();
         result.status = "FAIL".into();
         result.response_status = Some(500);
-        result.response_body = Some(r#"{"error":"InternalServerError: NullPointer at AuthService.java:42"}"#.into());
+        result.response_body =
+            Some(r#"{"error":"InternalServerError: NullPointer at AuthService.java:42"}"#.into());
         assert!(is_anomaly_candidate(&result));
 
         let mut auth_res = CaseExecutionResult::default();
         auth_res.status = "FAIL".into();
         auth_res.response_status = Some(403);
-        auth_res.response_body = Some(r#"{"error":"Forbidden: requires role 'admin' for tenant_id"}"#.into());
+        auth_res.response_body =
+            Some(r#"{"error":"Forbidden: requires role 'admin' for tenant_id"}"#.into());
         assert!(is_anomaly_candidate(&auth_res));
 
         let mut schema_res = CaseExecutionResult::default();
         schema_res.status = "FAIL".into();
         schema_res.response_status = Some(422);
-        schema_res.response_body = Some(r#"{"detail":[{"loc":["body","user_id"],"msg":"field required"}]}"#.into());
+        schema_res.response_body =
+            Some(r#"{"detail":[{"loc":["body","user_id"],"msg":"field required"}]}"#.into());
         assert!(is_anomaly_candidate(&schema_res));
 
         let mut pass_res = CaseExecutionResult::default();
@@ -1361,7 +1426,8 @@ mod tests {
         let mut observation = CaseExecutionResult::default();
         observation.status = "FAIL".into();
         observation.response_status = Some(500);
-        observation.response_body = Some("SyntaxError: unterminated quoted string at or near 'admin'".into());
+        observation.response_body =
+            Some("SyntaxError: unterminated quoted string at or near 'admin'".into());
         let anomaly = detect_ooda_anomaly(&observation).expect("should detect SQL anomaly");
         assert_eq!(anomaly.anomaly_type, "sql_leak");
         let probe = synthesize_mutation_probe(&anomaly, "http://localhost:3000/api/users");
@@ -1382,7 +1448,8 @@ mod tests {
         let mut auth_obs = CaseExecutionResult::default();
         auth_obs.status = "FAIL".into();
         auth_obs.response_status = Some(403);
-        auth_obs.response_body = Some("Access Denied: missing required permission 'admin:read'".into());
+        auth_obs.response_body =
+            Some("Access Denied: missing required permission 'admin:read'".into());
         let a = detect_ooda_anomaly(&auth_obs).unwrap();
         assert_eq!(a.anomaly_type, "authz_leak");
 
@@ -1390,7 +1457,9 @@ mod tests {
         let mut schema_obs = CaseExecutionResult::default();
         schema_obs.status = "FAIL".into();
         schema_obs.response_status = Some(422);
-        schema_obs.response_body = Some("{\"detail\":[{\"loc\":[\"body\",\"account_id\"],\"msg\":\"field required\"}]}".into());
+        schema_obs.response_body = Some(
+            "{\"detail\":[{\"loc\":[\"body\",\"account_id\"],\"msg\":\"field required\"}]}".into(),
+        );
         let a = detect_ooda_anomaly(&schema_obs).unwrap();
         assert_eq!(a.anomaly_type, "schema_leak");
 
@@ -1398,7 +1467,8 @@ mod tests {
         let mut ssti_obs = CaseExecutionResult::default();
         ssti_obs.status = "FAIL".into();
         ssti_obs.response_status = Some(500);
-        ssti_obs.response_body = Some("TemplateSyntaxError: unexpected char in render(template)".into());
+        ssti_obs.response_body =
+            Some("TemplateSyntaxError: unexpected char in render(template)".into());
         let a = detect_ooda_anomaly(&ssti_obs).unwrap();
         assert_eq!(a.anomaly_type, "ssti_reflection");
 
@@ -1413,7 +1483,13 @@ mod tests {
 
     #[test]
     fn test_ooda_synthesize_mutation_probes_for_all_types() {
-        let types = ["sql_leak", "authz_leak", "schema_leak", "ssti_reflection", "canary_reflection"];
+        let types = [
+            "sql_leak",
+            "authz_leak",
+            "schema_leak",
+            "ssti_reflection",
+            "canary_reflection",
+        ];
         for t in types {
             let anomaly = OodaAnomaly {
                 anomaly_type: t.to_string(),

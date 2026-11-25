@@ -1,6 +1,6 @@
-use std::time::Duration;
 use anyhow::Result;
 use reqwest::blocking::Client;
+use std::time::Duration;
 
 /// Follow at most 5 redirects, and never to another host (scope/SSRF guard).
 pub fn same_host_redirects() -> reqwest::redirect::Policy {

@@ -1,7 +1,7 @@
 //! Multi-region latency benchmarking and geographical anomaly detection.
 
 use super::types::{
-    MultiRegionReport, MultiRegionRequest, RegionProbeResult, NOT_MEASURED, NOT_MEASURED_REGIONS,
+    MultiRegionReport, MultiRegionRequest, NOT_MEASURED, NOT_MEASURED_REGIONS, RegionProbeResult,
     SUBRESOURCE_BYTES_CAP,
 };
 use super::utils::{count_capped, host_of, hostport, http_client, port_of, truncate_chars};
@@ -22,7 +22,12 @@ pub(crate) struct Sample {
     headers: HashMap<String, String>,
 }
 
-pub(crate) fn local_sample(url: &reqwest::Url, host: &str, port: u16, timeout_ms: u64) -> Option<Sample> {
+pub(crate) fn local_sample(
+    url: &reqwest::Url,
+    host: &str,
+    port: u16,
+    timeout_ms: u64,
+) -> Option<Sample> {
     let dns_t0 = Instant::now();
     let addrs: Vec<SocketAddr> = hostport(host, port)
         .to_socket_addrs()
@@ -198,4 +203,3 @@ pub fn run_multi_region_audit(req: &MultiRegionRequest) -> Result<MultiRegionRep
         measurement_note: note,
     })
 }
-

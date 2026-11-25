@@ -24,8 +24,10 @@ pub fn evaluate_rag_triad(
         if query_words.is_empty() {
             1.0
         } else {
-            let matched_query_terms =
-                query_words.iter().filter(|w| ctx_words.contains(*w)).count();
+            let matched_query_terms = query_words
+                .iter()
+                .filter(|w| ctx_words.contains(*w))
+                .count();
             let query_coverage = matched_query_terms as f64 / query_words.len() as f64;
 
             // Sentence density
@@ -94,9 +96,8 @@ pub fn evaluate_rag_triad(
             if !ungrounded.is_empty() {
                 hallucinations.push(HallucinationDetail {
                     claim: s.clone(),
-                    reason:
-                        "Sentence asserts numbers or entities not present in retrieved context"
-                            .into(),
+                    reason: "Sentence asserts numbers or entities not present in retrieved context"
+                        .into(),
                     ungrounded_terms: ungrounded,
                 });
             } else if overlap_ratio < 0.25 && s_words.len() >= 4 {
@@ -138,7 +139,10 @@ pub fn evaluate_rag_triad(
     let term_overlap = if query_words.is_empty() {
         1.0
     } else {
-        let matched = query_words.iter().filter(|w| resp_words.contains(*w)).count();
+        let matched = query_words
+            .iter()
+            .filter(|w| resp_words.contains(*w))
+            .count();
         (matched as f64 / query_words.len() as f64).min(1.0)
     };
 

@@ -1,12 +1,12 @@
 //! Request / Response DTOs, query schemas, and domain payloads for the serve module.
 
+use crate::engine::ScanOpts;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{Semaphore, mpsc};
-use crate::engine::ScanOpts;
 
 pub const MIN_TOKEN_CHARS: usize = 16;
 /// Tokens that shipped in earlier versions or docs: refused even though they are long enough.

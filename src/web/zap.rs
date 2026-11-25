@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 
+use super::client::{container_url, has_shell_unsafe_chars};
+use super::smoke::gate;
 use crate::ctx::Ctx;
 use crate::model::*;
 use crate::tools::ToolSpec;
-use super::client::{container_url, has_shell_unsafe_chars};
-use super::smoke::gate;
 
 pub fn run_zap_scan(
     ctx: &Ctx,

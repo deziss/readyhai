@@ -2,7 +2,7 @@
 
 use super::super::triage::severity_for;
 use super::contract::{json_of, json_scalar_string, primary_object};
-use super::types::{chk, outcome, OracleOutcome, Technique, Verdict};
+use super::types::{OracleOutcome, Technique, Verdict, chk, outcome};
 
 /// One response of a concurrent burst (body capped by the executor).
 #[derive(Debug, Clone)]

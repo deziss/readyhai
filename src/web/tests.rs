@@ -1,10 +1,10 @@
+use super::checks;
 use super::client::{container_url, host_of};
 use super::nuclei::parse_nuclei;
 use super::playwright::{is_missing_image, parse_playwright};
 use super::schemathesis::junit_failure_text;
 use super::smoke::{csp_findings, tls_findings};
 use super::zap::{parse_zap, parse_zap_report, zap_active};
-use super::checks;
 use crate::ctx::Ctx;
 use crate::model::*;
 

@@ -100,4 +100,3 @@ pub fn generate_har_from_regress(report: &RegressReport) -> serde_json::Value {
         }
     })
 }
-

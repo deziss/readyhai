@@ -6,8 +6,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::super::types::{CaseExecutionResult, TriagedDefect};
-use crate::llm::untrusted::{self, clean_output, fence_capped, Guard};
-use crate::llm::{ask_typed, Budget, LlmConfig};
+use crate::llm::untrusted::{self, Guard, clean_output, fence_capped};
+use crate::llm::{Budget, LlmConfig, ask_typed};
 
 const TRIAGE_ROLE: &str = "You are a senior root-cause analyst. For each defect write one short developer-facing note: the likely root cause and a concrete fix. \
 Describe only; defect ids, titles, severities and priorities are final and must not be changed. Format: {\"notes\": [{\"defect_id\": string, \"note\": string}]}";

@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
-use serde_json::Value;
 use super::super::AuthKind;
+use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const METHODS: [&str; 8] = [
     "get", "put", "post", "delete", "patch", "head", "options", "trace",

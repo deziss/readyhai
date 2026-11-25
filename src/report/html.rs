@@ -3,7 +3,7 @@
 use anyhow::Result;
 use minijinja::value::Serde;
 use minijinja::{AutoEscape, Environment};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::model::*;
 

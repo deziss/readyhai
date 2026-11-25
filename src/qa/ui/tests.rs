@@ -1,9 +1,7 @@
 use super::baseline::{accept_visual_baseline_in, visual_baseline_dir};
 use super::builder::build;
 use super::exec::SecretsGuard;
-use super::image::{
-    LOCAL_IMAGE, PUBLISHED_IMAGE, container_base, origin, pick_image,
-};
+use super::image::{LOCAL_IMAGE, PUBLISHED_IMAGE, container_base, origin, pick_image};
 use super::model::UiReport;
 use crate::model::Severity;
 use crate::qa::model::*;
@@ -111,8 +109,7 @@ fn a11y_and_visual_are_per_item() {
         .collect();
     // same rule on two pages + a second rule on one page: three distinct fingerprints
     assert_eq!(a11y.len(), 3);
-    let fps: std::collections::BTreeSet<&str> =
-        a11y.iter().map(|d| d.fp_key.as_str()).collect();
+    let fps: std::collections::BTreeSet<&str> = a11y.iter().map(|d| d.fp_key.as_str()).collect();
     assert_eq!(fps.len(), 3);
     assert!(
         fps.contains("qa.ui.a11y|image-alt|/a")

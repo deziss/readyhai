@@ -43,7 +43,11 @@ pub(crate) fn invalid_format(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     }
     let n = defs.len();
     defs.truncate(MAX_ITEM_DEFECTS);
-    let status = if n > 0 { ResultStatus::Fail } else { ResultStatus::Pass };
+    let status = if n > 0 {
+        ResultStatus::Fail
+    } else {
+        ResultStatus::Pass
+    };
     Ok(out(record(
         ctx,
         "qa.data.invalid-format",

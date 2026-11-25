@@ -1,7 +1,7 @@
 //! Kubernetes manifest hardening and security checks.
 
 use super::dockerfile::image_untagged;
-use super::facts::{k8s_docs_checked, read_checked, Skips};
+use super::facts::{Skips, k8s_docs_checked, read_checked};
 use super::{na, non_empty_map, path, str_of, truthy};
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, Finding, Severity};

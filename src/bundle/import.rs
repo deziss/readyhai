@@ -3,12 +3,12 @@
 use std::path::Path;
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 
 use crate::engine;
 use crate::tools::{self, Docker};
 
-use super::manifest::{safe_rel, verify_manifest, Manifest};
+use super::manifest::{Manifest, safe_rel, verify_manifest};
 use super::tar::{check_tar_safe, copy_tree, run, tmp_name};
 
 /// `readyhai bundle import` — run on the air-gapped machine.

@@ -6,7 +6,7 @@ use crate::qa::model::{Area, ResultStatus};
 
 use super::csvscan::csv_tables;
 use super::data_files;
-use crate::qa::suite::common::{Def, MAX_ITEM_DEFECTS, no_snapshot, out, read, record, re};
+use crate::qa::suite::common::{Def, MAX_ITEM_DEFECTS, no_snapshot, out, re, read, record};
 
 pub(crate) fn pii_exposed(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     let Some(snap) = &ctx.snapshot else {
@@ -14,7 +14,9 @@ pub(crate) fn pii_exposed(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     };
     let files = data_files(
         snap,
-        &[".csv", ".tsv", ".json", ".sql", ".txt", ".yml", ".yaml", ".xml"],
+        &[
+            ".csv", ".tsv", ".json", ".sql", ".txt", ".yml", ".yaml", ".xml",
+        ],
     );
     if files.is_empty() {
         return Ok(CheckOutput::status(CheckStatus::NotApplicable(
@@ -48,7 +50,9 @@ pub(crate) fn pii_exposed(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                     _ => "SSN-like value",
                 });
             }
-            if let Some(m) = email.find(line) && !safe_domain(m.as_str()) {
+            if let Some(m) = email.find(line)
+                && !safe_domain(m.as_str())
+            {
                 hits.push("non-example email address");
             }
             for cap in phone.find_iter(line).take(3) {
@@ -79,9 +83,7 @@ pub(crate) fn pii_exposed(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                     expected: "Fixtures use synthetic data (example.com, reserved test numbers)"
                         .into(),
                     actual: line.trim().chars().take(120).collect(),
-                    remediation:
-                        "Replace with synthetic values or a data generator (faker)"
-                            .into(),
+                    remediation: "Replace with synthetic values or a data generator (faker)".into(),
                     fp_key: format!("{f}:{}", i + 1),
                     steps: vec![format!("Open {f}"), format!("Inspect line {}", i + 1)],
                 });
@@ -90,7 +92,11 @@ pub(crate) fn pii_exposed(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     }
     let n = defs.len();
     defs.truncate(MAX_ITEM_DEFECTS);
-    let status = if n > 0 { ResultStatus::Fail } else { ResultStatus::Pass };
+    let status = if n > 0 {
+        ResultStatus::Fail
+    } else {
+        ResultStatus::Pass
+    };
     Ok(out(record(
         ctx,
         "qa.data.pii-exposed",
@@ -99,7 +105,10 @@ pub(crate) fn pii_exposed(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
         "Fixtures contain no real-looking PII",
         "fixtures",
         status,
-        &format!("{n} line(s) with possible PII across {} fixture file(s)", files.len()),
+        &format!(
+            "{n} line(s) with possible PII across {} fixture file(s)",
+            files.len()
+        ),
         defs,
     )))
 }
@@ -145,8 +154,11 @@ pub(crate) fn stale_dates(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
             }
         }
         if !stale.is_empty() {
-            let sample: Vec<String> =
-                stale.iter().take(3).map(|(l, d)| format!("{d} (line {l})")).collect();
+            let sample: Vec<String> = stale
+                .iter()
+                .take(3)
+                .map(|(l, d)| format!("{d} (line {l})"))
+                .collect();
             defs.push(Def {
                 rule: "qa.data.stale-dates",
                 cat: Category::Quality,
@@ -166,7 +178,11 @@ pub(crate) fn stale_dates(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     }
     let n = defs.len();
     defs.truncate(MAX_ITEM_DEFECTS);
-    let status = if n > 0 { ResultStatus::Fail } else { ResultStatus::Pass };
+    let status = if n > 0 {
+        ResultStatus::Fail
+    } else {
+        ResultStatus::Pass
+    };
     Ok(out(record(
         ctx,
         "qa.data.stale-dates",
@@ -194,8 +210,18 @@ pub(crate) fn orphan_reference(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     let mut parent_ids: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         Default::default();
     for (file, header, rows) in &tables {
-        let stem = file.rsplit('/').next().unwrap_or("").split('.').next().unwrap_or("").to_lowercase();
-        let Some(ii) = header.iter().position(|c| c.trim().eq_ignore_ascii_case("id")) else {
+        let stem = file
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let Some(ii) = header
+            .iter()
+            .position(|c| c.trim().eq_ignore_ascii_case("id"))
+        else {
             continue;
         };
         let ids = rows
@@ -207,16 +233,27 @@ pub(crate) fn orphan_reference(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     }
     let mut defs: Vec<Def> = Vec::new();
     for (file, header, rows) in &tables {
-        let stem = file.rsplit('/').next().unwrap_or("").split('.').next().unwrap_or("").to_lowercase();
+        let stem = file
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
         for (ci, col) in header.iter().enumerate() {
             let l = col.trim().to_lowercase();
             let Some(target) = l.strip_suffix("_id") else {
                 continue;
             };
             // Accept singular/plural matching against a table stem ("user_id" -> users or user).
-            let parent = [target.to_string(), format!("{target}s"), target.trim_end_matches('s').to_string()]
-                .into_iter()
-                .find(|p| parent_ids.contains_key(p) && *p != stem);
+            let parent = [
+                target.to_string(),
+                format!("{target}s"),
+                target.trim_end_matches('s').to_string(),
+            ]
+            .into_iter()
+            .find(|p| parent_ids.contains_key(p) && *p != stem);
             let Some(parent) = parent else { continue };
             let keys = &parent_ids[&parent];
             let mut orphans: Vec<(usize, String)> = Vec::new();
@@ -229,8 +266,11 @@ pub(crate) fn orphan_reference(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
                 }
             }
             if !orphans.is_empty() {
-                let sample: Vec<String> =
-                    orphans.iter().take(5).map(|(l, v)| format!("{v} (line {l})")).collect();
+                let sample: Vec<String> = orphans
+                    .iter()
+                    .take(5)
+                    .map(|(l, v)| format!("{v} (line {l})"))
+                    .collect();
                 defs.push(Def {
                     rule: "qa.data.orphan-reference",
                     cat: Category::Quality,
@@ -256,7 +296,11 @@ pub(crate) fn orphan_reference(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     }
     let n = defs.len();
     defs.truncate(MAX_ITEM_DEFECTS);
-    let status = if n > 0 { ResultStatus::Fail } else { ResultStatus::Pass };
+    let status = if n > 0 {
+        ResultStatus::Fail
+    } else {
+        ResultStatus::Pass
+    };
     Ok(out(record(
         ctx,
         "qa.data.orphan-reference",

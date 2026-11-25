@@ -138,7 +138,9 @@ impl<'de> Deserialize<'de> for PathPut {
         match v {
             Value::Null => Ok(PathPut::Clear),
             Value::String(s) => Ok(PathPut::Set(s)),
-            _ => Err(serde::de::Error::custom("vulndb.path must be a string or null")),
+            _ => Err(serde::de::Error::custom(
+                "vulndb.path must be a string or null",
+            )),
         }
     }
 }

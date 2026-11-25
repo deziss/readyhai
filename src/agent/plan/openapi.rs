@@ -1,7 +1,5 @@
 //! OpenAPI specification-driven planning (schema sampling, contracts, negative probes, and bursts).
 
-use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
 use super::super::change::ChangeSet;
 use super::super::discover::SpecDoc;
 use super::super::exec::Credentials;
@@ -12,6 +10,8 @@ use super::types::{Depth, NULL, SQLI, XSS};
 use crate::llm::untrusted::clean;
 use crate::qa::api::spec::Op as ApiOp;
 use crate::qa::api::synth::{self, Expect};
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
 
 fn resolve<'a>(doc: &'a Value, v: &'a Value) -> &'a Value {
     let mut cur = v;

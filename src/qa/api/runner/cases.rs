@@ -5,9 +5,7 @@ use super::types::Runner;
 use crate::model::{Category, Severity};
 use crate::qa::api::defect_types::{DefectRef, NewDefect, Reruns};
 use crate::qa::api::spec::Op;
-use crate::qa::model::{
-    Area, CaseSource, Priority, ResultStatus, TestCase, Technique, TestResult,
-};
+use crate::qa::model::{Area, CaseSource, Priority, ResultStatus, Technique, TestCase, TestResult};
 
 /// A failed API case is re-run up to this many times to tell a flaky failure from a real one.
 pub const MAX_RERUN: u32 = 2;

@@ -1,9 +1,8 @@
 use super::*;
-use std::time::Duration;
 use crate::agent::budget::RunBudget;
-use crate::agent::types::*;
 use crate::agent::oracle::*;
-
+use crate::agent::types::*;
+use std::time::Duration;
 
 fn case(method: &str, component: &str, payload: Option<&str>) -> PlannedCase {
     PlannedCase {

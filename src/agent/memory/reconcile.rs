@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::observe::{ClassObs, Observation, class_of, is_cleanup, op_of_class};
 use super::sanitize::{clean_ident, days_between, sev_rank};
 use super::types::{
-    Acceptance, DefectLine, DefectStatus, FlakyLine, KnownDefect, Memory,
-    MAX_IDENT, MAX_LISTED, MAX_RUNS, RECENT_FIX_DAYS, SinceLastRun,
+    Acceptance, DefectLine, DefectStatus, FlakyLine, KnownDefect, MAX_IDENT, MAX_LISTED, MAX_RUNS,
+    Memory, RECENT_FIX_DAYS, SinceLastRun,
 };
 use crate::agent::types::{PlannedCase, TriagedDefect};
 
@@ -394,4 +394,3 @@ impl PlanHints {
             .collect()
     }
 }
-

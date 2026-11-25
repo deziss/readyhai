@@ -718,8 +718,7 @@ fn what_an_area_leaves_unused_goes_to_a_pool_that_resumes_the_cases_another_area
         "{auth:?}"
     );
     assert!(
-        con.budget.used.requests == con.budget.allocated.requests
-            && con.budget.used.requests < 10,
+        con.budget.used.requests == con.budget.allocated.requests && con.budget.used.requests < 10,
         "{con:?}"
     );
     assert!(a.pool_reclaimed.requests >= 20, "{a:?}");
@@ -1225,7 +1224,12 @@ fn the_reports_show_an_agents_section_per_area_with_budgets_and_wave_two_escaped
         md.contains("## Agents") && md.contains("**4** worker(s) over **2** wave(s)"),
         "{md}"
     );
-    assert!(md.contains("| `auth` | done | 14 | 1 | 0 | 1 | 0 | 14/14 | 20/64 | 2.5s/90.0s | 0/2 | DEF-001 |"), "{md}");
+    assert!(
+        md.contains(
+            "| `auth` | done | 14 | 1 | 0 | 1 | 0 | 14/14 | 20/64 | 2.5s/90.0s | 0/2 | DEF-001 |"
+        ),
+        "{md}"
+    );
     assert!(
         md.contains("1/1 + w2 1/6") || md.contains("32/116 + w2 1/6"),
         "{md}"

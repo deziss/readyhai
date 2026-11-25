@@ -1,14 +1,14 @@
-use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
 
-use crate::checks::Check;
-use crate::ctx::Ctx;
-use crate::model::{CheckOutput, CheckStatus, Finding, Profile, TargetKind};
-use crate::tools::ToolSpec;
 use super::baseline::{copy_dir_pngs, visual_baseline_dir};
 use super::builder::build;
 use super::image::{HINT, container_base, is_missing_image, origin, playwright_image, set_mode};
 use super::model::UiReport;
+use crate::checks::Check;
+use crate::ctx::Ctx;
+use crate::model::{CheckOutput, CheckStatus, Finding, Profile, TargetKind};
+use crate::tools::ToolSpec;
 
 /// Removes out/secrets on drop, so role cookies never outlive the run (even on error).
 pub struct SecretsGuard(pub PathBuf);

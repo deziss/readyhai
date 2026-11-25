@@ -60,7 +60,13 @@ pub fn html_ledger(l: &EvidenceLedger) -> String {
             Some("met") => ("st-PASS", "met"),
             Some("warning") => ("st-WARN", "warning"),
             Some("unmet") => ("st-FAIL", "not met"),
-            _ => if e.met { ("st-PASS", "met") } else { ("st-FAIL", "not met") },
+            _ => {
+                if e.met {
+                    ("st-PASS", "met")
+                } else {
+                    ("st-FAIL", "not met")
+                }
+            }
         };
         h.push_str(&format!(
             "<tr><td>{} <span class=\"mut\">{}</span></td><td class=\"{}\">{}</td><td>{}</td></tr>",

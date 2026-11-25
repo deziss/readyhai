@@ -90,7 +90,9 @@ pub fn build_recon_profiler_user_prompt(
     .with_fenced_target("TARGET URL", target)
     .with_fenced_json("OBSERVED HEADERS", &serde_json::json!(headers))
     .with_guideline("Identify web servers (nginx, Apache, Caddy, Cloudflare, etc.).")
-    .with_guideline("Identify application frameworks (Django, Express, FastAPI, Spring, Laravel, etc.).")
+    .with_guideline(
+        "Identify application frameworks (Django, Express, FastAPI, Spring, Laravel, etc.).",
+    )
     .with_guideline("List all missing security headers (CSP, HSTS, X-Frame-Options, etc.).")
     .with_schema(RECON_PROFILER_JSON_SCHEMA);
 

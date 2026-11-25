@@ -1,6 +1,7 @@
 //! Authentication middleware, token verification, and authorization policies.
 
 use super::types::{App, BANNED_TOKENS, MIN_TOKEN_CHARS, Principal};
+use crate::scope::Scope;
 use anyhow::{Result, bail};
 use axum::Extension;
 use axum::Json;
@@ -11,7 +12,6 @@ use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
-use crate::scope::Scope;
 
 /// Token policy: no token, no server. There is deliberately no development fallback.
 pub fn validate_token(raw: Option<&str>) -> Result<String> {
@@ -87,7 +87,6 @@ pub fn forbidden(role: &str, action: &str) -> Response {
         .into_response()
 }
 
-
 /// Paths served without a token (GET only): the health probe and the SVG status badges, which are
 /// read-only and render only a sanitised status/score from the query string (no run data, no secrets).
 pub const PUBLIC_GET: &[&str] = &[
@@ -103,7 +102,10 @@ pub fn is_public_get(path: &str) -> bool {
 
 /// What key am I, and what may I do? UI/clients use this to hide what the caller
 /// cannot use; RBAC off reports the legacy single-admin mode.
-pub async fn whoami(Extension(who): Extension<Principal>, State(app): State<Arc<App>>) -> Json<serde_json::Value> {
+pub async fn whoami(
+    Extension(who): Extension<Principal>,
+    State(app): State<Arc<App>>,
+) -> Json<serde_json::Value> {
     Json(json!({
         "name": who.name,
         "role": who.role.as_str(),
@@ -125,7 +127,11 @@ pub async fn require_auth(State(app): State<Arc<App>>, mut req: Request, next: N
     let ident = if public {
         None
     } else {
-        let Some(v) = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) else {
+        let Some(v) = req
+            .headers()
+            .get(header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+        else {
             return unauthorized();
         };
         let Some((scheme, tok)) = v.split_once(' ') else {
@@ -134,7 +140,10 @@ pub async fn require_auth(State(app): State<Arc<App>>, mut req: Request, next: N
         if !scheme.eq_ignore_ascii_case("bearer") {
             return unauthorized();
         }
-        match app.rbac.authenticate(tok, &app.token_digest, &app.principal) {
+        match app
+            .rbac
+            .authenticate(tok, &app.token_digest, &app.principal)
+        {
             Some((name, role)) => {
                 let action = super::rbac::action_for(req.method(), req.uri().path());
                 if app.rbac.enabled && !role.allows(action) {

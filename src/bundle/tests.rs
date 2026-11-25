@@ -6,9 +6,9 @@ use std::process::Command;
 use serde_json::Value;
 
 use super::env::ENV_LOCK;
-use super::eol::{endoflife, EMBEDDED_EOL, EOL_PRODUCTS};
+use super::eol::{EMBEDDED_EOL, EOL_PRODUCTS, endoflife};
 use super::export::export;
-use super::manifest::{build_files, verify_manifest, Manifest};
+use super::manifest::{Manifest, build_files, verify_manifest};
 use super::tar::{check_tar_safe, run};
 
 fn tmpdir(n: &str) -> PathBuf {

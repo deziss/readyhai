@@ -30,7 +30,7 @@ pub mod replay;
 #[cfg(test)]
 mod tests;
 
-pub use juror::{audit_defects_with_juror, evaluate_with_juror, parse_juror_verdict, JurorVerdict};
+pub use juror::{JurorVerdict, audit_defects_with_juror, evaluate_with_juror, parse_juror_verdict};
 pub use options::{DEFAULT_K, MAX_K, VerifyOptions, VerifyOutcome, k_from_env, no_raise, parse_k};
 pub use plan::targets_unlikely_id;
 

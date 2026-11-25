@@ -4,7 +4,9 @@ use serde_json::Value;
 use super::helpers::sv;
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, CheckStatus, Finding, Severity};
-use crate::tools::{ToolSpec, gate, missing_image, out_err, read_out, read_text_capped, tool_failed};
+use crate::tools::{
+    ToolSpec, gate, missing_image, out_err, read_out, read_text_capped, tool_failed,
+};
 
 /// `github.com/owner/repo` from a git remote URL (credentials dropped), only for github.com.
 pub fn github_slug(url: &str) -> Option<String> {

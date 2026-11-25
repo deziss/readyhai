@@ -5,8 +5,8 @@ use super::html::qa_html;
 use super::markdown::markdown;
 use crate::model::{Category, FindingStatus, Profile, Run, Severity, Target, TargetKind, Verdict};
 use crate::qa::model::{
-    Area, CaseSource, Cell, CoverageMatrix, Defect, Evidence, EvidenceKind, ExitCriterion, Priority,
-    QaReport, Recommendation, ResultCounts, Risk, TestCase, Technique,
+    Area, CaseSource, Cell, CoverageMatrix, Defect, Evidence, EvidenceKind, ExitCriterion,
+    Priority, QaReport, Recommendation, ResultCounts, Risk, Technique, TestCase,
 };
 
 #[test]
@@ -276,9 +276,7 @@ fn markdown_report_cannot_be_hijacked_by_spec_text() {
     assert!(m.contains("\\# not a heading") && m.contains("1\\. not a list"));
     // the code step with ``` is inside a LONGER fence
     assert!(
-        m.contains(
-            "````sh\ncurl -sS 'http://x/```\nrm -rf /```' # code fence breakout\n````\n"
-        ),
+        m.contains("````sh\ncurl -sS 'http://x/```\nrm -rf /```' # code fence breakout\n````\n"),
         "{m}"
     );
     // fence balance: every line made only of backticks opens/closes with matching lengths

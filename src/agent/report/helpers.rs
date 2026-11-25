@@ -1,7 +1,7 @@
 use crate::agent::memory::{DefectLine, SinceLastRun};
 use crate::agent::types::{
-    AgentRunReport, AgentsReport, AreaBudget, AreaReport, CaseExecutionResult, ChangeImpact,
-    Quota, TriagedDefect, VerificationRecord, VerificationSummary, VerifyVerdict,
+    AgentRunReport, AgentsReport, AreaBudget, AreaReport, CaseExecutionResult, ChangeImpact, Quota,
+    TriagedDefect, VerificationRecord, VerificationSummary, VerifyVerdict,
 };
 
 pub const SHOWN_FILES: usize = 40;

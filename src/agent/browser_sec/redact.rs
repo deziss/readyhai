@@ -1,6 +1,6 @@
-use std::sync::OnceLock;
-use regex::Regex;
 use crate::llm::untrusted::redact_then_truncate;
+use regex::Regex;
+use std::sync::OnceLock;
 
 fn jwt_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();

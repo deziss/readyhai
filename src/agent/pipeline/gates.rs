@@ -8,7 +8,7 @@
 //! 5. `VerifyGate`: Validates k-pass replay records, Juror Source->Sink taint evaluation, zero unverified false-positive defects.
 //! 6. `ReleaseGate`: Validates Evidence Ledger four-pillar thresholds (Value, Authority, Safety, Evidence), OWASP ASVS compliance breakdown, and generates the cryptographically signed Software Factory Attestation.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -259,7 +259,9 @@ impl QualityGate for DiscoveryGate {
 
 pub fn validate_discovery_gate(input: &DiscoveryGateInput) -> Result<GateVerdict> {
     if input.routes_count == 0 && !input.verified_empty_fallback {
-        bail!("DiscoveryGate exit failure: route discovery inventory is empty and verified empty fallback was not confirmed");
+        bail!(
+            "DiscoveryGate exit failure: route discovery inventory is empty and verified empty fallback was not confirmed"
+        );
     }
     if !input.semantic_predictions_validated {
         bail!("DiscoveryGate exit failure: semantic route predictions could not be validated");
@@ -316,7 +318,9 @@ impl PlanGate {
         verified_empty_fallback: bool,
     ) -> Result<GateVerdict> {
         if routes_count == 0 && !verified_empty_fallback {
-            bail!("PlanGate entrance failure: requires routes or verified empty fallback from Discovery");
+            bail!(
+                "PlanGate entrance failure: requires routes or verified empty fallback from Discovery"
+            );
         }
         Ok(GateVerdict::new(
             PipelineState::Plan,
@@ -361,7 +365,9 @@ pub fn validate_plan_gate(input: &PlanGateInput) -> Result<GateVerdict> {
         bail!("PlanGate exit failure: zero baseline test cases generated");
     }
     if !input.directives_covered {
-        bail!("PlanGate exit failure: synthesized directives and focus areas are not covered in plan");
+        bail!(
+            "PlanGate exit failure: synthesized directives and focus areas are not covered in plan"
+        );
     }
     let verdict = GateVerdict::new(
         PipelineState::Plan,
@@ -483,11 +489,7 @@ pub fn validate_execution_gate(input: &ExecutionGateInput) -> Result<GateVerdict
             input.waves_completed
         ),
     )
-    .with_check(
-        "worker_panics",
-        true,
-        "Zero worker thread panics confirmed",
-    )
+    .with_check("worker_panics", true, "Zero worker thread panics confirmed")
     .with_check(
         "budget_compliance",
         true,
@@ -563,7 +565,9 @@ impl QualityGate for VerifyGate {
 
 pub fn validate_verify_gate(input: &VerifyGateInput) -> Result<GateVerdict> {
     if !input.k_replay_executed {
-        bail!("VerifyGate exit failure: k-pass replay records missing or verification was not executed");
+        bail!(
+            "VerifyGate exit failure: k-pass replay records missing or verification was not executed"
+        );
     }
     if !input.juror_taint_evaluated {
         bail!("VerifyGate exit failure: Juror Source->Sink taint evaluation was not performed");
@@ -865,7 +869,10 @@ pub fn validate_release_gate_verdict(input: &ReleaseGateInput) -> Result<GateVer
     .with_check(
         "value_pillar",
         true,
-        format!("Score: {} (min: {})", input.value_score, input.min_threshold),
+        format!(
+            "Score: {} (min: {})",
+            input.value_score, input.min_threshold
+        ),
     )
     .with_check(
         "authority_pillar",
@@ -878,7 +885,10 @@ pub fn validate_release_gate_verdict(input: &ReleaseGateInput) -> Result<GateVer
     .with_check(
         "safety_pillar",
         true,
-        format!("Score: {} (min: {})", input.safety_score, input.min_threshold),
+        format!(
+            "Score: {} (min: {})",
+            input.safety_score, input.min_threshold
+        ),
     )
     .with_check(
         "evidence_pillar",

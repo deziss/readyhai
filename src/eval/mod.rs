@@ -25,7 +25,7 @@ pub use report::render_markdown;
 pub use runner::run_eval;
 pub use scoring::{glob_match, score_run, summarize_suite};
 pub use types::{
-    inconclusive_rate, Allow, ChangeSpec, Check, EvalOpts, EvalSummary, Expect, MemorySpec,
-    Observed, RepoSpec, RunScore, RunStats, SuiteKind, SuiteResult, SuiteSpec, TargetSpec,
-    Thresholds,
+    Allow, ChangeSpec, Check, EvalOpts, EvalSummary, Expect, MemorySpec, Observed, RepoSpec,
+    RunScore, RunStats, SuiteKind, SuiteResult, SuiteSpec, TargetSpec, Thresholds,
+    inconclusive_rate,
 };

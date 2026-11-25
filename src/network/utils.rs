@@ -1,8 +1,6 @@
 //! HTTP core utilities, method safety guards, URL parsers, and header validators.
 
-use super::types::{
-    MAX_HEADERS, MAX_HEADER_BYTES, MAX_PAYLOAD_BYTES, MAX_REDIRECTS,
-};
+use super::types::{MAX_HEADER_BYTES, MAX_HEADERS, MAX_PAYLOAD_BYTES, MAX_REDIRECTS};
 use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::io::Read;
@@ -148,5 +146,3 @@ pub fn http_client(timeout_ms: u64, fresh_connections: bool) -> reqwest::blockin
 pub fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
-
-

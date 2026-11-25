@@ -8,7 +8,7 @@
 //! 5. Verify (Station 5: Independent replay & Contextual Taint Tracing Juror)
 //! 6. Gate (Station 6: Factory Attestation, release readiness scoring & ASVS compliance)
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -73,10 +73,10 @@ impl PipelineState {
             (Self::Gate, Self::Gate) => true,
 
             // Feedback loops and re-routing between stations
-            (Self::Execute, Self::Plan) => true,   // Ambiguity refinement back to planning
+            (Self::Execute, Self::Plan) => true, // Ambiguity refinement back to planning
             (Self::Verify, Self::Execute) => true, // Anomaly detected during verification
-            (Self::Verify, Self::Plan) => true,    // Ambiguity refinement back to planning
-            (Self::Gate, Self::Verify) => true,    // Gate rejection requiring replay/juror check
+            (Self::Verify, Self::Plan) => true,  // Ambiguity refinement back to planning
+            (Self::Gate, Self::Verify) => true,  // Gate rejection requiring replay/juror check
 
             // Any active station can transition to Failed on fatal error or abort
             (Self::Recon, Self::Failed)
@@ -239,9 +239,7 @@ impl StationNode {
             (PipelineState::Recon, RoutingCondition::NormalProgression) => {
                 Some(PipelineState::Discovery)
             }
-            (PipelineState::Recon, RoutingCondition::AmbiguityRefine) => {
-                Some(PipelineState::Recon)
-            }
+            (PipelineState::Recon, RoutingCondition::AmbiguityRefine) => Some(PipelineState::Recon),
 
             // Discovery:
             (PipelineState::Discovery, RoutingCondition::NormalProgression) => {
@@ -278,20 +276,14 @@ impl StationNode {
             (PipelineState::Verify, RoutingCondition::AnomalyDetected) => {
                 Some(PipelineState::Execute)
             }
-            (PipelineState::Verify, RoutingCondition::AmbiguityRefine) => {
-                Some(PipelineState::Plan)
-            }
+            (PipelineState::Verify, RoutingCondition::AmbiguityRefine) => Some(PipelineState::Plan),
 
             // Gate:
             (PipelineState::Gate, RoutingCondition::NormalProgression) => {
                 Some(PipelineState::Completed)
             }
-            (PipelineState::Gate, RoutingCondition::AmbiguityRefine) => {
-                Some(PipelineState::Verify)
-            }
-            (PipelineState::Gate, RoutingCondition::ReplayRequired) => {
-                Some(PipelineState::Verify)
-            }
+            (PipelineState::Gate, RoutingCondition::AmbiguityRefine) => Some(PipelineState::Verify),
+            (PipelineState::Gate, RoutingCondition::ReplayRequired) => Some(PipelineState::Verify),
 
             _ => None,
         }

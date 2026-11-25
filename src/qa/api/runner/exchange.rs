@@ -7,9 +7,7 @@ use crate::model::{Category, Severity};
 use crate::qa::api::contract;
 use crate::qa::api::defect_types::{DefectRef, NewDefect, Req};
 use crate::qa::api::exec::{self, Exchange};
-use crate::qa::api::helpers::{
-    MAX_IDS, body_fp_or_empty, collection_of, created_id, ids_in_list,
-};
+use crate::qa::api::helpers::{MAX_IDS, body_fp_or_empty, collection_of, created_id, ids_in_list};
 use crate::qa::api::spec::Op;
 use crate::qa::api::synth;
 use crate::qa::model::{Area, Defect, Priority, Risk};

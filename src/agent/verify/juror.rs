@@ -3,14 +3,16 @@
 //! Evaluates candidate defects and test failures using Source -> Sink taint reflection
 //! to eliminate false positives and synthesize concrete unified diff remediation patches.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::super::types::{CaseExecutionResult, TriagedDefect};
-use crate::agent::prompts::juror::{build_taint_juror_system_prompt, build_taint_juror_user_prompt};
+use crate::agent::prompts::juror::{
+    build_taint_juror_system_prompt, build_taint_juror_user_prompt,
+};
 use crate::llm::untrusted::{self, clean_output, fence_capped};
-use crate::llm::{ask_typed, Budget, LlmConfig};
+use crate::llm::{Budget, LlmConfig, ask_typed};
 
 const JUROR_ROLE: &str = "You are a principal application security verifier and Contextual Taint Tracing Juror. \
 Analyze the security test failure, candidate defect, and source-to-sink taint propagation. \
@@ -103,16 +105,16 @@ fn evaluate_llm(
         is_true_positive: out.is_true_positive,
         confidence: out.confidence.min(100),
         taint_path: out.taint_path.as_deref().map(|s| clean_output(s, 240)),
-        remediation_diff: out.remediation_diff.as_deref().map(|s| clean_output(s, 1000)),
+        remediation_diff: out
+            .remediation_diff
+            .as_deref()
+            .map(|s| clean_output(s, 1000)),
         explanation: out.explanation.as_deref().map(|s| clean_output(s, 600)),
     })
 }
 
 /// Deterministic Source -> Sink taint reflection analysis.
-fn evaluate_deterministic(
-    failure: &CaseExecutionResult,
-    context: Option<&str>,
-) -> JurorVerdict {
+fn evaluate_deterministic(failure: &CaseExecutionResult, context: Option<&str>) -> JurorVerdict {
     let status_code = failure.status_code.unwrap_or(0);
     let evidence_str = failure.evidence.to_ascii_lowercase();
     let reason_str = failure

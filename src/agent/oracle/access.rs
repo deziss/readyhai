@@ -3,13 +3,9 @@
 use super::super::triage::severity_for;
 use super::super::types::PlannedCase;
 use super::signatures::{is_login_location, looks_like_secret_or_config};
-use super::types::{chk, Observation, OracleCheck, Technique, Verdict};
+use super::types::{Observation, OracleCheck, Technique, Verdict, chk};
 
-pub(crate) fn sensitive_checks(
-    case: &PlannedCase,
-    o: &Observation,
-    out: &mut Vec<OracleCheck>,
-) {
+pub(crate) fn sensitive_checks(case: &PlannedCase, o: &Observation, out: &mut Vec<OracleCheck>) {
     let code = o.status;
     let html = o.content_type.to_ascii_lowercase().contains("html");
     if (200..=299).contains(&code) && !html && looks_like_secret_or_config(o.body) {
@@ -141,11 +137,7 @@ pub(crate) fn denied_check(
 }
 
 /// Judge the answer to a request that carried a foreign `Origin`.
-pub(crate) fn cors_check(
-    o: &Observation,
-    out: &mut Vec<OracleCheck>,
-    warnings: &mut Vec<String>,
-) {
+pub(crate) fn cors_check(o: &Observation, out: &mut Vec<OracleCheck>, warnings: &mut Vec<String>) {
     let Some(origin) = o.origin else {
         out.push(chk(
             "cors",

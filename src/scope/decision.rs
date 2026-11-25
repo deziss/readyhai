@@ -1,9 +1,9 @@
 //! Egress decision engine and intrusive action gating.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 use super::config::Scope;
-use super::ip::{classify_host, HostClass};
+use super::ip::{HostClass, classify_host};
 use super::url::{norm_host, parse_web_url, url_host};
 
 /// Is the web target allowed, and is it nonprod (for intrusive checks)?

@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use serde_json::Value;
+use std::collections::HashMap;
 
 use super::exchange::{Exchange, Runner, skipped_result, status_matches};
 use super::models::StatefulScenarioResult;

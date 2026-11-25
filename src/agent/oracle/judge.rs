@@ -2,17 +2,17 @@
 
 use super::super::triage::severity_for;
 use super::super::types::PlannedCase;
+use super::access::{cors_check, denied_check, sensitive_checks};
 use super::contract::{
     class_evidence, contract_checks, excessive_data_exposure_check, is_traversal_probe, json_of,
     mass_assignment_reflection, traversal_signature,
 };
-use super::expectations::{
-    derive_expectation, expectation_checks, is_rejection, Expect,
-};
-use super::access::{cors_check, denied_check, sensitive_checks};
+use super::expectations::{Expect, derive_expectation, expectation_checks, is_rejection};
 use super::probes::probe_oracle_checks;
 use super::signatures::{disclosure_signature, is_sensitive_path};
-use super::types::{chk, is_cors_case, Observation, OracleCheck, OracleOutcome, Technique, Verdict};
+use super::types::{
+    Observation, OracleCheck, OracleOutcome, Technique, Verdict, chk, is_cors_case,
+};
 
 pub fn judge(case: &PlannedCase, o: &Observation) -> OracleOutcome {
     let tech = Technique::parse(&case.technique);

@@ -78,7 +78,11 @@ pub fn auto_load_env() {
 
     #[cfg(windows)]
     if let Ok(app_data) = std::env::var("APPDATA") {
-        candidates.push(std::path::PathBuf::from(app_data).join("readyhai").join(".env"));
+        candidates.push(
+            std::path::PathBuf::from(app_data)
+                .join("readyhai")
+                .join(".env"),
+        );
     }
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))

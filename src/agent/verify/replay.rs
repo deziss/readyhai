@@ -1,15 +1,15 @@
 use serde_json::json;
 use std::collections::BTreeSet;
 
+use super::options::VerifyOptions;
+use super::plan::{Vote, spa_shell, vote};
 use crate::agent::budget::RunBudget;
 use crate::agent::exec::{
     Auth, Clients, ProbeOutcome, RequestSpec, ResolvedAuth, follows_redirects,
     send_with_probe_oracle,
 };
 use crate::agent::oast::OastCollector;
-use super::options::VerifyOptions;
 use crate::agent::oracle::{self, Observation, Severity};
-use super::plan::{Vote, spa_shell, vote};
 use crate::agent::types::{
     CaseExecutionResult, Leftover, PlannedCase, ReplayRecord, StatefulStep, VerificationRecord,
     VerifyVerdict, current_ledger, is_creation, record_creation_response,

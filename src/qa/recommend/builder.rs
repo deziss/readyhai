@@ -2,11 +2,11 @@
 
 use std::collections::BTreeSet;
 
-use super::criteria::build_exit_criteria;
-use super::evidence::{area_label, not_run, EVIDENCE_CRITERION, MIN_EXECUTED_PCT, NotRun};
-use super::fingerprint::{fingerprint, merged_status};
-use super::super::model::*;
 use super::super::QaCtx;
+use super::super::model::*;
+use super::criteria::build_exit_criteria;
+use super::evidence::{EVIDENCE_CRITERION, MIN_EXECUTED_PCT, NotRun, area_label, not_run};
+use super::fingerprint::{fingerprint, merged_status};
 use crate::model::{Category, CheckStatus, FindingStatus, Run, Severity, Verdict};
 
 pub fn build(mut col: QaCollector, run: &Run, qa: &QaCtx, mode: &str) -> QaReport {

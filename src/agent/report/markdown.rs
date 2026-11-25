@@ -103,7 +103,13 @@ pub fn generate_agent_markdown_report(rep: &AgentRunReport) -> String {
             let mark = match e.status.as_deref() {
                 Some("met") => "x",
                 Some("warning") => "!",
-                _ => if e.met { "x" } else { " " },
+                _ => {
+                    if e.met {
+                        "x"
+                    } else {
+                        " "
+                    }
+                }
             };
             md.push_str(&format!(
                 "- [{mark}] {} - {}\n",

@@ -9,7 +9,7 @@ use crate::agent::prompts::discovery::{
 use crate::agent::recon::SynthesizedDirectives;
 use crate::agent::types::{DiscoveredRoute, InputSurface, TargetTechProfile};
 use crate::llm::untrusted::{self, fence_capped};
-use crate::llm::{ask_typed, Budget, LlmConfig};
+use crate::llm::{Budget, LlmConfig, ask_typed};
 
 /// A semantic route candidate predicted via LLM reasoning or technology fingerprint heuristics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,7 +60,10 @@ pub fn parse_semantic_routes(raw: &str) -> Result<Vec<SemanticRoute>> {
 
     // Try parsing as arbitrary Value with "routes" or "endpoints" key
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
-        && let Some(arr) = val.get("routes").or_else(|| val.get("endpoints")).and_then(|v| v.as_array())
+        && let Some(arr) = val
+            .get("routes")
+            .or_else(|| val.get("endpoints"))
+            .and_then(|v| v.as_array())
     {
         let mut list = Vec::new();
         for item in arr {
@@ -86,7 +89,10 @@ fn sanitize_routes(routes: Vec<SemanticRoute>) -> Result<Vec<SemanticRoute>> {
             r.path = path.to_string();
         }
         r.method = r.method.trim().to_uppercase();
-        if matches!(r.method.as_str(), "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS") {
+        if matches!(
+            r.method.as_str(),
+            "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "HEAD" | "OPTIONS"
+        ) {
             clean.push(r);
         }
     }
@@ -122,9 +128,7 @@ pub fn discover_semantic_routes(
             .map(|r| serde_json::json!({"path": r.path, "method": r.method, "status": r.status_code}))
             .collect();
 
-        let focus = directives
-            .map(|d| d.focus_areas.as_slice())
-            .unwrap_or(&[]);
+        let focus = directives.map(|d| d.focus_areas.as_slice()).unwrap_or(&[]);
 
         let system = build_semantic_discovery_system_prompt();
         let prompt = build_semantic_discovery_user_prompt(
@@ -137,18 +141,12 @@ pub fn discover_semantic_routes(
             10,
         );
 
-        let res = ask_typed::<Vec<SemanticRoute>>(
-            cfg,
-            budget,
-            &system,
-            &prompt,
-            |routes| {
-                if routes.is_empty() {
-                    anyhow::bail!("empty semantic routes returned");
-                }
-                Ok(())
-            },
-        );
+        let res = ask_typed::<Vec<SemanticRoute>>(cfg, budget, &system, &prompt, |routes| {
+            if routes.is_empty() {
+                anyhow::bail!("empty semantic routes returned");
+            }
+            Ok(())
+        });
 
         if let Ok(routes) = res {
             let mapped = convert_to_discovered_routes(&routes, &known_paths);
@@ -160,12 +158,30 @@ pub fn discover_semantic_routes(
 
     // 2. Deterministic framework-adapted semantic heuristics
     let mut candidates: Vec<SemanticRoute> = Vec::new();
-    let signals_lower: Vec<String> = tech.detected_signals.iter().map(|s| s.to_lowercase()).collect();
+    let signals_lower: Vec<String> = tech
+        .detected_signals
+        .iter()
+        .map(|s| s.to_lowercase())
+        .collect();
     let fw_lower = tech.primary_framework.to_lowercase();
-    let is_spring = fw_lower.contains("spring") || signals_lower.iter().any(|s| s.contains("actuator") || s.contains("spring"));
-    let is_express = fw_lower.contains("express") || signals_lower.iter().any(|s| s.contains("node") || s.contains("express"));
-    let is_django = fw_lower.contains("django") || signals_lower.iter().any(|s| s.contains("django") || s.contains("python"));
-    let is_php = tech.is_php || fw_lower.contains("laravel") || fw_lower.contains("php") || signals_lower.iter().any(|s| s.contains("php") || s.contains("laravel"));
+    let is_spring = fw_lower.contains("spring")
+        || signals_lower
+            .iter()
+            .any(|s| s.contains("actuator") || s.contains("spring"));
+    let is_express = fw_lower.contains("express")
+        || signals_lower
+            .iter()
+            .any(|s| s.contains("node") || s.contains("express"));
+    let is_django = fw_lower.contains("django")
+        || signals_lower
+            .iter()
+            .any(|s| s.contains("django") || s.contains("python"));
+    let is_php = tech.is_php
+        || fw_lower.contains("laravel")
+        || fw_lower.contains("php")
+        || signals_lower
+            .iter()
+            .any(|s| s.contains("php") || s.contains("laravel"));
 
     if is_spring {
         candidates.push(SemanticRoute {
@@ -271,7 +287,8 @@ pub fn discover_semantic_routes(
                 candidates.push(SemanticRoute {
                     path: "/api/v1/users/{id}/permissions".into(),
                     method: "GET".into(),
-                    reasoning: "Authorization privilege escalation route inferred from directives".into(),
+                    reasoning: "Authorization privilege escalation route inferred from directives"
+                        .into(),
                     input_surface: Some("none".into()),
                     suggested_params: vec!["id".into()],
                 });

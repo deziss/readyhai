@@ -10,8 +10,8 @@ pub mod markdown;
 pub mod markdown_sections;
 pub mod sarif;
 
-use std::path::{Path, PathBuf};
 use anyhow::Result;
+use std::path::{Path, PathBuf};
 
 use crate::agent::types::AgentRunReport;
 

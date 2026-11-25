@@ -4,9 +4,9 @@ mod pages;
 pub use journeys::{process_forms, process_journeys, process_state_graph};
 pub use pages::process_pages;
 
+use super::model::UiReport;
 use crate::model::{Category, Severity};
 use crate::qa::model::*;
-use super::model::UiReport;
 
 #[derive(Default)]
 pub struct Built {

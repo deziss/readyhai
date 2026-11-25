@@ -1,13 +1,13 @@
 use serde_json::{Value, json};
 
-use crate::agent::budget::RunBudget;
-use crate::agent::oracle::{self, BurstFacts};
-use crate::agent::types::{CaseExecutionResult, PlannedCase, StatefulStep};
 use super::auth::ResolvedAuth;
 use super::builder::{RequestSpec, build_request, curl_for_auth, is_mutating};
 use super::clients::Seen;
 use super::dispatch::{Ctx, evidence_rel_path};
 use super::http::{exec_http, skeleton, skipped, status_of_outcome};
+use crate::agent::budget::RunBudget;
+use crate::agent::oracle::{self, BurstFacts};
+use crate::agent::types::{CaseExecutionResult, PlannedCase, StatefulStep};
 
 const MAX_BURST: usize = 10;
 
@@ -90,8 +90,11 @@ pub(crate) fn run_mutation(
     first: &Seen,
     auth: &ResolvedAuth,
 ) -> Option<(CaseExecutionResult, Value)> {
-    let feedback =
-        crate::agent::mutation::extract_schema_feedback(first.status, &first.content_type, &first.body)?;
+    let feedback = crate::agent::mutation::extract_schema_feedback(
+        first.status,
+        &first.content_type,
+        &first.body,
+    )?;
     let mutated_payload =
         crate::agent::mutation::mutate_payload(c.payload.as_deref(), &feedback, &c.technique)?;
     let mut m = c.clone();

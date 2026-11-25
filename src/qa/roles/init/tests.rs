@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 
 use super::super::{AuthKind, Roles, env_var};
 use super::derive::{Derived, DerivedRole, derive};
@@ -250,8 +250,7 @@ fn paths_whose_methods_disagree_get_no_glob_and_a_note() {
     assert!(
         d.warnings
             .iter()
-            .any(|w| w.contains("/things")
-                && w.contains("allows some methods and denies others")),
+            .any(|w| w.contains("/things") && w.contains("allows some methods and denies others")),
         "{:?}",
         d.warnings
     );
@@ -417,9 +416,10 @@ fn run_reads_yaml_writes_a_loadable_file_and_refuses_urls_and_overwrites() {
 
 #[test]
 fn the_fixture_spec_derives_roles_that_match_the_hand_written_ones() {
-    let doc: Value =
-        serde_json::from_str(include_str!("../../../../tests/fixtures/qa-api/openapi.json"))
-            .unwrap();
+    let doc: Value = serde_json::from_str(include_str!(
+        "../../../../tests/fixtures/qa-api/openapi.json"
+    ))
+    .unwrap();
     let d = derive(&doc).unwrap();
     // the fixture has an /admin area: ordinary roles are denied it, an admin reaches all
     let user = role(&d, "user");

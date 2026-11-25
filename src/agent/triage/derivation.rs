@@ -2,15 +2,15 @@
 
 use std::collections::BTreeMap;
 
-use super::grouping::{
-    endpoint_template, listed, merge_same_server_error, path_of, server_error_signature, Group,
-    SAME_ERROR_PREFIX,
-};
-use super::rules::class_meta;
 use super::super::oracle::Severity;
 use super::super::types::{
     CaseExecutionResult, TriagedDefect, VerificationRecord, VerificationSummary, VerifyVerdict,
 };
+use super::grouping::{
+    Group, SAME_ERROR_PREFIX, endpoint_template, listed, merge_same_server_error, path_of,
+    server_error_signature,
+};
+use super::rules::class_meta;
 
 pub(crate) fn severity_of(r: &CaseExecutionResult) -> Severity {
     r.oracle
@@ -188,7 +188,8 @@ pub fn derive_defects_verified(
             };
             // identity across runs: the failing check and the endpoint (record ids collapsed); a
             // merged server error is the error itself, whichever endpoints it shows up on
-            defect.rule = super::super::memory::clean_ident(&g.code, super::super::memory::MAX_IDENT);
+            defect.rule =
+                super::super::memory::clean_ident(&g.code, super::super::memory::MAX_IDENT);
             defect.fingerprint = super::super::memory::fingerprint(
                 &defect.rule,
                 &match g.same_error_on {

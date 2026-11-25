@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// List a tar and reject absolute paths, `..` components and link entries.
 pub fn check_tar_safe(tar: &Path) -> Result<()> {

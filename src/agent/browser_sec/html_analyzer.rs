@@ -1,7 +1,7 @@
-use std::collections::{BTreeMap, HashSet};
-use std::sync::OnceLock;
 use regex::Regex;
 use serde_json::Value;
+use std::collections::{BTreeMap, HashSet};
+use std::sync::OnceLock;
 
 use super::models::{path_of_url, target_host_key};
 use crate::agent::budget::RunBudget;
@@ -92,7 +92,11 @@ fn resolve_same_origin_action(target: &str, page_path: &str, action: &str) -> Op
 }
 
 /// Extract non-password, non-destructive HTML `<form method="post">` definitions for Stored XSS checks.
-pub(crate) fn extract_post_html_forms(target: &str, page_path: &str, html: &str) -> Vec<ParsedHtmlForm> {
+pub(crate) fn extract_post_html_forms(
+    target: &str,
+    page_path: &str,
+    html: &str,
+) -> Vec<ParsedHtmlForm> {
     static FORM_RE: OnceLock<Regex> = OnceLock::new();
     static CTRL_RE: OnceLock<Regex> = OnceLock::new();
     let form_re = FORM_RE.get_or_init(|| Regex::new(r"(?is)<form\b([^>]*)>(.*?)</form>").unwrap());

@@ -4,14 +4,14 @@ use super::agent_api::{read_report_file, regenerate_reports};
 use super::guards::{err, offload};
 use super::types::{App, MAX_LISTED_RUNS, TriggerScanReq};
 use super::worker::{enqueue, prepare_scan, read_json, run_in_progress};
+use crate::engine::{self, ScanOpts};
+use crate::model::Profile;
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::sync::Arc;
-use crate::engine::{self, ScanOpts};
-use crate::model::Profile;
 
 pub async fn list_checks(State(app): State<Arc<App>>) -> Response {
     let list: Vec<_> = crate::checks::all(app.plugins.as_deref())
@@ -100,8 +100,6 @@ pub async fn get_report(Path((id, fmt)): Path<(String, String)>) -> Response {
         Err(r) => r,
     }
 }
-
-
 
 pub async fn api_scans_create(
     State(app): State<Arc<App>>,
@@ -428,4 +426,3 @@ pub async fn list_runs() -> Response {
         Err(r) => r,
     }
 }
-
