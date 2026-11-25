@@ -51,12 +51,16 @@ export function NetworkLabView({
   const targetKey = deepAuditKey(target);
   const [timeoutMs, setTimeoutMs] = useState(5000);
 
-  // Keep target in sync when initialTarget changes from outside
-  useEffect(() => {
-    if (initialTarget && initialTarget.trim() && initialTarget !== target) {
+  // Keep target in sync when initialTarget changes from outside. This uses the
+  // React-recommended "adjust state during render" pattern rather than an
+  // effect + setState, which would cause an extra cascading render.
+  const [prevInitialTarget, setPrevInitialTarget] = useState(initialTarget);
+  if (initialTarget !== prevInitialTarget) {
+    setPrevInitialTarget(initialTarget);
+    if (initialTarget.trim()) {
       setTarget(initialTarget.trim());
     }
-  }, [initialTarget]);
+  }
 
   // Regressive test configuration
   const [method, setMethod] = useState("GET");

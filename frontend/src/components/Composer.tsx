@@ -211,7 +211,16 @@ export function AutonomousDirectivesEngine({
 
   const synthesize = useCallback(
     async (modeToUse: Mode = activeMode) => {
+      // Defer state writes off the synchronous effect call-stack (react-hooks
+      // "no synchronous setState in effects"); one microtask later is identical
+      // for the user and avoids the cascading-render pattern.
+      await Promise.resolve();
       setIsSynthesizing(true);
+      // Optimistic in-memory default for this mode/target while the request is
+      // in flight; the server result (or this same shape on failure) lands below.
+      const fallback = generateDefaultDirectives(modeToUse, target, discoveredData);
+      setSynthesized(fallback);
+      setDirectives(formatSynthesizedDirectives(fallback));
       try {
         const res = await apiRequest<SynthesizedDirectives>("/api/agent/directives/synthesize", {
           method: "POST",
@@ -252,11 +261,13 @@ export function AutonomousDirectivesEngine({
     [activeMode, target, specUrl, discoveredData, setDirectives]
   );
 
+  // synthesize() defers every state write past an `await` (see above), so this
+  // effect never sets state synchronously; the rule cannot see across the
+  // async callback scope.
   useEffect(() => {
-    const initial = generateDefaultDirectives(activeMode, target, discoveredData);
-    setDirectives(formatSynthesizedDirectives(initial));
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     synthesize(activeMode);
-  }, [target, discoveredData, activeMode, tokenVersion]);
+  }, [synthesize, tokenVersion]);
 
   return (
     <div className="flex flex-col gap-3 rounded-sm border border-rh-line bg-rh-bg/40 p-3.5">

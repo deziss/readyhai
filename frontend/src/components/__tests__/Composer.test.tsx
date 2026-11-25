@@ -7,8 +7,12 @@ interface CustomMatchers<R = unknown> {
 }
 
 declare module "vitest" {
-  interface Assertion<R = void, T = unknown> extends CustomMatchers<R> {}
-  interface AsymmetricMatchersContaining extends CustomMatchers {}
+  // Augmentation must be interfaces (declaration merging); the empty bodies
+  // inherit everything from CustomMatchers.
+  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+  interface Assertion<R = void> extends CustomMatchers<R> {}
+  // eslint-disable-next-line @typescript-eslint/no-empty-object-type
+  interface AsymmetricMatchersContaining extends CustomMatchers<void> {}
 }
 
 expect.extend({
@@ -194,10 +198,13 @@ describe("Composer behaviour", () => {
     });
   });
 
-  it("keeps directives in sync with the agent run payload without manual operator input", () => {
+  it("keeps directives in sync with the agent run payload without manual operator input", async () => {
     const { props } = renderComposer();
     // Verify directives state was initialized or synchronized automatically
-    expect(props.setDirectives).toHaveBeenCalled();
+    // (the sync effect defers its writes by one microtask, so wait for them).
+    await waitFor(() => {
+      expect(props.setDirectives).toHaveBeenCalled();
+    });
     const lastCall = (props.setDirectives as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
     expect(typeof lastCall).toBe("string");
     expect(lastCall.length).toBeGreaterThan(0);

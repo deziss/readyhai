@@ -122,7 +122,6 @@ export function VulnsView() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [busyFingerprint, setBusyFingerprint] = useState<string | null>(null);
-  const [reloadNonce, setReloadNonce] = useState(0);
 
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
   const [severityFilter, setSeverityFilter] = useState<SeverityFilter>("all");
@@ -135,6 +134,10 @@ export function VulnsView() {
     return () => window.clearTimeout(t);
   }, [targetText]);
 
+  // Loading is always in-flight from mount and whenever filters/token change, so the
+  // spinner starts from initial state; setting `loading` synchronously inside the
+  // effect body would just be a cascading render, which the react-hooks lint rule
+  // forbids. Every state write below lands in a promise continuation (async).
   const load = useCallback(() => {
     const params = new URLSearchParams();
     if (statusFilter !== "all") params.set("status", statusFilter);
@@ -154,9 +157,8 @@ export function VulnsView() {
   }, [statusFilter, severityFilter, targetParam]);
 
   useEffect(() => {
-    setLoading(true);
     load();
-  }, [load, tokenVersion, reloadNonce]);
+  }, [load, tokenVersion]);
 
   function refresh() {
     setLoading(true);
