@@ -51,13 +51,32 @@ jobs:
             dist/readyhai-linux-x86_64.tar.gz
             dist/readyhai-linux-x86_64.tar.gz.sha256
 
+      - name: Build release title & description from CHANGELOG
+        id: title
+        # Every tag must ship a titled, described release: a highlighted-point
+        # summary distilled from the CHANGELOG section, then the full section.
+        # Fails the workflow when the tag has no CHANGELOG entry.
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          python3 scripts/release_notes.py --title "$VERSION" > dist/release-title.txt
+          python3 scripts/release_notes.py "$VERSION" dist/release-notes.md
+          echo "---- release title ----"
+          cat dist/release-title.txt
+          echo "---- release description (head) ----"
+          head -12 dist/release-notes.md
+          {
+            echo "title<<RH_TITLE_EOF"
+            cat dist/release-title.txt
+            echo "RH_TITLE_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          name: "ReadyHai ${{ github.ref_name }}"
+          name: ${{ steps.title.outputs.title }}
+          body_path: dist/release-notes.md
           draft: false
           prerelease: false
           files: |
             dist/readyhai-linux-x86_64.tar.gz
             dist/readyhai-linux-x86_64.tar.gz.sha256
-          generate_release_notes: true

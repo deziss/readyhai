@@ -121,7 +121,7 @@ gh attestation verify oci://ghcr.io/deziss/readyhai:X.Y.Z --repo deziss/readyhai
 |---|---|---|
 | `ci.yml` | push and pull request to `main`/`master`; callable (`workflow_call`) | `test`: version sync (`scripts/version.sh check`), `cargo fmt -- --check`, `cargo clippy -- -D warnings`, `cargo test --verbose`, release build. `eval` (needs `test`, 20 min): `cargo run -- eval --suite all --k 2`, summary appended to the job summary, `eval-report` artifact. `frontend` (node 24): `npm ci`, lint, `tsc --noEmit`, `npm test`. `python`: context-retriever unit tests. `docker` (pull requests only): no-push builds of the backend, frontend and runner images |
 | `image.yml` | `v*` tags | `verify` (the tag must equal `v<VERSION>`), `ci` (the whole `ci.yml`), then multi-arch GHCR images with SBOM and SLSA provenance; `needs: [verify, ci]` |
-| `release.yml` | `v*` tags | tag must match `VERSION`; release tarball and `.sha256` with build provenance attestation; GitHub release |
+| `release.yml` | `v*` tags | tag must match `VERSION`; release tarball and `.sha256` with build provenance attestation; GitHub release **with a title and description built by `scripts/release_notes.py` from the tag's CHANGELOG section** (highlighted-point summary + full notes; a tag without a CHANGELOG entry fails the job) |
 | `scorecard.yml` | weekly | OpenSSF Scorecard with SARIF upload |
 
 All actions are pinned by commit SHA. The `eval` job is the regression gate for detection quality: it fails when a threshold in `tests/eval/*.toml` is missed ([eval.md](eval.md)).
