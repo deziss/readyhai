@@ -118,6 +118,32 @@ pub struct PlannedCase {
     /// it never removes or adds a case.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub history_priority: bool,
+    /// Why this case runs early because of the run's project intelligence (the vulnerability
+    /// database and the opt-in exploitation engine): the planner writes
+    /// [`INTEL_REPRODUCED`]<rule> when the case re-tests a finding that safe templates
+    /// re-confirmed live this run, or [`INTEL_OPEN`]<rule> when it relates to a finding the
+    /// database still holds open. Advisory priority only — it reorders, never adds, drops or
+    /// reclassifies anything, and no verdict reads it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub intel_note: String,
+}
+
+/// [`PlannedCase::intel_note`] prefix: the finding was re-confirmed live this run.
+pub const INTEL_REPRODUCED: &str = "re-tests reproduced finding ";
+/// [`PlannedCase::intel_note`] prefix: the finding is merely known-open in the database.
+pub const INTEL_OPEN: &str = "re-tests known-open finding ";
+
+/// Intel tier of a case: 0 re-tests a finding reproduced live right now, 1 relates to a
+/// known-open database finding, 2 neither. Feeds [`plan_order`]: a live weakness outranks a
+/// merely-known one, which outranks the memory's regression probes.
+pub fn intel_rank(c: &PlannedCase) -> u8 {
+    if c.intel_note.starts_with(INTEL_REPRODUCED) {
+        0
+    } else if c.intel_note.starts_with(INTEL_OPEN) {
+        1
+    } else {
+        2
+    }
 }
 
 /// `PlannedCase::source` of a planner-made ledger row that sends nothing: no technique has a
@@ -178,26 +204,31 @@ pub fn case_priority(c: &PlannedCase) -> (u8, u8) {
 }
 
 /// The sort key of a plan that has to be cut or ordered. With nothing to prioritise (`any_priority`
-/// false) it is exactly [`case_priority`]. Otherwise the cases that re-test a known defect (memory)
-/// come first, then every case that tests a changed operation or one with a failing or flaky past
-/// (and the root liveness probe, which is always kept), then the rest, each tier by
-/// [`case_priority`]. So truncation drops unchanged, never-failed operations first.
+/// false) every case shares one tier, so the key reduces to [`case_priority`]. Otherwise the cases
+/// that re-test a finding the run reproduced live come first, then those related to a known-open
+/// database finding, then the cases that re-test a past defect (memory regression probes), then
+/// every case that tests a changed operation or one with a failing or flaky past (and the root
+/// liveness probe, which is always kept), then the rest, each tier by [`case_priority`]. So
+/// truncation drops unchanged, never-failed operations with no open finding first. With no intel
+/// markers anywhere the relative order is exactly what it was before the intel tiers existed.
 pub fn plan_order(any_priority: bool) -> impl Fn(&PlannedCase) -> (u8, u8, u8) {
     move |c| {
         let (class, risk) = case_priority(c);
-        let tier = if !c.regression_of.is_empty() {
-            0
-        } else if !any_priority
-            || !c.changed_ops.is_empty()
-            || c.history_priority
-            || c.source.as_deref() == Some("directives")
-            || c.technique == "authz"
-            || c.technique == "injection"
-            || c.component == "/"
-        {
-            1
-        } else {
-            2
+        let tier = match intel_rank(c) {
+            0 => 0,
+            1 => 1,
+            _ if !c.regression_of.is_empty() => 2,
+            _ if !any_priority
+                || !c.changed_ops.is_empty()
+                || c.history_priority
+                || c.source.as_deref() == Some("directives")
+                || c.technique == "authz"
+                || c.technique == "injection"
+                || c.component == "/" =>
+            {
+                3
+            }
+            _ => 4,
         };
         (tier, class, risk)
     }
@@ -209,9 +240,12 @@ pub fn any_changed(cases: &[PlannedCase]) -> bool {
 }
 
 /// Does any case of the plan have a reason to run early: a changed operation, a failing or flaky
-/// past, a known defect to re-test? Feeds [`plan_order`].
+/// past, a known defect to re-test, or a related open/reproduced finding? Feeds [`plan_order`].
 pub fn any_prioritised(cases: &[PlannedCase]) -> bool {
-    cases
-        .iter()
-        .any(|c| !c.changed_ops.is_empty() || c.history_priority || !c.regression_of.is_empty())
+    cases.iter().any(|c| {
+        !c.changed_ops.is_empty()
+            || c.history_priority
+            || !c.regression_of.is_empty()
+            || !c.intel_note.is_empty()
+    })
 }

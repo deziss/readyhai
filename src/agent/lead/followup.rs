@@ -209,6 +209,7 @@ pub fn plan_follow_ups(
                 // a follow-up is the lead's own case, not a re-test of a remembered defect
                 f.regression_of = vec![];
                 f.history_priority = false;
+                f.intel_note = String::new();
                 if let Some(s) = sibling {
                     f.contract = s.contract.clone();
                     f.expect_fields = s.expect_fields.clone();
@@ -249,6 +250,7 @@ pub fn plan_follow_ups(
                 f.changed_ops = vec![];
                 f.regression_of = vec![];
                 f.history_priority = false;
+                f.intel_note = String::new();
                 if f.source.as_deref() != Some("llm") {
                     // an LLM case stays exploratory for the oracle; anything else is the lead's own
                     f.source = Some("followup".into());

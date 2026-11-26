@@ -118,6 +118,7 @@ pub fn results_from_browser_report(
             area: "ui".into(),
             regression_of: Vec::new(),
             history_priority: false,
+            intel_note: String::new(),
         };
         let url = target_url_for_component(target, &component);
         let curl = format!("curl -sS {}", shell_quote(&url));

@@ -15,6 +15,7 @@ pub mod discovery;
 pub mod gate;
 pub mod gates;
 pub mod graph;
+pub(crate) mod intel;
 pub mod memory;
 pub mod options;
 pub mod order;

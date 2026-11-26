@@ -46,6 +46,11 @@ pub struct RunOptions {
     /// Where the agent remembers its targets (`<data_dir>/memory`; None = no memory: the run plans
     /// from the profile alone and writes nothing). `READYHAI_AGENT_MEMORY=off` turns it off.
     pub memory_dir: Option<PathBuf>,
+    /// The run's data directory for project intelligence (`<data>/vulns/vulns.jsonl`,
+    /// `<data>/settings.toml`). None = the process data directory (`READYHAI_DATA` or
+    /// XDG) — production behaviour. Tests point it at a temp dir so a run never
+    /// reads or writes the operator's real vulnerability database.
+    pub data_dir: Option<PathBuf>,
 }
 
 impl Default for RunOptions {
@@ -60,6 +65,7 @@ impl Default for RunOptions {
             lookup_requester_ip: true,
             workers: super::super::lead::workers_from_env(),
             memory_dir: memory::default_dir(),
+            data_dir: None,
         }
     }
 }
@@ -79,6 +85,13 @@ impl RunOptions {
     /// Keep the target's memory in `dir` (None: no memory).
     pub fn with_memory_dir(mut self, dir: Option<PathBuf>) -> Self {
         self.memory_dir = dir;
+        self
+    }
+
+    /// Read and write project intel (vulnerability database, settings lookup) under
+    /// `dir` instead of the process data directory (None: the process default).
+    pub fn with_data_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.data_dir = dir;
         self
     }
 }

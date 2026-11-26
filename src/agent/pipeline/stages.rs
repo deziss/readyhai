@@ -27,6 +27,7 @@ use super::gates::{
     validate_release_gate_verdict, validate_verify_gate,
 };
 use super::graph::{PipelineState, RoutingCondition, StationNode};
+use super::intel;
 use super::memory::{recall, remember};
 use super::options::{
     RunOptions, cap_if_slow, checkpoint, ip_fields, log, measure_llm, resolve_llm, take_llm_notes,
@@ -51,7 +52,13 @@ pub(crate) fn agent_stages(
         lookup_requester_ip,
         workers,
         memory_dir,
+        data_dir,
     } = opts;
+    // The run's project-intel root: the process data directory in production, an
+    // injected directory in tests, so a run can never touch the operator's own
+    // vulnerability database by accident.
+    let data_root = data_dir.unwrap_or_else(crate::engine::data_dir);
+    let data_root = data_root.as_path();
     let mut llm_budget = budget.llm_budget();
     let (ip, ip_type, guidance) = ip_fields(lookup_requester_ip, &mut rep.steps);
     rep.requester_ip = ip;
@@ -415,7 +422,74 @@ pub(crate) fn agent_stages(
 
     // 1c. what the agent remembers about this target (deterministic: a file, no LLM, no request)
     let today = crate::engine::today();
-    let (hints, memory_notes) = recall(memory_dir.as_deref(), &req.target, rep, &today);
+    let (mut hints, memory_notes) = recall(memory_dir.as_deref(), &req.target, rep, &today);
+    checkpoint(base, rep, &budget, &llm_budget);
+
+    // 1d. project intel: the vulnerability database, the opt-in exploitation engine and the
+    // plugged-tool registry, as ADVISORY planning context (see `intel` for the three
+    // invariants). Deterministic data only — it never changes a verdict. A broken settings
+    // FILE hard-fails the run like a scan does; no file means defaults.
+    let settings_path = crate::settings::settings_path_from_env().or_else(|| {
+        let d = data_root.join("settings.toml");
+        d.is_file().then_some(d)
+    });
+    let run_settings = crate::settings::Settings::load(settings_path.as_deref()).map_err(|e| {
+        anyhow::anyhow!(
+            "settings file {} cannot be used: {e:#}",
+            settings_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<none: defaults>".into())
+        )
+    })?;
+    // A configured-but-broken scope file degrades this step with a visible note and
+    // switches active probing off (see `intel::gather`), unlike the scan commands.
+    let (run_scope, scope_note) = match crate::scope::from_env() {
+        Ok(sc) => (sc, None),
+        Err(e) => (
+            None,
+            Some(format!(
+                "exploitation: skipped (scope file unusable: {e:#})"
+            )),
+        ),
+    };
+    let nonprod_now = nonprod_pin.unwrap_or_else(|| target_is_nonprod(&req.target));
+    let gathered = intel::gather(
+        req.dry_run,
+        &req.target,
+        &run_settings,
+        run_scope.as_ref(),
+        nonprod_now,
+        data_root,
+    );
+    let intel_reproduced = gathered.reproduced.clone();
+    if let Some(n) = scope_note {
+        rep.notes.push(n);
+    }
+    for n in &gathered.notes {
+        rep.notes.push(n.clone());
+    }
+    if hints.is_none() && !gathered.open.is_empty() {
+        hints = Some(Default::default());
+    }
+    if let Some(h) = hints.as_mut() {
+        h.merge_intel(
+            gathered
+                .open
+                .iter()
+                .map(|r| (r.fingerprint.clone(), r.rule.clone(), r.severity.clone()))
+                .collect(),
+            gathered.reproduced.clone(),
+        );
+    }
+    log(
+        &mut rep.steps,
+        "Intel",
+        "Context Gather",
+        &intel::step_summary(&gathered),
+        "completed",
+        Some("deterministic"),
+    );
     checkpoint(base, rep, &budget, &llm_budget);
 
     // Station 3: Plan
@@ -1216,6 +1290,33 @@ pub(crate) fn agent_stages(
     );
     rep.stage_sources.insert("triage".into(), triage_src);
     rep.triaged_defects = defects;
+    // 4a2. record this run's defects into the project's vulnerability database (advisory
+    // bookkeeping only — verdicts are already final; a dry-run records nothing)
+    {
+        let db_note = intel::record_to_vulndb(
+            data_root,
+            &run_settings,
+            &req.target,
+            &rep.triaged_defects,
+            req.dry_run,
+        );
+        let note = db_note.unwrap_or_else(|| "vulnerability DB: no update".to_string());
+        log(
+            &mut rep.steps,
+            "Intel",
+            "Vulnerability DB Record",
+            &note,
+            "completed",
+            Some("deterministic"),
+        );
+        rep.notes.push(note);
+        if !intel_reproduced.is_empty() {
+            rep.notes.push(format!(
+                "exploitation: {} of the host's known-open findings reproduced under safe templates (advisory)",
+                intel_reproduced.len()
+            ));
+        }
+    }
     // 4b. memory: fold this run into what the agent knew; an unexpired acceptance of a known
     // defect is applied here, so the ledger below does not count it as blocking
     let mut remembered = remember(memory_dir.as_deref(), req, rep, &cleanup, &today);

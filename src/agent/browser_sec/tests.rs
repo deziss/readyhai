@@ -250,6 +250,7 @@ fn agent_detects_dom_xss_and_stored_xss_with_clean_control_and_verifies_k() {
         lookup_requester_ip: false,
         workers: 2,
         memory_dir: None,
+        data_dir: Some(std::env::temp_dir().join(format!("rh-bsec-data-{}", std::process::id()))),
     };
 
     let rep = run_with(&run_base, &req, "browser-sec-test", opts, Some(true)).unwrap();

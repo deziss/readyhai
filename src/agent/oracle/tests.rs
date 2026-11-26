@@ -44,6 +44,7 @@ fn case(tech: &str, method: &str, component: &str) -> PlannedCase {
         area: String::new(),
         regression_of: vec![],
         history_priority: false,
+        intel_note: String::new(),
     }
 }
 

@@ -47,6 +47,7 @@ pub(crate) fn mk(
         area: String::new(),
         regression_of: vec![],
         history_priority: false,
+        intel_note: String::new(),
     }
 }
 

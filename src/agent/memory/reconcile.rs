@@ -8,7 +8,17 @@ use super::types::{
     Acceptance, DefectLine, DefectStatus, FlakyLine, KnownDefect, MAX_IDENT, MAX_LISTED, MAX_RUNS,
     Memory, RECENT_FIX_DAYS, SinceLastRun,
 };
-use crate::agent::types::{PlannedCase, TriagedDefect};
+use crate::agent::triage::path_of;
+use crate::agent::types::{INTEL_OPEN, INTEL_REPRODUCED, PlannedCase, TriagedDefect};
+
+/// Lowercase alphanumeric tokens of length >= 3 (deterministic, locale-free).
+fn tokens(s: &str) -> BTreeSet<String> {
+    s.to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|t| t.len() >= 3)
+        .map(str::to_string)
+        .collect()
+}
 
 pub(crate) fn line(
     fp: &str,
@@ -323,11 +333,35 @@ pub struct PlanHints {
     pub history_ops: BTreeSet<String>,
     /// Case classes with flaky outcomes: their failures are verified with the maximum k.
     pub flaky_classes: BTreeSet<String>,
+    /// (fingerprint, rule, severity) of this host's *known-open* rows in the project
+    /// vulnerability database — advisory context for prioritisation only, never a
+    /// case source and never a verdict input. Ordered worst-first by the database.
+    pub known_open: Vec<(String, String, String)>,
+    /// Vulndb fingerprints that safe exploitation templates re-confirmed this run
+    /// (opt-in engine only). Advisory: raises attention, changes nothing else.
+    pub reproduced: Vec<String>,
 }
 
 impl PlanHints {
     pub fn is_empty(&self) -> bool {
-        self.regression.is_empty() && self.history_ops.is_empty() && self.flaky_classes.is_empty()
+        self.regression.is_empty()
+            && self.history_ops.is_empty()
+            && self.flaky_classes.is_empty()
+            && self.known_open.is_empty()
+            && self.reproduced.is_empty()
+    }
+
+    /// Fold project intel (vulnerability database + exploitation verdicts) into the
+    /// memory-derived hints. Kept separate from [`PlanHints::from_memory`] so the
+    /// memory path stays pure; merging is the pipeline's call. Deterministic data
+    /// informing the plan — the same status as every other hint here.
+    pub fn merge_intel(
+        &mut self,
+        known_open: Vec<(String, String, String)>,
+        reproduced: Vec<String>,
+    ) {
+        self.known_open = known_open;
+        self.reproduced = reproduced;
     }
 
     pub fn from_memory(m: &Memory, today: &str) -> PlanHints {
@@ -364,20 +398,69 @@ impl PlanHints {
         h
     }
 
-    /// Tag the cases (`regression_of`, `history_priority`) and order the plan: regression probes,
-    /// then changed operations, then operations with a past, then the rest; each tier keeps the
-    /// planner's order. Returns how many cases are regression probes. A pure reordering: the cases
-    /// are the same before and after.
+    /// The vulndb rules this run proved live with safe exploitation templates: the `reproduced`
+    /// fingerprints, resolved to their rules through [`PlanHints::known_open`]. A reproduced
+    /// fingerprint with no known-open row has no rule to match and is ignored (deterministic).
+    fn reproduced_rules(&self) -> BTreeSet<String> {
+        self.known_open
+            .iter()
+            .filter(|(fp, _, _)| self.reproduced.contains(fp))
+            .map(|(_, rule, _)| rule.clone())
+            .collect()
+    }
+
+    /// Deterministic, cheap relevance: does this open finding's rule relate to this planned
+    /// case? The finding's URL is not carried in the hints, so matching uses the rule name
+    /// only: normalized rule tokens matched against the case's URL-path fragments (or the
+    /// whole rule appearing in the path). Deliberately not the title — rule names echo in
+    /// generic titles ("server error", "access control") and would elevate everything.
+    /// The second bucket of the regression mechanism — never adds or drops a case.
+    fn rule_relates(rule: &str, c: &PlannedCase) -> bool {
+        let rt = tokens(rule);
+        if rt.is_empty() {
+            return false;
+        }
+        let path = path_of(&c.component).to_ascii_lowercase();
+        path.contains(&rule.to_ascii_lowercase()) || tokens(&path).iter().any(|t| rt.contains(t))
+    }
+
+    /// Tag the cases (`regression_of`, `history_priority`, `intel_note`) and order the plan:
+    /// cases that re-test a finding the run just reproduced, then cases related to a known-open
+    /// database finding, then memory's regression probes, then changed operations, then
+    /// operations with a past, then the rest; each tier keeps the planner's order. Returns how
+    /// many cases are regression probes. A pure reordering: the cases are the same before and
+    /// after, and with no intel the order is exactly the one from before the intel tiers.
     pub fn apply(&self, cases: &mut [PlannedCase]) -> usize {
+        let reproduced = self.reproduced_rules();
         for c in cases.iter_mut() {
             let class = class_of(c);
             c.regression_of = self.regression.get(&class).cloned().unwrap_or_default();
             c.history_priority = self.history_ops.contains(&op_of_class(&class))
                 || self.flaky_classes.contains(&class);
+            // second bucket: open/reproduced vulndb findings, matched by rule tokens.
+            // A reproduced-related finding outranks a merely-open one; within a tier
+            // the database's worst-first order decides which rule is recorded.
+            let relates = |rule: &str| Self::rule_relates(rule, c);
+            let hit_reproduced = self
+                .known_open
+                .iter()
+                .find(|(fp, rule, _)| reproduced.contains(rule) || self.reproduced.contains(fp))
+                .filter(|(_, rule, _)| relates(rule))
+                .map(|(_, rule, _)| format!("{INTEL_REPRODUCED}{rule}"));
+            c.intel_note = hit_reproduced.unwrap_or_else(|| {
+                self.known_open
+                    .iter()
+                    .find(|(_, rule, _)| relates(rule))
+                    .map(|(_, rule, _)| format!("{INTEL_OPEN}{rule}"))
+                    .unwrap_or_default()
+            });
         }
         cases.sort_by_key(|c| {
             (
+                crate::agent::types::intel_rank(c) != 0,
+                crate::agent::types::intel_rank(c) != 1,
                 c.regression_of.is_empty(),
+                crate::agent::types::intel_rank(c) != 2,
                 c.changed_ops.is_empty(),
                 !c.history_priority,
             )

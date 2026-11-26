@@ -6,7 +6,9 @@ use super::change::ChangeSet;
 use super::discover::Discovery;
 use super::exec::{Credentials, normalize_method};
 use super::memory::PlanHints;
-use super::types::{PlannedCase, any_prioritised, plan_order};
+use super::types::{
+    INTEL_OPEN, INTEL_REPRODUCED, PlannedCase, any_prioritised, intel_rank, plan_order,
+};
 use crate::llm::{Budget, LlmConfig};
 
 pub mod baseline;
@@ -198,14 +200,31 @@ pub fn plan_cases_remembered_with_whitebox(
                 "agent memory: {probes} case(s) re-test known defects and run first, {past} more belong to operations that failed or were flaky before; nothing was added or dropped"
             ));
         }
+        // traceability for the intel tiers: the why rides on each case's `intel_note`
+        let live = cases
+            .iter()
+            .filter(|c| c.intel_note.starts_with(INTEL_REPRODUCED))
+            .count();
+        let open = cases
+            .iter()
+            .filter(|c| c.intel_note.starts_with(INTEL_OPEN))
+            .count();
+        if live + open > 0 {
+            notes.push(format!(
+                "project intelligence: {live} case(s) re-test findings safe exploitation re-confirmed live and run first, {open} more relate to findings still open in the vulnerability database; nothing was added or dropped"
+            ));
+        }
     }
     let changed = any_prioritised(&cases);
     if let Some(f) = focus {
-        // changed operations first, after the known-defect probes (stable: each side keeps the
-        // planner's order)
+        // changed operations first, after the intel cases and the known-defect probes (stable:
+        // each side keeps the planner's order)
         cases.sort_by_key(|c| {
             (
+                intel_rank(c) != 0,
+                intel_rank(c) != 1,
                 c.regression_of.is_empty(),
+                intel_rank(c) != 2,
                 c.changed_ops.is_empty(),
                 !c.history_priority,
             )

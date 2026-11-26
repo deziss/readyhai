@@ -846,6 +846,7 @@ fn run_opts(k: u32) -> crate::agent::pipeline::RunOptions {
         lookup_requester_ip: false,
         workers: 4,
         memory_dir: None,
+        data_dir: Some(std::env::temp_dir().join(format!("rh-verify-data-{}", std::process::id()))),
     }
 }
 

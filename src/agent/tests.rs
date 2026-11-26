@@ -271,6 +271,12 @@ fn tmp(name: &str) -> std::path::PathBuf {
     d
 }
 
+/// Unique suffix for per-test-run data roots (vulndb lives in the data dir and accumulates).
+fn next_data_seq() -> usize {
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+}
+
 fn opts() -> RunOptions {
     RunOptions {
         budget: RunBudget::new(80, 800, Duration::from_secs(120), 0.0),
@@ -282,6 +288,10 @@ fn opts() -> RunOptions {
         lookup_requester_ip: false,
         workers: 4,
         memory_dir: None,
+        // Tests never touch the operator's real data dir (vulnerability database).
+        // Fresh per opts(): one run's findings recorded into the vulndb must not
+        // intel-elevate the next run's plan inside the same test process.
+        data_dir: Some(tmp(&format!("data-{}", next_data_seq()))),
     }
 }
 
@@ -329,6 +339,7 @@ fn case(id: &str, tech: &str, method: &str, comp: &str) -> PlannedCase {
         area: String::new(),
         regression_of: vec![],
         history_priority: false,
+        intel_note: String::new(),
     }
 }
 

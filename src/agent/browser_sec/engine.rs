@@ -57,6 +57,7 @@ fn make_browser_finding_case(
         area: "ui".into(),
         regression_of: Vec::new(),
         history_priority: false,
+        intel_note: String::new(),
     }
 }
 

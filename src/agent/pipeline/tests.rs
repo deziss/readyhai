@@ -177,6 +177,9 @@ fn opts() -> RunOptions {
         lookup_requester_ip: false,
         workers: 4,
         memory_dir: None,
+        // Never let a test run read or write the operator's real vulnerability
+        // database / settings: the intel stage works inside this temp root.
+        data_dir: Some(tmp("intel-sandbox")),
     }
 }
 
@@ -366,6 +369,53 @@ fn order_and_trim_drops_generic_probes_first_and_renumbers() {
     assert!(
         kept[..2].iter().all(|c| c.technique == "authz"),
         "the cases that will run first are the important ones"
+    );
+}
+
+#[test]
+fn a_cut_plan_keeps_reproduced_related_cases_before_open_and_regression_ones() {
+    use crate::agent::types::{INTEL_OPEN, INTEL_REPRODUCED};
+    let build = || {
+        let mut cases: Vec<PlannedCase> = (0..8)
+            .map(|i| {
+                planned(
+                    &format!("TC-{:03}", i + 1),
+                    "boundary",
+                    "GET",
+                    &format!("/g{i}"),
+                )
+            })
+            .collect();
+        let mut repro = planned("TC-009", "boundary", "GET", "/live");
+        repro.intel_note = format!("{INTEL_REPRODUCED}env-exposure");
+        let mut open = planned("TC-010", "boundary", "GET", "/stale");
+        open.intel_note = format!("{INTEL_OPEN}git-exposure");
+        let mut regress = planned("TC-011", "boundary", "GET", "/memory");
+        regress.regression_of = vec!["a".repeat(16)];
+        cases.extend([regress, open, repro]);
+        cases
+    };
+
+    // a cap of two keeps the two intel cases, in precedence order, before anything else
+    let (kept, dropped) = order_and_trim(build(), Some(2), 60);
+    assert_eq!(
+        kept.iter()
+            .map(|c| c.component.as_str())
+            .collect::<Vec<_>>(),
+        ["/live", "/stale"],
+        "reproduced-related first, then open-related"
+    );
+    assert!(
+        dropped.iter().any(|c| c.component == "/memory"),
+        "the memory regression probe yields to live intel"
+    );
+    // a cap of three keeps the regression probe third
+    let (kept, _) = order_and_trim(build(), Some(3), 60);
+    assert_eq!(
+        kept.iter()
+            .map(|c| c.component.as_str())
+            .collect::<Vec<_>>(),
+        ["/live", "/stale", "/memory"]
     );
 }
 

@@ -279,6 +279,7 @@ impl AttackDag {
             area: "stateful".into(),
             regression_of: Vec::new(),
             history_priority: false,
+            intel_note: String::new(),
         };
         Ok(c)
     }

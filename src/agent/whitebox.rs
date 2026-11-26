@@ -392,6 +392,7 @@ fn build_case(
         area: String::new(),
         regression_of: Vec::new(),
         history_priority: false,
+        intel_note: String::new(),
     }
 }
 
@@ -810,6 +811,9 @@ app.get("/api/internal/export", (req, res) => {
             lookup_requester_ip: false,
             workers: 2,
             memory_dir: None,
+            data_dir: Some(
+                std::env::temp_dir().join(format!("rh-whitebox-data-{}", std::process::id())),
+            ),
         };
 
         let rep = run_with(&run_base, &req, "wb-test", opts, Some(true)).unwrap();

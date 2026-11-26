@@ -550,6 +550,7 @@ pub fn synthesize_mutation_probe(anomaly: &OodaAnomaly, target: &str) -> Planned
         area: String::new(),
         regression_of: Vec::new(),
         history_priority: false,
+        intel_note: String::new(),
     };
     probe.area = Area::classify(&probe).as_str().to_string();
     probe
@@ -1245,6 +1246,9 @@ mod tests {
             lookup_requester_ip: false,
             workers: 2,
             memory_dir: None,
+            data_dir: Some(
+                std::env::temp_dir().join(format!("rh-react-data-{}", std::process::id())),
+            ),
         };
 
         let rep = run_with(&run_base, &req, "react-llm", opts, Some(true)).unwrap();
@@ -1365,6 +1369,9 @@ mod tests {
             lookup_requester_ip: false,
             workers: 2,
             memory_dir: None,
+            data_dir: Some(
+                std::env::temp_dir().join(format!("rh-react-data-{}", std::process::id())),
+            ),
         };
 
         let rep = run_with(&run_base, &req, "react-offline", opts, Some(true)).unwrap();

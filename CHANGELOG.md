@@ -2,6 +2,25 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.8.0] - 2026-11-26
+
+### Added
+
+- **Intel stage (`src/agent/pipeline/intel.rs`)**: a new pipeline station between memory recall and Planning — the agent no longer plans blind on a target it has already probed. Before the planner runs, the agent gathers four cheap sources into one advisory intel bundle: (1) the target's own **Vulns DB history** for this host — its open findings with their `verification` stamps exactly as triaged, honoured only when `[vulndb] enabled`; (2) **up-front safe re-verification** — when the operator has `[exploits] enabled` and the run is not a dry-run, the v3.7 verification templates replay over the host's currently-open findings within the `max_probes` budget, every URL through the ordinary scope egress guard with `intrusive = true`, so a weakness proven before is proven again before planning starts; (3) **passive network posture** — cheap facts from the existing `src/network` helpers, no active probing of its own; (4) **tooling availability** — which plugged tool images (Docker packs / tool cache) are actually present, so the planner does not schedule what the machine cannot run today.
+- **Post-triage recording loop**: after Defect Triage the agent records its own triaged findings into the Vulns DB via `vulndb::record_run` when `[vulndb] enabled` — agent runs now feed the same cross-target database CLI and `serve` scans write to, with the same fingerprint dedupe and triage-status semantics. Dry runs record nothing and probe nothing.
+
+### Changed
+
+- Agent-memory `PlanHints` gained `known_open` (this host's open Vulns DB findings) and `reproduced` (weaknesses the Intel stage re-proved this run), so the planner re-tests verified/open weaknesses first. Deterministic prioritization only: intel reorders the plan, and — per Deterministic Primacy — never changes a verdict.
+
+### Docs
+
+- `src/agent/pipeline/README.md`: Intel stage in the lifecycle and submodule table, with advisory/deterministic invariants; README agent blurb notes the vulndb consume/re-record loop; `docs/build-log.md` Round 12 describes the sources and the safety layers.
+
+### Testing
+
+- The Intel stage ships with unit coverage for the gate semantics (no `[vulndb]` → no intel read or write-back; `[exploits]` off or dry-run → zero probes; dry-run → zero records; plan-hint prioritization stays deterministic and verdict-neutral) — plus plan-hint merge and planner-elevation cases in `memory/tests.rs` and `plan/tests.rs` (reproduced > open > regression ordering, and a byte-identical plan with empty hints). Release run: 1014 `cargo test` passed (+15 over v3.7.0), `cargo clippy -- -D warnings` and `cargo fmt --check` clean.
+
 ## [3.7.0] - 2026-11-26
 
 ### Added

@@ -32,6 +32,7 @@ fn case(method: &str, component: &str, payload: Option<&str>) -> PlannedCase {
         area: String::new(),
         regression_of: vec![],
         history_priority: false,
+        intel_note: String::new(),
     }
 }
 

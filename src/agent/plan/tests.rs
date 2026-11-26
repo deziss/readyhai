@@ -2652,3 +2652,164 @@ fn test_attack_dag_partition_independent_branches() {
     assert_eq!(single_branches.len(), 1);
     assert_eq!(single_branches[0].len(), 2);
 }
+// ------------------------------------------------------------ project intelligence (vulndb hints)
+
+fn intel_hints(open: Vec<(&str, &str, &str)>, reproduced: Vec<&str>) -> PlanHints {
+    use crate::agent::memory::fingerprint;
+    let mut h = PlanHints::default();
+    h.merge_intel(
+        open.into_iter()
+            .map(|(fp_seed, rule, sev)| {
+                (
+                    fingerprint(rule, fp_seed),
+                    rule.to_string(),
+                    sev.to_string(),
+                )
+            })
+            .collect(),
+        reproduced.into_iter().map(String::from).collect(),
+    );
+    h
+}
+
+fn plan_with(d: &Discovery, creds: &Credentials, hints: &PlanHints) -> PlanOutcome {
+    plan_cases_remembered(
+        None,
+        "http://h",
+        "standard",
+        d,
+        None,
+        creds,
+        7,
+        None,
+        Some(hints),
+    )
+}
+
+#[test]
+fn a_known_open_finding_elevates_cases_related_to_its_rule() {
+    let mut d = Discovery::default();
+    d.routes = vec![
+        route("/", 200),
+        route("/.git/config", 200),
+        route("/about", 200),
+    ];
+    let creds = Credentials::none();
+    let plain = plan_cases_seeded(None, "http://h", "standard", &d, None, &creds, 7);
+    let idx_of_git = plain
+        .cases
+        .iter()
+        .position(|c| c.component.starts_with("/.git"))
+        .expect("the planner probes the discovered git config");
+    // a merely-open finding: the fingerprint seed never matches a reproduced id
+    let hints = intel_hints(vec![("/whatever", "git-exposure", "high")], vec![]);
+    let with = plan_with(&d, &creds, &hints);
+    assert_eq!(
+        with.cases.len(),
+        plain.cases.len(),
+        "nothing is added or dropped"
+    );
+    let git_now = with
+        .cases
+        .iter()
+        .position(|c| c.component.starts_with("/.git"))
+        .unwrap();
+    assert!(
+        with.cases[git_now]
+            .intel_note
+            .starts_with(super::super::types::INTEL_OPEN),
+        "{:?}",
+        with.cases[git_now].intel_note
+    );
+    assert_eq!(super::super::types::intel_rank(&with.cases[git_now]), 1);
+    // the note names the rule it came from, so the ordering is traceable
+    assert!(with.cases[git_now].intel_note.contains("git-exposure"));
+    // elevated above where plain ordering put it, and above the default-order cases
+    assert!(git_now < idx_of_git, "{git_now} !< {idx_of_git}");
+    assert!(
+        with.notes
+            .iter()
+            .any(|n| n.contains("project intelligence:")),
+        "{:?}",
+        with.notes
+    );
+    // same multiset of cases: this only reorders
+    let keys = |p: &PlanOutcome| {
+        let mut k: Vec<String> = p.cases.iter().map(key_of).collect();
+        k.sort();
+        k
+    };
+    assert_eq!(keys(&with), keys(&plain));
+}
+
+#[test]
+fn a_reproduced_finding_outranks_a_merely_open_one() {
+    let mut d = Discovery::default();
+    d.routes = vec![
+        route("/", 200),
+        route("/.env", 200),
+        route("/.git/config", 200),
+        route("/about", 200),
+    ];
+    let creds = Credentials::none();
+    // "reproduced" carries real fingerprints: the env-exposure finding was re-confirmed live
+    let live_fp = crate::agent::memory::fingerprint("env-exposure", "/live");
+    let hints = intel_hints(
+        vec![
+            ("/live", "env-exposure", "medium"),
+            ("/stale", "git-exposure", "high"),
+        ],
+        vec![&live_fp],
+    );
+    let with = plan_with(&d, &creds, &hints);
+    let env_i = with
+        .cases
+        .iter()
+        .position(|c| c.component.starts_with("/.env"))
+        .unwrap();
+    let git_i = with
+        .cases
+        .iter()
+        .position(|c| c.component.starts_with("/.git"))
+        .unwrap();
+    assert!(
+        with.cases[env_i]
+            .intel_note
+            .starts_with(super::super::types::INTEL_REPRODUCED),
+        "{:?}",
+        with.cases[env_i].intel_note
+    );
+    assert!(
+        with.cases[git_i]
+            .intel_note
+            .starts_with(super::super::types::INTEL_OPEN)
+    );
+    // live proof first, even though the merely-open finding is the worse severity
+    assert!(env_i < git_i, "{env_i} !< {git_i}");
+    assert_eq!(env_i, 0, "the reproduced-related case leads the plan");
+    // and the truncation order keeps the same precedence
+    let key = plan_order(any_prioritised(&with.cases));
+    let mut cut = with.cases.clone();
+    cut.sort_by_key(|c| key(c));
+    assert_eq!(cut[0].component, with.cases[env_i].component);
+}
+
+#[test]
+fn intel_hints_with_no_findings_leave_the_plan_byte_identical() {
+    let mut d = Discovery::default();
+    d.routes = vec![route("/", 200), route("/.env", 200), route("/admin", 401)];
+    d.routes[1].has_form = true;
+    let creds = Credentials::none();
+    let plain = plan_cases_seeded(None, "http://h", "standard", &d, None, &creds, 7);
+    let empty = plan_with(&d, &creds, &intel_hints(vec![], vec![]));
+    assert_eq!(
+        serde_json::to_string(&empty.cases).unwrap(),
+        serde_json::to_string(&plain.cases).unwrap()
+    );
+    assert!(
+        !empty
+            .notes
+            .iter()
+            .any(|n| n.contains("project intelligence:"))
+    );
+}

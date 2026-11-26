@@ -708,3 +708,21 @@ fn forget_removes_the_file_and_the_lock_is_released() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn merge_intel_fills_the_new_fields_and_is_empty_counts_them() {
+    let mut h = PlanHints::default();
+    assert!(h.is_empty());
+    h.merge_intel(
+        vec![("a1b2c3".into(), "git-exposure".into(), "high".into())],
+        vec!["a1b2c3".into()],
+    );
+    assert_eq!(h.known_open.len(), 1);
+    assert_eq!(h.known_open[0].1, "git-exposure");
+    assert_eq!(h.reproduced, vec!["a1b2c3".to_string()]);
+    assert!(!h.is_empty(), "intel-only hints must not look empty");
+    // Merging replaces (the run's own intel wins), it never duplicates.
+    h.merge_intel(vec![], vec![]);
+    assert!(h.known_open.is_empty() && h.reproduced.is_empty());
+    assert!(h.is_empty());
+}
