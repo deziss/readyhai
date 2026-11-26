@@ -64,11 +64,8 @@ jobs:
           cat dist/release-title.txt
           echo "---- release description (head) ----"
           head -12 dist/release-notes.md
-          {
-            echo "title<<RH_TITLE_EOF"
-            cat dist/release-title.txt
-            echo "RH_TITLE_EOF"
-          } >> "$GITHUB_OUTPUT"
+          # single-line title: plain key=value is safe ($() trims the newline)
+          echo "title=$(cat dist/release-title.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3

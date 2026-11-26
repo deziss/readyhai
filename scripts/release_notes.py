@@ -135,6 +135,8 @@ def main(argv: list[str]) -> int:
     if not args or not re.fullmatch(r"\d+\.\d+\.\d+", args[0]):
         sys.exit(__doc__)
     out = title(args[0]) if want_title else notes(args[0])
+    if not out.endswith("\n"):
+        out += "\n"  # never concatenate onto a following delimiter line
     if not want_title and len(args) == 2:
         Path(args[1]).write_text(out, encoding="utf-8")
     else:
