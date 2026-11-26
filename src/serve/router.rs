@@ -4,6 +4,7 @@ use super::agent_api::*;
 use super::auth::{require_auth, validate_principal, validate_scope_path, validate_token, whoami};
 use super::badges::*;
 use super::eval_api::*;
+use super::exploits_api::{api_exploits_run, api_exploits_templates};
 use super::guards::err;
 use super::network_api::*;
 use super::scans::*;
@@ -219,6 +220,8 @@ pub fn build_router(app: Arc<App>) -> Router {
         .route("/api/rbac", get(api_rbac_get))
         .route("/api/vulns", get(api_vulns_get))
         .route("/api/vulns/{fp}", post(api_vulns_status_post))
+        .route("/api/exploits/templates", get(api_exploits_templates))
+        .route("/api/exploits/run", post(api_exploits_run))
         .route("/checks", get(list_checks))
         .route("/runs", post(create_run).get(list_runs))
         .route("/runs/{id}", get(get_run))

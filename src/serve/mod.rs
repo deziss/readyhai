@@ -4,6 +4,7 @@ pub mod agent_api;
 pub mod auth;
 pub mod badges;
 pub mod eval_api;
+pub mod exploits_api;
 pub mod guards;
 pub mod network_api;
 pub mod rbac;
@@ -26,6 +27,8 @@ pub use self::auth::*;
 pub use self::badges::*;
 #[allow(unused_imports)]
 pub use self::eval_api::*;
+#[allow(unused_imports)]
+pub use self::exploits_api::*;
 #[allow(unused_imports)]
 pub use self::guards::*;
 #[allow(unused_imports)]

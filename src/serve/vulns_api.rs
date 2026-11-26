@@ -26,6 +26,7 @@ pub struct VulnsQuery {
     pub status: Option<String>,
     pub severity: Option<String>,
     pub target: Option<String>,
+    pub verification: Option<String>,
 }
 
 /// Body of `POST /api/vulns/{fingerprint}`.
@@ -63,6 +64,12 @@ pub async fn api_vulns_get(Query(q): Query<VulnsQuery>) -> Response {
     let mut bad = None;
     let status = filter_value("status", q.status.as_deref(), &vulndb::STATUSES, &mut bad);
     let severity = filter_value("severity", q.severity.as_deref(), &SEVERITIES, &mut bad);
+    let verification = filter_value(
+        "verification",
+        q.verification.as_deref(),
+        &vulndb::VERIFICATIONS,
+        &mut bad,
+    );
     if let Some(r) = bad {
         return r;
     }
@@ -76,6 +83,7 @@ pub async fn api_vulns_get(Query(q): Query<VulnsQuery>) -> Response {
         target,
         status,
         severity,
+        verification,
     };
     match offload(move || vulndb::list(&filter)).await {
         Ok(rows) => Json(json!({"count": rows.len(), "vulns": rows})).into_response(),

@@ -142,6 +142,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/rbac"),
     ("GET", "/api/vulns"),
     ("POST", "/api/vulns/{fp}"),
+    ("GET", "/api/exploits/templates"),
+    ("POST", "/api/exploits/run"),
     ("GET", "/api/badges/gate"),
     ("GET", "/api/badges/ledger"),
     ("GET", "/api/badges/network"),

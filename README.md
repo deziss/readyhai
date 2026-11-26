@@ -7,7 +7,7 @@
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate.
 
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.6.0-brightgreen.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-3.7.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
 [![Tests](https://img.shields.io/badge/tests-889%20Rust%20%7C%20144%20Vitest-informational.svg)](#testing)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)
@@ -32,6 +32,7 @@ Modern deployments often rely on dozens of disparate tools (`trivy`, `semgrep`, 
 - **Deterministic and honest:** verdicts come from code, never from an LLM. Anything that could not be measured is "not evaluated" or `null`, never a default score. A failure must reproduce under the verifier before it counts as a defect.
 - **Measured against seeded bugs:** `readyhai eval` scores the QA engine and the agent on fixtures with known defects (recall, false positives, pass^k) and gates CI on it.
 - **Vulnerability database:** every warn/fail finding is remembered across targets in one local JSONL (fingerprint dedupe, re-observation counted). Triage with `readyhai vulns`, `readyhai vulns accept|forget <fp>`, the REST API or the Vulns view; `accepted`/`forgotten` decisions survive re-scans (acceptance resets only when the severity changes). On by default; `[vulndb] enabled = false` turns recording off.
+- **Exploitation verification (opt-in):** recorded findings that can be re-checked safely get a second, honest look — `src/exploits` ships deterministic read-only PoC templates (env-file read, `.git/HEAD` exposure, backup-file read, open admin panel, live TLS posture, reachability probe) auto-matched to a finding by kind/rule/title. Only the finding's own URL (or its origin's `/.env` / `/.git/HEAD`) is ever requested; every probe passes the scope egress guard in intrusive mode (prod refused), the whole engine is off until `[exploits] enabled = true`, and a verdict never changes triage status. Evidence excerpts are redacted; a check that cannot honestly prove its case reports `inconclusive` rather than faking a `verified`.
 - **WireGuard config audit:** a built-in repo check (`wireguard`) flags committed `PrivateKey`/`PresharedKey` values (redacted), key reuse across peers/files, `AllowedIPs = 0.0.0.0/0` overreach, weak key material, `[Interface]` sections without `Address=`, duplicate `ListenPort`s and NAT peers without `PersistentKeepalive`.
 - **AI Agent Native:** Built-in Model Context Protocol (MCP) server over stdio for Claude Code and autonomous agents.
 
@@ -336,7 +337,9 @@ readyhai vulns accept 4f2a91c7d3                 # unique 6+ char fingerprint pr
 readyhai vulns forget 4f2a91c7d3
 ```
 
-Read-only: no scan, no Docker, no network. `accepted`/`forgotten` survive re-scans (an `accepted` row re-recorded at a different severity re-opens). Same rows via `GET/POST /api/vulns` and the **Vulns** web view. Details: [docs/configuration.md](docs/configuration.md#vulnerability-database-vulndb).
+Read-only: no scan, no Docker, no network. `accepted`/`forgotten` survive re-scans (an `accepted` row re-recorded at a different severity re-opens). Same rows via `GET/POST /api/vulns` (also filterable with `?verification=`) and the **Vulns** web view. Details: [docs/configuration.md](docs/configuration.md#vulnerability-database-vulndb).
+
+Each row also carries an evidence-grade **verification** stamp (`unverified`/`verified`/`not_reproducible`/`inconclusive`/`skipped`) set by the opt-in exploit-verification engine — `GET /api/exploits/templates`, `POST /api/exploits/run`, or the **Verify** button in the Vulns view. Verification never changes the triage status above, and nothing probes until `[exploits] enabled = true`.
 
 ### Web Interface (Port 3000)
 
@@ -352,8 +355,8 @@ The Next.js interface (IBM Plex, dark theme, `rh-*` design tokens) has five top-
    - **Regressive testing**: N iterations with separate private sessions (no connection pooling) to catch flapping endpoints, socket leaks and proxy drops, with throttling presets (Unthrottled, Fast 3G, Slow 3G, flaky jitter, custom latency).
    - **Root-cause diagnosis**: DNS, TCP, TLS, TTFB and gateway status stages; classification into `STABLE`, `TIMEOUT`, `5XX_FLAPPING`, `CONNECTION_RESET`, `HTTP_ERRORS`, `HIGH_JITTER`; copyable reproduction cURLs. Anything that cannot be measured is shown as not measured.
    - **Deep audit** (six pillars: dual-stack, sub-resources, protocol matrix, TLS, CORS preflight, MTU) and a **cURL runner** with stage timings.
-4. **Settings** (server tool integrations and access control): tri-state (auto/on/off) controls for the Tools, Plugins and Intrusive classes, a searchable per-check toggle table showing each check's effective decision and why (`by auto`, `by settings`, …), a custom id/glob field, Save/Discard/Reset with optimistic-concurrency versioning, a vulnerability-database status panel (enabled flag + file path, backend-sourced), and a read-only RBAC keyring panel (names, roles, key fingerprint prefixes; admins only — other roles see a muted note). Saving writes `settings.toml` in the server's data directory; the next scan picks it up. Requires the admin role when RBAC is on.
-5. **Vulns** (cross-target vulnerability database): every warn/fail finding ReadyHai recorded on this server, fed automatically by scans; a severity/target/rule/status table with open/accepted/forgotten and severity filters plus a debounced target search, open/accepted/forgotten counts, and per-row **Accept** / **Forget** triage backed by `GET /api/vulns` and `POST /api/vulns/{fingerprint}` (status changes need the admin role when RBAC is on; viewers get a plain 403 explanation).
+4. **Settings** (server tool integrations and access control): tri-state (auto/on/off) controls for the Tools, Plugins and Intrusive classes, a searchable per-check toggle table showing each check's effective decision and why (`by auto`, `by settings`, …), a custom id/glob field, Save/Discard/Reset with optimistic-concurrency versioning, a vulnerability-database status panel (enabled flag + file path, backend-sourced), an **Exploitation** card (enable safe verification runs + `max_probes` budget, off by default), and a read-only RBAC keyring panel (names, roles, key fingerprint prefixes; admins only — other roles see a muted note). Saving writes `settings.toml` in the server's data directory; the next scan picks it up. Requires the admin role when RBAC is on.
+5. **Vulns** (cross-target vulnerability database): every warn/fail finding ReadyHai recorded on this server, fed automatically by scans; a severity/target/rule/status table with open/accepted/forgotten and severity filters plus a debounced target search, open/accepted/forgotten counts, per-row **Accept** / **Forget** triage backed by `GET /api/vulns` and `POST /api/vulns/{fingerprint}` (status changes need the admin role when RBAC is on; viewers get a plain 403 explanation), plus a verification badge and a per-row **Verify** button that re-checks the finding with its safe template (`POST /api/exploits/run`, admin role; hidden entirely on backends without the feature).
 
 The UI shows only what the backend reported; a missing verdict, score or measurement is "not evaluated", never a default.
 
@@ -579,7 +582,7 @@ CI (`.github/workflows/ci.yml`) runs version sync, `cargo fmt --check`, `cargo c
 
 The full status is in [docs/roadmap.md](docs/roadmap.md). In short:
 
-- **Done:** scan engine (46 built-in checks incl. Tree-sitter cross-file AST audit, Opengrep, Nuclei, active ZAP, WireGuard config audit), senior-QA engine, offline bundle, deep-security agent (modular attacks, in-process OAST, Playwright `BrowserSecurity`, white-box AST bridge, ReAct adaptive waves, independent verifier, lead and sub-agents, per-target memory), 10-suite eval harness and CI gate, Agent Studio and Network Lab, vuln database and Vulns view, MCP swarm tools, signed multi-arch images.
+- **Done:** scan engine (46 built-in checks incl. Tree-sitter cross-file AST audit, Opengrep, Nuclei, active ZAP, WireGuard config audit), senior-QA engine, offline bundle, deep-security agent (modular attacks, in-process OAST, Playwright `BrowserSecurity`, white-box AST bridge, ReAct adaptive waves, independent verifier, lead and sub-agents, per-target memory), 10-suite eval harness and CI gate, Agent Studio and Network Lab, vuln database and Vulns view, opt-in exploitation verification (`src/exploits`, `GET /api/exploits/templates`, `POST /api/exploits/run`, Verify in the Vulns view), MCP swarm tools, signed multi-arch images.
 - **Next:** multi-target trend dashboards, cross-service distributed taint/auth correlation, and verified PR patch synthesis.
 - **Not implemented, and documented as such:**
   - A GitHub App / PR status check: `POST /api/github/pr-comment` only renders PR-comment markdown from data you supply; ReadyHai does not post to GitHub. Upload SARIF with the `upload-sarif` action instead.

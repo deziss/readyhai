@@ -22,6 +22,9 @@ interface VulnFixture {
   occurrences: number;
   status: string;
   message: string;
+  verification: string;
+  verified_by: string | null;
+  verified_at: string | null;
 }
 
 function vuln(over: Partial<VulnFixture> & { fingerprint: string }): VulnFixture {
@@ -38,6 +41,9 @@ function vuln(over: Partial<VulnFixture> & { fingerprint: string }): VulnFixture
     occurrences: 3,
     status: "open",
     message: "No CSP header was returned on 5 sampled responses.",
+    verification: "unverified",
+    verified_by: null,
+    verified_at: null,
     ...over,
   };
 }
@@ -108,6 +114,16 @@ interface StubOptions {
   /** Behavior of POST /api/vulns/{fp}. */
   postStatus?: number;
   postError?: string;
+  /** Templates returned by GET /api/exploits/templates ([] when omitted... see default). */
+  templates?: unknown[];
+  /** HTTP status for GET /api/exploits/templates (404 = backend without exploits). */
+  templatesStatus?: number;
+  /** HTTP status for POST /api/exploits/run. */
+  runStatus?: number;
+  /** results[] of POST /api/exploits/run when runStatus is 200. */
+  runResults?: unknown[];
+  /** Error text for POST /api/exploits/run non-200 (e.g. the 409 exploitation-disabled message). */
+  runError?: string;
 }
 
 interface Call {
@@ -116,11 +132,23 @@ interface Call {
   body?: string;
 }
 
+/** A template whose keywords match the fixture row with rule "env-file-read". */
+const DOTENV_TEMPLATE = {
+  id: "http.dotenv-exposed",
+  title: "Exposed .env file",
+  family: "exposure",
+  applies_keywords: ["env", "dotenv"],
+  http: true,
+  description: "Fetches the .env file and looks for credential assignments.",
+};
+
 function stubBackend(opts: StubOptions = {}) {
   const calls: Call[] = [];
   const list = opts.list ?? serializeLikeServer(PAYLOAD);
   const listStatus = opts.listStatus ?? 200;
   const postStatus = opts.postStatus ?? 200;
+  const templatesStatus = opts.templatesStatus ?? (opts.templates ? 200 : 404);
+  const runStatus = opts.runStatus ?? 200;
 
   vi.stubGlobal(
     "fetch",
@@ -129,6 +157,24 @@ function stubBackend(opts: StubOptions = {}) {
       const method = init.method ?? "GET";
       calls.push({ url, method, body: typeof init.body === "string" ? init.body : undefined });
 
+      if (url === "/api/exploits/templates") {
+        return templatesStatus === 200
+          ? new Response(
+              serializeLikeServer({ count: (opts.templates ?? []).length, templates: opts.templates ?? [] }),
+              { status: 200 }
+            )
+          : new Response(JSON.stringify({ error: "no such endpoint" }), { status: templatesStatus });
+      }
+      if (url === "/api/exploits/run" && method === "POST") {
+        return runStatus === 200
+          ? new Response(
+              serializeLikeServer({ executed: (opts.runResults ?? []).length, results: opts.runResults ?? [] }),
+              { status: 200 }
+            )
+          : new Response(JSON.stringify({ error: opts.runError ?? "exploitation is disabled" }), {
+              status: runStatus,
+            });
+      }
       if (url.startsWith("/api/vulns?") || url === "/api/vulns") {
         return listStatus === 200
           ? new Response(list, { status: 200 })
@@ -319,5 +365,102 @@ describe("VulnsView", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /^Refresh$/ }));
     await waitFor(() => expect(calls.filter((c) => c.method === "GET").length).toBeGreaterThan(before));
+  });
+
+  // -------------------------------------------------------------------------
+  // Exploitation verification (badges + Verify button)
+  // -------------------------------------------------------------------------
+
+  it("shows a verification badge on stamped rows and nothing on unverified rows", async () => {
+    const list = serializeLikeServer({
+      count: 2,
+      vulns: [
+        vuln({
+          fingerprint: "v1v1v1v1a2a2a2a2",
+          rule: "tls-1-0-enabled",
+          title: "[WARN] TLS 1.0 still enabled",
+          verification: "verified",
+          verified_by: "http.tls-legacy-check",
+          verified_at: "2026-11-23T09:15:00Z",
+        }),
+        vuln({ fingerprint: "u1u1u1u1b2b2b2b2" }),
+      ],
+    });
+    stubBackend({ list });
+    render(<VulnsView />);
+    await screen.findByText("[WARN] TLS 1.0 still enabled");
+
+    const badge = screen.getByTestId("verification-v1v1v1v1a2a2a2a2");
+    expect(badge.textContent).toBe("verified");
+    expect(badge.getAttribute("title")).toContain("http.tls-legacy-check");
+    // unverified rows carry no badge at all
+    expect(screen.queryByTestId("verification-u1u1u1u1b2b2b2b2")).toBeNull();
+  });
+
+  it("Verify posts the fingerprint and stamps the row with the verdict", async () => {
+    const list = serializeLikeServer({
+      count: 1,
+      vulns: [vuln({ fingerprint: "en01en01en01en01", rule: "env-file-read", title: "[FAIL] .env exposed" })],
+    });
+    const calls = stubBackend({
+      list,
+      templates: [DOTENV_TEMPLATE],
+      runResults: [
+        {
+          fingerprint: "en01en01en01en01",
+          template: "http.dotenv-exposed",
+          verdict: "verified",
+          reason: "credentials found in the response body",
+          evidence: "AWS_SECRET_ACCESS_KEY=...",
+          verified_at: "2026-11-23T09:15:00Z",
+        },
+      ],
+    });
+    render(<VulnsView />);
+    await screen.findByText("[FAIL] .env exposed");
+
+    const btn = screen.getByLabelText("Verify finding en01en01en01en01");
+    fireEvent.click(btn);
+
+    await waitFor(() =>
+      expect(calls).toContainEqual(
+        expect.objectContaining({ url: "/api/exploits/run", method: "POST" })
+      )
+    );
+    const post = calls.find((c) => c.url === "/api/exploits/run")!;
+    expect(JSON.parse(post.body!)).toEqual({ fingerprints: ["en01en01en01en01"] });
+
+    // row is stamped locally from the result, and the verdict surfaces in the notice strip
+    await waitFor(() =>
+      expect(screen.getByTestId("verification-en01en01en01en01").textContent).toBe("verified")
+    );
+    expect(await screen.findByText(/Finding en01en01: verified — credentials found/)).toBeTruthy();
+  });
+
+  it("surfaces the 409 exploitation-disabled message and a failing run keeps the row", async () => {
+    const list = serializeLikeServer({
+      count: 1,
+      vulns: [vuln({ fingerprint: "en02en02en02en02", rule: "dotenv-exposed", title: "[WARN] dotenv exposed" })],
+    });
+    stubBackend({ list, templates: [DOTENV_TEMPLATE], runStatus: 409, runError: "enable exploitation in settings first" });
+    const { unmount } = render(<VulnsView />);
+    await screen.findByText("[WARN] dotenv exposed");
+
+    fireEvent.click(screen.getByLabelText("Verify finding en02en02en02en02"));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("enable exploitation in settings first");
+    expect(screen.queryByTestId("verification-en02en02en02en02")).toBeNull();
+    unmount();
+  });
+
+  it("hides Verify buttons when the backend has no templates endpoint", async () => {
+    const list = serializeLikeServer({
+      count: 1,
+      vulns: [vuln({ fingerprint: "en03en03en03en03", rule: "env-file-read", title: "[FAIL] .env exposed" })],
+    });
+    stubBackend({ list }); // default templatesStatus 404
+    render(<VulnsView />);
+    await screen.findByText("[FAIL] .env exposed");
+    expect(screen.queryByLabelText("Verify finding en03en03en03en03")).toBeNull();
   });
 });

@@ -53,21 +53,67 @@ export interface SettingsResponse {
   effective: {
     integrations: IntegrationsDoc;
     toggle: SettingsToggleEntry[];
+    /** Server releases that report the sections put them here (see settings_api.rs). */
+    vulndb?: VulnDbInfo | null;
+    exploits?: ExploitsInfo | null;
   };
   override_count: number;
   /** True when a READYHAI_SETTINGS env file is being overridden by the data-dir file. */
   shadowing_env: boolean;
   /**
-   * Vulnerability database status (backend-sourced, display-only). Older
-   * backends omit the section entirely: treat it as not reported.
+   * Vulnerability database status from `effective.vulndb` (display-only on this
+   * card, carried back on every save). Older backends omit the section entirely:
+   * treat it as not reported.
    */
   vulndb?: VulnDbInfo | null;
+  /**
+   * Exploitation verification (`POST /api/exploits/run`) from `effective.exploits`.
+   * Editable: while the card is visible the section rides along in every PUT,
+   * exactly like vulndb. Older backends omit it: the card hides itself.
+   */
+  exploits?: ExploitsInfo | null;
 }
 
 export interface VulnDbInfo {
   enabled: boolean;
   /** Absolute path, or null when the default data dir is used. */
   path: string | null;
+}
+
+export interface ExploitsInfo {
+  /** When false the server refuses verification runs (POST /api/exploits/run → 409). */
+  enabled: boolean;
+  /** Verification probes allowed per run. The server bounds it to 1..=100. */
+  max_probes: number;
+}
+
+/** Server bounds and defaults for exploits (settings.rs Exploits::default/validate). */
+export const MAX_PROBES_MIN = 1;
+export const MAX_PROBES_MAX = 100;
+const EXPLOITS_DEFAULT: ExploitsInfo = { enabled: false, max_probes: 25 };
+
+/** Sections live under `effective` on current servers and were read at the top
+ * level by earlier builds; accept either shape. */
+export function exploitsOf(d: SettingsResponse | null | undefined): ExploitsInfo | null | undefined {
+  return d?.effective?.exploits ?? d?.exploits;
+}
+
+/**
+ * Normalizes the wire section into a draft: a boolean enabled, and a max_probes
+ * that always satisfies the server bounds (a present section is sent back on
+ * every Save, so an out-of-range draft would make the whole PUT 400). Unknown
+ * values fall back to the built-in settings defaults (off, 25 probes), matching
+ * the tolerant readers elsewhere.
+ */
+export function normalizeExploits(x: ExploitsInfo | null | undefined): ExploitsInfo {
+  const enabled = x?.enabled === true;
+  let maxProbes = EXPLOITS_DEFAULT.max_probes;
+  if (typeof x?.max_probes === "number" && Number.isFinite(x.max_probes)) {
+    maxProbes = Math.round(x.max_probes);
+  }
+  if (maxProbes < MAX_PROBES_MIN) maxProbes = MAX_PROBES_MIN;
+  if (maxProbes > MAX_PROBES_MAX) maxProbes = MAX_PROBES_MAX;
+  return { enabled, max_probes: maxProbes };
 }
 
 export interface SettingsCheckInfo {
@@ -133,14 +179,28 @@ function togglesToEntries(
     .map((id) => ({ id, enabled: map[id] }));
 }
 
-function fingerprint(integrations: IntegrationsDoc, toggle: SettingsToggleEntry[]): string {
+function fingerprint(
+  integrations: IntegrationsDoc,
+  toggle: SettingsToggleEntry[],
+  exploits: ExploitsInfo | null
+): string {
   // Key order must be fixed on both sides: the server's JSON key order can
   // differ from our object literals, and JSON.stringify is order-sensitive.
   const canonicalIntegrations = INTEGRATION_ROWS.map((r) => [r.key, integrations[r.key]] as const);
   const canonicalToggle = [...toggle]
     .sort((a, b) => (a.id < b.id ? -1 : 1))
     .map((e) => [e.id, e.enabled] as const);
-  return JSON.stringify({ integrations: canonicalIntegrations, toggle: canonicalToggle });
+  const canonicalExploits = exploits
+    ? ([
+        ["enabled", exploits.enabled],
+        ["max_probes", exploits.max_probes],
+      ] as const)
+    : null;
+  return JSON.stringify({
+    integrations: canonicalIntegrations,
+    toggle: canonicalToggle,
+    exploits: canonicalExploits,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +306,11 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
   });
   const [draftToggles, setDraftToggles] = useState<Record<string, TriState>>({});
   const [intrusiveWarning, setIntrusiveWarning] = useState(false);
+  /**
+   * Exploitation draft; null while the backend does not report `effective.exploits`
+   * (older servers). While non-null the section rides along in every PUT, like vulndb.
+   */
+  const [draftExploits, setDraftExploits] = useState<ExploitsInfo | null>(null);
 
   // Save/reset state
   const [saving, setSaving] = useState(false);
@@ -279,6 +344,8 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
     setDoc(d);
     setDraftIntegrations(normalizeIntegrations(d.effective?.integrations));
     setDraftToggles(togglesToMap(d.effective?.toggle ?? []));
+    const exploits = exploitsOf(d);
+    setDraftExploits(exploits && typeof exploits.enabled === "boolean" ? normalizeExploits(exploits) : null);
     setIntrusiveWarning(false);
     setSaveError(null);
     setCustomError(null);
@@ -372,10 +439,21 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
   // Dirty tracking: compare the draft with the saved document in wire shape.
   const dirty = useMemo(() => {
     if (!doc) return false;
-    const server = fingerprint(doc.effective.integrations, doc.effective.toggle);
-    const draft = fingerprint(draftIntegrations, togglesToEntries(draftToggles, savedToggleIds));
+    const savedExploits = exploitsOf(doc);
+    const server = fingerprint(
+      doc.effective.integrations,
+      doc.effective.toggle,
+      savedExploits && typeof savedExploits.enabled === "boolean"
+        ? normalizeExploits(savedExploits)
+        : null
+    );
+    const draft = fingerprint(
+      draftIntegrations,
+      togglesToEntries(draftToggles, savedToggleIds),
+      draftExploits
+    );
     return server !== draft;
-  }, [doc, draftIntegrations, draftToggles, savedToggleIds]);
+  }, [doc, draftIntegrations, draftToggles, savedToggleIds, draftExploits]);
 
   function setIntegration(key: keyof IntegrationsDoc, next: TriState) {
     // The backend rejects integrations.intrusive = "on": never select it, just warn.
@@ -391,6 +469,20 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
   function setToggle(id: string, next: TriState) {
     setSaveMessage(null);
     setDraftToggles((prev) => ({ ...prev, [id]: next }));
+  }
+
+  function setExploitsEnabled(next: boolean) {
+    setSaveMessage(null);
+    setDraftExploits((prev) => (prev ? { ...prev, enabled: next } : prev));
+  }
+
+  function setExploitsMaxProbes(next: number) {
+    setSaveMessage(null);
+    setDraftExploits((prev) =>
+      prev
+        ? { ...prev, max_probes: Math.min(MAX_PROBES_MAX, Math.max(MAX_PROBES_MIN, Math.round(next))) }
+        : prev
+    );
   }
 
   function removeToggle(id: string) {
@@ -426,10 +518,17 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
     setSaving(true);
     setSaveError(null);
     setSaveMessage(null);
-    const payload = {
+    const payload: {
+      integrations: IntegrationsDoc;
+      toggle: SettingsToggleEntry[];
+      exploits?: ExploitsInfo;
+    } = {
       integrations: draftIntegrations,
       toggle: togglesToEntries(draftToggles, savedToggleIds),
     };
+    // Like vulndb, once the section exists it rides along in every PUT so a
+    // partial payload can never silently reset the server's exploitation config.
+    if (draftExploits) payload.exploits = { ...draftExploits };
     const r = await apiRequest<SettingsResponse>("/api/settings", {
       method: "PUT",
       json: payload,
@@ -488,6 +587,9 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
   }, [draftToggles, checks]);
 
   const busy = saving || resetting;
+  /** Wire section for the Exploitation card; null on backends without it. */
+  const docExploits =
+    doc && typeof exploitsOf(doc)?.enabled === "boolean" ? exploitsOf(doc) : null;
 
   return (
     <div className="flex-1 flex flex-col min-h-0 bg-rh-bg overflow-hidden">
@@ -686,6 +788,59 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
                 </p>
               )}
             </SectionCard>
+
+            {/* Section 1c: Exploitation verification (editable, rides along in every PUT) */}
+            {docExploits && (
+              <SectionCard
+                title="Exploitation"
+                subtitle="Safe verification of recorded findings. While disabled the server refuses verification runs; the Vulns page shows a Verify button for findings an exploit template covers."
+              >
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={draftExploits?.enabled ?? false}
+                    aria-label="Exploitation enabled"
+                    disabled={!doc.editable || !draftExploits}
+                    onClick={() => setExploitsEnabled(!(draftExploits?.enabled ?? false))}
+                    className={
+                      CHIP +
+                      " cursor-pointer transition-colors disabled:cursor-not-allowed disabled:opacity-50 " +
+                      (draftExploits?.enabled
+                        ? "bg-rh-go/15 text-rh-go"
+                        : "bg-rh-raised text-rh-muted") +
+                      " " +
+                      FOCUS
+                    }
+                    title="Let ReadyHai replay an exploit template against a finding to confirm it"
+                  >
+                    {draftExploits?.enabled ? "exploitation enabled" : "exploitation disabled"}
+                  </button>
+                  <span className="flex items-center gap-2 text-rh-muted">
+                    Max probes per run
+                    <input
+                      type="number"
+                      min={MAX_PROBES_MIN}
+                      max={MAX_PROBES_MAX}
+                      step={1}
+                      className={INPUT + " w-20 tabular-nums"}
+                      aria-label={`Max probes (${MAX_PROBES_MIN} to ${MAX_PROBES_MAX})`}
+                      disabled={!doc.editable || !draftExploits}
+                      value={draftExploits?.max_probes ?? EXPLOITS_DEFAULT.max_probes}
+                      onChange={(e) => {
+                        const next = Number(e.target.value);
+                        if (Number.isFinite(next)) setExploitsMaxProbes(next);
+                      }}
+                    />
+                  </span>
+                </div>
+                <p className={MUTED_NOTE}>
+                  Each Verify click replays one safe template against one finding and records the
+                  verdict (verified / not reproducible / inconclusive) on the finding. Bounds:{" "}
+                  {MAX_PROBES_MIN}&ndash;{MAX_PROBES_MAX} probes per run.
+                </p>
+              </SectionCard>
+            )}
 
             {/* Section 2: Checks & plugins */}
             <SectionCard

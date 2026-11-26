@@ -21,6 +21,7 @@ mod dashboard;
 mod engine;
 mod eval;
 mod eval_ai;
+mod exploits;
 mod facts;
 mod fix;
 mod host;
@@ -178,6 +179,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<VulnsCmd>,
     },
+    /// Safe re-verification of recorded findings: run the reviewed probe templates
+    /// against vulndb fingerprints. Blocked until `[exploits] enabled = true`.
+    Exploits {
+        #[command(subcommand)]
+        cmd: Option<ExploitsCmd>,
+    },
     /// List checks
     Checks,
     /// Scanner images and databases
@@ -286,6 +293,23 @@ enum VulnsCmd {
     Forget {
         /// Fingerprint from the list (a unique prefix of 6+ characters is enough)
         fingerprint: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExploitsCmd {
+    /// Show the verification catalogue (id, family, title, description). No requests are sent
+    List,
+    /// Re-check the named findings with their safe template and stamp the outcome.
+    /// Requires `[exploits] enabled = true`; every URL passes the scope egress guard
+    /// with intrusive = true, so a host tagged env = "prod" is refused
+    Run {
+        /// Fingerprint from `readyhai vulns` (a unique prefix of 6+ characters is enough)
+        #[arg(value_name = "FINGERPRINT")]
+        fingerprints: Vec<String>,
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -556,6 +580,7 @@ fn run() -> anyhow::Result<u8> {
                 target,
                 status: status.clone(),
                 severity: None,
+                verification: None,
             });
             if json {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -564,6 +589,65 @@ fn run() -> anyhow::Result<u8> {
             print_vulns(&rows, status.as_deref(), &path);
             Ok(0)
         }
+        Cmd::Exploits { cmd } => match cmd.unwrap_or(ExploitsCmd::List) {
+            // Catalogue only: a static table, no settings read and no request sent.
+            ExploitsCmd::List => {
+                print_exploit_templates();
+                Ok(0)
+            }
+            ExploitsCmd::Run { fingerprints, json } => {
+                let fps: Vec<String> = fingerprints
+                    .iter()
+                    .map(|f| f.trim().to_ascii_lowercase())
+                    .filter(|f| !f.is_empty() && f.len() >= 6)
+                    .collect();
+                if fps.is_empty() {
+                    eprintln!(
+                        "readyhai: error: give at least one fingerprint (6+ characters, a unique \
+                         prefix works; see `readyhai vulns`)"
+                    );
+                    return Ok(1);
+                }
+                // Same file the REST API uses for this (serve::settings_api::scan_settings_path):
+                // the operator env file wins, else the data-dir copy the Settings UI writes.
+                let settings_path = settings::settings_path_from_env().or_else(|| {
+                    let d = engine::data_dir().join("settings.toml");
+                    d.is_file().then_some(d)
+                });
+                // Validated, never ignored: a broken settings file refuses the run (fail closed),
+                // exactly like `POST /api/exploits/run` answering 500 instead of guessing.
+                let st = settings::Settings::load(settings_path.as_deref())?;
+                if !st.exploits.enabled {
+                    eprintln!(
+                        "exploitation verification is disabled, so no request was sent.\n  \
+                         enable it in the Settings UI (Exploitation verification), or set\n  \
+                         [exploits]\nenabled = true\nin the settings file in use ({}).",
+                        settings_path
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| "<none: defaults>".into())
+                    );
+                    return Ok(1);
+                }
+                // Rules of engagement, same construction as the scan commands: READYHAI_SCOPE
+                // must load — a configured-but-broken file is an error (fail closed), never
+                // "no scope". Every probe URL then goes through the ordinary egress guard with
+                // intrusive = true (prod hosts and unresolvable names are refused).
+                let sc = scope::from_env()?;
+                let egress = |u: &str| -> Result<String, String> {
+                    scope::egress_guard(u, sc.as_ref(), true)
+                        .map(|eg| eg.url)
+                        .map_err(|e| format!("{e:#}"))
+                };
+                let results = exploits::run(&fps, st.exploits.max_probes, &egress)?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&results)?);
+                    return Ok(0);
+                }
+                print_exploit_verdicts(&results);
+                Ok(0)
+            }
+        },
         Cmd::Checks => {
             let plugins = std::env::var("READYHAI_PLUGINS").ok().map(PathBuf::from);
             for c in checks::all(plugins.as_deref()) {
@@ -850,6 +934,99 @@ fn run() -> anyhow::Result<u8> {
             Ok(if ok { 0 } else { 1 })
         }
     }
+}
+
+/// `readyhai exploits list`: the verification catalogue. Pure data — reads no settings
+/// and sends no request, so it works before the operator enables anything.
+fn print_exploit_templates() {
+    let ts = exploits::templates();
+    println!(
+        "{:<28} {:<10} TITLE / HOW IT VERIFIES (read-only, bounded, redacted evidence)",
+        "TEMPLATE", "FAMILY"
+    );
+    for t in &ts {
+        println!(
+            "{:<28} {:<10} {}",
+            t.id,
+            t.family,
+            fold(t.description, 100, 41)
+        );
+    }
+    println!(
+        "\n{} template(s) · run them with `readyhai exploits run <fingerprint>...`\n\
+         blocked until `[exploits] enabled = true` (Settings UI or settings file); probes\n\
+         follow scope.toml and are refused on hosts tagged env = \"prod\".",
+        ts.len()
+    );
+}
+
+/// Fold a long single-line description into an indented paragraph so the table stays readable.
+fn fold(s: &str, width: usize, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    let mut out = String::new();
+    let mut line = String::new();
+    let mut col = indent;
+    for w in s.split_whitespace() {
+        if col + w.len() + 1 > width && !line.is_empty() {
+            out.push_str(&line);
+            out.push('\n');
+            line.clear();
+            col = indent;
+        }
+        if !line.is_empty() {
+            line.push(' ');
+            col += 1;
+        }
+        line.push_str(w);
+        col += w.len();
+    }
+    if !line.is_empty() {
+        out.push_str(&line);
+    }
+    // Drop the padding of the first line: the caller already printed the column before it.
+    out.trim_start()
+        .to_string()
+        .replace('\n', &format!("\n{pad}"))
+}
+
+/// `readyhai exploits run`: one block per verdict. Evidence arrives from the engine already
+/// control-character-stripped and secret-redacted; it is printed as-is, never re-derived.
+fn print_exploit_verdicts(results: &[exploits::Verdict]) {
+    if results.is_empty() {
+        println!("nothing verified (no fingerprint resolved to a recorded finding).");
+        return;
+    }
+    for v in results {
+        println!(
+            "\n{} · {} · {}",
+            v.fingerprint,
+            if v.template.is_empty() {
+                "(no template)"
+            } else {
+                &v.template
+            },
+            v.verdict.to_uppercase()
+        );
+        println!("  reason:   {}", fold(&v.reason, 100, 12));
+        if !v.evidence.is_empty() {
+            println!("  evidence: {}", fold(&v.evidence, 100, 12));
+        }
+        println!("  checked:  {}", v.verified_at);
+    }
+    let counts = exploits::OUTCOMES
+        .iter()
+        .map(|o| {
+            let n = results.iter().filter(|v| &v.verdict == o).count();
+            format!("{n} {o}")
+        })
+        .collect::<Vec<_>>()
+        .join(" · ");
+    println!(
+        "\n{} verdict(s) · {} · verification never changes status (triage is yours).",
+        results.len(),
+        counts
+    );
+    println!("database: {}", vulndb::path().display());
 }
 
 /// `readyhai vulns`: the plain table (severity desc, newest first), same column style as

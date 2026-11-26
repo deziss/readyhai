@@ -28,6 +28,30 @@ pub struct Settings {
     /// Global vulnerability database (`readyhai vulns`).
     #[serde(default)]
     pub vulndb: VulnDb,
+    /// Exploitation verification (`readyhai exploits`, `POST /api/exploits/run`).
+    #[serde(default)]
+    pub exploits: Exploits,
+}
+
+/// Safe re-verification of recorded findings ([`crate::exploits`]). Off by default:
+/// verification sends requests at the target, so it is an explicit operator decision,
+/// exactly like `integrations.intrusive` being opt-in for scans.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Exploits {
+    /// When off, `exploits run` refuses and the REST endpoint answers 409.
+    pub enabled: bool,
+    /// Hard cap on verification probes per run (template executions, each ≤ 2 requests).
+    pub max_probes: u32,
+}
+
+impl Default for Exploits {
+    fn default() -> Self {
+        Exploits {
+            enabled: false,
+            max_probes: 25,
+        }
+    }
 }
 
 /// The cross-target vulnerability database (`src/vulndb.rs`, `readyhai vulns`).
@@ -131,6 +155,12 @@ impl Settings {
         {
             return Err(anyhow!(
                 "vulndb.path must be a file path, not empty (leave it unset for <data>/vulns/vulns.jsonl)"
+            ));
+        }
+        if !(1..=100).contains(&self.exploits.max_probes) {
+            return Err(anyhow!(
+                "exploits.max_probes must be between 1 and 100, got {}",
+                self.exploits.max_probes
             ));
         }
         for t in &self.toggle {

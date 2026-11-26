@@ -40,6 +40,15 @@ pub const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 pub const MAX_TEXT: usize = 300;
 /// The statuses a record can carry.
 pub const STATUSES: [&str; 3] = ["open", "accepted", "forgotten"];
+/// Verification verdicts a record can carry (see [`crate::exploits`]). `unverified`
+/// is the absence of a verdict, not an outcome of a probe.
+pub const VERIFICATIONS: [&str; 5] = [
+    "unverified",
+    "verified",
+    "not_reproducible",
+    "inconclusive",
+    "skipped",
+];
 
 /// One finding as the scan hands it to the database.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +87,16 @@ pub struct VulnRecord {
     /// `open|accepted|forgotten`.
     pub status: String,
     pub message: String,
+    /// `unverified|verified|not_reproducible|inconclusive|skipped` — see
+    /// [`crate::exploits`]. Absent in files written before v3.7 reads as `unverified`.
+    #[serde(default)]
+    pub verification: String,
+    /// Exploit template id that produced the verdict, if any.
+    #[serde(default)]
+    pub verified_by: Option<String>,
+    /// RFC3339 UTC of the verification, if any.
+    #[serde(default)]
+    pub verified_at: Option<String>,
 }
 
 /// What [`list`] keeps; a `None` field does not filter.
@@ -86,6 +105,8 @@ pub struct Filter {
     pub target: Option<String>,
     pub status: Option<String>,
     pub severity: Option<String>,
+    /// `unverified|verified|not_reproducible|inconclusive|skipped`.
+    pub verification: Option<String>,
 }
 
 /// What one record call did.
@@ -268,6 +289,9 @@ pub fn record_findings_at(path: &Path, target: &str, entries: &[VulnEntry]) -> R
                     occurrences: 1,
                     status: "open".into(),
                     message: clean(e.message),
+                    verification: "unverified".into(),
+                    verified_by: None,
+                    verified_at: None,
                 });
                 report.added += 1;
             }
@@ -374,7 +398,24 @@ impl Filter {
         {
             return false;
         }
+        if let Some(v) = self.verification.as_deref().map(str::trim)
+            && !v.is_empty()
+            // Rows written before v3.7 carry no field and read as "unverified".
+            && effective_verification(r) != v.to_ascii_lowercase()
+        {
+            return false;
+        }
         true
+    }
+}
+
+/// The verification word for a row, normalising the empty string that pre-v3.7
+/// files deserialize to.
+pub fn effective_verification(r: &VulnRecord) -> String {
+    if r.verification.is_empty() {
+        "unverified".into()
+    } else {
+        r.verification.clone()
     }
 }
 
@@ -443,6 +484,53 @@ pub fn valid_status(status: &str) -> bool {
 /// fingerprint (or an ambiguous prefix).
 pub fn set_status(fingerprint: &str, status: &str) -> Result<bool> {
     set_status_at(&path(), fingerprint, status)
+}
+
+/// True for the five verdict words a record can carry.
+pub fn valid_verification(status: &str) -> bool {
+    VERIFICATIONS.contains(&status)
+}
+
+/// Stamp one record with a verification verdict (see [`crate::exploits`]). Like
+/// [`set_status`] this is an operator-surface write: it records what a probe proved,
+/// never what a scan re-reported, so re-scans leave it alone. The engine stamps
+/// through [`set_verification_at`] in its own read-modify-write pass; this mirror
+/// of [`set_status`] stays for any single-fingerprint caller (file paths included).
+#[allow(dead_code)] // mirrors set_status for future single-fp callers
+pub fn set_verification(
+    fingerprint: &str,
+    verification: &str,
+    template: &str,
+) -> Result<(bool, Option<VulnRecord>)> {
+    set_verification_at(&path(), fingerprint, verification, template)
+}
+
+/// [`set_verification`] with the file explicit. Returns (found, the stamped record)
+/// so REST/CLI callers can report the row without a second read.
+pub fn set_verification_at(
+    path: &Path,
+    fingerprint: &str,
+    verification: &str,
+    template: &str,
+) -> Result<(bool, Option<VulnRecord>)> {
+    let verification = verification.trim().to_ascii_lowercase();
+    if !valid_verification(&verification) {
+        bail!("verification must be one of {}", VERIFICATIONS.join("|"));
+    }
+    let (mut rows, warnings) = read_at(path)?;
+    warn_all(&warnings);
+    let Some(full) = resolve(&rows, fingerprint) else {
+        return Ok((false, None));
+    };
+    let Some(r) = rows.iter_mut().find(|r| r.fingerprint == full) else {
+        return Ok((false, None));
+    };
+    r.verification = verification;
+    r.verified_by = (!template.trim().is_empty()).then(|| clean(template));
+    r.verified_at = Some(now());
+    let stamped = r.clone();
+    write_rows(path, &rows)?;
+    Ok((true, Some(stamped)))
 }
 
 /// [`set_status`] with the file explicit.

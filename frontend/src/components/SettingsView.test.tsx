@@ -317,4 +317,46 @@ describe("SettingsView", () => {
     expect(await screen.findByText(/not reported by this backend version/)).toBeTruthy();
     expect(screen.queryByText("vuln database enabled")).toBeNull();
   });
+
+  it("renders the exploitation card and sends the section in every PUT", async () => {
+    const docWithExploits = {
+      ...SETTINGS_V3,
+      effective: {
+        ...SETTINGS_V3.effective,
+        exploits: { enabled: true, max_probes: 10 },
+      },
+    };
+    const calls = stubBackend({ settingsDoc: docWithExploits });
+    render(<SettingsView />);
+
+    // card renders the effective values: on-pill and the probe bound
+    expect(await screen.findByText("Exploitation")).toBeTruthy();
+    const pill = screen.getByRole("switch", { name: "Exploitation enabled" });
+    expect(pill.getAttribute("aria-checked")).toBe("true");
+    expect(pill.textContent).toBe("exploitation enabled");
+    const probes = screen.getByLabelText(/Max probes/) as HTMLInputElement;
+    expect(probes.value).toBe("10");
+    // the section is not dirty on load
+    expect(screen.queryByRole("button", { name: /^Save$/ })).toBeNull();
+
+    // editing the toggle marks the view dirty and rides along in the PUT
+    fireEvent.click(pill);
+    expect(await screen.findByText("unsaved changes")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+    await waitFor(() => expect(calls.some((c) => c.method === "PUT")).toBe(true));
+    const putBody = JSON.parse(calls.find((c) => c.method === "PUT")!.body!);
+    expect(putBody.exploits).toEqual({ enabled: false, max_probes: 10 });
+
+    // saved document comes back through applyDoc: pill follows the server value
+    expect(await screen.findByText("exploitation disabled")).toBeTruthy();
+    expect(screen.queryByText("unsaved changes")).toBeNull();
+  });
+
+  it("hides the exploitation card for backends without the section", async () => {
+    stubBackend();
+    render(<SettingsView />);
+    await screen.findByText("Nuclei template scanner");
+    expect(screen.queryByText("Exploitation")).toBeNull();
+    expect(screen.queryByRole("switch", { name: "Exploitation enabled" })).toBeNull();
+  });
 });

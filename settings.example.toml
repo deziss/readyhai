@@ -26,3 +26,12 @@ intrusive = "auto" # kill switch for the intrusive class: auto | off only ("on" 
 # [[toggle]]
 # id = "plugin.crowdstrike.falcon-sensor-audit"
 # enabled = "on"              # ...except this one
+
+# Safe exploit-verification of recorded findings (src/exploits.rs, the UI Verify
+# buttons, POST /api/exploits/run, `readyhai exploits run`). Strictly opt-in:
+# while enabled = false the API answers 409 and the CLI refuses before any probe.
+[exploits]
+enabled = false     # NEVER defaults to true; verification re-reads the finding's
+                    # own URL through the scope guard (prod hosts stay refused)
+max_probes = 25     # template executions per run (1..100); rows past the budget
+                    # are reported as skipped, never silently dropped

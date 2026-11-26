@@ -2,7 +2,7 @@
 
 ReadyHai ("Ready hai?" = "is it ready?") is a self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate written in Rust. You point it at a repo, a container image, a web app/API, a host (SSH) or an Android app. It runs native readiness rules plus pinned scanners in hardened throwaway containers, a senior-QA engine and an autonomous testing agent, and returns one verdict with reasons: `PASS` / `WARN` / `FAIL` for scans, Go / Conditional Go / No-Go / Inconclusive for `qa`, `GO` / `CONDITIONAL_GO` / `NO_GO` for the agent.
 
-These docs describe what the code in `src/`, `frontend/`, `tests/eval/` and `.github/workflows/` does (current version: `VERSION` / `3.6.0`; changelog: [../CHANGELOG.md](../CHANGELOG.md)). Where the code differs from the original plan, the docs say so. If you find a mismatch, trust the code and check [build-log.md](build-log.md) for older context.
+These docs describe what the code in `src/`, `frontend/`, `tests/eval/` and `.github/workflows/` does (current version: `VERSION` / `3.7.0`; changelog: [../CHANGELOG.md](../CHANGELOG.md)). Where the code differs from the original plan, the docs say so. If you find a mismatch, trust the code and check [build-log.md](build-log.md) for older context.
 
 ## Index
 
@@ -10,8 +10,8 @@ These docs describe what the code in `src/`, `frontend/`, `tests/eval/` and `.gi
 |---|---|
 | [architecture.md](architecture.md) | Components, data flow, the agent module map (pipeline, oracle, verifier, lead, memory, change, ledger), data model, run directory, design choices and trade-offs |
 | [usage.md](usage.md) | Every CLI command and flag, target syntaxes, profiles, reports, exit codes, baseline workflow, agent workflows, examples |
-| [configuration.md](configuration.md) | `readyhai.toml`, `policy.toml`, `scope.toml`, baseline JSON, `tools.lock.toml`, plugins, every environment variable |
-| [api.md](api.md) | REST endpoints, the egress guard, the agent API, the network lab API, and the MCP stdio server |
+| [configuration.md](configuration.md) | `readyhai.toml`, `policy.toml`, `scope.toml`, baseline JSON, `tools.lock.toml`, plugins, `settings.toml` (`[integrations]`, `[[toggle]]`, `[vulndb]`, `[exploits] enabled` / `max_probes`), every environment variable |
+| [api.md](api.md) | REST endpoints (incl. `GET /api/exploits/templates` and `POST /api/exploits/run`), the egress guard, the agent API, the network lab API, and the MCP stdio server |
 | [security-model.md](security-model.md) | Threat model, controls with code locations, known residual risks |
 | [qa.md](qa.md) | Senior-QA guide: `readyhai qa`, API/UI/perf/resilience/suite checks, roles.toml, safety model, recommendation logic, reports |
 | [eval.md](eval.md) | `readyhai eval`: scores the QA engine and agent against seeded-defect fixtures (recall, false positives, pass^k), suite file format, how to add a suite, CI job |
@@ -82,6 +82,7 @@ Or without Docker: `export READYHAI_TOKEN=$(openssl rand -hex 24); $R serve --bi
 ## Status at a glance
 
 - Repo, image, web, host and Android scans: 46 built-in checks (including native Tree-sitter AST cross-file taint & auth-guard auditing `security.code_audit`, `tool.opengrep`, `tool.nuclei`, `tool.zap_active`, OSV AST import enrichment, and the `wireguard` wg-quick config audit); the web, UI, PDF, resilience and MobSF paths were run live on 2026-10-30. The Windows probe is the one path never run on a real host. Details: [status-and-competition.md](status-and-competition.md).
+- Vulnerability database + exploitation verification (`src/vulndb.rs`, `src/exploits/`): every warn/fail finding is recorded across targets (`GET/POST /api/vulns`, `readyhai vulns`), and findings that can be re-checked safely carry an evidence-grade `verification` stamp from the six read-only templates in `GET /api/exploits/templates` / `POST /api/exploits/run` (Admin class; `409` while `[exploits] enabled = false`, the default; per-run `max_probes` budget 1–100, all probe URLs through the egress guard in intrusive mode; triage `status` is never changed). Settings UI Exploitation card, Vulns view badge + **Verify**. Details: [configuration.md](configuration.md), [api.md](api.md).
 - Senior-QA engine (`readyhai qa`): API path live-verified (7/7 seeded bugs, 0 false positives), UI QA found 6/6 seeded UI bugs, see [qa.md](qa.md).
 - Agent (`readyhai agent`): autonomous 6-station Software Factory StateGraph (Recon, Discovery, Plan, Execute, Verify, Gate) governed by the Quad-Engineering disciplines (Loop, Graph, Prompt, and Software Factory Engineering). Features dynamic AI directives synthesis, modular deep-security attack probes, Attack DAG dependency workflows, closed-loop OODA ReAct mutations with oscillation damping, Contextual Taint Juror with unified diff patches, and cryptographically signed Software Factory Attestation. Gated across 10 eval suites (`readyhai eval`): `agent-api` (7/7), `security-deep`, `whitebox-exploit`, and 7 additional suites ([eval.md](eval.md)).
 - Next: cross-service distributed tracing / multi-target dashboards and PR auto-fix patch synthesis ([roadmap.md](roadmap.md)).

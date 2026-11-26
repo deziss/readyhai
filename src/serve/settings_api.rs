@@ -67,6 +67,10 @@ fn body(s: &Settings, path: Option<PathBuf>, version: u64, shadowing: bool) -> V
                 "enabled": s.vulndb.enabled,
                 "path": s.vulndb.path.clone(),
             },
+            "exploits": {
+                "enabled": s.exploits.enabled,
+                "max_probes": s.exploits.max_probes,
+            },
             "toggle": s.toggle.iter().map(|t| json!({"id": t.id, "enabled": tri(t.enabled)})).collect::<Vec<_>>(),
         },
         "override_count": s.override_count(),
@@ -155,12 +159,21 @@ struct VulnDbPut {
     path: PathPut,
 }
 
+/// Optional `[exploits]` half of a PUT; same carry-over semantics as `[vulndb]`.
+#[derive(Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ExploitsPut {
+    enabled: Option<bool>,
+    max_probes: Option<u32>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SettingsPut {
     integrations: Option<TriIntegrations>,
     toggle: Option<Vec<TriToggle>>,
     vulndb: Option<VulnDbPut>,
+    exploits: Option<ExploitsPut>,
 }
 
 fn bad(e: impl std::fmt::Display) -> Response {
@@ -211,6 +224,19 @@ pub async fn api_settings_put(Json(req): Json<SettingsPut>) -> Response {
             PathPut::Keep => {}
             PathPut::Clear => settings.vulndb.path = None,
             PathPut::Set(p) => settings.vulndb.path = Some(p),
+        }
+    }
+    // `[exploits]` carries over like `[vulndb]`: a save from another card must not
+    // silently re-enable request-sending verification.
+    settings.exploits = Settings::load(file.is_file().then_some(&file))
+        .unwrap_or_default()
+        .exploits;
+    if let Some(x) = req.exploits {
+        if let Some(enabled) = x.enabled {
+            settings.exploits.enabled = enabled;
+        }
+        if let Some(max) = x.max_probes {
+            settings.exploits.max_probes = max;
         }
     }
     if let Err(e) = settings.validate() {

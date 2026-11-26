@@ -320,6 +320,7 @@ fn list_filters_by_target_and_status_and_sorts_by_severity_then_recency() {
                 target: Some("http://a:9".into()),
                 status: Some("open".into()),
                 severity: None,
+                verification: None,
             },
         )
         .0

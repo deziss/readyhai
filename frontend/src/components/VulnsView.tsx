@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Ban, RefreshCw, ShieldCheck } from "lucide-react";
+import { Ban, FlaskConical, Loader2, RefreshCw, ShieldCheck } from "lucide-react";
 import { apiRequest, notify, useApiTokenVersion } from "@/lib/api";
 
 // Shared control styles, mirroring SettingsView / AgentHistoryView.
@@ -17,11 +17,26 @@ const MUTED_NOTE = "text-xs text-rh-muted";
 const TARGET_DEBOUNCE_MS = 300;
 
 // ---------------------------------------------------------------------------
-// API shapes (GET /api/vulns, POST /api/vulns/{fingerprint})
+// API shapes (GET /api/vulns, POST /api/vulns/{fingerprint},
+// GET /api/exploits/templates, POST /api/exploits/run)
 // ---------------------------------------------------------------------------
 
 export type VulnSeverity = "low" | "medium" | "high";
 export type VulnStatus = "open" | "accepted" | "forgotten";
+export type VulnVerification =
+  | "unverified"
+  | "verified"
+  | "not_reproducible"
+  | "inconclusive"
+  | "skipped";
+
+const VERIFICATIONS: readonly string[] = [
+  "unverified",
+  "verified",
+  "not_reproducible",
+  "inconclusive",
+  "skipped",
+];
 
 export interface VulnEntry {
   fingerprint: string;
@@ -37,11 +52,47 @@ export interface VulnEntry {
   occurrences: number;
   status: VulnStatus | string;
   message: string;
+  /** Exploitation-verification stamp. Missing/unknown values act as "unverified". */
+  verification: VulnVerification | string;
+  /** Exploit template id that last verified the row, "" when there is none. */
+  verified_by: string;
+  verified_at: string;
 }
 
 export interface VulnsResponse {
   count: number;
   vulns: VulnEntry[];
+}
+
+/** GET /api/exploits/templates entry (see src/exploits/mod.rs on the backend). */
+export interface ExploitTemplate {
+  id: string;
+  title: string;
+  family: string;
+  /** Lower-case fragments matched against a row's kind + rule + title. */
+  applies_keywords: string[];
+  http: boolean;
+  description: string;
+}
+
+export interface ExploitTemplatesResponse {
+  count: number;
+  templates: ExploitTemplate[];
+}
+
+/** One row of a POST /api/exploits/run result set. */
+interface ExploitRunResult {
+  fingerprint: string;
+  template: string;
+  verdict: string;
+  reason: string;
+  evidence: string;
+  verified_at: string;
+}
+
+interface ExploitRunResponse {
+  executed: number;
+  results: ExploitRunResult[];
 }
 
 type StatusFilter = "all" | VulnStatus;
@@ -57,6 +108,16 @@ function str(v: unknown, fallback = ""): string {
 
 function num(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/** Any value the backend does not recognise (or omits) means "never verified". */
+function asVerification(v: unknown): string {
+  return typeof v === "string" && VERIFICATIONS.includes(v) ? v : "unverified";
+}
+
+/** Optional ISO timestamp: null/absent/blank all become "". */
+function optStr(v: unknown): string {
+  return typeof v === "string" ? v : "";
 }
 
 function asVulnList(data: VulnsResponse | null | undefined): VulnEntry[] {
@@ -77,8 +138,28 @@ function asVulnList(data: VulnsResponse | null | undefined): VulnEntry[] {
       occurrences: num(v.occurrences),
       status: str(v.status, "open"),
       message: str(v.message),
+      verification: asVerification(v.verification),
+      verified_by: optStr(v.verified_by),
+      verified_at: optStr(v.verified_at),
     }))
     .filter((v) => v.fingerprint !== "");
+}
+
+function asTemplateList(data: ExploitTemplatesResponse | null | undefined): ExploitTemplate[] {
+  const raw: unknown[] = data && Array.isArray(data.templates) ? data.templates : [];
+  return raw
+    .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
+    .map((t) => ({
+      id: str(t.id),
+      title: str(t.title),
+      family: str(t.family),
+      applies_keywords: Array.isArray(t.applies_keywords)
+        ? t.applies_keywords.filter((k): k is string => typeof k === "string")
+        : [],
+      http: t.http === true,
+      description: str(t.description),
+    }))
+    .filter((t) => t.id !== "" && t.applies_keywords.length > 0);
 }
 
 function sentence(v: string): string {
@@ -100,6 +181,51 @@ function statusTone(status: string): string {
   if (s === "accepted") return "bg-rh-go/15 text-rh-go";
   if (s === "forgotten") return "bg-rh-raised text-rh-muted";
   return "bg-rh-raised text-rh-muted";
+}
+
+/**
+ * Verification chip tones. "unverified" has no tone: an unstamped row shows no
+ * badge at all, so only the meaningful verdicts take up space in the table.
+ */
+function verificationTone(verification: string): string | null {
+  const s = (verification || "").toLowerCase();
+  if (s === "verified") return "bg-rh-go/15 text-rh-go";
+  if (s === "not_reproducible") return "bg-rh-nogo/15 text-rh-nogo";
+  if (s === "inconclusive") return "bg-rh-cond/15 text-rh-cond";
+  if (s === "skipped") return "bg-rh-raised text-rh-muted";
+  return null;
+}
+
+const VERIFICATION_LABEL: Record<string, string> = {
+  verified: "verified",
+  not_reproducible: "not reproducible",
+  inconclusive: "inconclusive",
+  skipped: "skipped",
+};
+
+/** Label for a verdict/verification value; unknown values are shown as-is. */
+function verificationLabel(verification: string): string {
+  const s = (verification || "").toLowerCase();
+  return VERIFICATION_LABEL[s] ?? s;
+}
+
+/**
+ * Does this template apply to a finding? Mirrors the backend rule
+ * (`exploits::matches`): any lower-case keyword is a substring of
+ * kind + rule + title. The backend still makes the final choice per run.
+ */
+function templateApplies(t: ExploitTemplate, v: VulnEntry): boolean {
+  if (t.applies_keywords.length === 0) return false;
+  const hay = `${v.kind} ${v.rule} ${v.title}`.toLowerCase();
+  return t.applies_keywords.some((k) => k !== "" && hay.includes(k));
+}
+
+/** Tooltip for the verification chip: who stamped it, when and why. */
+function verificationTip(v: VulnEntry): string {
+  const parts = [`Verification: ${verificationLabel(v.verification)}`];
+  if (v.verified_by) parts.push(`template ${v.verified_by}`);
+  if (v.verified_at) parts.push(formatTs(v.verified_at));
+  return parts.join(" · ");
 }
 
 /** Plain timestamps: existing views format with toLocaleString, no relative helper exists. */
@@ -128,6 +254,14 @@ export function VulnsView() {
   const [targetText, setTargetText] = useState("");
   /** Debounced copy of targetText that is sent to the backend as ?target=. */
   const [targetParam, setTargetParam] = useState("");
+
+  /** Exploit templates (GET /api/exploits/templates). [] until loaded, and []
+   * stays when the backend has no exploits support: no Verify buttons then. */
+  const [templates, setTemplates] = useState<ExploitTemplate[]>([]);
+  /** Fingerprint of the row whose POST /api/exploits/run is in flight. */
+  const [verifyingFingerprint, setVerifyingFingerprint] = useState<string | null>(null);
+  /** Last verdict reason/evidence per fingerprint (tooltip on the badge/Verify). */
+  const [verifyNotes, setVerifyNotes] = useState<Record<string, { reason: string; evidence: string; template: string }>>({});
 
   useEffect(() => {
     const t = window.setTimeout(() => setTargetParam(targetText.trim()), TARGET_DEBOUNCE_MS);
@@ -160,9 +294,85 @@ export function VulnsView() {
     load();
   }, [load, tokenVersion]);
 
+  // Templates decide whether a row can be verified at all. Like the list load,
+  // every state write happens in the promise continuation, so the effect below
+  // stays free of synchronous setState. A 404/401/5xx just means "no templates",
+  // which hides the Verify buttons instead of nagging about an optional feature.
+  const loadTemplates = useCallback(() => {
+    return apiRequest<ExploitTemplatesResponse>("/api/exploits/templates", {
+      label: "Loading exploit templates",
+    }).then((r) => {
+      setTemplates(r.ok ? asTemplateList(r.data) : []);
+    });
+  }, []);
+
+  useEffect(() => {
+    loadTemplates();
+  }, [loadTemplates, tokenVersion]);
+
   function refresh() {
     setLoading(true);
     load();
+    loadTemplates();
+  }
+
+  /**
+   * Verify one finding with `POST /api/exploits/run`. The answer carries the new
+   * stamp, so the row updates locally from the result. A 409 means the operator
+   * has not enabled exploitation: its message goes into the shared notice area.
+   */
+  async function verifyFingerprint(fingerprint: string) {
+    setVerifyingFingerprint(fingerprint);
+    setActionError(null);
+    setActionMessage(null);
+    const r = await apiRequest<ExploitRunResponse>("/api/exploits/run", {
+      method: "POST",
+      json: { fingerprints: [fingerprint] },
+      label: "Verification run",
+    });
+    setVerifyingFingerprint(null);
+    if (r.ok) {
+      const result = (r.data && Array.isArray(r.data.results) ? r.data.results : []).find(
+        (x) => x && typeof x.fingerprint === "string" && x.fingerprint.startsWith(fingerprint)
+      );
+      if (!result) {
+        const msg = "Verification run failed: the server returned no result for this finding.";
+        setActionError(msg);
+        notify(msg);
+        return;
+      }
+      const verification = asVerification(result.verdict);
+      const template = optStr(result.template);
+      const reason = optStr(result.reason);
+      setVulns((prev) =>
+        prev.map((v) =>
+          v.fingerprint === fingerprint
+            ? {
+                ...v,
+                verification,
+                verified_by: template || v.verified_by,
+                verified_at: optStr(result.verified_at) || v.verified_at,
+              }
+            : v
+        )
+      );
+      setVerifyNotes((prev) => ({
+        ...prev,
+        [fingerprint]: { reason, evidence: optStr(result.evidence), template },
+      }));
+      const msg = `Finding ${fingerprint.slice(0, 8)}: ${verificationLabel(verification)}${
+        reason ? ` — ${reason}` : ""
+      }`;
+      setActionMessage(msg);
+      notify(msg, "info");
+    } else if (r.status === 409) {
+      // Exploitation is disabled in settings: show the server's own wording.
+      setActionError(r.error);
+      notify(r.error);
+    } else {
+      setActionError(r.error);
+      notify(r.error);
+    }
   }
 
   async function setStatusFor(fingerprint: string, next: VulnStatus) {
@@ -221,8 +431,19 @@ export function VulnsView() {
     });
   }, [vulns, statusFilter, severityFilter, targetText]);
 
-  const busy = busyFingerprint !== null;
+  const busy = busyFingerprint !== null || verifyingFingerprint !== null;
   const filtersActive = statusFilter !== "open" || severityFilter !== "all" || targetText.trim() !== "";
+
+  /** First catalogue template that applies to each loaded row, by fingerprint. */
+  const applicableTemplates = useMemo(() => {
+    const map: Record<string, ExploitTemplate> = {};
+    if (templates.length === 0) return map;
+    for (const v of vulns) {
+      const t = templates.find((tpl) => templateApplies(tpl, v));
+      if (t) map[v.fingerprint] = t;
+    }
+    return map;
+  }, [vulns, templates]);
 
   function clearFilters() {
     setStatusFilter("open");
@@ -388,12 +609,32 @@ export function VulnsView() {
                   <th className="px-3 py-2 font-medium">Last seen</th>
                   <th className="px-3 py-2 font-medium">Occurrences</th>
                   <th className="px-3 py-2 font-medium">Status</th>
+                  <th className="px-3 py-2 font-medium">Verification</th>
                   <th className="px-3 py-2 font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((v) => {
                   const rowBusy = busy;
+                  const vTone = verificationTone(String(v.verification));
+                  const template = applicableTemplates[v.fingerprint];
+                  const note = verifyNotes[v.fingerprint];
+                  const chipTip = [
+                    verificationTip(v),
+                    note?.reason ? `reason: ${note.reason}` : "",
+                    note?.evidence ? `evidence: ${note.evidence}` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+                  const verifyTitle = [
+                    template
+                      ? `Verify with ${template.id}: ${template.description}`
+                      : "Verify this finding",
+                    note?.reason ? `Last run: ${note.reason}` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" — ");
+                  const pending = verifyingFingerprint === v.fingerprint;
                   return (
                     <tr
                       key={v.fingerprint}
@@ -429,7 +670,40 @@ export function VulnsView() {
                         </span>
                       </td>
                       <td className="px-3 py-2">
+                        {vTone && (
+                          <span
+                            className={`${CHIP} ${vTone}`}
+                            title={chipTip}
+                            data-testid={`verification-${v.fingerprint}`}
+                          >
+                            {verificationLabel(String(v.verification))}
+                          </span>
+                        )}
+                        {note?.reason && (
+                          <span className={`${vTone ? "block mt-0.5" : ""} max-w-[200px] text-rh-muted`}>
+                            {note.reason}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2">
                         <div className="flex items-center gap-1.5">
+                          {template && (
+                            <button
+                              type="button"
+                              onClick={() => verifyFingerprint(v.fingerprint)}
+                              disabled={rowBusy}
+                              title={verifyTitle}
+                              aria-label={`Verify finding ${v.fingerprint}`}
+                              className={BTN_GHOST}
+                            >
+                              {pending ? (
+                                <Loader2 className="w-3 h-3 animate-spin" aria-hidden="true" />
+                              ) : (
+                                <FlaskConical className="w-3 h-3" aria-hidden="true" />
+                              )}
+                              {pending ? "Verifying..." : "Verify"}
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => setStatusFor(v.fingerprint, "accepted")}
@@ -463,7 +737,9 @@ export function VulnsView() {
 
         <p className={`${MUTED_NOTE} mt-3`}>
           Statuses are stored in the vulnerability database and shared with the scans and the
-          <span className="font-mono text-rh-text"> readyhai vulns</span> CLI.
+          <span className="font-mono text-rh-text"> readyhai vulns</span> CLI. Verification stamps
+          come from <span className="font-mono text-rh-text">readyhai exploits run</span> and must be
+          enabled by the operator in Settings.
         </p>
       </div>
     </div>
