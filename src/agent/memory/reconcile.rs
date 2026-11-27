@@ -425,8 +425,9 @@ impl PlanHints {
     }
 
     /// Tag the cases (`regression_of`, `history_priority`, `intel_note`) and order the plan:
-    /// cases that re-test a finding the run just reproduced, then cases related to a known-open
-    /// database finding, then memory's regression probes, then changed operations, then
+    /// cases that re-test a finding the run just reproduced, then memory's regression probes
+    /// (the agent's own remembered reproduction outranks advisory database context), then
+    /// cases related to a merely-known-open database finding, then changed operations, then
     /// operations with a past, then the rest; each tier keeps the planner's order. Returns how
     /// many cases are regression probes. A pure reordering: the cases are the same before and
     /// after, and with no intel the order is exactly the one from before the intel tiers.
@@ -456,14 +457,17 @@ impl PlanHints {
             });
         }
         cases.sort_by_key(|c| {
-            (
-                crate::agent::types::intel_rank(c) != 0,
-                crate::agent::types::intel_rank(c) != 1,
-                c.regression_of.is_empty(),
-                crate::agent::types::intel_rank(c) != 2,
-                c.changed_ops.is_empty(),
-                !c.history_priority,
-            )
+            // Same 5-tier ladder as plan_order: reproduced live > (regression probes
+            // unless already tagged reproduced) > known-open > changed/history > rest.
+            let rank = crate::agent::types::intel_rank(c);
+            let probe = !c.regression_of.is_empty();
+            let tier: u8 = match rank {
+                0 => 0,
+                _ if probe => 1,
+                1 => 2,
+                _ => 3,
+            };
+            (tier, c.changed_ops.is_empty(), !c.history_priority)
         });
         cases.iter().filter(|c| !c.regression_of.is_empty()).count()
     }

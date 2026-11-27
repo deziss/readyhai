@@ -396,26 +396,27 @@ fn a_cut_plan_keeps_reproduced_related_cases_before_open_and_regression_ones() {
         cases
     };
 
-    // a cap of two keeps the two intel cases, in precedence order, before anything else
+    // a cap of two keeps the proven-first pair: live reproduction, then the agent's own
+    // remembered reproduction (memory regression probe) — advisory open intel yields to both
     let (kept, dropped) = order_and_trim(build(), Some(2), 60);
     assert_eq!(
         kept.iter()
             .map(|c| c.component.as_str())
             .collect::<Vec<_>>(),
-        ["/live", "/stale"],
-        "reproduced-related first, then open-related"
+        ["/live", "/memory"],
+        "reproduced-related first, then the memory regression probe"
     );
     assert!(
-        dropped.iter().any(|c| c.component == "/memory"),
-        "the memory regression probe yields to live intel"
+        dropped.iter().any(|c| c.component == "/stale"),
+        "the merely-open intel note yields to a proven reproduction"
     );
-    // a cap of three keeps the regression probe third
+    // a cap of three keeps the merely-open case third
     let (kept, _) = order_and_trim(build(), Some(3), 60);
     assert_eq!(
         kept.iter()
             .map(|c| c.component.as_str())
             .collect::<Vec<_>>(),
-        ["/live", "/stale", "/memory"]
+        ["/live", "/memory", "/stale"]
     );
 }
 

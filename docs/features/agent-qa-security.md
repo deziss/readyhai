@@ -183,7 +183,8 @@ bundle:
    planner does not schedule what the machine cannot run today.
 
 The result lands in the agent memory's `PlanHints` as `known_open` + `reproduced`, so the planner
-re-tests verified/open weaknesses first (**reproduced > open > regression** order). After Defect
+re-tests proven weaknesses first (**reproduced > memory-regression > open** order — the agent's
+own remembered reproduction always outranks advisory database context). After Defect
 Triage the run **records its own triaged findings back** into the same Vulns DB via
 `vulndb::record_run` (again gated on `[vulndb] enabled`). Invariants: intel only *reorders* the
 plan — it never creates, upgrades or changes a verdict; a dry run sends **zero probes** and

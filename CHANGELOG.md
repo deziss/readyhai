@@ -2,7 +2,11 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [3.8.1] - 2026-11-27
+
+### Fixed
+
+- **Agent plan tier order — advisory intel no longer outranks a proven reproduction**: the v3.8.0 Intel stage ranked cases tagged with a merely-*open* Vulns DB finding above the agent's own memory regression probes, so a second run against a known target could start with database context instead of re-running the reproduction it remembered. The plan ladder is now **reproduced live (this run) > memory regression probes > known-open database notes > changed/history operations > rest**, in the planner, the truncation order and the hint merge alike. The `agent-memory` eval suite (`regression probes lead the plan`) passes again; CI is green.
 
 ### Docs
 

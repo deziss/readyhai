@@ -205,8 +205,9 @@ pub fn case_priority(c: &PlannedCase) -> (u8, u8) {
 
 /// The sort key of a plan that has to be cut or ordered. With nothing to prioritise (`any_priority`
 /// false) every case shares one tier, so the key reduces to [`case_priority`]. Otherwise the cases
-/// that re-test a finding the run reproduced live come first, then those related to a known-open
-/// database finding, then the cases that re-test a past defect (memory regression probes), then
+/// that re-test a finding the run reproduced live come first, then the cases that re-test a past
+/// defect (memory regression probes — the agent's own remembered reproduction always outranks
+/// advisory database context), then those related to a merely-known-open database finding, then
 /// every case that tests a changed operation or one with a failing or flaky past (and the root
 /// liveness probe, which is always kept), then the rest, each tier by [`case_priority`]. So
 /// truncation drops unchanged, never-failed operations with no open finding first. With no intel
@@ -216,8 +217,8 @@ pub fn plan_order(any_priority: bool) -> impl Fn(&PlannedCase) -> (u8, u8, u8) {
         let (class, risk) = case_priority(c);
         let tier = match intel_rank(c) {
             0 => 0,
-            1 => 1,
-            _ if !c.regression_of.is_empty() => 2,
+            _ if !c.regression_of.is_empty() => 1,
+            1 => 2,
             _ if !any_priority
                 || !c.changed_ops.is_empty()
                 || c.history_priority

@@ -23,7 +23,7 @@ The `agent::pipeline` module orchestrates the autonomous testing lifecycle: Disc
 - `run_agentic_loop_with(req: &AgentRunRequest, run_id: &str, opts: RunOptions) -> Result<AgentRunReport>`
 - `run_discovery_scan(target: &str, spec_url: Option<&str>) -> Result<AgentRunReport>`
 - `RunOptions`, `LlmMode`
-- Intel stage (`intel.rs`): builds the advisory per-run intel bundle from the Vulns DB, opt-in safe exploit-verification re-checks, passive `src/network` posture facts and plugged-tool availability; the resulting `PlanHints` carry `known_open` + `reproduced` so the planner re-tests verified/open weaknesses first, and the post-triage pass records the run's findings via `vulndb::record_run`.
+- Intel stage (`intel.rs`): builds the advisory per-run intel bundle from the Vulns DB, opt-in safe exploit-verification re-checks, passive `src/network` posture facts and plugged-tool availability; the resulting `PlanHints` carry `known_open` + `reproduced` so the planner re-tests proven weaknesses first (reproduced > memory regression probes > merely-open), and the post-triage pass records the run's findings via `vulndb::record_run`.
 
 ## Invariants & Rules
 1. **Deterministic Primacy**: All verdicts and defect classifications are computed deterministically; LLM outputs are strictly advisory and never change verdicts.
