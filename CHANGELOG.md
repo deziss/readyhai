@@ -2,6 +2,13 @@
 
 All notable changes to ReadyHai are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Docs
+
+- **Comprehensive feature guides**: new `docs/features/` section explains every feature — what it does, why it matters, how to use it, how to configure it — across [Scanning & targets](features/scanning-and-targets.md) (verdict model; repo/image/web/SSH/Android targets; baselines; reports; tool orchestrator and OSS packs) and [Agent, QA & security intelligence](features/agent-qa-security.md) (QA suite, Super Agent incl. the Intel stage, exploits, vulndb, network lab, eval/eval-ai, fix, mutate, MCP, settings/RBAC).
+- **In-app Docs route**: the frontend now serves the full feature catalog at `/docs` (`src/app/docs/`, registry in `src/lib/docs-features.ts`) with search, category navigation and deep links back to the repo markdown; a Docs entry joins the header navigation.
+
 ## [3.8.0] - 2026-11-26
 
 ### Added

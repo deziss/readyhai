@@ -15,7 +15,7 @@
 Point ReadyHai at a codebase, a container image, an API/web app, an SSH host, or an Android APK.  
 It executes hardened, sandboxed checks and outputs a definitive verdict: **PASS**, **WARN**, or **FAIL**.
 
-[Quick Start](#quick-start) • [Features](#key-capabilities) • [CLI Commands](#command-reference) • [Eval](#evaluation-harness) • [Version Management](#single-source-of-truth-versioning) • [Security & Secrets](#secrets-and-sensitive-data-policy) • [Documentation](docs/README.md) • [Changelog](CHANGELOG.md)
+[Quick Start](#quick-start) • [Features](#key-capabilities) • [CLI Commands](#command-reference) • [Eval](#evaluation-harness) • [Version Management](#single-source-of-truth-versioning) • [Security & Secrets](#secrets-and-sensitive-data-policy) • [Feature guides](docs/features/README.md) • [Documentation](docs/README.md) • [Changelog](CHANGELOG.md)
 
 ---
 

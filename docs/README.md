@@ -8,6 +8,7 @@ These docs describe what the code in `src/`, `frontend/`, `tests/eval/` and `.gi
 
 | Doc | What it covers |
 |---|---|
+| [features/README.md](features/README.md) | **Feature guides** — every feature explained: what it does, why it matters, how to use it, how to configure it ([scanning & targets](features/scanning-and-targets.md), [agent, QA & security intelligence](features/agent-qa-security.md)); also rendered in-app at the frontend `/docs` route |
 | [architecture.md](architecture.md) | Components, data flow, the agent module map (pipeline, oracle, verifier, lead, memory, change, ledger), data model, run directory, design choices and trade-offs |
 | [usage.md](usage.md) | Every CLI command and flag, target syntaxes, profiles, reports, exit codes, baseline workflow, agent workflows, examples |
 | [configuration.md](configuration.md) | `readyhai.toml`, `policy.toml`, `scope.toml`, baseline JSON, `tools.lock.toml`, plugins, `settings.toml` (`[integrations]`, `[[toggle]]`, `[vulndb]`, `[exploits] enabled` / `max_probes`), every environment variable |

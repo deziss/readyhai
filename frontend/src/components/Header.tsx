@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Activity, Bug, Cpu, Globe, Settings, ShieldCheck } from "lucide-react";
+import { Activity, BookOpen, Bug, Cpu, Globe, Settings, ShieldCheck } from "lucide-react";
 import { apiRequest, useApiTokenVersion } from "@/lib/api";
 import { ApiTokenSettings } from "./ApiTokenSettings";
 
@@ -111,6 +111,17 @@ export function Header({
             </button>
           );
         })}
+        {/* Docs is a real route, not a studio view: plain anchor, outside the tab logic. */}
+        <a
+          id="nav-link-docs"
+          href="/docs"
+          title="Documentation"
+          aria-label="Documentation"
+          className="inline-flex cursor-pointer items-center gap-2 self-center border border-rh-line px-2.5 py-1 text-ui font-medium text-rh-muted transition-colors hover:bg-rh-raised hover:text-rh-text [--rh-focus-offset:-3px]"
+        >
+          <BookOpen className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span className="max-md:sr-only">Docs</span>
+        </a>
       </nav>
 
       {/* Context and settings */}
