@@ -100,3 +100,11 @@ tests/fixtures/**/*.py[cod]
 
 # Local rules of engagement (real hosts/IPs). Use scope.example.toml as the template.
 scope.toml
+
+# Internal planning artefacts (never publish; scrubbed from history)
+docs/plans/
+docs/superpowers/
+/plans/
+
+# Generated eval output (CI builds it on the fly; do not commit)
+/eval-report/

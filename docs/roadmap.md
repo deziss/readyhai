@@ -17,11 +17,11 @@ Status key: **Done** (implemented, covered by tests or verification), **Done, li
 | 8 Studio revamp | Design system, command center, release gate in the workspace, six-stage stepper, cancel, sandboxed reports, token settings | **Done** | `0.4.0`–`0.6.2`. UI behaviour is covered by vitest (127 cases); no browser end-to-end test runs in CI. |
 | 9 Deep security | Native Tree-sitter cross-file taint/auth audit (`security.code_audit`), Opengrep, Nuclei, active ZAP, TLS/CSP checks, modular `attacks/*`, in-process OAST, Playwright `BrowserSecurity`, white-box `--repo` AST bridge, ReAct follow-up waves, `security-deep` + `whitebox-exploit` evals | **Done** | Landed in `0.7.0`. Gated across 10 deterministic CI eval suites with 0 false positives. |
 | 10 Modern Toolchain & Dep Upgrade | Node 24 LTS, TypeScript 7, React 19, Next.js 16.4, MiniJinja 3, Sha2 0.11, Rand 0.10, Reqwest 0.13, Playwright 1.65.1 | **Done, live** | Landed in `0.9.0`. Full suite passed: 813 Rust tests, 141 Vitest tests, Docker stack running healthy. |
-| 11 World-Class Evaluator & QA Engine | 7-pillar master plan (Multi-protocol APIs, Autonomous State-Graph Journeys, GenAI Evaluator, OTel trace correlation, Agentic Fixer, Mutation testing, Enterprise mesh) | **In Progress** | Master blueprint: [docs/plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md) |
+| 11 World-Class Evaluator & QA Engine | 7-pillar master plan (Multi-protocol APIs, Autonomous State-Graph Journeys, GenAI Evaluator, OTel trace correlation, Agentic Fixer, Mutation testing, Enterprise mesh) | **In Progress** | Master blueprint: internal document (not published). |
 
 ## Evolutionary Horizons (World-Class Evaluator & QA Engine)
 
-See [plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md](plans/2026-11-14-world-class-evaluator-and-qa-master-plan.md) for full architectural specifications.
+The full architectural specifications for this master plan are kept internally (not published).
 
 1. **Horizon 1 (v1.0.0) — Protocol Breadth & Enterprise Queue**: **Done**
    - OpenAPI 3.1 & JSON Schema Draft 2020-12 full support (`prefixItems`, polymorphic schemas).
