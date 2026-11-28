@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { LayoutDashboard } from "lucide-react";
 import { Activity, BookOpen, Bug, Cpu, Globe, Settings, ShieldCheck } from "lucide-react";
-import { apiRequest, useApiTokenVersion } from "@/lib/api";
+import { useCachedApi } from "@/lib/cache";
+import { pollIntervalMs, usePrefs } from "@/lib/prefs";
 import { ApiTokenSettings } from "./ApiTokenSettings";
+import { QuickToggles } from "./QuickToggles";
 
 export type SaaSViewMode =
+  | "dashboard"
   | "studio"
   | "agent_history"
   | "scans_history"
@@ -18,10 +21,10 @@ interface HeaderProps {
   activeView: SaaSViewMode;
   onViewChange: (view: SaaSViewMode) => void;
   scansCount?: number;
-  agentRunsCount?: number;
 }
 
 const NAV_ITEMS: { id: string; view: SaaSViewMode; label: string; icon: typeof Cpu }[] = [
+  { id: "nav-tab-dashboard", view: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "nav-tab-studio", view: "studio", label: "Agent studio", icon: Cpu },
   { id: "nav-tab-scans-history", view: "scans_history", label: "Scans", icon: ShieldCheck },
   { id: "nav-tab-network-lab", view: "network_lab", label: "Network lab", icon: Activity },
@@ -35,32 +38,14 @@ export function Header({
   onViewChange,
   scansCount = 0,
 }: HeaderProps) {
-  // null = status unknown (never reached the backend, or the last probe failed).
-  const [modelStatus, setModelStatus] = useState<{
-    model?: string;
-    provider?: string;
-    status?: string;
-    latency_ms?: number;
-  } | null>(null);
-  const tokenVersion = useApiTokenVersion();
-
-  useEffect(() => {
-    let cancelled = false;
-    async function checkStatus() {
-      const r = await apiRequest<{ model?: string; provider?: string; status?: string; latency_ms?: number }>(
-        "/api/agent/status",
-        { label: "Model status" }
-      );
-      if (cancelled) return;
-      setModelStatus(r.ok ? r.data : null);
-    }
-    checkStatus();
-    const interval = setInterval(checkStatus, 15000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [tokenVersion]);
+  const prefs = usePrefs();
+  // null = status unknown (never reached the backend, or the last probe failed). The cache means a
+  // remount or a view switch paints the last known status instead of flashing "unknown".
+  const status = useCachedApi<{ model?: string; provider?: string; status?: string; latency_ms?: number }>(
+    "/api/agent/status",
+    { label: "Model status", pollMs: pollIntervalMs(prefs) ?? 15000 }
+  );
+  const modelStatus = status.data;
 
   const isOnline = modelStatus?.status === "online";
   const statusKnown = !!modelStatus?.status;
@@ -84,7 +69,12 @@ export function Header({
       </div>
 
       {/* Views */}
-      <nav aria-label="Views" className="flex h-full min-w-0 items-stretch gap-1">
+      {/* The nav takes the remaining space and scrolls horizontally when the viewport is too
+          narrow for every tab, so it can never spill over the status cluster at its side. */}
+      <nav
+        aria-label="Views"
+        className="flex h-full min-w-0 flex-1 items-stretch gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
         {NAV_ITEMS.map(({ id, view, label, icon: Icon }) => {
           const active = activeView === view;
           return (
@@ -126,7 +116,7 @@ export function Header({
 
       {/* Context and settings */}
       <div className="flex shrink-0 items-center gap-2">
-        <div className="hidden max-w-[260px] items-center gap-2 rounded-sm border border-rh-line bg-rh-raised px-2.5 py-1 text-xs xl:flex">
+        <div className="hidden max-w-[260px] items-center gap-2 rounded-sm border border-rh-line bg-rh-raised px-2.5 py-1 text-xs 2xl:flex">
           <Globe className="h-3.5 w-3.5 shrink-0 text-rh-muted" aria-hidden="true" />
           <span className="text-rh-muted">Target</span>
           <span className="truncate font-mono text-rh-text" title={currentTarget}>
@@ -134,9 +124,14 @@ export function Header({
           </span>
         </div>
 
-        <div className="hidden items-center gap-2 rounded-sm border border-rh-line bg-rh-raised px-2.5 py-1 text-xs sm:flex">
+        <div
+          className="hidden items-center gap-2 rounded-sm border border-rh-line bg-rh-raised px-2.5 py-1 text-xs md:flex"
+          title={`Model status: ${statusKnown ? modelStatus?.status : "unknown"}`}
+        >
           <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} aria-hidden="true" />
-          <span className="text-rh-text">
+          {/* Below lg only the dot survives: at tablet width the nav needs the room more than the
+              latency readout does. */}
+          <span className="hidden text-rh-text lg:inline">
             {statusKnown ? `Model ${modelStatus?.status}${latency}` : "Model status unknown"}
           </span>
           {modelStatus?.model && (
@@ -147,6 +142,7 @@ export function Header({
           )}
         </div>
 
+        <QuickToggles />
         <ApiTokenSettings />
       </div>
     </header>

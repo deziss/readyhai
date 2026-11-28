@@ -222,10 +222,9 @@ fn xml_unescape(v: &str) -> String {
 /// reports these tools emit, wrong for arbitrary XML (by design, and never recursive).
 /// The closing tag must end exactly at the name, so `</host>` never swallows `</hostname>`.
 fn xml_elements(xml: &str, name: &str) -> Vec<(String, String)> {
-    let re = regex::Regex::new(&format!(
+    let re = crate::regex_cache::compiled(&format!(
         r"(?s)<{name}\b([^>]*?)(?:/>|>(.*?)</{name}(?:\s[^>]*)?>)"
-    ))
-    .unwrap();
+    ));
     re.captures_iter(xml)
         .map(|c| {
             (
@@ -560,9 +559,9 @@ fn sqlmap_names(text: &str) -> (Vec<String>, Vec<String>) {
             v.push(s);
         }
     };
-    let param_re = regex::Regex::new(r"(?i)parameter\s+'([^']+)'").unwrap();
-    let type_re = regex::Regex::new(r"(?im)(?:^-|\s)Type:\s*([A-Za-z][^\n\r]*)").unwrap();
-    let tech_re = regex::Regex::new(r"'([^']{3,60})'\s+(?:is\s+)?injectable").unwrap();
+    let param_re = crate::regex_cache::compiled(r"(?i)parameter\s+'([^']+)'");
+    let type_re = crate::regex_cache::compiled(r"(?im)(?:^-|\s)Type:\s*([A-Za-z][^\n\r]*)");
+    let tech_re = crate::regex_cache::compiled(r"'([^']{3,60})'\s+(?:is\s+)?injectable");
     for c in param_re.captures_iter(text) {
         push(&mut params, &c[1]);
     }

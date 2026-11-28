@@ -13,13 +13,15 @@ fn test_rag_triad_grounded_answer() {
     let score = evaluate_rag_triad(query, Some(context), response, None);
     assert_eq!(score.hallucination_count, 0);
     assert!(
-        score.faithfulness >= 0.90,
-        "Faithfulness should be high: {}",
+        score.faithfulness.is_some_and(|v| v >= 0.90),
+        "Faithfulness should be high: {:?}",
         score.faithfulness
     );
-    assert!(score.context_relevance >= 0.60);
-    assert!(score.answer_relevance >= 0.50);
-    assert!(score.composite_score >= 0.70);
+    assert!(score.context_relevance.is_some_and(|v| v >= 0.60));
+    assert!(score.answer_relevance.is_some_and(|v| v >= 0.50));
+    assert!(score.composite_score.is_some_and(|v| v >= 0.70));
+    assert!(score.not_evaluated.is_empty());
+    assert!(score.method.contains("no embedding model"));
 }
 
 #[test]
@@ -32,8 +34,8 @@ fn test_rag_triad_hallucination_detected() {
     let score = evaluate_rag_triad(query, Some(context), response, None);
     assert!(score.hallucination_count >= 1);
     assert!(
-        score.faithfulness < 0.50,
-        "Faithfulness should be penalized: {}",
+        score.faithfulness.is_some_and(|v| v < 0.50),
+        "Faithfulness should be penalized: {:?}",
         score.faithfulness
     );
     let detail = &score.hallucinations[0];
@@ -43,6 +45,64 @@ fn test_rag_triad_hallucination_detected() {
             .iter()
             .any(|t| t.contains("95") || t.contains("initech"))
     );
+}
+
+#[test]
+fn test_rag_triad_without_context_is_not_measured() {
+    let query = "What was the Q3 revenue of ACME Corp?";
+    let response = "ACME Corp reported a revenue of $45 million in Q3 2026.";
+
+    let score = evaluate_rag_triad(query, None, response, None);
+    assert_eq!(
+        score.context_relevance, None,
+        "no retrieved context must not report a perfect score"
+    );
+    assert_eq!(score.faithfulness, None);
+    assert!(score.answer_relevance.is_some());
+    assert!(score.not_evaluated("context_relevance"));
+    assert!(score.not_evaluated("faithfulness"));
+
+    let json = serde_json::to_value(&score).expect("serialize");
+    assert!(json["context_relevance"].is_null());
+    assert!(json["faithfulness"].is_null());
+    assert_eq!(json["method"], serde_json::json!(super::rag::RAG_METHOD));
+    assert_eq!(json["not_evaluated"].as_array().expect("array").len(), 2);
+}
+
+#[test]
+fn test_rag_triad_empty_answer_leaves_faithfulness_unmeasured() {
+    let query = "What was the Q3 revenue of ACME Corp?";
+    let context = "In Q3 2026, ACME Corp recorded a revenue of $45 million.";
+
+    let score = evaluate_rag_triad(query, Some(context), "", None);
+    assert_eq!(
+        score.faithfulness, None,
+        "there was no claim to ground, so faithfulness is not a measurement"
+    );
+    assert!(score.not_evaluated("faithfulness"));
+    // A blank answer is still measurable as irrelevant.
+    assert_eq!(score.answer_relevance, Some(0.0));
+}
+
+#[test]
+fn test_rag_triad_empty_query_leaves_context_relevance_unmeasured() {
+    let context = "In Q3 2026, ACME Corp recorded a revenue of $45 million.";
+    let response = "ACME Corp reported a revenue of $45 million in Q3 2026.";
+
+    let score = evaluate_rag_triad("", Some(context), response, None);
+    assert_eq!(score.context_relevance, None);
+    assert!(score.not_evaluated("context_relevance"));
+    assert!(score.faithfulness.is_some());
+    // Composite still reports the metrics that were measured.
+    assert!(score.composite_score.is_some());
+}
+
+#[test]
+fn test_rag_triad_nothing_measurable_has_no_composite() {
+    let score = evaluate_rag_triad("", None, "hello world", None);
+    assert_eq!(score.context_relevance, None);
+    assert_eq!(score.faithfulness, None);
+    assert_eq!(score.composite_score, None);
 }
 
 #[test]

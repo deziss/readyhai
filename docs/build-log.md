@@ -314,7 +314,7 @@ Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.2.0 and v3.3.0).
 - **Loop Engineering (`src/agent/react.rs`)**: Closed-loop OODA (Observe-Orient-Decide-Act) controller, real-time anomaly detection, adaptive mutation probe synthesis (`ADAPTIVE_MUTATOR_ROLE`), oscillation damping (`OscillationDamper`), bounded execution waves.
 - **Graph Engineering (`src/agent/pipeline/graph.rs`, `src/agent/plan/dag.rs`)**: 6-station StateGraph finite state machine (`Recon` $\to$ `Discovery` $\to$ `Plan` $\to$ `Execute` $\to$ `Verify` $\to$ `Gate`), typed dynamic conditional routing, station iteration counters (`MAX_STATION_ITERATIONS = 5`), graph telemetry, Attack DAG dependency modeling with topological sorting, prerequisite execution guards (`execute_guarded`).
 - **Prompt Engineering (`src/agent/prompts/`)**: Centralized role-specialized prompt templates across all 6 stations with strict XML fencing (`<target_untrusted_content>`) and adversarial prompt injection neutralization (`neutralise_target_tags`).
-- **Software Factory Engineering (`src/agent/pipeline/gates.rs`, `src/agent/pipeline/gate.rs`)**: Formal entrance/exit station Quality Gates, cryptographic evidence provenance, ASVS V2–V14 compliance mapping, and SHA-256 cryptographically signed Release Attestation.
+- **Software Factory Engineering (`src/agent/pipeline/gates.rs`, `src/agent/pipeline/gate.rs`)**: Formal entrance/exit station Quality Gates, evidence claims citing case ids and evidence files, observed-findings mapping onto ASVS-shaped areas V2–V14, and a Release Attestation stamped with an unkeyed canonical SHA-256 integrity digest (no key-based signing).
 - **Autonomous Directives Engine (`frontend/src/components/Composer.tsx`)**: Removed manual text inputs from Command Center; dynamically synthesizes directives via LLM from target surface via `POST /api/agent/directives/synthesize`.
 
 ### Verification status
@@ -406,3 +406,22 @@ Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.8.0).
 
 ### Verification status
 - Qualitative this round, as the feature ships in parallel with this entry: unit coverage pins the gate semantics — no `[vulndb]` ⇒ no intel read and no write-back; `[exploits]` off or dry-run ⇒ zero probes; dry-run ⇒ zero records; every Intel probe passes the intrusive egress guard; intel reorders `PlanHints` but verdicts are byte-identical with Intel on and off. Exact `cargo test` / `vitest run` counts are recorded at release time (prior round: 1002 `#[test]` functions / 157 vitest cases grepped from source).
+
+
+## Round 13: Trust hardening, honest skipping, and the Studio redesign (2026-11-28)
+
+Release notes: [../CHANGELOG.md](../CHANGELOG.md) (v3.9.0).
+
+### What landed
+- **Honesty pass on the verdict paths**: the LLM juror is advisory-only (verdicts come from deterministic checks; the juror can raise confidence, never flip a verdict), skipped checks can no longer yield a silent PASS (they surface as `Partial`/`NotEvaluated`), unevaluated runs no longer score 100/GO, fabricated attestations and canned verify-claims were removed, exploit-verdict excerpts are redacted, and a remotely triggerable panic in the redaction path is fixed. Release-gate verdicts now derive from the attestation they cite.
+- **Robustness & throughput**: panics are supervised via `catch_unwind` (kept `panic = "unwind"` deliberately, documented); the blocking offload pool is bounded by a 256-slot semaphore and sheds with `503` + `Retry-After` instead of buying a thread per queued job; regexes are compiled once through a process-level cache; `POST /api/mutate` clamps `max_mutants` to ≤200 and `POST /api/fix` runs off the async workers; report reads are capped at 64 MiB; connect timeouts are set on shared HTTP clients.
+- **Supply chain**: `cargo deny` (advisories/licenses/bans/sources) gates CI against `deny.toml`; it caught RUSTSEC-2026-0592 and the `url` 2.5.9 fix landed before release; CI actions are SHA-pinned. Five tree-sitter grammars became optional `grammar-*` features (`--no-default-features` release binary: 21.0 MB vs 26.2 MB); files whose grammar is compiled out are recorded in `grammar_skipped` and the code-audit check reports `Partial` naming the languages — never a clean audit of unparsed code.
+- **OpenVEX export** (`readyhai vulns … vex`, `src/vex.rs`): evidence-only exploitability claims (`verified` → `affected`, everything else `under_investigation` with notes; `not_affected`/`fixed` are never emitted), stable `urn:readyhai:vex:<target>:<fingerprint>` statement ids, counted-not-dropped skips.
+- **The fixer stopped lying about data and regressions**: patches carry full `patched_content` (no more file truncation on apply), unverified patches are labelled `AppliedWithoutVerification` everywhere (report, commit message, PR body), `npm --silent test` actually runs the suite, run IDs resolve via the data dir, repo-level findings are skipped instead of crashing.
+- **Studio redesign**: own token vocabulary (not Tailwind defaults) with a prefs store (theme/density/type-scale/accent/colour-blind verdict palette/motion/landing view), shared UI primitives, a new Dashboard whose derivation layer treats an absent measurement as absent — never a guessed green — and a read-through localStorage cache (stale 10 min / drop 24 h / LRU 60 keys, token-scoped, mutation-invalidated) so refreshes paint instantly from the last good response while revalidating in the background.
+
+### Verification status
+- Rust suite: **1054 passed / 0 failed / 3 ignored** (default features) and **1050 / 0 / 3** with `--no-default-features` (four grammar-dependent fixtures are `#[cfg]`-gated on their grammars; a lockstep test pins that the grammar gate and the parser agree). `cargo clippy --all-targets -- -D warnings` and `cargo fmt --check` clean in both configs; CI runs clippy and the suite for both.
+- Frontend: `vitest run` green (cache contract, dashboard derivation, prefs store, plus the existing suites); `tsc --noEmit` clean.
+- Supply chain: `cargo deny check advisories licenses bans sources` all-ok on the v3.9.0 lockfile; live HTTPS smoke test through the reqwest/rustls stack passed after the `url` 2.5.9 bump.
+- Container: image built from this commit and verified — `readyhai ping` healthcheck, `/api/health` + `/api/version` over HTTP, `--version` reports 3.9.0.

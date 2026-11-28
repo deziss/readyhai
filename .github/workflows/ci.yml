@@ -36,10 +36,20 @@ jobs:
         run: cargo fmt -- --check
 
       - name: Run clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The tree-sitter grammars are optional features; a `--no-default-features`
+      # build must stay warning-free too, or the slim build rots silently.
+      - name: Run clippy (no default features)
+        run: cargo clippy --all-targets --no-default-features -- -D warnings
 
       - name: Run test suite
         run: cargo test --verbose
+
+      # Grammar-gated fixtures and the lockstep invariant must pass with grammars compiled
+      # out too, otherwise the slim build's test suite silently rots.
+      - name: Run test suite (no default features)
+        run: cargo test --no-default-features
 
       - name: Build release binary
         run: cargo build --release
@@ -84,6 +94,20 @@ jobs:
           name: eval-report
           path: eval-report/
           if-no-files-found: warn
+
+  supply-chain:
+    # Enterprise trust: every crate in the tree is checked against the RustSec advisory database
+    # and its licence against the allowlist in deny.toml, and the lockfile is verified to resolve
+    # exactly what Cargo.lock pins (`--locked`). See deny.toml for the policy and waiver rules.
+    name: Supply chain (cargo-deny)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run cargo-deny
+        uses: EmbarkStudios/cargo-deny-action@bb119f768ea239e765aeaef5769558d4f21213aa # v2.1.5
+        with:
+          command: check advisories licenses bans sources
 
   frontend:
     name: Frontend lint, typecheck & test

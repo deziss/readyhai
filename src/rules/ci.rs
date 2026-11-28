@@ -11,10 +11,23 @@ use std::collections::HashSet;
 /// (a comment-free `name: readyhai`, `pip install readyhai`, a repo name) proves no scan runs.
 pub(crate) const SCANNERS: &str = r"trivy|grype|snyk|semgrep|gitleaks|trufflehog|bandit|sonar|osv-scanner|dependency-check|pip-audit|npm audit|detect-secrets|ggshield|checkmarx|codeql|opengrep|readyhai(?:\.exe)?\s+scan";
 
+// Compiled once for the process. The two `{SCANNERS}` patterns are assembled at run time (the
+// name list is a const, not a literal pattern), so they go through the shared cache; the others
+// are literal and use `regex_cached!`. Checks run per scan and matched per CI line.
+regex_cached!(READYHAI_SCAN_STEP, r"\breadyhai(?:\.exe)?\s+scan\b");
+regex_cached!(
+    NEVER_INLINE,
+    r"(?i)(--exit-code[= ]0\b|\|\|\s*true|--soft-fail|continue-on-error:\s*true|allow_failure:\s*true)"
+);
+regex_cached!(
+    NEVER_KEY_LINE,
+    r#"(?i)^(continue-on-error|allow_failure)\s*:\s*['"]?(true|yes|on)['"]?\s*(#.*)?$"#
+);
+
 /// The real readyhai scan step: `readyhai scan ...` on one line, without `--no-tools` (which
 /// turns the SAST / secret / dependency scanners off).
 pub(crate) fn runs_readyhai_scan(all_lower: &str) -> bool {
-    let rs = Regex::new(r"\breadyhai(?:\.exe)?\s+scan\b").unwrap();
+    let rs = &*READYHAI_SCAN_STEP;
     all_lower
         .lines()
         .any(|l| rs.is_match(l) && !l.contains("--no-tools"))
@@ -134,21 +147,14 @@ pub(crate) fn ci_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
             .remediation("Add a pipeline that builds, tests and scans on every change."),
         ]);
     }
-    let scan = Regex::new(&format!("(?i)({SCANNERS})")).unwrap();
+    let scan = crate::regex_cache::compiled(&format!("(?i)({SCANNERS})"));
     // scanner and failure-swallowing on ONE line
-    let never = Regex::new(
-        r"(?i)(--exit-code[= ]0\b|\|\|\s*true|--soft-fail|continue-on-error:\s*true|allow_failure:\s*true)",
-    )
-    .unwrap();
+    let never = &*NEVER_INLINE;
     // ... or on its own line elsewhere in the step / job (GitHub Actions, GitLab CI)
-    let never_key = Regex::new(
-        r#"(?i)^(continue-on-error|allow_failure)\s*:\s*['"]?(true|yes|on)['"]?\s*(#.*)?$"#,
-    )
-    .unwrap();
-    let guard = Regex::new(&format!(
+    let never_key = &*NEVER_KEY_LINE;
+    let guard = crate::regex_cache::compiled(&format!(
         r"(?i)(command\s+-v|which|type\s+-p|hash)\s+({SCANNERS}|readyhai)"
-    ))
-    .unwrap();
+    ));
     let mut all = String::new();
     let mut out = vec![];
     let mut skips = Skips::default();
@@ -175,7 +181,7 @@ pub(crate) fn ci_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
                 let mut never_found = never.is_match(l);
                 let mut why = "on the same line";
                 if !never_found
-                    && let Some((anchor, w)) = never_fails_nearby(&lines, i, &never_key)
+                    && let Some((anchor, w)) = never_fails_nearby(&lines, i, never_key)
                     && reported.insert(anchor)
                 {
                     never_found = true;

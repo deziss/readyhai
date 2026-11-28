@@ -25,7 +25,8 @@ pub struct FixOpts {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Run repository test suite to verify patch introduces zero regressions (default: true)
+    /// Run the repository's test suite against each patch and roll it back if it fails
+    /// (default: true). Only detects regressions the suite itself covers.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub verify: bool,
 
@@ -41,10 +42,16 @@ pub struct FixOpts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PatchStatus {
+    /// Patch text was built; nothing was run against it.
     Synthesized,
+    /// The repository's test suite passed with the patch applied.
     Verified,
     VerificationFailed,
+    /// Written to disk after the suite passed.
     Applied,
+    /// Written to disk **without** any suite run (`--verify` off, or no supported runner found).
+    /// Distinct from `Applied` so a report can never count an unchecked patch as checked.
+    AppliedWithoutVerification,
     RolledBack,
 }
 
@@ -66,8 +73,13 @@ pub struct PatchRemediation {
     pub rule: String,
     pub file_path: String,
     pub line: usize,
+    /// The single source line as it was before the fix, for display.
     pub original_snippet: String,
+    /// The single source line after the fix, for display only. Writing this to disk would replace
+    /// the whole file with one line — use `patched_content` for that.
     pub patched_snippet: String,
+    /// Complete file content with the fix applied. This is what is written to disk.
+    pub patched_content: String,
     pub unified_diff: String,
     pub rationale: String,
     pub status: PatchStatus,
@@ -81,7 +93,15 @@ pub struct FixReport {
     pub repo: String,
     pub total_defects_evaluated: usize,
     pub patches_synthesized: usize,
+    /// Patches whose *test-suite* run passed after the patch was applied on disk. A green suite
+    /// says the suite still passes; it does not establish the absence of regressions the suite
+    /// does not cover, so nothing here claims that.
     pub patches_verified: usize,
+    /// Patches that reached disk (or the report) **without** any test-suite verification, because
+    /// `--verify` was off or no supported test runner was detected. Kept separate from
+    /// `patches_verified` on purpose: these were never checked, and a report that folded them into
+    /// the verified count would claim a check that never ran.
+    pub patches_unverified: usize,
     pub patches_applied: usize,
     pub branch_created: Option<String>,
     pub commit_sha: Option<String>,

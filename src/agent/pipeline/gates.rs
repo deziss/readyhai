@@ -6,12 +6,12 @@
 //! 3. `PlanGate`: Validates Attack DAG is acyclic, baseline cases generated, directives covered.
 //! 4. `ExecutionGate`: Validates area worker wave completion, budget compliance, zero worker thread panics.
 //! 5. `VerifyGate`: Validates k-pass replay records, Juror Source->Sink taint evaluation, zero unverified false-positive defects.
-//! 6. `ReleaseGate`: Validates Evidence Ledger four-pillar thresholds (Value, Authority, Safety, Evidence), OWASP ASVS compliance breakdown, and generates the cryptographically signed Software Factory Attestation.
+//! 6. `ReleaseGate`: Validates Evidence Ledger four-pillar thresholds (Value, Authority, Safety, Evidence) and observed findings, and generates the Software Factory Attestation, stamped with an unkeyed SHA-256 integrity digest (key-based signing is not implemented).
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
+use super::gate;
 use super::graph::PipelineState;
 pub use crate::agent::types::{
     AsvsCategoryScore, EvidenceLedger, OwaspAsvsBreakdown, SoftwareFactoryAttestation,
@@ -512,6 +512,10 @@ pub fn validate_execution_gate(input: &ExecutionGateInput) -> Result<GateVerdict
 pub struct VerifyGateInput {
     pub k_replay_executed: bool,
     pub juror_taint_evaluated: bool,
+    /// Reproduced defects the taint juror judged likely false positives. They are kept (a
+    /// measurement outranks an opinion), and this count is what makes the disagreement visible.
+    #[serde(default)]
+    pub juror_disagreements: usize,
     pub unverified_false_positives: usize,
 }
 
@@ -520,6 +524,7 @@ pub struct VerifyGateInput {
 pub struct VerifyGate {
     pub k_replay_executed: bool,
     pub juror_taint_evaluated: bool,
+    pub juror_disagreements: usize,
     pub unverified_false_positives: usize,
 }
 
@@ -582,7 +587,15 @@ pub fn validate_verify_gate(input: &VerifyGateInput) -> Result<GateVerdict> {
         PipelineState::Verify,
         GateType::Exit,
         true,
-        "VerifyGate passed: k-pass replays verified, Juror taint analysis completed, zero false positives",
+        if input.juror_disagreements == 0 {
+            "VerifyGate passed: k-pass replays verified, every defect adjudicated, no unresolved juror disagreement".to_string()
+        } else {
+            format!(
+                "VerifyGate passed with {} reproduced defect(s) the juror doubts; they are retained \
+                 and flagged in `juror_opinion`",
+                input.juror_disagreements
+            )
+        },
     )
     .with_check(
         "k_replay_records",
@@ -592,10 +605,18 @@ pub fn validate_verify_gate(input: &VerifyGateInput) -> Result<GateVerdict> {
     .with_check(
         "juror_taint_evaluation",
         true,
-        "Contextual Source->Sink taint tracing completed",
+        "every defect reached a juror verdict (or there were none to trace)",
     )
     .with_check(
-        "zero_unverified_fps",
+        "juror_disagreements_recorded",
+        true,
+        format!(
+            "{} reproduced defect(s) carry a recorded juror disagreement",
+            input.juror_disagreements
+        ),
+    )
+    .with_check(
+        "zero_unverified_false_positives",
         true,
         "Zero unverified false-positive defects confirmed",
     );
@@ -607,27 +628,43 @@ pub fn validate_verify_gate(input: &VerifyGateInput) -> Result<GateVerdict> {
 // ============================================================================
 
 /// Typed input for Release quality gate validation.
+///
+/// The pillar scores are caller-supplied: `pillar_scores_measured` must say whether they were
+/// actually computed from evidence. Without it a caller could green-light a release by passing
+/// plausible numbers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseGateInput {
-    pub value_score: u32,
-    pub authority_score: u32,
-    pub safety_score: u32,
-    pub evidence_score: u32,
+    /// `None` = not evaluated.
+    #[serde(default)]
+    pub value_score: Option<u32>,
+    #[serde(default)]
+    pub authority_score: Option<u32>,
+    #[serde(default)]
+    pub safety_score: Option<u32>,
+    #[serde(default)]
+    pub evidence_score: Option<u32>,
     pub min_threshold: u32,
-    pub asvs_l1_compliant: bool,
+    /// An observed-findings statement: no critical or high defect was seen. Never a compliance claim.
+    pub no_critical_or_high_findings: bool,
     pub critical_defects: usize,
+    /// False = the pillar scores above were not actually measured; the attestation then reports
+    /// `NOT_EVALUATED` instead of a score.
+    #[serde(default)]
+    pub pillar_scores_measured: bool,
 }
 
 impl Default for ReleaseGateInput {
+    /// Reports not-evaluated everywhere: an all-default run measured nothing, and the gate says so.
     fn default() -> Self {
         Self {
-            value_score: 80,
-            authority_score: 80,
-            safety_score: 80,
-            evidence_score: 80,
+            value_score: None,
+            authority_score: None,
+            safety_score: None,
+            evidence_score: None,
             min_threshold: 70,
-            asvs_l1_compliant: true,
+            no_critical_or_high_findings: true,
             critical_defects: 0,
+            pillar_scores_measured: false,
         }
     }
 }
@@ -640,8 +677,9 @@ pub struct ReleaseGate {
     pub safety_score: Option<u32>,
     pub evidence_score: Option<u32>,
     pub min_threshold: u32,
-    pub asvs_l1_compliant: bool,
+    pub no_critical_or_high_findings: bool,
     pub critical_defects: usize,
+    pub pillar_scores_measured: bool,
 }
 
 impl ReleaseGate {
@@ -674,31 +712,24 @@ impl ReleaseGate {
         defects: &[TriagedDefect],
         min_threshold: u32,
     ) -> Result<SoftwareFactoryAttestation> {
-        let val = ledger.value_score.unwrap_or(0);
-        let auth = ledger.authority_score.unwrap_or(0);
-        let safe = ledger.safety_score.unwrap_or(0);
-        let evid = ledger.evidence_score.unwrap_or(0);
-
-        let crit_count = defects
-            .iter()
-            .filter(|d| d.severity.eq_ignore_ascii_case("critical"))
-            .count();
-        let high_count = defects
-            .iter()
-            .filter(|d| d.severity.eq_ignore_ascii_case("high"))
-            .count();
-        let asvs_l1 = crit_count == 0 && high_count == 0;
+        let obs = gate::observe(defects);
+        let measured = gate::ledger_evaluated(ledger)
+            && ledger.value_score.is_some()
+            && ledger.authority_score.is_some()
+            && ledger.safety_score.is_some()
+            && ledger.evidence_score.is_some();
 
         let input = ReleaseGateInput {
-            value_score: val,
-            authority_score: auth,
-            safety_score: safe,
-            evidence_score: evid,
+            value_score: ledger.value_score,
+            authority_score: ledger.authority_score,
+            safety_score: ledger.safety_score,
+            evidence_score: ledger.evidence_score,
             min_threshold,
-            asvs_l1_compliant: asvs_l1,
-            critical_defects: crit_count,
+            no_critical_or_high_findings: obs.critical == 0 && obs.high == 0,
+            critical_defects: obs.critical,
+            pillar_scores_measured: measured,
         };
-        validate_release_gate(&input)
+        validate_release_gate_with_ledger(&input, defects, Some(ledger))
     }
 }
 
@@ -719,190 +750,221 @@ impl QualityGate for ReleaseGate {
     }
 }
 
+/// Build the Software Factory Attestation from declared pillar scores and observed findings.
+///
+/// Declared scores are only honoured when `pillar_scores_measured` is set: when they were not
+/// actually computed the attestation reports `NOT_EVALUATED` with no score, exactly as
+/// [`gate::software_factory_attestation`] does for an unevaluated ledger. No ASVS category,
+/// coverage number or compliance claim is invented here — the substance comes from the same shared
+/// constructor in [`gate`].
 pub fn validate_release_gate(input: &ReleaseGateInput) -> Result<SoftwareFactoryAttestation> {
+    validate_release_gate_with_ledger(input, &[], None)
+}
+
+/// [`validate_release_gate`] with the evidence the caller actually has: the triaged defects and,
+/// when available, the evidence ledger. Passing them lets the per-area statuses, the coverage
+/// percentage and the integrity digest be drawn from real evidence instead of being left blank.
+pub fn validate_release_gate_with_ledger(
+    input: &ReleaseGateInput,
+    defects: &[TriagedDefect],
+    ledger: Option<&EvidenceLedger>,
+) -> Result<SoftwareFactoryAttestation> {
     if input.critical_defects > 0 {
         bail!(
             "ReleaseGate exit failure: {} critical defect(s) detected; deployment blocked",
             input.critical_defects
         );
     }
-    if !input.asvs_l1_compliant {
-        bail!("ReleaseGate exit failure: OWASP ASVS Level 1 compliance requirements not met");
-    }
-    if input.value_score < input.min_threshold {
+    if !input.no_critical_or_high_findings {
         bail!(
-            "ReleaseGate exit failure: Value pillar score {} is below required threshold {}",
-            input.value_score,
-            input.min_threshold
+            "ReleaseGate exit failure: a high finding was observed and is still open; release not cleared"
         );
     }
-    if input.authority_score < input.min_threshold {
-        bail!(
-            "ReleaseGate exit failure: Authority pillar score {} is below required threshold {}",
-            input.authority_score,
-            input.min_threshold
-        );
-    }
-    if input.safety_score < input.min_threshold {
-        bail!(
-            "ReleaseGate exit failure: Safety pillar score {} is below required threshold {}",
-            input.safety_score,
-            input.min_threshold
-        );
-    }
-    if input.evidence_score < input.min_threshold {
-        bail!(
-            "ReleaseGate exit failure: Evidence pillar score {} is below required threshold {}",
-            input.evidence_score,
-            input.min_threshold
-        );
+    if input.pillar_scores_measured {
+        for (name, score) in [
+            ("Value", input.value_score),
+            ("Authority", input.authority_score),
+            ("Safety", input.safety_score),
+            ("Evidence", input.evidence_score),
+        ] {
+            if let Some(val) = score
+                && val < input.min_threshold
+            {
+                bail!(
+                    "ReleaseGate exit failure: {} pillar score {} is below required threshold {}",
+                    name,
+                    val,
+                    input.min_threshold
+                );
+            }
+        }
     }
 
-    // Four-pillar weighted readiness score:
-    // Value: 30%, Authority: 30%, Safety: 25%, Evidence: 15%
-    let release_readiness_score = (input.value_score * 30
-        + input.authority_score * 30
-        + input.safety_score * 25
-        + input.evidence_score * 15)
-        / 100;
-
-    let gate_verdict = if release_readiness_score >= 80 {
-        "GO".to_string()
+    // Four-pillar weighted readiness score: Value 30%, Authority 30%, Safety 25%, Evidence 15%.
+    // Not computed at all when the pillars were never measured.
+    let declared = if input.pillar_scores_measured {
+        Some(
+            (input.value_score.unwrap_or(0) * 30
+                + input.authority_score.unwrap_or(0) * 30
+                + input.safety_score.unwrap_or(0) * 25
+                + input.evidence_score.unwrap_or(0) * 15)
+                / 100,
+        )
     } else {
-        "CONDITIONAL_GO".to_string()
+        None
     };
 
-    let categories_def = [
-        ("V2", "Authentication"),
-        ("V4", "Access Control"),
-        ("V5", "Validation & Sanitization"),
-        ("V8", "Data Protection"),
-        ("V13", "API & Web Service"),
-        ("V14", "Configuration"),
-    ];
-
-    let categories: Vec<AsvsCategoryScore> = categories_def
-        .iter()
-        .map(|(code, name)| AsvsCategoryScore {
-            code: code.to_string(),
-            name: name.to_string(),
-            score: 100,
-            passed: true,
-            findings: 0,
-        })
-        .collect();
-
-    let asvs_breakdown = OwaspAsvsBreakdown {
-        level_1_compliant: input.asvs_l1_compliant,
-        level_2_compliant: input.asvs_l1_compliant && release_readiness_score >= 80,
-        level_3_compliant: input.asvs_l1_compliant && release_readiness_score >= 90,
-        overall_coverage_pct: 100,
-        categories,
+    let obs = if defects.is_empty() {
+        // No defect list was supplied: the caller's two flags are all that is known.
+        gate::Observed {
+            critical: input.critical_defects,
+            high: usize::from(!input.no_critical_or_high_findings),
+            medium: 0,
+            low: 0,
+        }
+    } else {
+        gate::observe(defects)
     };
 
-    let mut release_directives = vec![
-        "ALLOW_DEPLOYMENT: Software factory attestation verified release readiness.".into(),
-        "ASVS_COMPLIANCE_CONFIRMED: OWASP ASVS Level 1 verified.".into(),
-        format!(
-            "PILLAR_VERIFICATION_COMPLETE: Value ({}), Authority ({}), Safety ({}), Evidence ({}) verified above threshold ({}).",
-            input.value_score,
-            input.authority_score,
-            input.safety_score,
-            input.evidence_score,
-            input.min_threshold
-        ),
-    ];
-
-    if release_readiness_score >= 80 {
-        release_directives
-            .push("RELEASE_CERTIFIED: Autonomous software factory sign-off granted.".into());
-    } else {
-        release_directives.push(
-            "CONDITIONAL_SIGN_OFF: Marginal readiness score requires secondary review.".into(),
-        );
-    }
-
-    let timestamp = crate::agent::store::now_iso();
-    let digest_input = format!(
-        "SOFTWARE_FACTORY_ATTESTATION:{}:{}:{}:{}:{}:{}:{}",
-        release_readiness_score,
-        gate_verdict,
-        timestamp,
+    let sub = gate::release_substance(declared, obs, defects, ledger, input.pillar_scores_measured);
+    let mut attestation = gate::assemble(
+        &sub.gate_verdict,
+        sub.score,
+        sub.breakdown,
+        sub.directives,
+        sub.fallback_summary.into(),
+        defects,
+        ledger,
+    );
+    if let (Some(summary), Some(v), Some(a), Some(sf), Some(e)) = (
+        attestation.advisory_summary.as_mut(),
         input.value_score,
         input.authority_score,
         input.safety_score,
-        input.evidence_score
-    );
-    let mut hasher = Sha256::new();
-    hasher.update(digest_input.as_bytes());
-    let attestation_digest = hex::encode(hasher.finalize());
+        input.evidence_score,
+    ) {
+        let measured = if input.pillar_scores_measured {
+            "measured"
+        } else {
+            "declared without measurement"
+        };
+        summary.push_str(&format!(
+            " Pillar scores ({measured}, min {}): Value {v}, Authority {a}, Safety {sf}, Evidence {e}.",
+            input.min_threshold
+        ));
+    }
+    Ok(attestation)
+}
 
-    let advisory_summary = Some(format!(
-        "Software Factory Quality Gate certified release readiness: score {}/100, verdict {}, four pillars verified, OWASP ASVS L1: true.",
-        release_readiness_score, gate_verdict
-    ));
-
-    Ok(SoftwareFactoryAttestation {
-        release_readiness_score,
-        gate_verdict,
-        asvs_breakdown,
-        release_directives,
-        attestation_digest,
-        timestamp,
-        advisory_summary,
-    })
+fn score_text(score: Option<u32>, min_threshold: u32) -> String {
+    match score {
+        Some(val) => format!("Score: {val} (min: {min_threshold})"),
+        None => "Not evaluated".to_string(),
+    }
 }
 
 pub fn validate_release_gate_verdict(input: &ReleaseGateInput) -> Result<GateVerdict> {
     let attestation = validate_release_gate(input)?;
-    let verdict = GateVerdict::new(
+    Ok(release_gate_verdict_for(input, &attestation, &[]))
+}
+
+/// The Release exit gate verdict **for an attestation the caller already built from real evidence**
+/// (executed defects and the evidence ledger), plus the run-level reasons it is not cleared.
+///
+/// A run that has already built its attestation must use this instead of
+/// [`validate_release_gate_verdict`], which rebuilds an attestation from pillar scores alone (no
+/// defects, no ledger). Going through the plain version logs a score and an integrity digest that
+/// are not the ones the run records, so two attestations of the same release disagree.
+///
+/// `blockers` name why a release is not cleared (a failed station, a cancelled run, an incomplete
+/// sweep). A non-empty list yields a **failed** verdict that lists them, so a blocked release can
+/// never be logged as a passed gate — the check detail carries the reason either way.
+pub fn release_gate_verdict_for(
+    input: &ReleaseGateInput,
+    attestation: &SoftwareFactoryAttestation,
+    blockers: &[String],
+) -> GateVerdict {
+    let readiness_text = match attestation.release_readiness_score {
+        Some(score) => format!("{score}/100"),
+        None => "not evaluated".to_string(),
+    };
+    let digest: String = attestation.attestation_digest.chars().take(16).collect();
+    // An attestation that measured nothing cannot clear a release, whatever the caller says.
+    let mut reasons: Vec<&str> = blockers.iter().map(String::as_str).collect();
+    let not_evaluated = attestation.gate_verdict == "NOT_EVALUATED";
+    if not_evaluated {
+        reasons.push("the run evaluated no conclusive evidence, so readiness was never measured");
+    }
+    let passed = reasons.is_empty();
+    let head = if passed {
+        "ReleaseGate cleared".to_string()
+    } else {
+        format!(
+            "ReleaseGate NOT cleared: {} blocking condition(s)",
+            reasons.len()
+        )
+    };
+    let mut verdict = GateVerdict::new(
         PipelineState::Gate,
         GateType::Exit,
-        true,
+        passed,
         format!(
-            "ReleaseGate passed: score {}/100, verdict: {}, digest: {}",
-            attestation.release_readiness_score,
-            attestation.gate_verdict,
-            &attestation.attestation_digest[..16]
+            "{head}: attestation verdict {}, score {readiness_text}, digest {digest}",
+            attestation.gate_verdict
         ),
-    )
-    .with_check(
-        "value_pillar",
-        true,
-        format!(
-            "Score: {} (min: {})",
-            input.value_score, input.min_threshold
-        ),
-    )
-    .with_check(
-        "authority_pillar",
-        true,
-        format!(
-            "Score: {} (min: {})",
-            input.authority_score, input.min_threshold
-        ),
-    )
-    .with_check(
-        "safety_pillar",
-        true,
-        format!(
-            "Score: {} (min: {})",
-            input.safety_score, input.min_threshold
-        ),
-    )
-    .with_check(
-        "evidence_pillar",
-        true,
-        format!(
-            "Score: {} (min: {})",
-            input.evidence_score, input.min_threshold
-        ),
-    )
-    .with_check("asvs_compliance", true, "ASVS Level 1 compliant")
-    .with_check(
-        "attestation_signed",
-        true,
-        format!("SHA-256: {}", attestation.attestation_digest),
     );
-    Ok(verdict)
+    for reason in reasons {
+        verdict = verdict.with_check("blocker", false, reason.to_string());
+    }
+    verdict
+        .with_check(
+            "attestation_verdict",
+            !not_evaluated,
+            attestation.gate_verdict.clone(),
+        )
+        .with_check(
+            "release_readiness_score",
+            attestation.release_readiness_score.is_some(),
+            match attestation.release_readiness_score {
+                Some(score) => format!("Score: {score}/100 computed from executed cases"),
+                None => "Not evaluated: this run gathered no conclusive evidence".to_string(),
+            },
+        )
+        .with_check(
+            "value_pillar",
+            true,
+            score_text(input.value_score, input.min_threshold),
+        )
+        .with_check(
+            "authority_pillar",
+            true,
+            score_text(input.authority_score, input.min_threshold),
+        )
+        .with_check(
+            "safety_pillar",
+            true,
+            score_text(input.safety_score, input.min_threshold),
+        )
+        .with_check(
+            "evidence_pillar",
+            true,
+            score_text(input.evidence_score, input.min_threshold),
+        )
+        .with_check(
+            "no_critical_or_high_findings",
+            input.no_critical_or_high_findings,
+            if input.no_critical_or_high_findings {
+                "No critical or high finding was observed".to_string()
+            } else {
+                "A critical or high finding is still open".to_string()
+            },
+        )
+        .with_check(
+            "attestation_digest_recorded",
+            true,
+            format!(
+                "Unkeyed SHA-256 integrity digest: {}",
+                attestation.attestation_digest
+            ),
+        )
 }

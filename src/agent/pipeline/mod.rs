@@ -33,13 +33,16 @@ pub(crate) use cleanup::{
 };
 pub(crate) use discovery::run_discovery_in;
 pub use discovery::run_discovery_scan;
-pub use gate::{OwaspAsvsBreakdown, SoftwareFactoryAttestation, software_factory_attestation};
+pub use gate::{
+    OwaspAsvsBreakdown, SoftwareFactoryAttestation, attestation_digest,
+    software_factory_attestation,
+};
 pub use gates::{
     DiscoveryGate, DiscoveryGateInput, ExecutionGate, ExecutionGateInput, GateCheck, GateType,
     GateVerdict, PlanGate, PlanGateInput, QualityGate, ReconGate, ReconGateInput, ReleaseGate,
-    ReleaseGateInput, VerifyGate, VerifyGateInput, validate_discovery_gate,
-    validate_execution_gate, validate_plan_gate, validate_recon_gate, validate_release_gate,
-    validate_release_gate_verdict, validate_verify_gate,
+    ReleaseGateInput, VerifyGate, VerifyGateInput, release_gate_verdict_for,
+    validate_discovery_gate, validate_execution_gate, validate_plan_gate, validate_recon_gate,
+    validate_release_gate, validate_release_gate_verdict, validate_verify_gate,
 };
 pub use graph::{GraphTelemetry, PipelineState, RoutingCondition, StationNode, TransitionRecord};
 pub use options::{LlmMode, RunOptions};

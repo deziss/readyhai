@@ -1,6 +1,6 @@
 [package]
 name = "readyhai"
-version = "3.8.1"
+version = "3.9.0"
 edition = "2024"
 description = "Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate"
 authors = ["Anshu Kushawaha <kushawahaanshu8858@gmail.com>"]
@@ -23,18 +23,38 @@ hex = "0.4"
 walkdir = "2.5"
 globset = "0.4"
 regex = "1.13"
-minijinja = { version = "3.1", features = ["serde"] }
+minijinja = { version = "3.1", default-features = false, features = ["serde", "builtins", "multi_template", "loop_controls", "internal_debug"] }
 time = { version = "0.3", features = ["formatting", "macros"] }
 rand = "0.10"
+# The rustls crypto provider here is aws-lc-rs, which pulls in aws-lc-sys: a C library, so the
+# builder needs a C toolchain and the binary carries it. Accepted deliberately rather than
+# overlooked: aws-lc is the provider that gives rustls its X25519MLKEM768 hybrid key exchange, so
+# swapping to ring to shave size would silently downgrade the post-quantum posture of every
+# outbound request (update checks, web search, LLM calls). Do not "optimize" it away without
+# deciding that trade explicitly.
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "signal"] }
-axum = "0.8"
+# `form` is off: every endpoint body here is JSON or raw bytes, and dropping it removes
+# form_urlencoded, serde_urlencoded and serde_path_to_error from the tree.
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "original-uri", "query", "tokio", "tower-log", "tracing"] }
 tree-sitter = "0.27"
-tree-sitter-python = "0.25.0"
-tree-sitter-javascript = "0.25.0"
-tree-sitter-typescript = "0.23.2"
-tree-sitter-go = "0.25.0"
-tree-sitter-php = "0.25.1"
+tree-sitter-python = { version = "0.25.0", optional = true }
+tree-sitter-javascript = { version = "0.25.0", optional = true }
+tree-sitter-typescript = { version = "0.23.2", optional = true }
+tree-sitter-go = { version = "0.25.0", optional = true }
+tree-sitter-php = { version = "0.25.1", optional = true }
+
+# AST code audit grammars are cargo features so a downstream build can shrink the binary
+# (`--no-default-features` drops all five grammars, ~5 MB of compiled parsers, and `code_audit`
+# then honestly reports those files as skipped rather than silently claiming a clean audit).
+# The default build keeps full coverage — this is a rebuild knob, not a behavior change.
+[features]
+default = ["grammar-python", "grammar-javascript", "grammar-typescript", "grammar-go", "grammar-php"]
+grammar-python = ["dep:tree-sitter-python"]
+grammar-javascript = ["dep:tree-sitter-javascript"]
+grammar-typescript = ["dep:tree-sitter-typescript"]
+grammar-go = ["dep:tree-sitter-go"]
+grammar-php = ["dep:tree-sitter-php"]
 
 [profile.dev]
 debug = 0
@@ -42,5 +62,9 @@ debug = 0
 [profile.release]
 strip = true
 lto = "thin"
-panic = "abort"
+# `unwind` is load-bearing, not a size knob: the supervisors in engine::orchestrator,
+# agent::pipeline and agent::lead convert a panic into `Errored` / `status = "failed"` /
+# `BLOCKED` via catch_unwind. With `abort` those arms are dead code and one panic in a scan
+# SIGABRTs the whole `serve` process, losing every in-flight run. Cost is a few % of binary size.
+panic = "unwind"
 codegen-units = 1

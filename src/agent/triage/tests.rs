@@ -1,6 +1,7 @@
 //! Unit tests for defect triage, deterministic severity, verification mapping, and LLM notes.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use std::collections::HashSet;
 

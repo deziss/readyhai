@@ -276,27 +276,32 @@ pub(crate) fn audit_subresources(base_url: &reqwest::Url, timeout_ms: u64) -> Su
             let mut discovered_urls = Vec::new();
 
             // Scripts: <script ... src="..."
-            let re_script = regex::Regex::new(r#"(?i)<script[^>]+src=["']([^"']+)["']"#).unwrap();
-            for cap in re_script.captures_iter(&body) {
+            // Compiled once for the process: this block runs per response, and a per-response
+            // `Regex::new` costs more than the scan it guards on a crawl of a large site.
+            regex_cached!(RE_SCRIPT, r#"(?i)<script[^>]+src=["']([^"']+)["']"#);
+            for cap in RE_SCRIPT.captures_iter(&body) {
                 if let Some(m) = cap.get(1) {
                     discovered_urls.push((m.as_str().to_string(), "script"));
                 }
             }
 
             // Styles: <link ... rel="stylesheet" ... href="..." or vice versa
-            let re_style =
-                regex::Regex::new(r#"(?i)<link[^>]+href=["']([^"']+\.css[^"']*)["']"#).unwrap();
-            for cap in re_style.captures_iter(&body) {
+            regex_cached!(
+                RE_STYLE,
+                r#"(?i)<link[^>]+href=["']([^"']+\.css[^"']*)["']"#
+            );
+            for cap in RE_STYLE.captures_iter(&body) {
                 if let Some(m) = cap.get(1) {
                     discovered_urls.push((m.as_str().to_string(), "stylesheet"));
                 }
             }
 
             // Preload: <link rel="preload" href="..."
-            let re_preload =
-                regex::Regex::new(r#"(?i)<link[^>]+rel=["']preload["'][^>]+href=["']([^"']+)["']"#)
-                    .unwrap();
-            for cap in re_preload.captures_iter(&body) {
+            regex_cached!(
+                RE_PRELOAD,
+                r#"(?i)<link[^>]+rel=["']preload["'][^>]+href=["']([^"']+)["']"#
+            );
+            for cap in RE_PRELOAD.captures_iter(&body) {
                 if let Some(m) = cap.get(1) {
                     discovered_urls.push((m.as_str().to_string(), "preload"));
                 }

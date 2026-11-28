@@ -19,7 +19,9 @@ pub fn synthesize_remediation(
     sibling_guards: &[String],
 ) -> Result<Option<PatchRemediation>> {
     let target_path = repo.join(&defect.file);
-    if !target_path.exists() {
+    // Repo-level findings (location "." or a directory) have no line to patch: skip them rather
+    // than failing the whole run when the "file" turns out to be the repository directory.
+    if !target_path.is_file() {
         return Ok(None);
     }
     let content = fs::read_to_string(&target_path)
@@ -233,6 +235,7 @@ pub fn synthesize_remediation(
         line: defect.line,
         original_snippet: target_line.to_string(),
         patched_snippet: patched_lines[line_idx].to_string(),
+        patched_content,
         unified_diff: diff,
         rationale,
         status: PatchStatus::Synthesized,

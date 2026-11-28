@@ -20,7 +20,7 @@ pub fn same_host_redirects() -> reqwest::redirect::Policy {
 }
 
 pub fn client(redirects: bool) -> Result<Client> {
-    let mut b = Client::builder()
+    let mut b = crate::network::utils::with_connect_timeout(Client::builder())
         .timeout(Duration::from_secs(15))
         .redirect(if redirects {
             same_host_redirects()

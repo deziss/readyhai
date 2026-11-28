@@ -3,7 +3,6 @@
 use crate::facts::Facts;
 use crate::model::{CheckOutput, CheckStatus, Finding};
 use crate::snapshot::Snapshot;
-use regex::Regex;
 use serde_norway::Value;
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
@@ -137,10 +136,17 @@ pub(crate) fn req_deps(text: &str) -> Vec<Dep> {
     v
 }
 
+regex_cached!(PKG_EXACT_VERSION, r"^=?v?\d+\.\d+\.\d+([-+][\w.+-]*)?$");
+// File-name, dependency-token and health-route patterns for `detect_facts`. Literal patterns, so
+// they compile once per process instead of once per snapshot while looping over every file.
+regex_cached!(COMPOSE_FILE, r"^(docker-compose|compose)[^/]*\.ya?ml$");
+regex_cached!(DEP_TOKEN, r"[a-z0-9_@/.\-]+");
+regex_cached!(HEALTH_ROUTE, r"(?i)/(healthz?|ready)\b");
+
 pub(crate) fn pkg_deps(text: &str) -> Result<Vec<Dep>, String> {
     let j = serde_json::from_str::<serde_json::Value>(text)
         .map_err(|e| format!("invalid JSON: {e}"))?;
-    let exact = Regex::new(r"^=?v?\d+\.\d+\.\d+([-+][\w.+-]*)?$").unwrap();
+    let exact = &*PKG_EXACT_VERSION;
     let mut v = vec![];
     for sect in ["dependencies", "devDependencies", "optionalDependencies"] {
         for (k, s) in j
@@ -259,7 +265,7 @@ pub(crate) fn k8s_docs(text: &str) -> Vec<Value> {
 
 pub fn detect_facts(snap: &Snapshot) -> Facts {
     let denied: HashSet<&str> = snap.denied.iter().map(|d| d.path.as_str()).collect();
-    let compose_re = Regex::new(r"^(docker-compose|compose)[^/]*\.ya?ml$").unwrap();
+    let compose_re = &*COMPOSE_FILE;
     let mut f = Facts::default();
     let (mut yamls, mut sources) = (vec![], vec![]);
     let mut wg_candidates: Vec<String> = vec![];
@@ -345,7 +351,7 @@ pub fn detect_facts(snap: &Snapshot) -> Facts {
 
     // dependencies, framework
     let mut names: BTreeSet<String> = BTreeSet::new();
-    let tok = Regex::new(r"[a-z0-9_@/.\-]+").unwrap();
+    let tok = &*DEP_TOKEN;
     for rel in f.requirement_files.iter().chain(&f.package_jsons) {
         let deps = manifest_deps(snap, rel).unwrap_or_default(); // deps_check reports the failure
         f.total_deps += deps.len();
@@ -373,7 +379,7 @@ pub fn detect_facts(snap: &Snapshot) -> Facts {
     .map(|(_, n)| n.to_string());
     f.has_otel = names.iter().any(|n| n.contains("opentelemetry"));
 
-    let health = Regex::new(r"(?i)/(healthz?|ready)\b").unwrap();
+    let health = &*HEALTH_ROUTE;
     for rel in &sources {
         if f.has_health_route && f.has_otel {
             break;

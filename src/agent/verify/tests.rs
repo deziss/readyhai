@@ -1330,9 +1330,10 @@ fn test_juror_deterministic_taint_tracing_sql_injection() {
     assert!(verdict.is_true_positive);
     assert!(verdict.confidence >= 90);
     assert!(verdict.taint_path.unwrap().contains("SQL query execution"));
-    let diff = verdict.remediation_diff.expect("diff should be generated");
-    assert!(diff.contains("--- a/src/db/users.py"));
-    assert!(diff.contains("cursor.execute"));
+    // The deterministic juror has not read `src/db/users.py`, and a unified diff claims line
+    // numbers from a real file: emitting one here is fabrication, so it must be None.
+    assert!(verdict.remediation_diff.is_none());
+    assert!(verdict.evaluated);
 }
 
 #[test]
@@ -1348,6 +1349,8 @@ fn test_juror_deterministic_false_positive_elimination() {
     assert!(!verdict.is_true_positive);
     assert_eq!(verdict.confidence, 90);
     assert!(verdict.remediation_diff.is_none());
+    // an affirmative "harmlessly rejected" finding, *not* an unadjudicated one
+    assert!(verdict.evaluated);
 }
 
 #[test]
@@ -1385,16 +1388,117 @@ fn test_audit_defects_with_juror() {
     let defects = vec![defect_tp, defect_fp];
     let results = vec![failure_tp, failure_fp];
 
-    let (kept, eliminated) = super::juror::audit_defects_with_juror(None, defects, &results);
-    assert_eq!(eliminated, 1, "false positive defect should be eliminated");
-    assert_eq!(kept.len(), 1, "only true positive should be retained");
-    assert_eq!(kept[0].id, "DEF-001");
-    assert!(
-        kept[0]
-            .remediation_patch
-            .as_ref()
-            .unwrap()
-            .contains("cursor.execute")
+    let (kept, audit) = super::juror::audit_defects_with_juror(None, defects, &results);
+    assert_eq!(
+        audit.eliminated, 1,
+        "unreproduced false positive is eliminated"
     );
+    assert_eq!(audit.disagreed, 0);
+    assert_eq!(kept.len(), 1, "only the true positive is retained");
+    assert_eq!(kept[0].id, "DEF-001");
+    // No fabricated patch: `remediation_patch` is only ever model-written (and labelled) or
+    // fixer-written. See `a_reproduced_defect_survives_a_false_positive_verdict`.
+    assert!(kept[0].remediation_patch.is_none());
     assert!(kept[0].remediation_explanation.is_some());
+    assert!(kept[0].juror_evaluated);
+}
+
+fn reproduced_sql_defect() -> crate::agent::types::TriagedDefect {
+    crate::agent::types::TriagedDefect {
+        id: "DEF-100".into(),
+        case_ids: vec!["TC-REPRO".into()],
+        component: "/api/v1/orders".into(),
+        verified: true,
+        reproduced: Some("3/3".into()),
+        verification: Some("confirmed".into()),
+        evidence_files: vec!["evidence/TC-REPRO.json".into()],
+        source_context: Some("src/orders.py:88".into()),
+        ..Default::default()
+    }
+}
+
+fn sql_failure() -> crate::agent::types::CaseExecutionResult {
+    let mut failure = CaseExecutionResult::default();
+    failure.case_id = "TC-REPRO".into();
+    failure.component = "/api/v1/orders".into();
+    failure.status = "FAIL".into();
+    failure.status_code = Some(500);
+    failure.evidence = "pg_query: syntax error at or near \"1\"".into();
+    failure
+}
+
+#[test]
+fn a_reproduced_defect_survives_a_false_positive_verdict() {
+    // Same input shape as the eliminated case above, but the verifier replayed it and it
+    // reproduced with evidence captured. An opinion may not delete a measurement.
+    let mut defect = reproduced_sql_defect();
+    defect.owasp_category = "A03: Injection".into();
+    // a *clean* 404 response would make the juror call it a false positive; the reproduction
+    // evidence below must still keep it alive.
+    let mut result = sql_failure();
+    result.status_code = Some(404);
+    result.evidence = "404 Not Found: Cannot GET /api/v1/orders".into();
+
+    let (kept, audit) =
+        super::juror::audit_defects_with_juror(None, vec![defect], std::slice::from_ref(&result));
+    assert_eq!(kept.len(), 1, "reproduced defect must not be deleted");
+    assert_eq!(audit.eliminated, 0);
+    assert_eq!(
+        audit.disagreed, 1,
+        "the disagreement is recorded, not silently swallowed"
+    );
+    let opinion = kept[0]
+        .juror_opinion
+        .as_ref()
+        .expect("disagreement written to the defect");
+    assert!(opinion.contains("reproduced"));
+    assert!(kept[0].juror_evaluated);
+}
+
+#[test]
+fn the_same_verdict_eliminates_an_unreproduced_finding() {
+    // The asymmetry, isolated: identical juror input, no measurement behind it.
+    let mut defect = reproduced_sql_defect();
+    defect.verified = false;
+    defect.reproduced = None;
+    defect.verification = None;
+    defect.evidence_files.clear();
+    let mut result = sql_failure();
+    result.status_code = Some(404);
+    result.evidence = "404 Not Found: Cannot GET /api/v1/orders".into();
+
+    let (kept, audit) =
+        super::juror::audit_defects_with_juror(None, vec![defect], std::slice::from_ref(&result));
+    assert!(kept.is_empty());
+    assert_eq!(audit.eliminated, 1);
+}
+
+#[test]
+fn an_unjudgeable_finding_is_reported_as_not_evaluated() {
+    // No source->sink pattern and no rejection status: the deterministic juror must abstain
+    // rather than invent a verdict or a diff.
+    let mut failure = CaseExecutionResult::default();
+    failure.case_id = "TC-MYST".into();
+    failure.component = "/api/v1/report".into();
+    failure.status = "FAIL".into();
+    failure.status_code = Some(200);
+    failure.evidence = "the report page took too long".into();
+
+    let verdict = super::juror::evaluate_with_juror(None, &failure, None);
+    assert!(!verdict.evaluated, "abstain, don't guess");
+    assert_eq!(verdict.confidence, 0);
+    assert!(verdict.remediation_diff.is_none());
+
+    // and a defect with no matching result at all is also counted, not quietly skipped
+    let defect = crate::agent::types::TriagedDefect {
+        id: "DEF-ORPHAN".into(),
+        case_ids: vec!["TC-NOPE".into()],
+        component: "/api/v1/elsewhere".into(),
+        ..Default::default()
+    };
+    let (kept, audit) =
+        super::juror::audit_defects_with_juror(None, vec![defect], std::slice::from_ref(&failure));
+    assert_eq!(kept.len(), 1);
+    assert!(!kept[0].juror_evaluated);
+    assert_eq!(audit.not_evaluated, 1);
 }

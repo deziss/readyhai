@@ -1,5 +1,8 @@
 use super::*;
 
+// The fixture needs the python grammar; a slim build compiled without it reports
+// these files as skipped, so the expectation only exists where the grammar exists.
+#[cfg(feature = "grammar-python")]
 #[test]
 fn detects_cross_file_python_sqli_missing_auth_guard_and_clean_parameterized_no_fp() {
     let dir = std::env::temp_dir().join(format!(
@@ -96,6 +99,7 @@ def purge_all(conn):
     );
 }
 
+#[cfg(all(feature = "grammar-typescript", feature = "grammar-go"))]
 #[test]
 fn detects_js_express_missing_guard_and_go_cmd_injection() {
     let dir = std::env::temp_dir().join(format!(
@@ -155,4 +159,64 @@ func pingHandler(w http.ResponseWriter, r *http.Request) {
         "{:?}",
         inv.imported_packages
     );
+}
+
+#[test]
+fn grammar_feature_flag_and_parser_stay_in_lockstep() {
+    // The auditor decides "skip and report" from `grammar_available()` and decides
+    // "cannot parse" from `parser()`. If those ever disagree, a file is either silently
+    // dropped (available=true, parser=None) or double-handled; both lie in the report.
+    for lang in [
+        Lang::Python,
+        Lang::JavaScript,
+        Lang::TypeScript,
+        Lang::Tsx,
+        Lang::Go,
+        Lang::Php,
+    ] {
+        assert_eq!(
+            lang.grammar_available(),
+            lang.parser().is_some(),
+            "grammar_available()/parser() disagree for {}",
+            lang.as_str()
+        );
+    }
+    // A build with every grammar enabled must audit every known extension, so a small
+    // mixed repo records zero grammar skips — the honest-skipping path is for slim builds.
+    let full_build = [
+        Lang::Python,
+        Lang::JavaScript,
+        Lang::TypeScript,
+        Lang::Tsx,
+        Lang::Go,
+        Lang::Php,
+    ]
+    .iter()
+    .all(|l| l.grammar_available());
+    if full_build {
+        let dir = std::env::temp_dir().join(format!(
+            "rh-codeaudit-grammars-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, body) in [
+            ("a.py", "def f(x):\n    return x\n"),
+            ("b.js", "function f(x) { return x; }\n"),
+            ("c.ts", "function f(x: number): number { return x; }\n"),
+            ("d.go", "package main\nfunc f(x int) int { return x }\n"),
+            ("e.php", "<?php function f($x) { return $x; }\n"),
+        ] {
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+        let inv = audit_tree(&dir);
+        assert!(
+            inv.grammar_skipped.is_empty(),
+            "default build must not skip any grammar: {:?}",
+            inv.grammar_skipped
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

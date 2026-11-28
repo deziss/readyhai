@@ -87,8 +87,10 @@ pub fn forbidden(role: &str, action: &str) -> Response {
         .into_response()
 }
 
-/// Paths served without a token (GET only): the health probe and the SVG status badges, which are
-/// read-only and render only a sanitised status/score from the query string (no run data, no secrets).
+/// Paths served without a token (GET only): the health probe and the three SVG status badges.
+/// Those exact paths render only an allowlisted verdict or integer score from the query string and
+/// never any run data; the run-derived badge routes (`/api/badges/gate/{id}`,
+/// `/api/badges/ledger/{id}`) are deliberately NOT public — a run id's results stay behind auth.
 pub const PUBLIC_GET: &[&str] = &[
     "/health",
     "/api/badges/gate",

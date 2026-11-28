@@ -162,7 +162,10 @@ deterministic verification guardrails:
    Ledger** scores four weighted pillars (`value` 30, `authority` 30, `safety` 25, `evidence` 15)
    over a technique-coverage matrix, each pillar only scored at ≥ 50 % confidence, and emits the
    gate verdict `GO | CONDITIONAL_GO | NO_GO | NOT_EVALUATED` plus a `SoftwareFactoryAttestation`
-   (release-readiness score 0–100, OWASP ASVS V2–V14 breakdown, SHA-256 seal). Everything the run
+   (release-readiness score 0–100 or `null` when nothing was evaluated, observed findings per
+   ASVS-shaped area V2–V14 with the case ids that tested each, and an unkeyed canonical SHA-256
+   integrity digest — not a signature: key-based signing such as minisign/Sigstore is not
+   implemented). Everything the run
    created is torn down and read back on confirmed-nonprod targets (`cleanup.json`, leftovers
    listed).
 
@@ -369,7 +372,30 @@ readyhai vulns --status accepted --target https://staging.example.com
 readyhai vulns --all                            # include accepted + forgotten
 readyhai vulns accept 4f2a91c7d3                # unique 6+ char prefix is enough
 readyhai vulns forget 4f2a91c7d3
+readyhai vulns --target https://app.example.com vex > app.openvex.json
 ```
+
+**OpenVEX export (`vulns … vex`).** `src/vex.rs` (v3.8.2) turns the rows in the current filter into
+an [OpenVEX](https://openvex.dev) v0.2.0 document, the format CISA's VEX guidance recommends and
+CycloneDX 1.5/1.6 can embed, so the exploitability answer travels with the SBOM instead of dying in
+a terminal. The filters (`--target`, `--status`, `--all`) are the list filters unchanged; the
+document prints to stdout, so redirect it. What it claims is deliberately narrow:
+
+| vulndb `verification` | VEX `status` | why |
+| --- | --- | --- |
+| `verified` | `affected` | an exploit template demonstrated the flaw against this target |
+| `unverified` | `under_investigation` | no exploitation attempted; that is the default for every scanner match |
+| `not_reproducible` | `under_investigation` | a blocked or environment-dependent probe is not evidence of absence |
+| `inconclusive` / `skipped` | `under_investigation` | the result was unclear, or no reviewed template covered it |
+
+`not_affected` and `fixed` are **never** emitted: either claim needs a reachability, mitigation or
+re-scan determination that ReadyHai has not made, and a document that overstates coverage is worse
+than no document. A triage `accepted` row keeps its exploitability status and says so in
+`status_notes`, because accepting risk is a decision, not a finding. Only rows carrying a standard
+id (CVE, GHSA, OSV) become statements; the rest are counted in
+`findings_skipped_no_standard_vulnerability_id` rather than dropped in silence. Products are
+`pkg:readyhai/target/<target_key>`, the same hash `vulns --target` matches on, and statement `@id`s
+are `urn:readyhai:vex:<target_key>:<fingerprint>`, so re-exporting is stable and diffable.
 
 ```bash
 H="Authorization: Bearer $READYHAI_TOKEN"
@@ -605,7 +631,8 @@ JSON-RPC 2.0, `src/mcp/`), giving Claude Code or any MCP client eight tools: `re
 `readyhai_agent_swarm` (returns a `run_id` immediately; at most 2 concurrent swarms),
 `readyhai_agent_status` and `readyhai_agent_cancel`, and `readyhai_agent_discover`. Client
 disconnect cancels every run it started. Integration surface beyond MCP: the REST API (all of the
-above), SVG badges (`/api/badges/{gate,ledger,network}`), the PR-comment route, and the
+above), SVG badges (`/api/badges/{gate,ledger,network}`, plus the token-protected
+`/api/badges/{gate,ledger}/{run_id}` variants that read a real stored run), the PR-comment route, and the
 `[integrations]` settings layer (next section) that gates pinned container tools and plugin
 packs — including the 19 digest-pinned official packs (`plugins/official/`: reconnaissance
 `httpx`/`dnsx`/`subfinder`/`gau`/`katana`/`naabu`/`nmap`/`rustscan`/`feroxbuster`, active checks

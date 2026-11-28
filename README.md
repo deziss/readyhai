@@ -7,9 +7,9 @@
 **Ready hai?** *(रेड्डी है? / "Is it ready?")* — Self-hosted security scanner, autonomous pentest & QA agent, and production-readiness gate.
 
 [![License](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-3.8.1-brightgreen.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-3.9.0-brightgreen.svg)](VERSION)
 [![Rust](https://img.shields.io/badge/rust-2024%20edition-orange.svg)](Cargo.toml)
-[![Tests](https://img.shields.io/badge/tests-889%20Rust%20%7C%20144%20Vitest-informational.svg)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1054%20Rust%20%7C%20199%20Vitest-informational.svg)](#testing)
 [![Author](https://img.shields.io/badge/maintainer-Anshu%20Kushawaha-blueviolet.svg)](mailto:kushwahaanshu8858@gmail.com)
 
 Point ReadyHai at a codebase, a container image, an API/web app, an SSH host, or an Android APK.  
@@ -65,7 +65,7 @@ The agent (`readyhai agent`, `POST /api/agent/run`, MCP `readyhai_agent_swarm`) 
 - **Station 3: Planning & Attack DAG Synthesis (`src/agent/plan/`).** Compiles baseline spec checks, deep-security attacks, and synthesizes a structured **Attack DAG (Dependency Graph)** (`src/agent/plan/dag.rs`) mapping multi-step stateful exploit sequences (e.g. User Setup $\to$ Role Escalation $\to$ Cross-Tenant Exfiltration) guided by dynamic directives.
 - **Station 4: Execution & Adaptive ReAct Loop (`src/agent/react.rs`).** Area workers execute tests across concurrent waves. When responses reveal anomalies (500 stack traces leaking SQL/source, 403 permission leaks, 422 schema validation errors), the ReAct loop formulates mutation hypotheses and triggers branching probe waves in real time.
 - **Station 5: Verification & Contextual Taint Juror (`src/agent/verify/juror.rs`).** Replays failing cases independently up to $k$ times (`READYHAI_VERIFY_K`). An LLM-powered **Juror** inspects Source-to-Sink taint reflection to eliminate false positives and automatically synthesizes unified diff remediation patches (`remediation_patch`) onto confirmed defects.
-- **Station 6: Readiness Gate & Software Factory Attestation (`src/agent/pipeline/gate.rs`).** Formulates an official **Software Factory Attestation Certificate** (`SoftwareFactoryAttestation`): evaluates release risk score (0–100), OWASP ASVS breakdown across V2–V14 categories, release directives, and signs off with a SHA-256 seal.
+- **Station 6: Readiness Gate & Software Factory Attestation (`src/agent/pipeline/gate.rs`).** Records the **Software Factory Attestation** (`SoftwareFactoryAttestation`): release readiness score (0–100, `null` when nothing was evaluated), an observed-findings breakdown shaped like OWASP ASVS areas V2–V14 (each area reports `pass | fail | partial | not_evaluated` with the case ids that tested it), release directives, and an unkeyed SHA-256 integrity digest over that substance. It never claims ASVS compliance or certification, and a run that evaluated nothing reports `NOT_EVALUATED` with no score and no approval.
 
 ### Quad-Engineering Disciplines
 
@@ -87,10 +87,10 @@ ReadyHai unifies four foundational agentic engineering disciplines into a produc
    - Untrusted target boundary protection using XML fences (`<target_untrusted_content>`) and proactive sanitization (`neutralise_target_tags`) preventing prompt injection attacks from adversarial payloads or reflected server inputs.
    - Strict JSON schema constraints and deterministic fallback mechanisms ensuring LLM outputs never corrupt pipeline state.
 
-4. **Software Factory Engineering (Station Quality Gates & Signed Attestation)**
+4. **Software Factory Engineering (Station Quality Gates & Release Attestation)**
    - Rigorous entrance and exit quality gates (`src/agent/pipeline/gates.rs`) governing transition boundaries between all 6 stations.
-   - Cryptographically verifiable release attestation (`SoftwareFactoryAttestation`) computing risk scores (0–100), OWASP ASVS V2–V14 category breakdowns, and signed with a deterministic SHA-256 digest seal.
-   - Fully auditable evidence ledger preserving cryptographic provenance across every observed vulnerability and verified defect.
+   - Release attestation (`SoftwareFactoryAttestation`) computing risk scores (0–100), observed-findings breakdowns across the ASVS-shaped areas V2–V14, and stamped with a canonical, deterministic SHA-256 **integrity digest** over its substance (verdict, scores, per-area status and case ids, directives, defect identity, evidence paths). The digest is unkeyed: key-based signing (e.g. minisign or Sigstore) is not implemented, so anyone with the same content can recompute it — it detects accidental drift, it does not authenticate an issuer.
+   - Fully auditable evidence ledger recording claims, case ids and stored evidence files for every observed vulnerability and verified defect.
 - **Shared QA checks.** With an OpenAPI spec the agent reuses the QA engine's case generator, response validator, error-leak catalog and latency limit (`src/qa/api`), reads the ids of existing records from collection endpoints and validates each one against the spec. On the eval fixture it finds 7 of 7 seeded bugs.
 - **Modular deep-security attacks (`src/agent/attacks/`).** Dedicated probe generators for JWT tampering (`alg:none`, stripped signatures, claim escalation, `kid` traversal), BFLA, reverse-proxy/header ACL bypasses (`/.`, `..;/`, `X-Forwarded-For`, `X-Original-URL`, `X-Rewrite-URL`), BOPLA excessive exposure & mass assignment, parameter-targeted Open Redirect / SSTI / multi-encoded path traversal / blind boolean & time-delay SQLi / command injection, OAST-backed blind SSRF, TOCTOU concurrency races, HTTP parameter pollution, and GraphQL introspection.
 - **In-process OAST & BrowserSecurity.** An ephemeral loopback HTTP listener (`src/agent/oast.rs`) correlates out-of-band `__OAST_URL__` SSRF callbacks during execution and verification, while interactive Playwright (`src/agent/browser_sec.rs`, `runners/playwright/agent_browser.mjs`) verifies DOM XSS, DOM sinks, storage/cookie hygiene, exposed source maps, and clickjacking without storing raw secret values.
@@ -146,6 +146,8 @@ make build
 make release
 sudo cp target/release/readyhai /usr/local/bin/
 ```
+
+The Tree-sitter language grammars are cargo features (`grammar-python`, `grammar-javascript`, `grammar-typescript`, `grammar-go`, `grammar-php`, all on by default). Building with `--no-default-features` (or any subset) ships a ~20% smaller binary for deployments that only audit some languages; files whose grammar was compiled out are reported as skipped (`Partial` check with the exact languages named), never silently treated as clean.
 
 ### 2. Pull & Pin Tool Scanners
 
@@ -335,9 +337,12 @@ readyhai vulns --json                            # machine-readable rows
 readyhai vulns --status accepted --target https://staging.example.com
 readyhai vulns accept 4f2a91c7d3                 # unique 6+ char fingerprint prefix
 readyhai vulns forget 4f2a91c7d3
+readyhai vulns --target https://app.example.com vex > app.openvex.json
 ```
 
 Read-only: no scan, no Docker, no network. `accepted`/`forgotten` survive re-scans (an `accepted` row re-recorded at a different severity re-opens). Same rows via `GET/POST /api/vulns` (also filterable with `?verification=`) and the **Vulns** web view. Details: [docs/configuration.md](docs/configuration.md#vulnerability-database-vulndb).
+
+The `vex` subcommand exports the same rows as an [OpenVEX](https://openvex.dev) v0.2.0 document, the exploitability companion to an SBOM that CISA's guidance recommends. It states `affected` only where an exploit template demonstrated the flaw; everything else is `under_investigation`, and it never claims `not_affected` or `fixed`, because ReadyHai has not made that determination. Findings without a CVE, GHSA or OSV id are counted in the document rather than silently dropped.
 
 Each row also carries an evidence-grade **verification** stamp (`unverified`/`verified`/`not_reproducible`/`inconclusive`/`skipped`) set by the opt-in exploit-verification engine — `GET /api/exploits/templates`, `POST /api/exploits/run`, or the **Verify** button in the Vulns view. Verification never changes the triage status above, and nothing probes until `[exploits] enabled = true`.
 
@@ -560,7 +565,7 @@ jobs:
 
 ## Testing
 
-ReadyHai has a large automated test suite: 981 Rust `#[test]` functions in `src/` (1 is `#[ignore]`d), frontend unit tests for the dashboard views in 16 vitest test files (incl. the Vulns view), and 18 Python tests for the context retriever (`1` skipped if `numpy` is absent). On top of unit tests, `readyhai eval` scores detection against seeded defects across 10 suites (`agent-*`, `qa-*`, `security-deep`, `whitebox-exploit`). They cover golden fixtures, snapshotting, AST taint/auth auditing, OAST & browser security, policy evaluation, redaction, the scope guard, the oracle, verifier, lead and memory, contract testing, and tool parsers.
+ReadyHai has a large automated test suite: 1054 passing Rust `#[test]` functions in `src/` (3 more are `#[ignore]`d; the ignored ones need python3 end-to-end fixtures or the Playwright Docker image), 199 frontend vitest tests across 19 test files (incl. the Vulns view, the dashboard derivation layer and the localStorage cache contract), and 18 Python tests for the context retriever (`1` skipped if `numpy` is absent). On top of unit tests, `readyhai eval` scores detection against seeded defects across 10 suites (`agent-*`, `qa-*`, `security-deep`, `whitebox-exploit`). They cover golden fixtures, snapshotting, AST taint/auth auditing, OAST & browser security, policy evaluation, redaction, the scope guard, the oracle, verifier, lead and memory, contract testing, and tool parsers.
 
 ```bash
 export PATH=$PATH:$HOME/.cargo/bin

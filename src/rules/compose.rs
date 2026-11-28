@@ -6,8 +6,11 @@ use super::{na, non_empty_map, path, truthy};
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, Finding, Severity};
 use crate::snapshot::Snapshot;
-use regex::Regex;
+
 use serde_norway::Value;
+
+// Extracts the host+path from a URL in a compose healthcheck/depends entry; compiled once.
+regex_cached!(COMPOSE_URL, r#"https?://[^/\s'"]+(/[^\s'"]*)?"#);
 
 pub(crate) fn test_string(v: &Value) -> String {
     match v.as_sequence() {
@@ -66,7 +69,7 @@ pub(crate) fn compose_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
     if ctx.facts.compose_files.is_empty() {
         return na("no compose file");
     }
-    let url_re = Regex::new(r#"https?://[^/\s'"]+(/[^\s'"]*)?"#).unwrap();
+    let url_re = &*COMPOSE_URL;
     let mut out = vec![];
     let mut skips = Skips::default();
     for file in &ctx.facts.compose_files {

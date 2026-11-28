@@ -2,7 +2,9 @@ use serde_json::Value;
 
 use super::api_contract::{parse_oasdiff, parse_spectral};
 use super::mutation::{parse_cargo_mutants, parse_mutmut_meta, parse_stryker};
-use super::osv::{enrich_osv_with_ast, parse_osv};
+#[cfg(feature = "grammar-go")]
+use super::osv::enrich_osv_with_ast;
+use super::osv::parse_osv;
 use super::scorecard::{github_slug, parse_scorecard, remote_url, slug_from_target_raw};
 use super::*;
 use crate::model::{Category, Finding, Severity};
@@ -188,6 +190,9 @@ fn registered() {
     }
 }
 
+// The enrichment under test comes from the Go AST import scan; without the grammar
+// there is no AST result to preserve, which is a different (already-tested) path.
+#[cfg(feature = "grammar-go")]
 #[test]
 fn osv_ast_import_enrichment_preserves_unknown_severity() {
     let dir = std::env::temp_dir().join(format!(

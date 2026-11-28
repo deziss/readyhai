@@ -215,17 +215,25 @@ fn test_attestation_and_gate_prompt_contract() {
     assert!(att_sys.contains("advisory_summary"));
     assert!(att_sys.contains("directives"));
 
+    let facts = FactoryObservedFacts {
+        evaluated: true,
+        release_readiness_score: Some(92),
+        gate_verdict: "GO".into(),
+        no_critical_or_high_findings: true,
+        no_high_or_medium_above_threshold: true,
+        no_observed_findings: false,
+        basis: "Derived only from defects observed by evidence-backed cases.".into(),
+    };
     let att_user = build_factory_attestation_user_prompt(
-        92,
-        "GO",
-        true,
-        true,
-        false,
-        &[serde_json::json!({"category": "V2 Authentication", "score": 100})],
+        &facts,
+        &[serde_json::json!({"code": "V2", "status": "pass", "evidence_case_ids": ["TC-1"]})],
         &[serde_json::json!({"id": "DEF-001", "severity": "LOW"})],
     );
-    assert!(att_user.contains("RELEASE READINESS & COMPLIANCE FACTS"));
+    assert!(att_user.contains("RELEASE READINESS & OBSERVED-FINDINGS FACTS"));
     assert!(att_user.contains("<target_untrusted_content>"));
+    // No fake compliance fact is fed to the model.
+    assert!(!att_user.contains("asvs_l1_compliant"));
+    assert!(att_user.contains("not evaluate") || att_user.contains("not evaluated"));
 
     let gate_sys = build_readiness_gate_system_prompt();
     assert!(gate_sys.contains(READINESS_GATE_ROLE));

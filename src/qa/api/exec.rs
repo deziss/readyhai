@@ -124,7 +124,7 @@ pub fn client() -> Result<&'static Client> {
             a.follow()
         }
     });
-    let c = Client::builder()
+    let c = crate::network::utils::with_connect_timeout(Client::builder())
         .timeout(Duration::from_secs(15))
         .redirect(policy)
         .user_agent("readyhai-qa")

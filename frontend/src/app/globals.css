@@ -1,68 +1,227 @@
 @import "tailwindcss";
-@custom-variant dark (&:where(.dark, .dark *));
 
 /*
- * ReadyHai design system.
+ * ReadyHai design system: graphite and bone, one saffron signal, verdict colours kept separate.
  *
- * Colour tokens produce utilities such as bg-rh-surface, text-rh-muted and border-rh-line.
- * `static` keeps every variable in :root even when no utility uses it yet, so arbitrary values
- * like `var(--color-rh-line)` always resolve.
+ * The palette is neutral-first on purpose. This is an Operate surface: an operator reads verdicts
+ * under time pressure, so chrome carries no hue and colour is spent only on meaning. Surfaces step
+ * bg -> surface -> raised, panels take a 1px line, and the one shadow in the system is for popovers.
  *
- * Surfaces: bg < surface < raised. Panels use a 1px rh-line border instead of a shadow; the only
- * shadow in the system is --shadow-popover, for menus, popovers and dialogs.
+ * Every colour token is a var() reference into the theme blocks below, so a theme, accent or
+ * verdict-mode change is a data-attribute swap on <html> and no component re-renders.
+ *
+ * Two rules the rest of the file protects:
+ *   1. Verdict colours (--color-rh-go | -cond | -nogo) never double as decoration or brand.
+ *   2. Saffron (--color-rh-primary) never appears on a verdict chip, so "amber-ish" always means
+ *      the condition verdict and never "clickable".
  */
-@theme static {
-  --color-rh-bg: #0e1320;
-  --color-rh-surface: #151b2b;
-  --color-rh-raised: #1c2436;
-  --color-rh-line: #2a3348;
-  --color-rh-text: #e6eaf2;
-  --color-rh-muted: #8b95ab;
-  --color-rh-primary: #5b7cfa;
-  --color-rh-primary-hover: #7390fb;
-  --color-rh-go: #3fb68b;
-  --color-rh-cond: #e0a43a;
-  --color-rh-nogo: #e5484d;
-  --color-rh-info: #4fa3d9;
 
-  /* Radius: sm for inputs and chips, md for panels. */
-  --radius-sm: 6px;
-  --radius-md: 10px;
+/* ---------------------------------------------------------------------------
+   Theme primitives. Dark graphite is the default; [data-theme="light"] swaps to bone.
+   Values were picked for AA on their own background: body text is >=7:1 in both themes.
+   --------------------------------------------------------------------------- */
+:root,
+[data-theme="dark"] {
+  --rh-bg: #14161a;
+  --rh-surface: #1a1d22;
+  --rh-raised: #22262d;
+  --rh-hover: #2a2f37;
+  --rh-line: #32373f;
+  --rh-line-strong: #454c57;
+  --rh-text: #e9e7e1;
+  --rh-muted: #9d9a92;
+  --rh-faint: #7c7a73;
 
-  /* Type scale: 12 / 13 / 14 / 16 / 20 / 24 px. text-ui is the 13px step used for dense controls. */
-  --text-xs: 12px;
-  --text-xs--line-height: 1.5;
-  --text-ui: 13px;
-  --text-ui--line-height: 1.5;
-  --text-sm: 14px;
-  --text-sm--line-height: 1.5;
-  --text-base: 16px;
-  --text-base--line-height: 1.5;
-  --text-xl: 20px;
-  --text-xl--line-height: 1.4;
-  --text-2xl: 24px;
-  --text-2xl--line-height: 1.3;
+  --rh-primary: #e0a03c;
+  --rh-primary-hover: #edb156;
+  /* Ink that sits on a saffron fill. Dark in both themes: bone-on-saffron fails at 2:1. */
+  --rh-primary-ink: #1a1305;
+  --rh-on-primary: var(--rh-primary-ink);
 
-  /* The single shadow: popovers, menus and dialogs only. */
-  --shadow-popover: 0 8px 24px rgb(0 0 0 / 0.35);
+  --rh-go: #46b183;
+  --rh-cond: #c9a227;
+  --rh-nogo: #e2565c;
+  --rh-info: #6f9fc4;
+
+  --rh-skeleton: #262a31;
+  --rh-skeleton-sheen: #333845;
+  --rh-overlay: rgb(10 11 13 / 0.72);
+  --rh-shadow: 0 10px 28px rgb(0 0 0 / 0.45);
+  color-scheme: dark;
+}
+
+[data-theme="light"],
+[data-theme="system"][data-resolved="light"] {
+  --rh-bg: #f4f2ee;
+  --rh-surface: #fbfaf7;
+  --rh-raised: #eeebe4;
+  --rh-hover: #e5e1d8;
+  --rh-line: #d8d3c8;
+  --rh-line-strong: #b9b2a4;
+  --rh-text: #1e2126;
+  --rh-muted: #5f6168;
+  --rh-faint: #6f6d66;
+
+  --rh-primary: #a55f10;
+  --rh-primary-hover: #8c5009;
+  --rh-primary-ink: #fdf9f2;
+  --rh-on-primary: var(--rh-primary-ink);
+
+  --rh-go: #15694a;
+  --rh-cond: #8a6b12;
+  --rh-nogo: #b4272f;
+  --rh-info: #2f6a91;
+
+  --rh-skeleton: #e6e2d9;
+  --rh-skeleton-sheen: #f3f0e9;
+  --rh-overlay: rgb(45 42 36 / 0.42);
+  --rh-shadow: 0 10px 28px rgb(60 52 38 / 0.18);
+  color-scheme: light;
 }
 
 /*
- * next/font (layout.tsx) loads IBM Plex under the hashed family names exposed as --font-plex-sans
- * and --font-plex-mono on <html>. These tokens put them first in the stack and publish the final
- * --font-sans / --font-mono. `inline` writes the var() reference into the variable itself, so the
- * Plex variable is resolved on <html> and never shadowed by a second declaration.
+ * Accents. The default saffron is the product's signal; the alternatives exist because one hue
+ * does not read the same on every panel, on every monitor, or to every pair of eyes. None of them
+ * touches the indigo/violet range the category defaults to.
  */
+[data-accent="signal"] {
+  --rh-primary: #c85a4e;
+  --rh-primary-hover: #d76e62;
+  --rh-primary-ink: #fff6f4;
+}
+[data-accent="kelp"] {
+  --rh-primary: #52907e;
+  --rh-primary-hover: #64a390;
+  --rh-primary-ink: #04140f;
+}
+[data-accent="plum"] {
+  --rh-primary: #94526b;
+  --rh-primary-hover: #a66780;
+  --rh-primary-ink: #fff4f8;
+}
+[data-theme="light"][data-accent="signal"],
+[data-theme="system"][data-resolved="light"][data-accent="signal"] {
+  --rh-primary: #a5382c;
+  --rh-primary-hover: #8c2d23;
+  --rh-primary-ink: #fff7f5;
+}
+[data-theme="light"][data-accent="kelp"],
+[data-theme="system"][data-resolved="light"][data-accent="kelp"] {
+  --rh-primary: #2f6b58;
+  --rh-primary-hover: #245747;
+  --rh-primary-ink: #f4fbf8;
+}
+[data-theme="light"][data-accent="plum"],
+[data-theme="system"][data-resolved="light"][data-accent="plum"] {
+  --rh-primary: #7b3a51;
+  --rh-primary-hover: #652e42;
+  --rh-primary-ink: #fdf5f8;
+}
+
+/*
+ * Colour-blind-safe verdicts. Oklab-separated hues that hold apart under deuteranopia and
+ * protanopia; the non-colour encoding (glyph plus word, see VerdictChip) is what actually carries
+ * the state, so colour stays a reinforcement rather than the only signal.
+ */
+[data-verdicts="cb_safe"] {
+  --rh-go: #5fbdea;
+  --rh-cond: #f2e04a;
+  --rh-nogo: #f2703a;
+  --rh-info: #b9a7e6;
+}
+[data-theme="light"][data-verdicts="cb_safe"],
+[data-theme="system"][data-resolved="light"][data-verdicts="cb_safe"] {
+  --rh-go: #0a5c8f;
+  --rh-cond: #6b5307;
+  --rh-nogo: #a3370d;
+  --rh-info: #5b4a8a;
+}
+
+/* ---------------------------------------------------------------------------
+   Tailwind surface. `inline` publishes var() references, so the blocks above win.
+   --------------------------------------------------------------------------- */
 @theme static inline {
-  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --color-rh-bg: var(--rh-bg);
+  --color-rh-surface: var(--rh-surface);
+  --color-rh-raised: var(--rh-raised);
+  --color-rh-hover: var(--rh-hover);
+  --color-rh-line: var(--rh-line);
+  --color-rh-line-strong: var(--rh-line-strong);
+  --color-rh-text: var(--rh-text);
+  --color-rh-muted: var(--rh-muted);
+  --color-rh-faint: var(--rh-faint);
+  --color-rh-primary: var(--rh-primary);
+  --color-rh-primary-hover: var(--rh-primary-hover);
+  --color-rh-primary-ink: var(--rh-primary-ink);
+  --color-rh-go: var(--rh-go);
+  --color-rh-cond: var(--rh-cond);
+  --color-rh-nogo: var(--rh-nogo);
+  --color-rh-info: var(--rh-info);
+  --color-rh-skeleton: var(--rh-skeleton);
+  --color-rh-skeleton-sheen: var(--rh-skeleton-sheen);
+  --color-rh-overlay: var(--rh-overlay);
+
+  --font-sans: var(--font-archivo), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 
-@layer base {
-  :root {
-    color-scheme: dark;
-  }
+@theme inline {
+  --shadow-popover: var(--rh-shadow);
 
+  /*
+   * Density and scale axes. Rows, panel padding and gaps read these instead of hard-coded values,
+   * so the Settings toggles change the whole UI without a rebuild.
+   */
+  --radius-sm: 5px;
+  --radius-md: 9px;
+  --radius-lg: 14px;
+
+  /* Smallest size in the system. Nothing user-facing sits below this, and it scales with the
+     text-size preference so density and size stay coherent. */
+  --text-micro: calc(11px * var(--rh-scale));
+  --text-micro--line-height: 1.35;
+  --text-xs: calc(12px * var(--rh-scale));
+  --text-xs--line-height: 1.45;
+  --text-ui: calc(13px * var(--rh-scale));
+  --text-ui--line-height: 1.45;
+  --text-sm: calc(14px * var(--rh-scale));
+  --text-sm--line-height: 1.5;
+  --text-base: calc(16px * var(--rh-scale));
+  --text-base--line-height: 1.5;
+  --text-lg: calc(18px * var(--rh-scale));
+  --text-lg--line-height: 1.4;
+  --text-xl: calc(21px * var(--rh-scale));
+  --text-xl--line-height: 1.35;
+  --text-2xl: calc(26px * var(--rh-scale));
+  --text-2xl--line-height: 1.25;
+  --text-display: calc(34px * var(--rh-scale));
+  --text-display--line-height: 1.1;
+  --text-display--letter-spacing: -0.025em;
+}
+
+:root {
+  /* Type scale: 0.92 / 1 / 1.12 as a single multiplier everything derives from. */
+  --rh-scale: 1;
+  --rh-row-h: 2.125rem;
+  --rh-pad-panel: 0.875rem;
+  --rh-gap: 0.75rem;
+  --rh-duration: 160ms;
+  --rh-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+[data-scale="sm"] {
+  --rh-scale: 0.92;
+}
+[data-scale="lg"] {
+  --rh-scale: 1.12;
+}
+[data-density="compact"] {
+  --rh-row-h: 1.75rem;
+  --rh-pad-panel: 0.5rem;
+  --rh-gap: 0.5rem;
+}
+
+@layer base {
   html,
   body {
     height: 100%;
@@ -73,9 +232,11 @@
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    /* One transition for the whole theme swap; components inherit it instead of animating colour. */
+    transition: background-color var(--rh-duration) var(--rh-ease), color var(--rh-duration) var(--rh-ease);
   }
 
-  /* Mono is reserved for real code: URLs, curl commands and ids. */
+  /* Mono stays reserved for code and measurement: URLs, curl, ids, timings, counts. */
   pre,
   code,
   kbd,
@@ -84,41 +245,146 @@
     font-feature-settings: "liga" 0;
   }
 
-  ::selection {
-    background: color-mix(in srgb, var(--color-rh-primary) 40%, transparent);
+  /* Counts, latencies and timestamps in tables must not shift width between rows. */
+  .tabular-nums,
+  time,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
   }
 
-  /* Scrollbars */
+  ::selection {
+    background: color-mix(in oklab, var(--color-rh-primary) 42%, transparent);
+    color: var(--color-rh-text);
+  }
+
+  /* Caret and spellcheck underline belong to the palette too. */
+  input,
+  textarea,
+  select {
+    caret-color: var(--color-rh-primary);
+  }
+  ::placeholder {
+    color: var(--color-rh-faint);
+  }
+
   * {
     scrollbar-width: thin;
-    scrollbar-color: var(--color-rh-line) transparent;
+    scrollbar-color: var(--rh-line-strong) transparent;
   }
   ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 9px;
+    height: 9px;
   }
   ::-webkit-scrollbar-track {
     background: transparent;
   }
   ::-webkit-scrollbar-thumb {
-    background: var(--color-rh-line);
+    background: var(--rh-line-strong);
     border-radius: 9999px;
     border: 2px solid transparent;
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--rh-muted);
     background-clip: padding-box;
   }
 }
 
 /*
- * Focus ring. Deliberately unlayered so no utility (for example a stray `focus:outline-none`)
- * can remove it. Elements that touch a clipping edge can pull the ring inward with
- * `[--rh-focus-offset:-2px]`.
+ * Focus ring. Unlayered on purpose: no utility can remove it. Elements at a clipping edge pull it
+ * inward with [--rh-focus-offset:-2px].
  */
 :focus-visible {
   outline: 2px solid var(--color-rh-primary);
   outline-offset: var(--rh-focus-offset, 2px);
 }
 
-/* Respect the user's motion preference: no animations or transitions, no smooth scrolling. */
+/* ---------------------------------------------------------------------------
+ * Motion. Two authored things only: the entrance of a panel that just got its data, and the
+ * skeleton breathe. Everything else transitions colour and nothing animates while it is hidden.
+ * --------------------------------------------------------------------------- */
+@keyframes rh-rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
+  }
+}
+
+@keyframes rh-sheen {
+  from {
+    background-position: -180% 0;
+  }
+  to {
+    background-position: 180% 0;
+  }
+}
+
+@keyframes rh-tick {
+  from {
+    transform: rotate(0);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.rh-rise {
+  animation: rh-rise 340ms var(--rh-ease) both;
+}
+
+.rh-skeleton {
+  background-color: var(--color-rh-skeleton);
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--color-rh-skeleton-sheen) 45%,
+    transparent 90%
+  );
+  background-size: 220% 100%;
+  background-repeat: no-repeat;
+  animation: rh-sheen 1600ms linear infinite;
+  border-radius: var(--radius-sm);
+}
+
+.rh-spin {
+  animation: rh-tick 900ms linear infinite;
+}
+
+/*
+ * A live run keeps a moving element; it is the only place a looping animation is allowed to sit
+ * unattended, and it stops when the run ends.
+ */
+.rh-live::after {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 0.45em;
+  margin-left: 0.4em;
+  vertical-align: 0.15em;
+  border-radius: 9999px;
+  background: currentColor;
+  animation: rh-breathe 1400ms ease-in-out infinite;
+}
+
+@keyframes rh-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Motion off: either the OS said so, or the user turned it off in Settings. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -128,4 +394,30 @@
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+[data-motion="off"] *,
+[data-motion="off"] *::before,
+[data-motion="off"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/*
+ * Conditional-verdict treatment. Amber is close enough to the saffron accent that colour alone
+ * cannot be the whole message, so a conditional state always carries a hatch and a word. This also
+ * does the work for the colour-blind mode and for printing.
+ */
+.rh-hatch {
+  background-image: repeating-linear-gradient(
+    135deg,
+    color-mix(in oklab, var(--color-rh-cond) 30%, transparent) 0 3px,
+    transparent 3px 6px
+  );
+}
+
+/* Hairline rule used between dashboard sections instead of a card inside a card. */
+.rh-rule {
+  border-top: 1px solid var(--color-rh-line);
 }

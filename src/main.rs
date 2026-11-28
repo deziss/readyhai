@@ -9,6 +9,9 @@
     clippy::some_filter
 )]
 
+// Declared first so the `regex_cached!` macro it exports is in scope for every module below.
+#[macro_use]
+mod regex_cache;
 mod agent;
 mod android;
 mod baseline;
@@ -33,6 +36,7 @@ mod mutate;
 pub mod network;
 mod policy;
 mod qa;
+
 mod report;
 mod rules;
 mod scope;
@@ -41,6 +45,7 @@ mod settings;
 mod snapshot;
 mod supply;
 mod tools;
+mod vex;
 mod vulndb;
 mod web;
 
@@ -294,6 +299,11 @@ enum VulnsCmd {
         /// Fingerprint from the list (a unique prefix of 6+ characters is enough)
         fingerprint: String,
     },
+    /// Write an OpenVEX document (v0.2.0) for the findings in the current filter. Statements say
+    /// `affected` only where exploitation was demonstrated; everything else is honestly
+    /// `under_investigation`, and no statement ever claims `not_affected`. Prints JSON; redirect
+    /// to a file. Example: `readyhai vulns --target https://app.example.com vex > product.openvex.json`
+    Vex,
 }
 
 #[derive(Subcommand)]
@@ -547,9 +557,31 @@ fn run() -> anyhow::Result<u8> {
         } => {
             let path = vulndb::path();
             if let Some(c) = cmd {
+                // VEX needs the same filter the list uses, so branch before the status-writing
+                // commands, which take a fingerprint instead.
+                if let VulnsCmd::Vex = c {
+                    let vstatus = match (status.clone(), all) {
+                        (Some(s), _) if vulndb::valid_status(&s) => Some(s),
+                        (Some(_), _) => {
+                            anyhow::bail!("--status must be one of {}", vulndb::STATUSES.join("|"))
+                        }
+                        (None, true) => None,
+                        (None, false) => Some("open".into()),
+                    };
+                    let doc = crate::vex::export(vulndb::Filter {
+                        target,
+                        status: vstatus,
+                        severity: None,
+                        verification: None,
+                    })
+                    .map_err(|e| anyhow::anyhow!("vex: {e}"))?;
+                    println!("{doc}");
+                    return Ok(0);
+                }
                 let (fp, to) = match c {
                     VulnsCmd::Accept { fingerprint } => (fingerprint, "accepted"),
                     VulnsCmd::Forget { fingerprint } => (fingerprint, "forgotten"),
+                    VulnsCmd::Vex => unreachable!("handled above"),
                 };
                 if !vulndb::set_status(&fp, to)? {
                     anyhow::bail!(

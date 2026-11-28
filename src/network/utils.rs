@@ -128,6 +128,57 @@ pub fn same_host_redirects() -> reqwest::redirect::Policy {
     })
 }
 
+/// How long a scan-side client waits for a connection to be established before giving up.
+///
+/// A connect timeout only bounds "the host never completed the handshake". A target that accepts
+/// the TCP socket and then goes silent (a firewalled port, a dead load balancer, a SYN-lost route)
+/// would otherwise hold the request open until the scan-wide deadline, wedging the whole run. It
+/// never shortens how long a *connected* server may take to answer, which is what the timing-based
+/// checks (`qa.api.slow_response`, time-delay blind SQLi) measure.
+///
+/// Override with `READYHAI_CONNECT_TIMEOUT_MS` (100..=30_000 ms).
+pub const SCAN_CONNECT_TIMEOUT: Duration = Duration::from_millis(5000);
+const SCAN_CONNECT_TIMEOUT_MIN_MS: u64 = 100;
+const SCAN_CONNECT_TIMEOUT_MAX_MS: u64 = 30_000;
+
+/// The connect timeout in force: [`SCAN_CONNECT_TIMEOUT`], or `READYHAI_CONNECT_TIMEOUT_MS`.
+pub fn scan_connect_timeout() -> Duration {
+    scan_connect_timeout_from(std::env::var("READYHAI_CONNECT_TIMEOUT_MS").ok().as_deref())
+}
+
+/// The env override of [`scan_connect_timeout`] as a pure function: unparsable or absent input
+/// keeps the default, anything else is clamped into the supported range.
+pub(crate) fn scan_connect_timeout_from(raw: Option<&str>) -> Duration {
+    match raw.and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(ms) => Duration::from_millis(
+            SCAN_CONNECT_TIMEOUT_MIN_MS
+                .max(ms)
+                .min(SCAN_CONNECT_TIMEOUT_MAX_MS),
+        ),
+        None => SCAN_CONNECT_TIMEOUT,
+    }
+}
+
+/// A connect timeout for scan-side clients, as an existing [`reqwest::blocking::ClientBuilder`]
+/// transform. It changes nothing else: redirect policy, TLS validation, proxy handling, headers
+/// and pooling stay exactly as the caller configured them, so clients that deliberately differ
+/// (strict-TLS vs `danger_accept_invalid_certs`, `no_proxy`, per-site redirect policies) must not
+/// be merged into one shared client.
+pub fn with_connect_timeout(
+    b: reqwest::blocking::ClientBuilder,
+) -> reqwest::blocking::ClientBuilder {
+    connect_timeout_builder(b, scan_connect_timeout())
+}
+
+/// [`with_connect_timeout`] with an explicit bound, for callers (and tests) that need a connect
+/// timeout shorter than the scan default.
+pub fn connect_timeout_builder(
+    b: reqwest::blocking::ClientBuilder,
+    connect: Duration,
+) -> reqwest::blocking::ClientBuilder {
+    b.connect_timeout(connect)
+}
+
 pub fn http_client(timeout_ms: u64, fresh_connections: bool) -> reqwest::blocking::Client {
     let mut b = reqwest::blocking::Client::builder()
         .timeout(Duration::from_millis(timeout_ms))

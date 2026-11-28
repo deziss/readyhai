@@ -139,7 +139,11 @@ pub(crate) fn pairwise(ctx: &Ctx) -> Result<CheckOutput> {
             ops_hit += 1;
         }
     }
-    let out = if proposed == 0 {
+    let out = if ops(&spec).is_empty() {
+        CheckOutput::status(CheckStatus::NotApplicable(
+            "spec exposes no operations".into(),
+        ))
+    } else if proposed == 0 {
         CheckOutput::status(CheckStatus::Passed)
     } else {
         CheckOutput::status(CheckStatus::Skipped(format!(
@@ -232,7 +236,11 @@ pub(crate) fn decision_table(ctx: &Ctx) -> Result<CheckOutput> {
             proposed += 1;
         }
     }
-    let out = if proposed == 0 {
+    let out = if ops(&spec).is_empty() {
+        CheckOutput::status(CheckStatus::NotApplicable(
+            "spec exposes no operations".into(),
+        ))
+    } else if proposed == 0 {
         CheckOutput::status(CheckStatus::Passed)
     } else {
         CheckOutput::status(CheckStatus::Skipped(format!(

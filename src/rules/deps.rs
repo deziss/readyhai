@@ -6,7 +6,9 @@ use super::na;
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, Finding, Severity};
 use crate::snapshot::Snapshot;
-use regex::Regex;
+
+// `docker build` pip-install line; literal pattern, compiled once for the process.
+regex_cached!(DOCKER_PIP_R, r"pip3?\s+install\b.*?-r\s+(\S+)");
 
 pub(crate) fn deps_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
     const C: &str = "readiness.deps";
@@ -25,7 +27,7 @@ pub(crate) fn deps_check(ctx: &Ctx, snap: &Snapshot) -> CheckOutput {
         )
     };
     // Which requirements file each Dockerfile installs.
-    let pip = Regex::new(r"pip3?\s+install\b.*?-r\s+(\S+)").unwrap();
+    let pip = &*DOCKER_PIP_R;
     let mut installed: Vec<(String, String)> = vec![];
     for df in &fc.dockerfiles {
         for st in read(snap, df).map(|t| parse_stages(&t)).unwrap_or_default() {

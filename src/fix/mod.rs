@@ -8,7 +8,8 @@
 //!    reuse project-specific authentication middleware identifiers.
 //! 3. Test-Before-PR verification sandbox: automatically detects project test runners
 //!    (`cargo test`, `npm test`, `pytest`, `go test`), applies patches, and automatically
-//!    rolls back if tests fail to guarantee zero regressions.
+//!    rolls back if tests fail. That bounds *regressions the suite can detect* — it is not a
+//!    guarantee of zero regressions for behavior the suite does not cover.
 //! 4. Automated Git branch creation & commit authoring (strict local-only push policy).
 //! 5. Evidence Ledger-backed Pull Request markdown synthesis with unified diffs and curl proofs.
 

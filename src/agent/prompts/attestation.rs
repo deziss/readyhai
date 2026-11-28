@@ -6,7 +6,7 @@ use super::{
 
 /// JSON schema expected from the Software Factory Attestation Officer.
 pub const FACTORY_ATTESTATION_JSON_SCHEMA: &str = r#"{
-  "advisory_summary": "Formal software factory sign-off: Release readiness 94/100, verdict GO. ASVS L1 and L2 satisfied. 0 Critical defects.",
+  "advisory_summary": "Advisory software factory record: Release readiness 94/100, verdict GO. No critical or high defect observed by evidence-backed cases. Areas no case tested are reported as not evaluated.",
   "directives": [
     "Enforce HSTS preload on production load balancer",
     "Monitor rate-limiting telemetry on /api/v1/auth/login"
@@ -40,34 +40,49 @@ pub fn build_readiness_gate_system_prompt() -> String {
     sys
 }
 
+/// What the attestation officer is told about a release. There are deliberately no compliance or
+/// certification booleans here: each one describes defects that evidence-backed cases observed, and
+/// `basis` states that limitation to the model. `release_readiness_score` is `None` when readiness
+/// was not evaluated, which serializes as `null` instead of a plausible number.
+#[derive(Debug, Clone)]
+pub struct FactoryObservedFacts {
+    pub evaluated: bool,
+    pub release_readiness_score: Option<u32>,
+    pub gate_verdict: String,
+    pub no_critical_or_high_findings: bool,
+    pub no_high_or_medium_above_threshold: bool,
+    pub no_observed_findings: bool,
+    pub basis: String,
+}
+
 /// Builds the user prompt for generating formal Software Factory Attestation and deployment directives.
 pub fn build_factory_attestation_user_prompt(
-    score: i64,
-    gate_verdict: &str,
-    asvs_l1: bool,
-    asvs_l2: bool,
-    asvs_l3: bool,
-    asvs_breakdown: &[serde_json::Value],
+    facts: &FactoryObservedFacts,
+    area_breakdown: &[serde_json::Value],
     defects: &[serde_json::Value],
 ) -> String {
     let attestation_facts = serde_json::json!({
-        "release_readiness_score": score,
-        "gate_verdict": gate_verdict,
-        "asvs_l1_compliant": asvs_l1,
-        "asvs_l2_compliant": asvs_l2,
-        "asvs_l3_compliant": asvs_l3,
+        "evaluated": facts.evaluated,
+        "release_readiness_score": facts.release_readiness_score,
+        "gate_verdict": facts.gate_verdict,
+        "no_critical_or_high_findings": facts.no_critical_or_high_findings,
+        "no_high_or_medium_above_threshold": facts.no_high_or_medium_above_threshold,
+        "no_observed_findings": facts.no_observed_findings,
+        "basis": facts.basis,
         "defects_count": defects.len(),
     });
 
     PromptBuilder::new(
         FACTORY_ATTESTER_ROLE,
-        "Given the computed release readiness score, OWASP ASVS verification breakdown (V2 Authentication through V14 Configuration), \
-        and remaining verified defects, formulate a concise formal release attestation summary and advisory deployment directives.",
+        "Given the computed release readiness score, the observed-findings breakdown for the ASVS-shaped areas \
+        (V2 Authentication through V14 Configuration), and the remaining defects, formulate a concise formal release \
+        attestation summary and advisory deployment directives. Report not evaluated for anything these facts do not measure.",
     )
-    .with_fenced_json("RELEASE READINESS & COMPLIANCE FACTS", &attestation_facts)
-    .with_fenced_json_capped("OWASP ASVS CATEGORY BREAKDOWN", &serde_json::json!(asvs_breakdown), 200)
-    .with_fenced_json_capped("VERIFIED DEFECTS SUMMARY", &serde_json::json!(defects), 200)
+    .with_fenced_json("RELEASE READINESS & OBSERVED-FINDINGS FACTS", &attestation_facts)
+    .with_fenced_json_capped("OBSERVED-FINDINGS AREA BREAKDOWN", &serde_json::json!(area_breakdown), 200)
+    .with_fenced_json_capped("TRIAGED DEFECTS SUMMARY", &serde_json::json!(defects), 200)
     .with_guideline("Advisory summary should be formal, concise, and suitable for audit logging.")
+    .with_guideline("Never claim compliance, certification or coverage the facts above do not state.")
     .with_guideline("Directives should provide actionable post-deployment hardening recommendations.")
     .with_schema(FACTORY_ATTESTATION_JSON_SCHEMA)
     .build_user()

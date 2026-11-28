@@ -57,6 +57,46 @@ fn test_remediate_missing_guard_express() {
     );
 }
 
+/// The runner writes `patched_content` to disk. It used to write `patched_snippet` (the one fixed
+/// line), which replaced the entire file with that line. Any change back to writing the snippet
+/// fails this test.
+#[test]
+fn patched_content_is_the_whole_file_not_just_the_fixed_line() {
+    let dir = test_dir("whole-file");
+    let file_path = dir.join("server.js");
+    let content = "const express = require('express');\nconst app = express();\napp.get('/users', listUsers);\n\nfunction listUsers(req, res) {\n  res.json([]);\n}\n\nmodule.exports = app;\n";
+    fs::write(&file_path, content).unwrap();
+
+    let defect = TargetDefect {
+        id: "D-001".into(),
+        rule: "security.auth.missing_guard".into(),
+        severity: Severity::High,
+        file: "server.js".into(),
+        line: 3,
+        title: "Endpoint lacks guard".into(),
+        component: "GET /users".into(),
+        reproduction: None,
+    };
+
+    let patch = synthesize_remediation(&dir, &defect, &["requireAuth".into()])
+        .unwrap()
+        .expect("should synthesize patch");
+
+    // Same shape as the original: every untouched line survives, and the trailing newline too.
+    assert_eq!(
+        patch.patched_content,
+        "const express = require('express');\nconst app = express();\napp.get('/users', requireAuth, listUsers);\n\nfunction listUsers(req, res) {\n  res.json([]);\n}\n\nmodule.exports = app;\n"
+    );
+    assert_eq!(
+        patch.patched_content.lines().count(),
+        content.lines().count(),
+        "the patched file must keep every line"
+    );
+    assert!(patch.patched_content.ends_with('\n'));
+    // The snippet is a strict subset; writing it would truncate the file.
+    assert!(!patch.patched_snippet.contains("module.exports"));
+}
+
 #[test]
 fn test_remediate_sql_injection_python() {
     let dir = test_dir("sqli");
@@ -170,13 +210,13 @@ fn test_remediate_hardcoded_secrets() {
     assert!(patch.patched_snippet.contains("process.env.API_SECRET_KEY"));
 }
 
-#[test]
-fn test_pr_markdown_structure() {
-    let report = FixReport {
+fn pr_report() -> FixReport {
+    FixReport {
         repo: "/test/repo".into(),
         total_defects_evaluated: 1,
         patches_synthesized: 1,
         patches_verified: 1,
+        patches_unverified: 0,
         patches_applied: 1,
         branch_created: Some("readyhai-fix/auth".into()),
         commit_sha: Some("abc1234".into()),
@@ -187,6 +227,7 @@ fn test_pr_markdown_structure() {
             line: 10,
             original_snippet: "app.get('/admin', handler);".into(),
             patched_snippet: "app.get('/admin', requireAuth, handler);".into(),
+            patched_content: "app.get('/admin', requireAuth, handler);\n".into(),
             unified_diff: "--- a/server.js\n+++ b/server.js\n".into(),
             rationale: "Injected requireAuth".into(),
             status: PatchStatus::Verified,
@@ -196,11 +237,40 @@ fn test_pr_markdown_structure() {
         }],
         pr_title: "resolve 1 security defect".into(),
         pr_body: String::new(),
-    };
+    }
+}
 
+#[test]
+fn test_pr_markdown_structure() {
+    let report = pr_report();
     let md = generate_pr_markdown(&report);
-    assert!(md.contains("# 🛡️ ReadyHai Verified Remediation"));
+    assert!(md.contains("# 🛡️ ReadyHai Remediation"));
     assert!(md.contains("readyhai-fix/auth"));
     assert!(md.contains("npm test"));
     assert!(md.contains("requireAuth"));
+    // the body must not overclaim: a green suite is not an absence of regressions
+    assert!(
+        !md.to_lowercase().contains("zero regressions"),
+        "PR body claims zero regressions: {md}"
+    );
+}
+
+#[test]
+fn a_patch_that_was_never_tested_is_reported_as_unverified() {
+    let mut report = pr_report();
+    report.patches_verified = 0;
+    report.patches_unverified = 1;
+    report.patches[0].status = PatchStatus::AppliedWithoutVerification;
+    report.patches[0].verification_runner = None;
+
+    let md = generate_pr_markdown(&report);
+    assert!(
+        md.contains("**Patches Without Verification** | `1`"),
+        "{md}"
+    );
+    assert!(md.contains("**not** checked"), "{md}");
+    assert!(
+        !md.contains("passed in"),
+        "must not describe a run that never happened: {md}"
+    );
 }

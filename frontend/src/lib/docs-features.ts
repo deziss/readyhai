@@ -34,7 +34,7 @@ export const DOC_CATEGORIES = [
 export type DocCategory = (typeof DOC_CATEGORIES)[number];
 
 /** Docs-page version badge. Kept in sync with the root VERSION file at release. */
-export const DOCS_VERSION = "3.8.1";
+export const DOCS_VERSION = "3.9.0";
 
 /** Repo-wide documentation index (external). */
 export const REPO_DOCS_URL = "https://github.com/deziss/readyhai/blob/main/docs/README.md";

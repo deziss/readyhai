@@ -26,6 +26,27 @@ fn default_true() -> bool {
     true
 }
 
+/// Deliberate scope decisions, and the only two reasons a non-run stays out of the verdict.
+/// Both come from `Settings::skip` (src/settings.rs): an explicit `[[toggle]]` / category
+/// switch, and the `integrations.intrusive = off` kill switch. Narrowing a scan is a supported
+/// operator action, so it is not a measurement gap; the reason is still recorded in the report.
+///
+/// Everything else that produces `Skipped` - Docker or a tool image missing, a DB not
+/// downloaded, a runner image not built, `adb` absent, `--no-tools`, a blown deadline, a check
+/// that found no input to work on - is a measurement we wanted and did not get. Defaulting the
+/// other way would make every future capability skip silently restore a green verdict.
+const DELIBERATE_SKIP_PREFIXES: &[&str] = &[
+    "intrusive:",
+    "disabled by settings",
+    "integrations.intrusive = off",
+];
+
+/// True when a skip reason means "this was supposed to be measured and was not".
+fn reason_is_involuntary(reason: &str) -> bool {
+    let r = reason.trim_start();
+    !DELIBERATE_SKIP_PREFIXES.iter().any(|p| r.starts_with(p))
+}
+
 /// A check is "required" when it is native (no tool image) or its tool image is present. A tool
 /// check whose image is missing cannot have run, so an error about the image is not a failure.
 fn is_required(c: &CheckResult, reason: &str) -> bool {
@@ -172,15 +193,42 @@ pub fn verdict(
             policy.warn_severity.as_str()
         ));
     }
-    let no_docker = checks
-        .iter()
-        .filter(
-            |c| matches!(&c.status, CheckStatus::Skipped(r) if r.contains("docker not available")),
-        )
-        .count();
-    if no_docker > 0 {
+    // A check that could not run is a measurement gap, and a gap must never look like a
+    // clean pass. Reasons split in two:
+    //  * involuntary (`reason_is_involuntary`) - we wanted the measurement and could not get
+    //    it (no docker, `--no-tools`). These hold the verdict at WARN.
+    //  * deliberate scope choices (intrusive checks refusing prod, an explicit operator
+    //    toggle in settings.toml). These stay quiet in the verdict but are still listed in
+    //    the run's notes, so the record always says what was not measured.
+    let mut gaps = 0usize;
+    for c in checks {
+        if let CheckStatus::Skipped(r) = &c.status
+            && reason_is_involuntary(r)
+        {
+            gaps += 1;
+        }
+    }
+    if gaps > 0 {
         warn.push(format!(
-            "{no_docker} scanner check(s) did not run: docker not available"
+            "{gaps} scanner check(s) selected for this target did not run (not evaluated)"
+        ));
+    }
+    // Sharpest form of the same rule: if checks were selected, some were skipped, and
+    // nothing at all was actually measured, the run gets no pass for free.
+    let measured = checks.iter().any(|c| {
+        matches!(
+            c.status,
+            CheckStatus::Passed | CheckStatus::Failed | CheckStatus::Partial(_)
+        )
+    });
+    if !measured
+        && checks
+            .iter()
+            .any(|c| matches!(c.status, CheckStatus::Skipped(_)))
+    {
+        fail.push(format!(
+            "no check produced a measurement ({} selected, none ran); this is not a pass",
+            checks.len()
         ));
     }
     for c in checks {
@@ -272,10 +320,98 @@ mod tests {
             Some("img:1"),
             CheckStatus::Skipped("docker not available".into()),
         );
-        assert_eq!(verdict(&p, &[], &[sk]).0, Verdict::Warn);
+        // Paired with a check that actually ran, so this asserts only that a skip is not a
+        // failure. A run whose *only* check was skipped is covered by nothing_measured_is_not_a_pass.
+        let ok = chk("o", None, CheckStatus::Passed);
+        assert_eq!(verdict(&p, &[], &[sk.clone(), ok.clone()]).0, Verdict::Warn);
+        assert!(
+            verdict(&p, &[], &[sk, ok])
+                .1
+                .iter()
+                .any(|r| r.contains("not evaluated"))
+        );
         // knob off: WARN
         p.errored_fails = false;
         assert_eq!(verdict(&p, &[], &[native]).0, Verdict::Warn);
+    }
+
+    #[test]
+    fn involuntary_skips_hold_the_verdict_at_warn_but_scope_choices_do_not() {
+        let p = Policy::load(None).unwrap();
+        let ran = chk("ran", None, CheckStatus::Passed);
+        let v_of = |reason: &str| {
+            verdict(
+                &p,
+                &[],
+                &[
+                    chk("c", None, CheckStatus::Skipped(reason.into())),
+                    ran.clone(),
+                ],
+            )
+        };
+        // wanted the measurement, could not get it => the record says so
+        for reason in [
+            "docker not available",
+            "--no-tools",
+            "run wall-clock deadline exceeded",
+            "vuln DB missing",
+        ] {
+            let (v, why) = v_of(reason);
+            assert_eq!(v, Verdict::Warn, "{reason}");
+            assert!(
+                why.iter()
+                    .any(|r| r.contains("did not run (not evaluated)")),
+                "{reason}: {why:?}"
+            );
+        }
+        // deliberate narrowing of scope stays a supported action and is not a measurement gap
+        for reason in [
+            "intrusive: needs --profile deep and a nonprod host (any host not marked env = \"prod\" in scope.toml)",
+            "disabled by settings (check secret.gitleaks)",
+            "disabled by settings (plugin foo)",
+            "integrations.intrusive = off (operator kill switch)",
+        ] {
+            let (v, why) = v_of(reason);
+            assert_eq!(v, Verdict::Pass, "{reason}: {why:?}");
+        }
+    }
+
+    #[test]
+    fn nothing_measured_is_not_a_pass() {
+        let p = Policy::load(None).unwrap();
+        // Selected checks, zero findings, and every one of them skipped: the classic way a
+        // broken environment (no docker, no tools) reports a green run.
+        let all_skipped = vec![
+            chk(
+                "a",
+                Some("grype"),
+                CheckStatus::Skipped("docker not available".into()),
+            ),
+            chk(
+                "b",
+                Some("zap"),
+                CheckStatus::Skipped("docker not available".into()),
+            ),
+        ];
+        let (v, why) = verdict(&p, &[], &all_skipped);
+        assert_eq!(v, Verdict::Fail);
+        assert!(
+            why.iter()
+                .any(|r| r.contains("no check produced a measurement")),
+            "{why:?}"
+        );
+        // One measurement is enough to produce a normal verdict.
+        let one_ran = vec![all_skipped[0].clone(), chk("b", None, CheckStatus::Passed)];
+        assert_eq!(verdict(&p, &[], &one_ran).0, Verdict::Warn);
+        // A target that legitimately has nothing to check is not a measurement gap either.
+        let not_applicable = vec![chk(
+            "compose",
+            None,
+            CheckStatus::NotApplicable("no compose files in target".into()),
+        )];
+        assert_ne!(verdict(&p, &[], &not_applicable).0, Verdict::Fail);
+        // No checks at all (nothing selected) is the caller's business, not a failure here.
+        assert_eq!(verdict(&p, &[], &[]).0, Verdict::Pass);
     }
 
     #[test]

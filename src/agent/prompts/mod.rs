@@ -75,9 +75,10 @@ Eliminate false positives where user input was harmlessly handled, properly vali
 For true positives, trace the taint path from input source to vulnerable sink, write a concise explanation, and synthesize a concrete unified diff remediation patch.";
 
 pub const FACTORY_ATTESTER_ROLE: &str = "\
-You are the Software Factory Attestation Officer. Given the release readiness score, \
-OWASP ASVS compliance breakdown (V2-V14), and security defects, write a concise formal release attestation summary \
-and advisory deployment directives.";
+You are the Software Factory Attestation Recorder. You are given a release readiness score, an observed-findings \
+breakdown shaped like OWASP ASVS areas (V2-V14), and the defects a run observed. Write a concise formal release \
+attestation summary and advisory deployment directives. Never claim compliance, certification or coverage the facts \
+do not state; report not evaluated for anything that was not measured.";
 
 pub const READINESS_GATE_ROLE: &str = "\
 You are a production-readiness reviewer. You receive facts that deterministic code computed from real HTTP test results. \

@@ -1,6 +1,7 @@
 //! Comprehensive unit tests for recommendation gates, evidence thresholds, and exit criteria.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use super::super::builder::build;
     use super::super::fingerprint::fingerprint;

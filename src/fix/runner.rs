@@ -16,7 +16,7 @@ use super::types::{FixOpts, FixReport, PatchStatus};
 /// Main entrypoint for `readyhai fix`.
 pub fn run(opts: FixOpts) -> Result<u8> {
     let repo = opts.repo.canonicalize().unwrap_or(opts.repo.clone());
-    let defects = collect_target_defects(&repo, opts.run.as_deref(), opts.defect.as_deref());
+    let defects = collect_target_defects(&repo, opts.run.as_deref(), opts.defect.as_deref())?;
 
     if defects.is_empty() {
         if opts.format == "json" {
@@ -51,8 +51,9 @@ pub fn run(opts: FixOpts) -> Result<u8> {
             if opts.verify
                 && let Some(runner) = test_runner
             {
-                // Apply patch to disk temporarily for sandbox verification
-                if let Err(e) = fs::write(&file_path, &patch.patched_snippet) {
+                // Apply patch to disk temporarily for sandbox verification. `patched_content` is
+                // the complete file; `patched_snippet` is one line and would truncate the file.
+                if let Err(e) = fs::write(&file_path, &patch.patched_content) {
                     patch.status = PatchStatus::VerificationFailed;
                     patch.error_log = Some(format!("failed to write patch for verification: {e}"));
                     remediations.push(patch);
@@ -88,9 +89,11 @@ pub fn run(opts: FixOpts) -> Result<u8> {
                     modified_files.insert(patch.file_path.clone());
                 }
             } else if !opts.dry_run {
-                // Apply without verification if verify is off or no runner
-                if fs::write(&file_path, &patch.patched_snippet).is_ok() {
-                    patch.status = PatchStatus::Applied;
+                // Apply without verification if verify is off or no runner detected. Recorded as
+                // `AppliedWithoutVerification` so the report cannot present an unchecked patch as
+                // a checked one.
+                if fs::write(&file_path, &patch.patched_content).is_ok() {
+                    patch.status = PatchStatus::AppliedWithoutVerification;
                     modified_files.insert(patch.file_path.clone());
                 }
             }
@@ -99,13 +102,29 @@ pub fn run(opts: FixOpts) -> Result<u8> {
         }
     }
 
+    // Only patches the suite actually passed count as verified; the rest are reported separately
+    // so the summary, PR body and commit message cannot claim a check that never ran.
     let verified_count = remediations
         .iter()
         .filter(|r| matches!(r.status, PatchStatus::Verified | PatchStatus::Applied))
         .count();
+    let unverified_count = remediations
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.status,
+                PatchStatus::AppliedWithoutVerification | PatchStatus::Synthesized
+            )
+        })
+        .count();
     let applied_count = remediations
         .iter()
-        .filter(|r| r.status == PatchStatus::Applied)
+        .filter(|r| {
+            matches!(
+                r.status,
+                PatchStatus::Applied | PatchStatus::AppliedWithoutVerification
+            )
+        })
         .count();
 
     let mut branch_created = None;
@@ -115,8 +134,11 @@ pub fn run(opts: FixOpts) -> Result<u8> {
         && !opts.dry_run
         && !modified_files.is_empty()
     {
+        // The commit says exactly what was checked: a green suite, not an absence of regressions.
         let commit_msg = format!(
-            "fix(security): resolve {} defect(s) via ReadyHai Agentic Fixer\n\nVerified with zero regressions.",
+            "fix(security): resolve {} defect(s) via ReadyHai Agentic Fixer\n\n\
+             Suite status: {verified_count} of {applied_count} applied patch(es) passed the \
+             repository test suite; the rest were applied without verification.",
             applied_count
         );
         let files_vec: Vec<String> = modified_files.into_iter().collect();
@@ -126,12 +148,15 @@ pub fn run(opts: FixOpts) -> Result<u8> {
         }
     }
 
-    let pr_title = format!("resolve {} security & QA defect(s)", verified_count);
+    // Counts the patches that reached disk, whatever their verification status: "resolved" is a
+    // claim about the change, not about a check.
+    let pr_title = format!("resolve {} security & QA defect(s)", applied_count);
     let mut report = FixReport {
         repo: repo.display().to_string(),
         total_defects_evaluated: defects.len(),
         patches_synthesized: remediations.len(),
         patches_verified: verified_count,
+        patches_unverified: unverified_count,
         patches_applied: applied_count,
         branch_created,
         commit_sha,
@@ -164,6 +189,7 @@ fn print_text_summary(report: &FixReport, dry_run: bool) {
     println!("  Defects Found:    {}", report.total_defects_evaluated);
     println!("  Patches Created:  {}", report.patches_synthesized);
     println!("  Verified Clean:   {}", report.patches_verified);
+    println!("  Unverified:       {}", report.patches_unverified);
     println!("  Patches Applied:  {}", report.patches_applied);
     if dry_run {
         println!("  Execution Mode:   DRY RUN (No files modified)");
@@ -183,6 +209,7 @@ fn print_text_summary(report: &FixReport, dry_run: bool) {
         let tag = match p.status {
             PatchStatus::Verified => "\x1b[32m[VERIFIED]\x1b[0m",
             PatchStatus::Applied => "\x1b[32m[APPLIED]\x1b[0m",
+            PatchStatus::AppliedWithoutVerification => "\x1b[33m[APPLIED-UNVERIFIED]\x1b[0m",
             PatchStatus::Synthesized => "\x1b[33m[SYNTHESIZED]\x1b[0m",
             PatchStatus::VerificationFailed => "\x1b[31m[TEST FAILED]\x1b[0m",
             PatchStatus::RolledBack => "\x1b[35m[ROLLED BACK]\x1b[0m",

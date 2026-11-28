@@ -2,6 +2,12 @@ import React from "react";
 import { Globe, RotateCw, GitPullRequest, Check, Copy } from "lucide-react";
 import type { DeepAuditReport, MultiRegionReport, PrCommentResponse } from "@/types/network";
 import { BTN_PRIMARY, BTN_SECONDARY, FOCUS } from "./types";
+import {
+  BADGE_LABEL_BG,
+  BADGE_LEDGER,
+  BADGE_NONE,
+  badgeColorForVerdict,
+} from "./badgePreview";
 
 export interface PrGateViewProps {
   target: string;
@@ -55,28 +61,18 @@ export function PrGateView({
     ? deepAuditReport.overall_verdict.toUpperCase()
     : null;
   const gateBadgeText = gateStatus ?? "not evaluated";
-  const gateBadgeColor =
-    gateStatus === "PASS"
-      ? "#22c55e"
-      : gateStatus === "WARN"
-      ? "#eab308"
-      : gateStatus
-      ? "#ef4444"
-      : "#475569";
+  const gateBadgeColor = badgeColorForVerdict(gateStatus);
 
   const meshTotal = multiRegionReport?.regions.length ?? 0;
   const meshOptimal = multiRegionReport
     ? multiRegionReport.regions.filter((r) => r.status === "OPTIMAL").length
     : 0;
   const meshBadgeText = meshTotal > 0 ? `${meshOptimal}/${meshTotal} optimal` : null;
-  const meshBadgeColor =
-    meshTotal === 0
-      ? "#475569"
-      : meshOptimal === meshTotal
-      ? "#10b981"
-      : meshOptimal === 0
-      ? "#ef4444"
-      : "#eab308";
+  // The mesh endpoint takes the same PASS/WARN/FAIL vocabulary as the gate, so the colour follows
+  // the verdict rather than how pleasing the ratio looks. all-optimal is PASS, none is FAIL.
+  const meshVerdict =
+    meshTotal === 0 ? null : meshOptimal === meshTotal ? "PASS" : meshOptimal === 0 ? "FAIL" : "WARN";
+  const meshBadgeColor = badgeColorForVerdict(meshVerdict);
 
   return (
     <div className="space-y-6">
@@ -120,7 +116,7 @@ export function PrGateView({
             <span className="text-xs font-medium text-rh-text block">Quality gate verdict</span>
             <div className="flex items-center justify-between">
               <div className="inline-flex rounded-[6px] overflow-hidden text-xs font-semibold">
-                <span className="bg-[#1e293b] text-white px-2.5 py-1">ReadyHai</span>
+                <span className="px-2.5 py-1 text-white" style={{ backgroundColor: BADGE_LABEL_BG }}>ReadyHai</span>
                 <span
                   className="text-white px-2.5 py-1"
                   style={{ backgroundColor: gateBadgeColor }}
@@ -164,10 +160,10 @@ export function PrGateView({
             </span>
             <div className="flex items-center justify-between">
               <div className="inline-flex rounded-[6px] overflow-hidden text-xs font-semibold">
-                <span className="bg-[#0f172a] text-white px-2.5 py-1">Evidence Ledger</span>
+                <span className="px-2.5 py-1 text-white" style={{ backgroundColor: BADGE_LABEL_BG }}>Evidence Ledger</span>
                 <span
                   className="text-white px-2.5 py-1"
-                  style={{ backgroundColor: ledgerScore === null ? "#475569" : "#3b82f6" }}
+                  style={{ backgroundColor: ledgerScore === null ? BADGE_NONE : BADGE_LEDGER }}
                 >
                   {ledgerScore === null ? "not evaluated" : `${ledgerScore}/100`}
                 </span>
@@ -206,7 +202,7 @@ export function PrGateView({
             <span className="text-xs font-medium text-rh-text block">Global network mesh</span>
             <div className="flex items-center justify-between">
               <div className="inline-flex rounded-[6px] overflow-hidden text-xs font-semibold">
-                <span className="bg-[#18181b] text-white px-2.5 py-1">Network Mesh</span>
+                <span className="px-2.5 py-1 text-white" style={{ backgroundColor: BADGE_LABEL_BG }}>Network Mesh</span>
                 <span className="text-white px-2.5 py-1" style={{ backgroundColor: meshBadgeColor }}>
                   {meshBadgeText ?? "not evaluated"}
                 </span>
@@ -217,7 +213,7 @@ export function PrGateView({
                   meshBadgeText &&
                   copyToClipboard(
                     `![Network Mesh](${badgeBase()}/api/badges/network?status=${encodeURIComponent(
-                      meshBadgeText
+                      meshVerdict ?? ""
                     )})`,
                     "badge-mesh"
                   )

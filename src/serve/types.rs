@@ -13,6 +13,14 @@ pub const MIN_TOKEN_CHARS: usize = 16;
 pub const BANNED_TOKENS: &[&str] = &["rh-dev-token-9f8e7d6c5b4a3210"];
 /// Concurrent blocking probes (agent run/discover/crawl, network lab) before `429`.
 pub const MAX_CONCURRENT_PROBES: usize = 16;
+/// How many cheap blocking jobs (report reads, listings, report generation) may wait for a
+/// blocking-pool thread at once. `offload` sheds past this with `503` instead of queueing: tokio's
+/// blocking pool grows its thread count without bound, so an unbounded queue lets one client that
+/// refreshes reports in a loop grow a thread per queued job until the process runs out of memory
+/// or file descriptors. Waiting briefly for a free slot is fine; an unlimited line is not.
+pub const MAX_QUEUED_OFFLOADS: usize = 256;
+/// How long an `offload` job waits for a queue slot before the route answers `503`.
+pub const OFFLOAD_QUEUE_TIMEOUT: Duration = Duration::from_millis(500);
 /// `max_pages` bounds for the crawler routes.
 pub const DEFAULT_CRAWL_PAGES: usize = 25;
 pub const MAX_CRAWL_PAGES: usize = 100;
@@ -34,7 +42,6 @@ pub const GUARD_TIMEOUT: Duration = Duration::from_secs(15);
 /// drain connections up to `FORCED_SHUTDOWN`, then stop containers and flush within the rest.
 pub const FORCED_SHUTDOWN: Duration = Duration::from_secs(8);
 pub const SHUTDOWN_REAP_PER_CALL: Duration = Duration::from_secs(4);
-pub const BADGE_VALUE_MAX: usize = 24;
 
 pub struct App {
     pub token_digest: [u8; 32],
@@ -253,6 +260,8 @@ pub fn default_max_mutants() -> usize {
 }
 
 #[derive(Deserialize)]
+/// Query for the public badges. `status` is validated against the verdict allowlist and `score`
+/// against `0..=100`; nothing else is ever rendered, so these stay plain strings here.
 pub struct BadgeQuery {
     #[serde(default)]
     pub status: Option<String>,

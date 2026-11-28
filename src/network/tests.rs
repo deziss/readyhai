@@ -1106,3 +1106,144 @@ fn old_reports_still_deserialize() {
     assert_eq!(r.method, "GET");
     assert!(r.iterations[0].resolved_ip.is_none());
 }
+
+/// A client built by the shared scan helper must give up on a target that accepts TCP and then
+/// never finishes the handshake, instead of holding the scan open until the run-wide deadline.
+///
+/// Not a tautology: nothing here reads a builder field back. The fixture is a real socket — a
+/// listener nobody ever accepts on, with its accept queue stuffed, so the kernel *drops* a new
+/// SYN rather than completing or refusing the handshake (asserted below, before the request). The
+/// only bound on the request is the one the helper contributes — there is deliberately no total
+/// `.timeout(...)` — so if `connect_timeout` were missing the request would hang for minutes and
+/// the wall-clock assertion would fail, and if the fixture had degraded into an instant
+/// connection-refused the lower-bound assertion would fail rather than let the test pass cheaply.
+/// The same client then has to reach a server that *does* complete the handshake.
+#[test]
+fn the_scan_connect_timeout_fires_on_a_target_that_never_finishes_the_handshake() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    // Stuff the accept queue: one live, unaccepted connection per thread, parked so the queue
+    // cannot drain for as long as the listener is alive.
+    for _ in 0..256 {
+        let target = addr;
+        std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || {
+                if let Ok(socket) = std::net::TcpStream::connect(target) {
+                    std::thread::park();
+                    drop(socket);
+                }
+            })
+            .unwrap();
+    }
+    let blackholed = (0..8).any(|_| {
+        std::thread::sleep(Duration::from_millis(50));
+        std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_err()
+    });
+    assert!(
+        blackholed,
+        "the loopback accept queue never filled, so a fresh handshake would be answered or \
+         refused outright and this test would prove nothing"
+    );
+
+    let connect = Duration::from_millis(400);
+    let c = connect_timeout_builder(reqwest::blocking::Client::builder(), connect)
+        .user_agent("readyhai-test")
+        .build()
+        .unwrap();
+
+    let t0 = Instant::now();
+    let err = c
+        .get(format!("http://{addr}/"))
+        .send()
+        .expect_err("a target that never completes the handshake must not produce a response");
+    let took = t0.elapsed();
+    assert!(
+        err.is_connect() || err.is_timeout(),
+        "the failure should be reported as a connect/timeout error, got {err:?}"
+    );
+    assert!(
+        took >= Duration::from_millis(25),
+        "the request died after {took:?}, which is an instant refusal rather than the black-holed \
+         handshake the helper's bound is for ({err})"
+    );
+    assert!(
+        took < Duration::from_secs(8),
+        "the connect bound did not fire: the request was still open after {took:?}"
+    );
+
+    // the same client still talks to a target that finishes the handshake.
+    let url = stub(|_| reply("200 OK", "hello"));
+    let resp = c
+        .get(url)
+        .send()
+        .expect("a responsive target must not be affected by the connect bound");
+    assert!(resp.status().is_success());
+    drop(listener);
+}
+
+/// The knob behind the helper: default, clamped override, and junk input.
+#[test]
+fn the_connect_timeout_override_is_bounded() {
+    assert_eq!(scan_connect_timeout_from(None), SCAN_CONNECT_TIMEOUT);
+    assert_eq!(scan_connect_timeout_from(Some("")), SCAN_CONNECT_TIMEOUT);
+    assert_eq!(
+        scan_connect_timeout_from(Some("soon")),
+        SCAN_CONNECT_TIMEOUT
+    );
+    assert_eq!(
+        scan_connect_timeout_from(Some("250")),
+        Duration::from_millis(250)
+    );
+    assert_eq!(
+        scan_connect_timeout_from(Some("1")),
+        Duration::from_millis(100),
+        "a bound below 100 ms would fail on any congested network"
+    );
+    assert_eq!(
+        scan_connect_timeout_from(Some("999999999")),
+        Duration::from_millis(30_000),
+        "an unbounded connect timeout is the wedge the helper exists to prevent"
+    );
+    assert!(
+        scan_connect_timeout().as_millis() >= 100,
+        "the in-force bound comes from the environment and must always be a real bound"
+    );
+}
+
+/// Census guard for the files whose scan-side clients this crate owns: every `Client::builder()`
+/// in them has to get its connect bound from the shared helper (or set `.connect_timeout` itself,
+/// as `http_client` and the IP providers do), so a future edit cannot quietly reintroduce an
+/// unbounded handshake.
+#[test]
+fn no_owned_scan_client_is_built_without_a_connect_bound() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    for rel in [
+        "web/client.rs",
+        "qa/api/exec.rs",
+        "agent/discover/surface.rs",
+        "llm/client.rs",
+        "network/utils.rs",
+        "network/ip.rs",
+    ] {
+        let text = std::fs::read_to_string(root.join(rel)).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            if !line.contains("Client::builder()") {
+                continue;
+            }
+            let window: String = text
+                .lines()
+                .skip(n)
+                .take(8)
+                .flat_map(|l| l.chars())
+                .collect();
+            assert!(
+                window.contains("with_connect_timeout(")
+                    || window.contains("connect_timeout_builder(")
+                    || window.contains(".connect_timeout("),
+                "{rel}:{} builds a client with no connect bound",
+                n + 1
+            );
+        }
+    }
+}

@@ -52,19 +52,41 @@ pub fn code_audit_check(ctx: &Ctx) -> anyhow::Result<CheckOutput> {
     for f in &mut findings {
         f.finalize();
     }
-    if inv.unreadable.is_empty() {
+    let mut notes = Vec::new();
+    if !inv.unreadable.is_empty() {
+        notes.push(format!(
+            "skipped {} oversized/unreadable file(s): {}",
+            inv.unreadable.len(),
+            inv.unreadable
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !inv.grammar_skipped.is_empty() {
+        let mut langs: Vec<&str> = inv
+            .grammar_skipped
+            .iter()
+            .filter_map(|s| s.split(':').next())
+            .collect();
+        langs.sort_unstable();
+        langs.dedup();
+        notes.push(format!(
+            "skipped {} file(s): no grammar compiled in for {} (rebuild with the matching \
+             `grammar-*` feature)",
+            inv.grammar_skipped.len(),
+            langs.join(", ")
+        ));
+    }
+    if notes.is_empty() {
         Ok(CheckOutput::findings(findings))
     } else {
         Ok(CheckOutput {
             status: Some(CheckStatus::Partial(format!(
-                "code audit skipped {} oversized/unreadable file(s): {}",
-                inv.unreadable.len(),
-                inv.unreadable
-                    .iter()
-                    .take(3)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "code audit {}",
+                notes.join("; ")
             ))),
             findings,
         })
@@ -147,6 +169,10 @@ pub fn audit_tree_filtered(root: &Path, denied: &BTreeSet<&str>) -> CodeInventor
             inv.unreadable.push(rel);
             continue;
         };
+        if !lang.grammar_available() {
+            inv.grammar_skipped.push(format!("{}:{rel}", lang.as_str()));
+            continue;
+        }
         let Some(mut parser) = lang.parser() else {
             continue;
         };

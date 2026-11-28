@@ -13,7 +13,7 @@ The `serve` module provides the HTTP REST API, SSE event streams, agent studio c
 - `agent_api.rs`: Agent Studio runs, SSE streaming, human-in-the-loop approvals, and discovery.
 - `network_api.rs`: Network Lab routes (regressions, curl tests, deep audit, HAR export).
 - `eval_api.rs`: AI evaluation, code mutation, automated patch generation, and PR comments.
-- `badges.rs`: Dynamic SVG badge generation for CI/CD status embedding.
+- `badges.rs`: Dynamic SVG badge generation for CI/CD status embedding; text comes only from a verdict allowlist, a clamped score, or a stored run — never from caller prose.
 - `router.rs`: Axum router assembly, static asset delivery, and graceful shutdown.
 - `tests.rs`: Isolated unit and integration test suite (38 tests).
 
@@ -29,7 +29,7 @@ The `serve` module provides the HTTP REST API, SSE event streams, agent studio c
 
 ## Rules & Constraints
 - All outbound HTTP actions must go through `guard()` to enforce scope and non-production checks.
-- All routes except `/health` and `/api/badges/*` sit behind `require_auth` bearer token middleware.
+- All routes except `/health` and the three public `/api/badges/{gate,ledger,network}` paths sit behind `require_auth` bearer token middleware; the `/api/badges/*/{id}` run badges are authenticated.
 - Blocking I/O (filesystem, DNS lookups) must run via `offload()` or `blocking()`, never on the async worker threads.
 
 ## Tests

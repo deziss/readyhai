@@ -39,14 +39,29 @@ pub struct EvalAiOpts {
     pub red_team: bool,
 }
 
+/// Lexical-heuristic RAG triad. Every score is `None` when it could not be measured — an
+/// unmeasured metric is reported as such and never as a perfect 1.0. See `method` for what the
+/// numbers actually are: stopword-filtered token overlap, not an embedding-based metric.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RagTriadScore {
-    pub context_relevance: f64,
-    pub faithfulness: f64,
-    pub answer_relevance: f64,
-    pub composite_score: f64,
+    pub context_relevance: Option<f64>,
+    pub faithfulness: Option<f64>,
+    pub answer_relevance: Option<f64>,
+    /// Weighted mean of the metrics that were measured; `None` when none were.
+    pub composite_score: Option<f64>,
     pub hallucination_count: usize,
     pub hallucinations: Vec<HallucinationDetail>,
+    /// Metric names rendered as `null` in this result (no context, empty answer, …).
+    #[serde(default)]
+    pub not_evaluated: Vec<String>,
+    /// How the numeric scores were computed, so the label cannot be mistaken for a semantic metric.
+    pub method: String,
+}
+
+impl RagTriadScore {
+    pub fn not_evaluated(&self, metric: &str) -> bool {
+        self.not_evaluated.iter().any(|m| m == metric)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,7 +110,8 @@ pub struct AiTestResult {
     pub rag_triad: Option<RagTriadScore>,
     pub trajectory_eval: Option<TrajectoryEval>,
     pub red_team: Option<RedTeamCheck>,
-    pub overall_score: f64,
+    /// `None` when no metric could be measured for this case — not a zero score.
+    pub overall_score: Option<f64>,
     pub feedback: Vec<String>,
 }
 
@@ -106,7 +122,9 @@ pub struct AiEvalReport {
     pub passed_cases: usize,
     pub failed_cases: usize,
     pub pass_rate: f64,
-    pub avg_rag_score: f64,
-    pub avg_faithfulness: f64,
+    /// Mean over the cases that were measured; `None` when none were.
+    pub avg_rag_score: Option<f64>,
+    /// Mean over the cases whose faithfulness was measurable; `None` when none were.
+    pub avg_faithfulness: Option<f64>,
     pub results: Vec<AiTestResult>,
 }

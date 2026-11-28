@@ -11,7 +11,10 @@ pub fn detect_test_runner(repo: &Path) -> Option<(&'static str, &'static [&'stat
     if repo.join("Cargo.toml").exists() {
         Some(("cargo", &["test", "--", "--quiet"]))
     } else if repo.join("package.json").exists() {
-        Some(("npm", &["test", "--", "--silent"]))
+        // `--silent` must be an npm flag, not an argument forwarded to the script: `npm test --
+        // --silent` passes `--silent` to the test command itself (e.g. `node --silent`), which
+        // fails every suite and made every npm patch look like a regression.
+        Some(("npm", &["--silent", "test"]))
     } else if repo.join("pyproject.toml").exists() || repo.join("pytest.ini").exists() {
         Some(("pytest", &["-q"]))
     } else if repo.join("go.mod").exists() {

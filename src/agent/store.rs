@@ -511,19 +511,37 @@ pub fn load_agent_run(id: &str) -> Result<AgentRunReport> {
     load_agent_run_in(&agent_runs_dir(), id)
 }
 
+/// Largest `report.json` / `run.json` we will read into memory. A run directory is written by
+/// the engine, but scan output can also arrive from a mounted volume or a restored backup, so
+/// the size is checked before reading rather than trusting it. `serve` already refuses to
+/// stream larger files; loading one into a `String` and then a DOM would be a worse surprise.
+pub const MAX_REPORT_JSON_BYTES: u64 = 64 * 1024 * 1024;
+
+fn read_capped(path: &Path) -> Result<Option<String>> {
+    match std::fs::metadata(path) {
+        Ok(m) if m.len() > MAX_REPORT_JSON_BYTES => {
+            bail!(
+                "{:?} is {} bytes, over the {MAX_REPORT_JSON_BYTES} byte limit",
+                path,
+                m.len()
+            )
+        }
+        Ok(_) => Ok(Some(std::fs::read_to_string(path)?)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 pub(crate) fn load_agent_run_in(base: &Path, id: &str) -> Result<AgentRunReport> {
     check_id(id)?;
     let path = base.join(id).join("report.json");
-    if path.exists() {
-        return Ok(normalize(serde_json::from_str(&std::fs::read_to_string(
-            path,
-        )?)?));
+    if let Some(txt) = read_capped(&path)? {
+        return Ok(normalize(serde_json::from_str(&txt)?));
     }
     // Fallback: core engine run
     let engine_path = crate::engine::run_dir(id).join("run.json");
-    if engine_path.exists()
-        && let Ok(run) =
-            serde_json::from_str::<crate::model::Run>(&std::fs::read_to_string(engine_path)?)
+    if let Some(txt) = read_capped(&engine_path)?
+        && let Ok(run) = serde_json::from_str::<crate::model::Run>(&txt)
     {
         return Ok(convert_engine_run_to_agent_report(&run));
     }

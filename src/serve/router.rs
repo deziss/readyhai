@@ -14,7 +14,7 @@ use super::settings_api::{
 use super::types::{App, FORCED_SHUTDOWN, MAX_CONCURRENT_PROBES, SHUTDOWN_REAP_PER_CALL};
 use super::vulns_api::{api_vulns_get, api_vulns_status_post};
 use super::worker::{
-    claims_run, handle_startup_runs, init_server_id, run_timeout, worker, worker_count,
+    active, claims_run, handle_startup_runs, init_server_id, run_timeout, worker, worker_count,
     write_status,
 };
 use crate::engine::{self, ScanOpts};
@@ -119,7 +119,8 @@ pub fn serve(bind: &str) -> Result<()> {
     });
 
     // Shutting down mid-scan: say so in all active runs' status and stop their containers now.
-    if let Ok(mut g) = app.active.lock() {
+    {
+        let mut g = active(&app);
         for id in g.drain() {
             write_status(
                 &id,
@@ -205,6 +206,8 @@ pub fn build_router(app: Arc<App>) -> Router {
         .route("/api/badges/gate", get(badge_gate))
         .route("/api/badges/ledger", get(badge_ledger))
         .route("/api/badges/network", get(badge_network))
+        .route("/api/badges/gate/{id}", get(badge_gate_run))
+        .route("/api/badges/ledger/{id}", get(badge_ledger_run))
         .route(
             "/health",
             get(|| async { Json(json!({"status": "ok", "version": engine::VERSION})) }),

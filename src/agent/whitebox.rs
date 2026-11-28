@@ -697,6 +697,9 @@ mod tests {
         );
     }
 
+    // The fixture's route injection comes from the TypeScript AST, so it only exists
+    // where that grammar is compiled in.
+    #[cfg(feature = "grammar-typescript")]
     #[test]
     fn hidden_repo_route_is_discovered_exploited_and_linked_to_source() {
         let (tx, rx) = mpsc::channel();

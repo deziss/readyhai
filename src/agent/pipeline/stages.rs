@@ -23,8 +23,8 @@ use super::gate::llm_gate;
 use super::gates::{
     DiscoveryGate, DiscoveryGateInput, ExecutionGate, ExecutionGateInput, PlanGate, PlanGateInput,
     ReconGate, ReconGateInput, ReleaseGateInput, VerifyGate, VerifyGateInput,
-    validate_discovery_gate, validate_execution_gate, validate_plan_gate, validate_recon_gate,
-    validate_release_gate_verdict, validate_verify_gate,
+    release_gate_verdict_for, validate_discovery_gate, validate_execution_gate, validate_plan_gate,
+    validate_recon_gate, validate_verify_gate,
 };
 use super::graph::{PipelineState, RoutingCondition, StationNode};
 use super::intel;
@@ -1242,16 +1242,34 @@ pub(crate) fn agent_stages(
     }
     // Contextual Taint Tracing Juror: false-positive elimination and unified diff remediation
     let juror_llm = llm_cfg.as_ref().filter(|_| !budget.is_cancelled());
-    let (audited_defects, eliminated_fps) = super::super::verify::juror::audit_defects_with_juror(
+    let (audited_defects, juror_audit) = super::super::verify::juror::audit_defects_with_juror(
         juror_llm.map(|c| (c, &mut llm_budget)),
         defects,
         &rep.executed_results,
     );
-    if eliminated_fps > 0 {
+    if juror_audit.eliminated > 0 {
         rep.notes.push(format!(
-            "juror: eliminated {eliminated_fps} false-positive defect(s) via contextual taint analysis"
+            "juror: eliminated {0} candidate defect(s) judged false positives; none of them had              reproduced, so nothing measured was discarded",
+            juror_audit.eliminated
         ));
     }
+    if juror_audit.disagreed > 0 {
+        rep.notes.push(format!(
+            "juror: {0} reproduced defect(s) were judged likely false positives by the taint juror.              They are kept — a reproduced failure is a measurement, an opinion is not — and              each carries the disagreement in `juror_opinion`.",
+            juror_audit.disagreed
+        ));
+    }
+    if juror_audit.not_evaluated > 0 {
+        rep.notes.push(format!(
+            "juror: {0} defect(s) were not adjudicated (no matching case result, or insufficient              evidence); they remain as reported",
+            juror_audit.not_evaluated
+        ));
+    }
+    // Did the juror actually reach a conclusion about every surviving defect? It can only judge a
+    // defect it can tie back to an executed result, and it abstains when the evidence does not
+    // support a call. `true` with no defects is honest: there was nothing to trace.
+    let juror_covered_all_defects = audited_defects.iter().all(|d| d.juror_evaluated);
+    let juror_disagreements = juror_audit.disagreed;
     let mut defects = audited_defects;
     let mut triage_src = "deterministic".to_string();
     if let (Some(cfg), false) = (
@@ -1328,26 +1346,39 @@ pub(crate) fn agent_stages(
 
     let verify_gate_in = VerifyGateInput {
         k_replay_executed: verified.summary.k > 0 || verified.summary.candidates == 0,
-        juror_taint_evaluated: true,
-        unverified_false_positives: 0,
+        juror_taint_evaluated: juror_covered_all_defects,
+        juror_disagreements,
+        unverified_false_positives: verified.summary.unverified,
     };
-    if let Ok(verdict) = validate_verify_gate(&verify_gate_in) {
-        log(
+    match validate_verify_gate(&verify_gate_in) {
+        Ok(verdict) if verdict.passed => log(
             &mut rep.steps,
             "SoftwareFactory",
             "Verify Quality Gate",
-            &format!(
-                "Verdict: {} ({})",
-                if verdict.passed { "PASS" } else { "FAIL" },
-                verdict.summary
-            ),
-            if verdict.passed {
-                "completed"
-            } else {
-                "warning"
-            },
+            &format!("Verdict: PASS ({})", verdict.summary),
+            "completed",
             Some("deterministic"),
-        );
+        ),
+        Ok(verdict) => log(
+            &mut rep.steps,
+            "SoftwareFactory",
+            "Verify Quality Gate",
+            &format!("Verdict: FAIL ({})", verdict.summary),
+            "warning",
+            Some("deterministic"),
+        ),
+        Err(err) => {
+            // A gate that could not even evaluate used to vanish from the log here, which left the
+            // report reading as though the station had passed.
+            log(
+                &mut rep.steps,
+                "SoftwareFactory",
+                "Verify Quality Gate",
+                &format!("Verdict: NOT_EVALUATED ({err})"),
+                "warning",
+                Some("deterministic"),
+            );
+        }
     }
     let _ = station_node.route(RoutingCondition::NormalProgression);
 
@@ -1410,10 +1441,16 @@ pub(crate) fn agent_stages(
         "SoftwareFactory",
         "Factory Attestation",
         &format!(
-            "Release readiness score: {}/100, verdict: {}, ASVS coverage: {}%",
-            attestation.release_readiness_score,
+            "Release readiness score: {}, verdict: {}, cases conclusively evaluated: {}",
+            match attestation.release_readiness_score {
+                Some(score) => format!("{score}/100"),
+                None => "not evaluated".to_string(),
+            },
             attestation.gate_verdict,
-            attestation.asvs_breakdown.overall_coverage_pct
+            match attestation.asvs_breakdown.cases_conclusively_evaluated_pct {
+                Some(pct) => format!("{pct}%"),
+                None => "no applicable coverage data".to_string(),
+            }
         ),
         if attestation.gate_verdict == "GO" {
             "completed"
@@ -1423,53 +1460,63 @@ pub(crate) fn agent_stages(
         Some("deterministic"),
     );
 
+    // Pillar scores are passed through as they are: `None` means the ledger did not evaluate that
+    // pillar, and the gate reports not-evaluated rather than inventing a plausible default. A
+    // pillar computed for an unevaluated ledger is not a measurement of readiness either.
+    let pillars_measured = super::gate::ledger_evaluated(
+        rep.evidence_ledger
+            .as_ref()
+            .expect("evidence ledger present"),
+    );
+    let ledger = rep
+        .evidence_ledger
+        .as_ref()
+        .expect("evidence ledger present");
+    let pillar = |score: Option<u32>| score.filter(|_| pillars_measured);
+    let critical_defects = rep
+        .triaged_defects
+        .iter()
+        .filter(|d| d.severity.eq_ignore_ascii_case("critical"))
+        .count();
+    let high_defects = rep
+        .triaged_defects
+        .iter()
+        .filter(|d| d.severity.eq_ignore_ascii_case("high"))
+        .count();
     let release_gate_in = ReleaseGateInput {
-        value_score: rep
-            .evidence_ledger
-            .as_ref()
-            .and_then(|l| l.value_score)
-            .unwrap_or(80),
-        authority_score: rep
-            .evidence_ledger
-            .as_ref()
-            .and_then(|l| l.authority_score)
-            .unwrap_or(80),
-        safety_score: rep
-            .evidence_ledger
-            .as_ref()
-            .and_then(|l| l.safety_score)
-            .unwrap_or(80),
-        evidence_score: rep
-            .evidence_ledger
-            .as_ref()
-            .and_then(|l| l.evidence_score)
-            .unwrap_or(80),
+        value_score: pillar(ledger.value_score),
+        authority_score: pillar(ledger.authority_score),
+        safety_score: pillar(ledger.safety_score),
+        evidence_score: pillar(ledger.evidence_score),
         min_threshold: 70,
-        asvs_l1_compliant: attestation.asvs_breakdown.overall_coverage_pct >= 50,
-        critical_defects: rep
-            .triaged_defects
-            .iter()
-            .filter(|d| d.severity == "critical")
-            .count(),
+        no_critical_or_high_findings: critical_defects == 0 && high_defects == 0,
+        critical_defects,
+        pillar_scores_measured: pillars_measured,
     };
-    if let Ok(verdict) = validate_release_gate_verdict(&release_gate_in) {
-        log(
-            &mut rep.steps,
-            "SoftwareFactory",
-            "Release Quality Gate",
-            &format!(
-                "Verdict: {} ({})",
-                if verdict.passed { "PASS" } else { "FAIL" },
-                verdict.summary
-            ),
-            if verdict.passed {
-                "completed"
-            } else {
-                "warning"
-            },
-            Some("deterministic"),
-        );
+    // The gate verdict is derived from the attestation this run just recorded, so the logged score
+    // and integrity digest are the ones stored in `rep.attestation`. A cancelled run tested less
+    // than it planned, which the attestation cannot know, so it is passed as a blocking condition.
+    let mut blockers: Vec<String> = Vec::new();
+    if budget.is_cancelled() {
+        blockers.push("run was cancelled before it finished; coverage is incomplete".to_string());
     }
+    let verdict = release_gate_verdict_for(&release_gate_in, &attestation, &blockers);
+    log(
+        &mut rep.steps,
+        "SoftwareFactory",
+        "Release Quality Gate",
+        &format!(
+            "Verdict: {} ({})",
+            if verdict.passed { "PASS" } else { "FAIL" },
+            verdict.summary
+        ),
+        if verdict.passed {
+            "completed"
+        } else {
+            "warning"
+        },
+        Some("deterministic"),
+    );
     rep.attestation = Some(attestation);
     let _ = station_node.route(RoutingCondition::NormalProgression);
     rep.graph_telemetry = Some(station_node.telemetry().clone());

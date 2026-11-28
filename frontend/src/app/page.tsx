@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Header, SaaSViewMode } from "@/components/Header";
 import { Composer } from "@/components/Composer";
 import { ToolCallList, buildStages, type StageState } from "@/components/ToolCallList";
@@ -13,7 +13,11 @@ import { NetworkLabView } from "@/components/NetworkLabView";
 import { SettingsView } from "@/components/SettingsView";
 import { VulnsView } from "@/components/VulnsView";
 import { FloatingTaskWidget, ActiveTaskItem, newTaskInstanceId } from "@/components/FloatingTaskWidget";
-import { apiRequest, errorText, notify, useApiTokenVersion } from "@/lib/api";
+import DashboardView from "@/components/DashboardView";
+import { apiRequest, errorText, notify } from "@/lib/api";
+import { invalidate, useCachedApi } from "@/lib/cache";
+import { initPrefs, pollIntervalMs, usePrefs } from "@/lib/prefs";
+import { CACHE_KEYS } from "@/lib/dashboard";
 import {
   buildLedger,
   canApproveVerdict,
@@ -39,9 +43,10 @@ import type {
 } from "@/types/agent";
 
 export default function Home() {
-  const [activeView, setActiveView] = useState<SaaSViewMode>("studio");
-  const [scansCount, setScansCount] = useState<number>(0);
-  const [agentRunsCount, setAgentRunsCount] = useState<number>(0);
+  // The dashboard is the landing view: an operator opens the app to ask whether a release is safe,
+  // not to configure a run. prefs.landingView honours anyone who prefers the Studio.
+  const prefs = usePrefs();
+  const [activeView, setActiveView] = useState<SaaSViewMode>(prefs.landingView);
 
   // Studio Form state
   const [target, setTarget] = useState("https://app-prod.nuhire.in/");
@@ -67,11 +72,9 @@ export default function Home() {
   const [threats, setThreats] = useState<ThreatFinding[]>([]);
   const [evidenceLedger, setEvidenceLedger] = useState<EvidenceLedger | null>(null);
   const [defectCount, setDefectCount] = useState<number | null>(null);
-  const [runsHistory, setRunsHistory] = useState<AgentRunRecord[]>([]);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
   const [activeTasks, setActiveTasks] = useState<ActiveTaskItem[]>([]);
 
-  const tokenVersion = useApiTokenVersion();
   const stageTimers = useRef<number[]>([]);
   const loadSeq = useRef(0);
   // Mirrors currentRunId synchronously so async handlers can tell whether the run they started
@@ -83,32 +86,38 @@ export default function Home() {
     setCurrentRunId(id);
   }, []);
 
-  // Fetch counts and history (polled). Errors are not surfaced here: a 401 raises the
-  // "set your API token" banner via the API helper, and a flaky poll should not spam notices.
-  const fetchCountsAndHistory = useCallback(
-    () =>
-      Promise.all([
-        apiRequest<AgentRunRecord[] | { runs?: AgentRunRecord[] }>("/api/agent/runs", { label: "Runs list" }),
-        apiRequest<{ scans?: unknown[] }>("/api/scans", { label: "Scans list" }),
-      ]).then(([agentRes, scansRes]) => {
-        if (agentRes.ok && agentRes.data) {
-          const d = agentRes.data;
-          const runsList: AgentRunRecord[] = Array.isArray(d) ? d : d.runs || [];
-          setRunsHistory(runsList);
-          setAgentRunsCount(runsList.length);
-        }
-        if (scansRes.ok && scansRes.data) {
-          setScansCount((scansRes.data.scans || []).length);
-        }
-      }),
-    []
-  );
+  // Runs and scans feed the nav badge, the Studio history list and the dashboard. They come from
+  // the shared cache, so switching views paints instantly and one poll serves all three readers.
+  // Errors are deliberately not surfaced here: a 401 raises the token banner via the API helper, and
+  // a flaky background poll should not spam notices.
+  const runsCache = useCachedApi<AgentRunRecord[] | { runs?: AgentRunRecord[] }>(CACHE_KEYS.runs, {
+    label: "Runs list",
+    pollMs: pollIntervalMs(prefs),
+  });
+  const scansCache = useCachedApi<{ scans?: unknown[] } | unknown[]>(CACHE_KEYS.scans, {
+    label: "Scans list",
+    pollMs: pollIntervalMs(prefs),
+  });
+  const runsHistory = useMemo<AgentRunRecord[]>(() => {
+    const d = runsCache.data;
+    if (!d) return [];
+    return Array.isArray(d) ? d : d.runs || [];
+  }, [runsCache.data]);
+  const scansCount = useMemo(() => {
+    const d = scansCache.data;
+    if (!d) return 0;
+    return Array.isArray(d) ? d.length : (d.scans || []).length;
+  }, [scansCache.data]);
 
+  /** Drops cached runs/scans so the next read hits the API: use after anything that changes them. */
+  const refreshLists = useCallback(() => {
+    void Promise.allSettled([runsCache.refresh(), scansCache.refresh()]);
+  }, [runsCache, scansCache]);
+
+  // Applies persisted preferences to <html> (the layout bootstrap already did a first pass).
   useEffect(() => {
-    fetchCountsAndHistory();
-    const interval = setInterval(fetchCountsAndHistory, 12000);
-    return () => clearInterval(interval);
-  }, [fetchCountsAndHistory, tokenVersion]);
+    initPrefs();
+  }, []);
 
   // The simulated stage-progress timers must never outlive the launch (or the page).
   const clearStageTimers = useCallback(() => {
@@ -300,7 +309,7 @@ export default function Home() {
           )
         );
         notify("Agent run was cancelled. Partial results are shown; no gate decision was made.", "info");
-        fetchCountsAndHistory();
+        refreshLists();
         return;
       }
 
@@ -312,7 +321,7 @@ export default function Home() {
             : t
         )
       );
-      fetchCountsAndHistory();
+      refreshLists();
     } catch (err) {
       failLaunch(`Agent run failed: ${errorText(err)}`);
     } finally {
@@ -418,8 +427,9 @@ export default function Home() {
       notify(r.error);
       return;
     }
-    setRunsHistory((prev) => prev.filter((x) => getRunId(x) !== runId));
-    setAgentRunsCount((prev) => Math.max(0, prev - 1));
+    // The list is cached, so drop the cache and let the backend confirm the deletion.
+    invalidate(CACHE_KEYS.runs);
+    refreshLists();
     // The deleted run can no longer be signed off.
     if (currentRunIdRef.current === runId) updateCurrentRunId(null);
   }
@@ -472,7 +482,7 @@ export default function Home() {
     if (!r.ok) return r.error;
 
     // The backend recorded a sign-off: refresh the lists whatever is on screen now.
-    fetchCountsAndHistory();
+    refreshLists();
 
     // Only the status the backend echoed back is shown; never the action that was clicked.
     const confirmedStatus = confirmedSignOffStatus(r.data?.approval_status);
@@ -509,11 +519,28 @@ export default function Home() {
         activeView={activeView}
         onViewChange={setActiveView}
         scansCount={scansCount}
-        agentRunsCount={agentRunsCount}
       />
 
       {/* API-token prompt (after a 401) and error notices */}
       <GlobalNotices />
+
+      {/* 0. Dashboard: release gate first. Read-only and cache-fed, so it is safe to mount always. */}
+      <div className={`min-h-0 flex-1 overflow-y-auto ${activeView === "dashboard" ? "flex flex-col" : "hidden"}`}>
+        <div className="flex min-h-0 flex-1 flex-col p-4">
+          <DashboardView
+            onRunTarget={(t) => {
+              setTarget(t);
+              setActiveView("studio");
+            }}
+            onSelectRun={(id) => {
+              const run = runsHistory.find((r) => getRunId(r) === id);
+              if (run) handleLoadIntoStudio(run);
+            }}
+            onSelectScan={() => setActiveView("scans_history")}
+            onOpenView={(view) => setActiveView(view as SaaSViewMode)}
+          />
+        </div>
+      </div>
 
       {/* 1. Agent studio (persistent background mount) */}
       <div className={`min-h-0 flex-1 overflow-hidden ${activeView === "studio" ? "flex flex-col" : "hidden"}`}>

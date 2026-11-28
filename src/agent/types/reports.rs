@@ -75,6 +75,15 @@ pub struct TriagedDefect {
     /// White-box source location / call chain discovered via AST analysis (when `--repo` is supplied).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_context: Option<String>,
+    /// The juror called this reproduced finding a likely false positive. The finding is **kept**
+    /// and the disagreement is recorded here, because a model's opinion cannot delete a
+    /// measurement. None = the juror agreed, or never adjudicated it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub juror_opinion: Option<String>,
+    /// The juror reached an evidence-backed conclusion about this finding. False means it was
+    /// never adjudicated (no matching case result, or "insufficient evidence").
+    #[serde(default)]
+    pub juror_evaluated: bool,
     /// The independent verifier replayed the failure and it reproduced on every replay.
     #[serde(default)]
     pub verified: bool,
@@ -418,30 +427,57 @@ pub struct AgentRunSummary {
     pub requester_ip: Option<String>,
 }
 
-/// Category compliance score under OWASP ASVS.
+/// One ASVS-shaped category as an **allocation of what this run actually observed**, not a
+/// compliance ruling.
+///
+/// Observed defects are allocated to categories by a keyword heuristic over their title, OWASP
+/// category and rule; that is a best-effort grouping of findings, not ASVS-verified coverage.
+/// `status` and `evidence_case_ids` come from the evidence ledger: they say whether any executed
+/// case actually tested the area. A category no case tested reports `not_evaluated`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AsvsCategoryScore {
     pub code: String,
     pub name: String,
-    pub score: u32,
+    /// `100 - 30 * findings`, clamped. None = not evaluated (no case tested this area).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub score: Option<u32>,
+    /// True only when cases tested the area and none of them produced a finding.
     pub passed: bool,
+    /// Defects the keyword heuristic allocated to this category.
     pub findings: usize,
+    /// `pass | fail | partial | not_evaluated` — derived from ledger evidence, never assumed.
+    pub status: String,
+    /// Case ids of the ledger cases that tested this area (empty when it was not evaluated).
+    #[serde(default)]
+    pub evidence_case_ids: Vec<String>,
 }
 
-/// OWASP ASVS compliance breakdown across verification levels and categories.
+/// Observed-findings summary shaped like an ASVS breakdown.
+///
+/// Nothing here is an OWASP ASVS certification: see `basis`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OwaspAsvsBreakdown {
-    pub level_1_compliant: bool,
-    pub level_2_compliant: bool,
-    pub level_3_compliant: bool,
-    pub overall_coverage_pct: u32,
+    /// No critical or high defect was observed in this run.
+    pub no_critical_or_high_findings: bool,
+    /// No high defect, and no more than two mediums, were observed.
+    pub no_high_or_medium_above_threshold: bool,
+    /// No defect at all was observed.
+    pub no_observed_findings: bool,
+    /// Conclusive share of the applicable cases over the whole run, from the ledger's coverage
+    /// cells. None = no applicable coverage data (`None = not evaluated`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cases_conclusively_evaluated_pct: Option<u32>,
+    /// One sentence saying what these numbers are derived from and what they are not.
+    pub basis: String,
     pub categories: Vec<AsvsCategoryScore>,
 }
 
-/// Formal Software Factory Attestation certifying release readiness.
+/// Formal Software Factory Attestation over what a run actually evaluated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SoftwareFactoryAttestation {
-    pub release_readiness_score: u32,
+    /// None = not evaluated (the run gathered no conclusive evidence, so readiness is unknown).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_readiness_score: Option<u32>,
     pub gate_verdict: String,
     pub asvs_breakdown: OwaspAsvsBreakdown,
     pub release_directives: Vec<String>,

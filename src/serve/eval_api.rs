@@ -1,25 +1,11 @@
 //! AI Evaluation, code mutation, and automated remediation PR handlers.
 
+use super::guards::{err, offload};
 use super::types::{ApiEvalAiPayload, ApiFixPayload, ApiMutatePayload, PrCommentPayload};
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-
-pub fn xml_escape(s: &str, max: usize) -> String {
-    let mut out = String::new();
-    for c in s.chars().filter(|c| !c.is_control()).take(max) {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
-}
 
 pub fn md_code(s: &str, max: usize) -> String {
     s.chars()
@@ -118,65 +104,107 @@ pub async fn api_eval_ai(Json(p): Json<ApiEvalAiPayload>) -> Response {
     (StatusCode::OK, Json(report)).into_response()
 }
 
+/// `POST /api/fix`: **preview only.** Patches are synthesized in memory; nothing is written to
+/// disk and no test suite is run, whatever `dry_run`/`verify` say. The report therefore reports
+/// zero verified and zero applied patches — an earlier version counted synthesized patches as
+/// verified, which claimed a test run that never happened. Use the `readyhai fix` CLI (or open a
+/// PR from the preview) to apply and verify.
 pub async fn api_fix(Json(p): Json<ApiFixPayload>) -> Response {
+    let _ = (&p.dry_run, &p.verify, &p.branch);
     let repo_path = std::path::PathBuf::from(&p.repo);
     let repo = repo_path.canonicalize().unwrap_or(repo_path);
-    let defects = crate::fix::collect_target_defects(&repo, p.run.as_deref(), p.defect.as_deref());
-    let sibling_guards = crate::fix::mine_sibling_guards(&repo);
-    let mut remediations = Vec::new();
-    for d in &defects {
-        if let Ok(Some(patch)) = crate::fix::synthesize_remediation(&repo, d, &sibling_guards) {
-            remediations.push(patch);
+    // Same reasoning as `api_mutate`: collecting defects and synthesizing patches reads the
+    // whole repository, so it belongs on the bounded blocking pool, not an async worker.
+    match offload(move || -> Result<crate::fix::FixReport, String> {
+        let defects =
+            crate::fix::collect_target_defects(&repo, p.run.as_deref(), p.defect.as_deref())
+                .map_err(|e| format!("{e:#}"))?;
+        let sibling_guards = crate::fix::mine_sibling_guards(&repo);
+        let mut remediations = Vec::new();
+        for d in &defects {
+            if let Ok(Some(patch)) = crate::fix::synthesize_remediation(&repo, d, &sibling_guards) {
+                remediations.push(patch);
+            }
         }
+        let synthesized = remediations.len();
+        let mut report = crate::fix::FixReport {
+            repo: repo.display().to_string(),
+            total_defects_evaluated: defects.len(),
+            patches_synthesized: synthesized,
+            patches_verified: 0,
+            // Preview only: nothing here ran a test suite, so every synthesized patch is honestly
+            // reported as unverified rather than folded into the verified count.
+            patches_unverified: synthesized,
+            patches_applied: 0,
+            branch_created: None,
+            commit_sha: None,
+            patches: remediations,
+            pr_title: format!("resolve {synthesized} security & QA defect(s)"),
+            pr_body: String::new(),
+        };
+        report.pr_body = crate::fix::generate_pr_markdown(&report);
+        Ok(report)
+    })
+    .await
+    {
+        Ok(Ok(report)) => (StatusCode::OK, Json(report)).into_response(),
+        Ok(Err(e)) => err(StatusCode::BAD_REQUEST, e),
+        Err(r) => r,
     }
-    let verified_count = remediations.len();
-    let mut report = crate::fix::FixReport {
-        repo: repo.display().to_string(),
-        total_defects_evaluated: defects.len(),
-        patches_synthesized: remediations.len(),
-        patches_verified: verified_count,
-        patches_applied: if p.dry_run { 0 } else { verified_count },
-        branch_created: None,
-        commit_sha: None,
-        patches: remediations,
-        pr_title: format!("resolve {} security & QA defect(s)", verified_count),
-        pr_body: String::new(),
-    };
-    report.pr_body = crate::fix::generate_pr_markdown(&report);
-    (StatusCode::OK, Json(report)).into_response()
 }
+
+/// Largest `max_mutants` the API accepts. The `mutate` CLI takes the flag from the operator;
+/// over HTTP the number has to be bounded, because generation walks the repository and reads
+/// every candidate source file.
+const MAX_MUTANTS: usize = 200;
 
 pub async fn api_mutate(Json(p): Json<ApiMutatePayload>) -> Response {
     let repo_path = std::path::PathBuf::from(&p.repo);
     let repo = repo_path.canonicalize().unwrap_or(repo_path);
-    let files = crate::mutate::find_mutable_files(&repo, p.target.as_deref());
-    let mut all_mutants = Vec::new();
-    let max_per_file = (p.max_mutants / files.len().max(1)).max(2);
-    for f in &files {
-        let rel = f
-            .strip_prefix(&repo)
-            .unwrap_or(f)
-            .to_string_lossy()
-            .to_string();
-        let file_mutants = crate::mutate::generate_file_mutants(f, &rel, max_per_file);
-        all_mutants.extend(file_mutants);
-        if all_mutants.len() >= p.max_mutants {
-            all_mutants.truncate(p.max_mutants);
-            break;
-        }
+    if !repo.is_dir() {
+        return err(
+            StatusCode::BAD_REQUEST,
+            format!("repo {:?} is not a directory on this server", repo),
+        );
     }
-    let total = all_mutants.len();
-    let report = crate::mutate::MutationReport {
-        repo: repo.display().to_string(),
-        total_mutants: total,
-        killed_mutants: 0,
-        survived_mutants: total,
-        timed_out_mutants: 0,
-        mutation_score: 0.0,
-        oracle_quality: "PENDING_EXECUTION".into(),
-        mutants: all_mutants,
+    let max_mutants = p.max_mutants.clamp(1, MAX_MUTANTS);
+    // Walking the repository and reading every candidate file is blocking work; it goes through
+    // the bounded offload pool like the rest of the API instead of stalling an async worker.
+    let generated = match offload(move || {
+        let files = crate::mutate::find_mutable_files(&repo, p.target.as_deref());
+        let mut all_mutants = Vec::new();
+        let max_per_file = (max_mutants / files.len().max(1)).max(2);
+        for f in &files {
+            let rel = f
+                .strip_prefix(&repo)
+                .unwrap_or(f)
+                .to_string_lossy()
+                .to_string();
+            let file_mutants = crate::mutate::generate_file_mutants(f, &rel, max_per_file);
+            all_mutants.extend(file_mutants);
+            if all_mutants.len() >= max_mutants {
+                all_mutants.truncate(max_mutants);
+                break;
+            }
+        }
+        let total = all_mutants.len();
+        crate::mutate::MutationReport {
+            repo: repo.display().to_string(),
+            total_mutants: total,
+            killed_mutants: 0,
+            survived_mutants: total,
+            timed_out_mutants: 0,
+            mutation_score: 0.0,
+            oracle_quality: "PENDING_EXECUTION".into(),
+            mutants: all_mutants,
+        }
+    })
+    .await
+    {
+        Ok(report) => report,
+        Err(r) => return r,
     };
-    (StatusCode::OK, Json(report)).into_response()
+    (StatusCode::OK, Json(generated)).into_response()
 }
 
 pub async fn github_pr_comment(Json(p): Json<PrCommentPayload>) -> Response {

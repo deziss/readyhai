@@ -25,6 +25,10 @@ RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin readyhai \
 ENV READYHAI_DATA=/data
 ENV READYHAI_IN_CONTAINER=1
 VOLUME /data
+# CWD must be writable by uid 10001: `readyhai scan` writes readyhai-report/ into the current
+# directory, and the image's default CWD (/) is root-owned read-only. /data is the volume the
+# container already owns.
+WORKDIR /data
 USER 10001:10001
 EXPOSE 8080
 # SIGTERM (docker stop) drains for 8 s, removes the running scan's containers, then exits; give the

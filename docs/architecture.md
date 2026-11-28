@@ -1,6 +1,8 @@
 # Architecture
 
-Single Rust crate (`readyhai`, edition 2024, about 101,300 lines in `src/` including unit tests; 23 direct dependencies, adding 6 Tree-sitter grammars). One binary provides the CLI, the REST server, the MCP stdio server, the eval harness and a health probe. The Agent Studio is a separate Next.js app in `frontend/`.
+Single Rust crate (`readyhai`, edition 2024, about 101,300 lines in `src/` including unit tests; 23 direct dependencies, adding 5 Tree-sitter grammars). One binary provides the CLI, the REST server, the MCP stdio server, the eval harness and a health probe. The Agent Studio is a separate Next.js app in `frontend/`.
+
+The five grammars are optional cargo features (`grammar-python`, `grammar-javascript`, `grammar-typescript`, `grammar-go`, `grammar-php`); the default set enables all of them. A `--no-default-features` build is roughly 5 MB smaller and still works: the code audit records every file whose grammar was compiled out in `CodeInventory.grammar_skipped` and reports the check as `Partial`, naming the languages and the features to re-enable — a slim binary never reports a clean audit of a language it cannot parse.
 
 ## Components
 
@@ -57,7 +59,7 @@ The agent is an autonomous **6-Station Software Factory StateGraph** (`src/agent
 5. Verifier / Juror ---> replay failures k times (pass^k), Contextual Taint Tracing Juror (verify/juror.rs) eliminating false positives and synthesizing remediation diffs
         |
         v
-6. Readiness Gate -----> technique-coverage matrix -> four pillars -> Software Factory Attestation certificate with OWASP ASVS scoring and signed release directives (pipeline/gate.rs)
+6. Readiness Gate -----> technique-coverage matrix -> four pillars -> Software Factory Attestation with observed-findings scoring per ASVS-shaped area and digest-stamped release directives (pipeline/gate.rs)
         |
         v
 [AgentRunReport: <data>/agent-runs/<run id>/report.json + evidence/ + cleanup.json + report/*]
@@ -89,8 +91,8 @@ The pipeline orchestrator is structured according to four core engineering disci
 
 4. **Software Factory Engineering (`src/agent/pipeline/gates.rs`, `src/agent/pipeline/gate.rs`)**
    - Formal station entrance and exit quality gates validating input completeness and verification assertions.
-   - Cryptographically signed release attestation (`SoftwareFactoryAttestation`) certifying OWASP ASVS V2–V14 compliance and SHA-256 seal.
-   - End-to-end evidence ledger provenance guaranteeing reproducibility.
+   - Release attestation (`SoftwareFactoryAttestation`) reporting observed findings per ASVS-shaped area V2–V14 (never an ASVS compliance certification), stamped with an unkeyed canonical SHA-256 integrity digest; key-based signing (minisign/Sigstore) is not implemented.
+   - End-to-end evidence ledger: claims cite case ids and stored evidence files so a verdict can be re-checked from disk.
 
 ### Module map
 

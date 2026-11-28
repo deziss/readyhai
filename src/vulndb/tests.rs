@@ -512,7 +512,7 @@ fn the_record_helper_keeps_only_actionable_unsuppressed_findings() {
         "pkg:lodash@4",
     );
     suppressed.status = FindingStatus::Suppressed;
-    let findings = vec![
+    let findings = [
         finding(
             "plugin.nmap",
             "tcp/2222",

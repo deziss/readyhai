@@ -1,0 +1,63 @@
+# cargo-deny configuration: supply-chain gate for the dependency tree.
+# CI runs `cargo deny check advisories licenses bans sources`
+# (.github/workflows/ci.yml, job `supply-chain`).
+#
+# Policy: ReadyHai ships as a single static binary into customer networks, so everything it links
+# is part of its attack surface and its licence obligations. A RustSec advisory for any crate in
+# the tree — direct or transitive — fails the build. Licences are allow-listed: anything not
+# listed below fails. A waiver needs an entry with a `reason` and an issue link; an entry without
+# a reason is a review bug.
+
+[graph]
+# The image and release binaries are musl-linux; checking these triples keeps window-only or
+# mac-only transitive crates out of the report noise while flagging anything that ships.
+targets = [
+    { triple = "x86_64-unknown-linux-musl" },
+    { triple = "aarch64-unknown-linux-musl" },
+]
+all-features = false
+
+[advisories]
+# Vulnerabilities are always denied. These two fields choose the dependency *scope* that
+# information-class Advisories (unmaintained / unsound) are reported at: the whole tree ships
+# inside the binary, so report at every depth.
+unmaintained = "workspace"
+unsound = "workspace"
+yanked = "deny"
+# A yanked version we knowingly pin goes in `ignore` with a reason, never a silent bypass.
+ignore = []
+
+[licenses]
+# Allow-list only: a licence not listed here fails the check. ReadyHai is AGPL-3.0-only and ships
+# a static binary, so a dependency must be linkable and usable by a customer inside their own
+# network with no additional obligations. Keep this list exactly the licences the tree actually
+# uses: an entry nothing depends on is a warning, and MPL/GPL/AGPL as a *dependency* stays out.
+allow = [
+    # The workspace crate itself. Its own licence is not a constraint on its dependencies; the
+    # rest of this list decides what may be linked INTO it.
+    "AGPL-3.0-only",
+    "MIT",
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MIT-0",
+    "Unicode-3.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+# Duplicating a crate is usually fine but always intentional here: warn so a dependency bump that
+# pulls a second copy of e.g. `rand` into a security product is visible in review.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+
+[sources]
+# Everything must come from crates.io. No git dependencies, no side registries: an unverifiable
+# source is not acceptable in a product that runs against production targets.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -85,8 +85,8 @@ export function ApiTokenSettings() {
         title={hasToken ? "An API token is saved. Select to change it." : "No API token is saved. Select to add one."}
       >
         <KeyRound className="h-3.5 w-3.5" aria-hidden="true" />
-        <span className="hidden sm:inline">{hasToken ? "API token" : "Set API token"}</span>
-        <span className="sr-only sm:hidden">{hasToken ? "API token" : "Set API token"}</span>
+        <span className="hidden lg:inline">{hasToken ? "API token" : "Set API token"}</span>
+        <span className="sr-only lg:hidden">{hasToken ? "API token" : "Set API token"}</span>
       </button>
 
       {open && (

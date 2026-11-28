@@ -1,7 +1,11 @@
 //! Contextual Taint Tracing Juror & Remediation Diffs.
 //!
-//! Evaluates candidate defects and test failures using Source -> Sink taint reflection
-//! to eliminate false positives and synthesize concrete unified diff remediation patches.
+//! Evaluates candidate defects and test failures using Source -> Sink taint reflection.
+//!
+//! The juror is an *opinion* (a model's, or a pattern matcher's). Reproduction is a measurement.
+//! So an opinion can downgrade or annotate a finding, but it can never delete one that
+//! reproduced: see [`audit_defects_with_juror`], where evidence-backed defects survive a
+//! false-positive verdict and the disagreement is recorded instead.
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
@@ -14,23 +18,36 @@ use crate::agent::prompts::juror::{
 use crate::llm::untrusted::{self, clean_output, fence_capped};
 use crate::llm::{Budget, LlmConfig, ask_typed};
 
+/// Provenance label on a diff that came from the model, not from a fixer that read the file.
+pub const MODEL_PATCH_LABEL: &str = "# model-proposed patch — written from the recorded response and a source snippet; verify it against the file";
+
 const JUROR_ROLE: &str = "You are a principal application security verifier and Contextual Taint Tracing Juror. \
 Analyze the security test failure, candidate defect, and source-to-sink taint propagation. \
-Eliminate false positives where user input was harmlessly handled, properly validated, or failed without security impact. \
-For true positives, trace the taint path from input source to vulnerable sink, write a concise explanation, and synthesize a concrete unified diff remediation patch. \
-Format: {\"is_true_positive\": bool, \"confidence\": int, \"taint_path\": string|null, \"remediation_diff\": string|null, \"explanation\": string}";
+Call a false positive ONLY where the evidence shows input was harmlessly handled, properly validated, or failed without security impact; if the evidence is insufficient to judge, say so with \"evaluated\": false and confidence 0 instead of guessing. \
+For true positives, trace the taint path from input source to vulnerable sink and write a concise explanation. Do not invent a unified diff: you have not read the file. \
+Format: {\"is_true_positive\": bool, \"confidence\": int, \"evaluated\": bool, \"taint_path\": string|null, \"remediation_diff\": string|null, \"explanation\": string}";
 
 /// Juror evaluation verdict.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JurorVerdict {
     pub is_true_positive: bool,
+    /// The model's or heuristic's own 0..=100 confidence. Never a harness measurement, and
+    /// therefore never able to overrule a failure that reproduced under k-replay.
     pub confidence: u32,
+    /// False when the juror reached no evidence-backed conclusion. Distinct from
+    /// `is_true_positive: false`, which is an affirmative false-positive finding.
+    #[serde(default = "default_evaluated")]
+    pub evaluated: bool,
     #[serde(default)]
     pub taint_path: Option<String>,
     #[serde(default)]
     pub remediation_diff: Option<String>,
     #[serde(default)]
     pub explanation: Option<String>,
+}
+
+fn default_evaluated() -> bool {
+    true
 }
 
 /// Parse raw LLM output into a [`JurorVerdict`].
@@ -44,7 +61,8 @@ pub fn parse_juror_verdict(raw: &str) -> Result<JurorVerdict> {
         trimmed
     };
 
-    let verdict: JurorVerdict = serde_json::from_str(json_str)?;
+    let mut verdict: JurorVerdict = serde_json::from_str(json_str)?;
+    verdict.confidence = verdict.confidence.min(100);
     Ok(verdict)
 }
 
@@ -104,6 +122,7 @@ fn evaluate_llm(
     Ok(JurorVerdict {
         is_true_positive: out.is_true_positive,
         confidence: out.confidence.min(100),
+        evaluated: out.evaluated,
         taint_path: out.taint_path.as_deref().map(|s| clean_output(s, 240)),
         remediation_diff: out
             .remediation_diff
@@ -148,6 +167,7 @@ fn evaluate_deterministic(failure: &CaseExecutionResult, context: Option<&str>) 
         return JurorVerdict {
             is_true_positive: false,
             confidence: 90,
+            evaluated: true,
             taint_path: None,
             remediation_diff: None,
             explanation: Some(
@@ -157,22 +177,23 @@ fn evaluate_deterministic(failure: &CaseExecutionResult, context: Option<&str>) 
         };
     }
 
-    // 2. True positive taint reflection checks:
-    let file_target = context
-        .and_then(|c| c.split(':').next())
-        .filter(|f| !f.is_empty())
-        .unwrap_or("app/api_handler.py");
+    // 2. True positive taint reflection checks.
+    //
+    // The deterministic juror has NOT read the target's source: `source_context` is a `file:line`
+    // pointer produced by AST analysis. A unified diff claims to apply to real lines of a real
+    // file, so emitting one here would be fabrication. The verdict therefore reports the taint
+    // path and the class of fix, and leaves `remediation_diff` to the verified Fixer pipeline
+    // (`agent::remediation`), which reads the file before proposing a patch.
+    let _ = context;
 
     // SQL Injection / Database error disclosure
     if contains_sql_leak(&combined_response) {
-        let diff = format!(
-            "--- a/{file_target}\n+++ b/{file_target}\n@@ -1,4 +1,4 @@\n- query = f\"SELECT * FROM records WHERE id = '{{param}}'\"\n+ cursor.execute(\"SELECT * FROM records WHERE id = %s\", (param,))"
-        );
         return JurorVerdict {
             is_true_positive: true,
             confidence: 96,
+            evaluated: true,
             taint_path: Some("Source: request parameter -> Sink: SQL query execution".into()),
-            remediation_diff: Some(diff),
+            remediation_diff: None,
             explanation: Some(
                 "Unsanitized input propagates directly into raw database query. Parameterize SQL statements."
                     .into(),
@@ -182,14 +203,12 @@ fn evaluate_deterministic(failure: &CaseExecutionResult, context: Option<&str>) 
 
     // Reflected Cross-Site Scripting (XSS)
     if contains_injection_reflection(&combined_response) {
-        let diff = format!(
-            "--- a/{file_target}\n+++ b/{file_target}\n@@ -1,4 +1,4 @@\n- return render_template(\"response.html\", data=user_input)\n+ return render_template(\"response.html\", data=html_escape(user_input))"
-        );
         return JurorVerdict {
             is_true_positive: true,
             confidence: 94,
+            evaluated: true,
             taint_path: Some("Source: user payload -> Sink: unescaped HTML reflection".into()),
-            remediation_diff: Some(diff),
+            remediation_diff: None,
             explanation: Some(
                 "Unescaped user input reflected in response markup. Apply context-aware output encoding."
                     .into(),
@@ -205,14 +224,12 @@ fn evaluate_deterministic(failure: &CaseExecutionResult, context: Option<&str>) 
             || reason_str.contains("idor")
             || reason_str.contains("bola"))
     {
-        let diff = format!(
-            "--- a/{file_target}\n+++ b/{file_target}\n@@ -1,4 +1,5 @@\n def get_resource(request, resource_id):\n+    verify_tenant_authorization(request.user, resource_id)\n     return fetch_from_db(resource_id)"
-        );
         return JurorVerdict {
             is_true_positive: true,
             confidence: 92,
+            evaluated: true,
             taint_path: Some("Source: unauthenticated/unauthorized request -> Sink: protected resource data exposure".into()),
-            remediation_diff: Some(diff),
+            remediation_diff: None,
             explanation: Some(
                 "Endpoint serves protected resource without enforcing tenant or role authorization guards."
                     .into(),
@@ -222,14 +239,12 @@ fn evaluate_deterministic(failure: &CaseExecutionResult, context: Option<&str>) 
 
     // Unhandled Server Error / Stack Trace Disclosure
     if status_code >= 500 || contains_stack_trace(&combined_response) {
-        let diff = format!(
-            "--- a/{file_target}\n+++ b/{file_target}\n@@ -1,4 +1,6 @@\n try:\n     result = process_request(req)\n+except ValueError as e:\n+    return jsonify({{\"error\": \"Invalid input\"}}), 400"
-        );
         return JurorVerdict {
             is_true_positive: true,
             confidence: 88,
+            evaluated: true,
             taint_path: Some("Source: malformed input -> Sink: unhandled crash / error stack disclosure".into()),
-            remediation_diff: Some(diff),
+            remediation_diff: None,
             explanation: Some(
                 "Malformed request causes unhandled server exception disclosing internal details. Validate inputs and handle exceptions gracefully."
                     .into(),
@@ -237,17 +252,17 @@ fn evaluate_deterministic(failure: &CaseExecutionResult, context: Option<&str>) 
         };
     }
 
-    // Generic True Positive Fallback
-    let diff = format!(
-        "--- a/{file_target}\n+++ b/{file_target}\n@@ -1,4 +1,5 @@\n+validate_request_schema(request.data)\n process_data(request.data)"
-    );
+    // Nothing matched a source->sink pattern. This is NOT a false positive and it is not an
+    // adjudicated true positive either: the finding stays as reported, at zero juror confidence,
+    // with `evaluated: false` so no caller can read it as a verdict.
     JurorVerdict {
         is_true_positive: true,
-        confidence: 85,
-        taint_path: Some("Source: untrusted client input -> Sink: unvalidated server processing".into()),
-        remediation_diff: Some(diff),
+        confidence: 0,
+        evaluated: false,
+        taint_path: None,
+        remediation_diff: None,
         explanation: Some(
-            "Security control violation observed during adversarial probing. Implement strict input validation and access checks."
+            "No source-to-sink pattern matched the recorded response; the finding is kept as              reported and was not adjudicated by the juror."
                 .into(),
         ),
     }
@@ -284,14 +299,48 @@ fn contains_injection_reflection(s: &str) -> bool {
 
 /// Audit triaged defects with the Juror.
 /// Eliminates false positives and populates `remediation_patch` and `remediation_explanation`.
-/// Returns `(kept_defects, eliminated_count)`.
+/// What [`audit_defects_with_juror`] did, reported separately because they mean different things
+/// to a reader of the report.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct JurorAudit {
+    /// Findings removed, because nothing about them ever produced a measurement.
+    pub eliminated: usize,
+    /// Evidence-backed findings the juror called a false positive. Kept, with the disagreement
+    /// recorded on the defect.
+    pub disagreed: usize,
+    /// Findings the juror could not adjudicate (no matching result, or an explicit
+    /// "insufficient evidence" verdict).
+    pub not_evaluated: usize,
+}
+
+/// True when something about the finding was *measured* rather than asserted: the independent
+/// verifier ran it, it reproduced (possibly flakily), or raw evidence was captured.
+///
+/// This is the line the juror may not cross. Model disagreement is an opinion; these are
+/// observations about the target. Deleting an observed failure on the strength of an opinion is
+/// how a scanner quietly loses real vulnerabilities.
+fn evidence_backed(defect: &TriagedDefect) -> bool {
+    defect.verified
+        || defect.reproduced.is_some()
+        || matches!(
+            defect.verification.as_deref(),
+            Some("confirmed") | Some("flaky")
+        )
+        || !defect.evidence_files.is_empty()
+}
+
+/// Adjudicate candidate defects with the juror.
+///
+/// A false-positive verdict may remove a finding that was never reproduced. It may **not** remove
+/// one that was: that finding is kept and carries the disagreement in `juror_opinion`, so a human
+/// can see both the reproduced failure and the doubt about it.
 pub fn audit_defects_with_juror(
     mut llm: Option<(&LlmConfig, &mut Budget)>,
     defects: Vec<TriagedDefect>,
     results: &[CaseExecutionResult],
-) -> (Vec<TriagedDefect>, usize) {
+) -> (Vec<TriagedDefect>, JurorAudit) {
     let mut kept = Vec::with_capacity(defects.len());
-    let mut eliminated = 0;
+    let mut audit = JurorAudit::default();
 
     for mut defect in defects {
         let matching_result = results
@@ -303,25 +352,56 @@ pub fn audit_defects_with_juror(
                     .find(|r| r.component == defect.component && r.status == "FAIL")
             });
 
-        if let Some(res) = matching_result {
-            let llm_ref = llm.as_mut().map(|(c, b)| (*c, &mut **b));
-            let verdict = evaluate_with_juror(llm_ref, res, defect.source_context.as_deref());
+        let Some(res) = matching_result else {
+            audit.not_evaluated += 1;
+            kept.push(defect);
+            continue;
+        };
 
-            if !verdict.is_true_positive && verdict.confidence >= 80 {
-                eliminated += 1;
+        let llm_ref = llm.as_mut().map(|(c, b)| (*c, &mut **b));
+        let verdict = evaluate_with_juror(llm_ref, res, defect.source_context.as_deref());
+        defect.juror_evaluated = verdict.evaluated;
+
+        if !verdict.evaluated {
+            audit.not_evaluated += 1;
+        } else if !verdict.is_true_positive {
+            let confident = verdict.confidence >= 80;
+            if evidence_backed(&defect) {
+                // Reproduced, and the juror disagrees. Record it; do not delete it.
+                if confident {
+                    audit.disagreed += 1;
+                    defect.juror_opinion = Some(format!(
+                        "juror: possible false positive ({}% confidence, judged from the recorded                          response only) — kept because the failure was reproduced with                          evidence. {}",
+                        verdict.confidence,
+                        verdict.explanation.as_deref().unwrap_or("No reason given.")
+                    ));
+                }
+            } else if confident {
+                audit.eliminated += 1;
                 continue;
+            } else {
+                audit.not_evaluated += 1;
             }
+        }
 
-            if let Some(diff) = verdict.remediation_diff {
-                defect.remediation_patch = Some(diff);
+        // Only an adjudicated true positive can supply remediation text, and only a model that
+        // was actually given source can supply a diff.
+        if verdict.is_true_positive && verdict.evaluated {
+            if let Some(diff) = verdict.remediation_diff
+                && defect.source_context.is_some()
+            {
+                defect.remediation_patch = Some(format!(
+                    "{MODEL_PATCH_LABEL}\n{}",
+                    clean_output(&diff, 1000)
+                ));
             }
             if let Some(exp) = verdict.explanation {
-                defect.remediation_explanation = Some(exp);
+                defect.remediation_explanation = Some(clean_output(&exp, 600));
             }
         }
 
         kept.push(defect);
     }
 
-    (kept, eliminated)
+    (kept, audit)
 }

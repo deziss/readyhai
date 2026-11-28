@@ -22,7 +22,10 @@ export function VerdictBadge({ verdict, className = "" }: VerdictBadgeProps) {
       );
     case "CONDITIONAL_GO":
       return (
-        <span className={`${base} bg-rh-cond/15 text-rh-cond`}>
+        <span
+          className={`${base} rh-hatch bg-rh-cond/15 text-rh-cond`}
+          title="Conditional: shipping is allowed with the listed conditions still open"
+        >
           <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" /> Conditional go
         </span>
       );

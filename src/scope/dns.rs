@@ -21,6 +21,29 @@ pub fn resolve_name(host: &str) -> std::io::Result<Vec<IpAddr>> {
     }
 }
 
+/// Does `host` name an internal address? See [`classify_host`]. A name that does not resolve is
+/// *not* internal here (nothing connects to it; the real operation fails later with a plain
+/// connection error); intrusive actions on such a name are refused by [`egress_guard`].
+pub fn host_is_internal(host: &str) -> bool {
+    classify_host(host) == HostClass::Internal
+}
+
+/// Host-name matches an allowlist entry (exact, `*.suffix`, or `*`).
+pub fn host_matches(host: &str, pattern: &str) -> bool {
+    let (host, pat) = (norm_host(host), norm_host(pattern));
+    if pat == "*" {
+        return true;
+    }
+    match pat.strip_prefix("*.") {
+        Some(sfx) if !sfx.is_empty() => {
+            host.len() > sfx.len() + 1
+                && host.ends_with(sfx)
+                && host.as_bytes()[host.len() - sfx.len() - 1] == b'.'
+        }
+        _ => host == pat,
+    }
+}
+
 /// Local stand-in for DNS in unit tests. Every name resolves to a public documentation address
 /// (203.0.113.7) unless it is under `.invalid` (does not resolve) or was given addresses with
 /// [`test_dns::set`]. Names starting `slow-` take 300 ms to answer.
@@ -63,28 +86,5 @@ pub mod test_dns {
             ));
         }
         Ok(vec!["203.0.113.7".parse().unwrap()])
-    }
-}
-
-/// Does `host` name an internal address? See [`classify_host`]. A name that does not resolve is
-/// *not* internal here (nothing connects to it; the real operation fails later with a plain
-/// connection error); intrusive actions on such a name are refused by [`egress_guard`].
-pub fn host_is_internal(host: &str) -> bool {
-    classify_host(host) == HostClass::Internal
-}
-
-/// Host-name matches an allowlist entry (exact, `*.suffix`, or `*`).
-pub fn host_matches(host: &str, pattern: &str) -> bool {
-    let (host, pat) = (norm_host(host), norm_host(pattern));
-    if pat == "*" {
-        return true;
-    }
-    match pat.strip_prefix("*.") {
-        Some(sfx) if !sfx.is_empty() => {
-            host.len() > sfx.len() + 1
-                && host.ends_with(sfx)
-                && host.as_bytes()[host.len() - sfx.len() - 1] == b'.'
-        }
-        _ => host == pat,
     }
 }

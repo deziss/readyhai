@@ -31,17 +31,95 @@ impl Lang {
         }
     }
 
+    /// Is this language's grammar compiled into this binary (see the `grammar-*` features)?
+    pub fn grammar_available(self) -> bool {
+        match self {
+            Self::Python => cfg!(feature = "grammar-python"),
+            Self::JavaScript => cfg!(feature = "grammar-javascript"),
+            Self::TypeScript | Self::Tsx => cfg!(feature = "grammar-typescript"),
+            Self::Go => cfg!(feature = "grammar-go"),
+            Self::Php => cfg!(feature = "grammar-php"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Python => "python",
+            Self::JavaScript => "javascript",
+            Self::TypeScript => "typescript",
+            Self::Tsx => "tsx",
+            Self::Go => "go",
+            Self::Php => "php",
+        }
+    }
+
     pub fn parser(self) -> Option<Parser> {
-        let mut p = Parser::new();
-        let lang = match self {
-            Self::Python => tree_sitter_python::LANGUAGE.into(),
-            Self::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
-            Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
-            Self::Go => tree_sitter_go::LANGUAGE.into(),
-            Self::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+        // A missing grammar is None, never a silent wrong answer: the auditor counts those
+        // files as skipped and the check reports them as Partial.
+        let lang: Option<tree_sitter::Language> = match self {
+            Self::Python => {
+                #[cfg(feature = "grammar-python")]
+                {
+                    Some(tree_sitter_python::LANGUAGE.into())
+                }
+                #[cfg(not(feature = "grammar-python"))]
+                {
+                    None
+                }
+            }
+            Self::JavaScript => {
+                #[cfg(feature = "grammar-javascript")]
+                {
+                    Some(tree_sitter_javascript::LANGUAGE.into())
+                }
+                #[cfg(not(feature = "grammar-javascript"))]
+                {
+                    None
+                }
+            }
+            Self::TypeScript => {
+                #[cfg(feature = "grammar-typescript")]
+                {
+                    Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
+                }
+                #[cfg(not(feature = "grammar-typescript"))]
+                {
+                    None
+                }
+            }
+            Self::Tsx => {
+                #[cfg(feature = "grammar-typescript")]
+                {
+                    Some(tree_sitter_typescript::LANGUAGE_TSX.into())
+                }
+                #[cfg(not(feature = "grammar-typescript"))]
+                {
+                    None
+                }
+            }
+            Self::Go => {
+                #[cfg(feature = "grammar-go")]
+                {
+                    Some(tree_sitter_go::LANGUAGE.into())
+                }
+                #[cfg(not(feature = "grammar-go"))]
+                {
+                    None
+                }
+            }
+            Self::Php => {
+                #[cfg(feature = "grammar-php")]
+                {
+                    Some(tree_sitter_php::LANGUAGE_PHP.into())
+                }
+                #[cfg(not(feature = "grammar-php"))]
+                {
+                    None
+                }
+            }
         };
-        p.set_language(&lang).ok()?;
+        let mut p = Parser::new();
+        p.set_language(&lang?).ok()?;
         Some(p)
     }
 }
@@ -125,6 +203,9 @@ pub struct CodeInventory {
     pub imported_packages: BTreeSet<String>,
     pub findings: Vec<Finding>,
     pub unreadable: Vec<String>,
+    /// Files whose language grammar was compiled out (`grammar-*` features), reported so a
+    /// narrowed build never claims an audit it did not perform. Format: `<lang>:<rel path>`.
+    pub grammar_skipped: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

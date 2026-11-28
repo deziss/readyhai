@@ -7,20 +7,25 @@ use crate::model::Severity;
 
 use super::types::TargetDefect;
 
-/// Load defects to remediate from runs/<ID> or live AST scan.
+/// Load defects to remediate from a stored run or live AST scan.
+///
+/// When `run_id` is given the run **must** resolve: the collected findings are exactly what that
+/// run recorded. A missing or unreadable run is an error, never a silent fallback to a live audit
+/// of the current tree (which would report different findings than the run the user named).
 pub fn collect_target_defects(
     repo: &Path,
     run_id: Option<&str>,
     filter: Option<&str>,
-) -> Vec<TargetDefect> {
+) -> anyhow::Result<Vec<TargetDefect>> {
     let mut targets = Vec::new();
 
     if let Some(rid) = run_id {
-        let run_path = PathBuf::from("runs").join(rid).join("run.json");
-        if let Ok(data) = fs::read_to_string(&run_path)
-            && let Ok(run_val) = serde_json::from_str::<serde_json::Value>(&data)
-            && let Some(findings) = run_val.get("findings").and_then(|f| f.as_array())
-        {
+        let run_path = resolve_run_path(rid)?;
+        let data = fs::read_to_string(&run_path)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", run_path.display()))?;
+        let run_val: serde_json::Value = serde_json::from_str(&data)
+            .map_err(|e| anyhow::anyhow!("{} is not valid JSON: {e}", run_path.display()))?;
+        if let Some(findings) = run_val.get("findings").and_then(|f| f.as_array()) {
             for (i, f) in findings.iter().enumerate() {
                 let rule = f
                     .get("rule")
@@ -99,5 +104,28 @@ pub fn collect_target_defects(
         });
     }
 
-    targets
+    Ok(targets)
+}
+
+/// Locate a stored run by ID.
+///
+/// `readyhai scan` writes runs under the data directory (`engine::run_dir`), so that is where a
+/// `--run` ID normally lives. A repo-local or CWD-relative `runs/<id>/run.json` is also accepted
+/// for runs written there by older versions or by hand.
+fn resolve_run_path(run_id: &str) -> anyhow::Result<PathBuf> {
+    let candidates = [
+        crate::engine::run_dir(run_id).join("run.json"),
+        PathBuf::from("runs").join(run_id).join("run.json"),
+    ];
+    for path in &candidates {
+        if path.is_file() {
+            return Ok(path.clone());
+        }
+    }
+    anyhow::bail!(
+        "run '{run_id}' was not found. Looked in {} and {}. List stored runs with `readyhai dashboard`, \
+         or omit --run to audit the working tree live.",
+        candidates[0].display(),
+        candidates[1].display()
+    )
 }

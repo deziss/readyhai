@@ -162,8 +162,18 @@ pub fn claims_run(stale: &[String], id: &str) -> bool {
     engine::valid_run_id(id) && (stale.iter().any(|s| s == id) || created_by_this_server(id))
 }
 
+/// The active-run registry, recovered if a panic poisoned the lock: dropping the registry
+/// would hide running scans from shutdown draining and leak their containers.
+pub(crate) fn active(app: &App) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+    app.active.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn active_contains(app: &App, id: &str) -> bool {
+    active(app).contains(id)
+}
+
 pub fn run_in_progress(app: &App, id: &str) -> bool {
-    if app.active.lock().ok().is_some_and(|g| g.contains(id)) {
+    if active_contains(app, id) {
         return true;
     }
     read_json(id, "status.json").is_some_and(|s| s["state"].as_str() == Some("running"))
@@ -194,9 +204,7 @@ pub async fn worker(
         if !engine::run_dir(&id).join("status.json").exists() {
             continue;
         }
-        if let Ok(mut a) = app.active.lock() {
-            a.insert(id.clone());
-        }
+        active(&app).insert(id.clone());
         write_status(&id, "running", None);
         opts.deadline = Some(Instant::now() + limit);
         let id2 = id.clone();
@@ -226,9 +234,7 @@ pub async fn worker(
                 );
             }
         }
-        if let Ok(mut a) = app.active.lock() {
-            a.remove(&id);
-        }
+        active(&app).remove(&id);
     }
 }
 

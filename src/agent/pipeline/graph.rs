@@ -6,7 +6,7 @@
 //! 3. Plan (Station 3: Attack DAG, dynamic case synthesis)
 //! 4. Execute (Station 4: Execution & adaptive ReAct feedback loop)
 //! 5. Verify (Station 5: Independent replay & Contextual Taint Tracing Juror)
-//! 6. Gate (Station 6: Factory Attestation, release readiness scoring & ASVS compliance)
+//! 6. Gate (Station 6: Factory Attestation, release readiness scoring & observed findings per ASVS-shaped area)
 
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};

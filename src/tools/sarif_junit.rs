@@ -13,11 +13,12 @@ fn unescape(t: &str) -> String {
 }
 
 fn attr(attrs: &str, name: &str) -> String {
-    let re = regex::Regex::new(&format!(
+    // Built per attribute name, read once per <testcase>: compiled through the shared cache so a
+    // 50k-case JUnit file does not compile the same half-dozen patterns 50k times.
+    let re = crate::regex_cache::compiled(&format!(
         r#"(?:^|\s){}\s*=\s*(?:"([^"]*)"|'([^']*)')"#,
         regex::escape(name)
-    ))
-    .unwrap();
+    ));
     re.captures(attrs)
         .and_then(|c| c.get(1).or_else(|| c.get(2)))
         .map(|m| unescape(m.as_str()))
@@ -25,8 +26,14 @@ fn attr(attrs: &str, name: &str) -> String {
 }
 
 pub fn parse_junit(xml: &str) -> Vec<JunitCase> {
-    let case_re = regex::Regex::new(r"(?s)<testcase\b([^>]*?)(?:/>|>(.*?)</testcase>)").unwrap();
-    let child_re = regex::Regex::new(r"(?s)<(failure|error|skipped)\b([^>]*?)(?:/>|>)").unwrap();
+    static CASE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static CHILD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let case_re = CASE.get_or_init(|| {
+        regex::Regex::new(r"(?s)<testcase\b([^>]*?)(?:/>|>(.*?)</testcase>)").unwrap()
+    });
+    let child_re = CHILD.get_or_init(|| {
+        regex::Regex::new(r"(?s)<(failure|error|skipped)\b([^>]*?)(?:/>|>)").unwrap()
+    });
     let mut out = vec![];
     for c in case_re.captures_iter(xml) {
         let attrs = c.get(1).map(|m| m.as_str()).unwrap_or("");

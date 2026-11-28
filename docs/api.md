@@ -8,7 +8,7 @@ Started by `readyhai serve [--bind ADDR]` (default `127.0.0.1:8080`; the contain
 
 `READYHAI_TOKEN` is **required**: it must be at least 16 characters of printable ASCII (no spaces). If it is missing, too short, or the old published example token, `serve` prints an error and exits with status 3. There is no development fallback token. Generate one with `openssl rand -hex 24`.
 
-**Every route requires `Authorization: Bearer <token>` except `GET /health`.** That includes `/`, `/ui`, `/api/*`, the badge routes and unknown paths. One middleware layer on the router does the check (the token is hashed and compared digest to digest, so the comparison is constant-time and independent of length); handlers never check credentials themselves. Failures return `401 {"error":"missing or bad bearer token"}` with `WWW-Authenticate: Bearer`. The scheme name is case-insensitive; the old `x-readyhai-token` header is no longer accepted.
+**Every route requires `Authorization: Bearer <token>` except `GET /health` and the three public SVG badge routes (`GET /api/badges/{gate,ledger,network}`).** Everything else — `/`, `/ui`, `/api/*`, the run-derived `GET /api/badges/{gate,ledger}/{id}` badges and unknown paths — is protected. One middleware layer on the router does the check (the token is hashed and compared digest to digest, so the comparison is constant-time and independent of length); handlers never check credentials themselves. Failures return `401 {"error":"missing or bad bearer token"}` with `WWW-Authenticate: Bearer`. The scheme name is case-insensitive; the old `x-readyhai-token` header is no longer accepted.
 
 Consequences: a browser UI or a badge `<img>` cannot call the API directly; put a server-side proxy that adds the header in front of it. `/health` returns `{"status":"ok","version":...}` and nothing else.
 
@@ -49,7 +49,7 @@ Everything the server does to a target over HTTP goes through one guard (`serve.
 | `POST /api/network/deep-audit`, `/multi-region` | allowed (read-only ok) |
 | `POST /api/scans`, `POST /runs` | `mcp::precheck` (below); the engine gates intrusive checks per check |
 
-Every target the guard refuses returns `403 {"error": ...}`: an unlisted internal host, an intrusive action on a `prod` host, an unresolvable name for an intrusive action, **and a URL that does not parse or has a scheme other than `http`/`https`** (for example `ftp://...`); the guard does not distinguish "malformed" from "not allowed". The two scan routes (`POST /runs`, `POST /api/scans`) validate with `mcp::precheck` instead and answer `400` for the same inputs; the memory routes, which send nothing to the target and apply no scope check, answer `400` for a target that is not an http(s) URL. Concurrent agent/network probes are capped at 4; the fifth gets `429`.
+Every target the guard refuses returns `403 {"error": ...}`: an unlisted internal host, an intrusive action on a `prod` host, an unresolvable name for an intrusive action, **and a URL that does not parse or has a scheme other than `http`/`https`** (for example `ftp://...`); the guard does not distinguish "malformed" from "not allowed". The two scan routes (`POST /runs`, `POST /api/scans`) validate with `mcp::precheck` instead and answer `400` for the same inputs; the memory routes, which send nothing to the target and apply no scope check, answer `400` for a target that is not an http(s) URL. Concurrent agent/network probes are capped at 16 (`MAX_CONCURRENT_PROBES`); a request that cannot get a slot within 2 s gets `429`. Cheap file jobs (report generation and reads, listings, export rendering) share a separate cap of 256 queued jobs: past that a route answers `503` with `Retry-After: 1` rather than queueing without bound.
 
 ### Error responses
 
@@ -60,9 +60,9 @@ Every target the guard refuses returns `403 {"error": ...}`: an unlisted interna
 | 403 | Egress guard refused the target on an agent or network-lab route: unparseable URL or a scheme other than http/https, an unlisted internal host, an intrusive action on an `env = "prod"` host, or an unresolvable name for an intrusive action | — **or** RBAC is on and the key's role does not allow the route's action (body names the role and required role)
 | 404 | Unknown run id (also for `POST /api/agent/runs/{id}/cancel`) |
 | 409 | Run is still running (delete), the run is not running (cancel), or a retest target does not match the stored run's target |
-| 429 | Four probes are already running (agent run, retest, network lab); retry when one finishes |
+| 429 | Sixteen concurrent probes are already running (agent run, retest, network lab) and none freed within 2 s; retry when one finishes |
 | 500 | The configured scope file cannot be used (fail closed), or an internal error |
-| 503 | The scan queue is full (`POST /runs`, `POST /api/scans`) |
+| 503 | The scan queue is full (`POST /runs`, `POST /api/scans`), or more than 256 file jobs are already queued (report and export routes; answered with `Retry-After: 1`) |
 | 504 | The scope check timed out resolving the host (15 s); refused |
 
 ### Endpoints
@@ -99,7 +99,8 @@ All rows except `/health` require the bearer token.
 | POST | `/api/fix` | The Agentic Fixer: synthesizes AST-grounded patches, verifies against test runners, and generates PR descriptions |
 | POST | `/api/mutate` | Autonomous Mutation Testing: injects semantic code mutants to evaluate test oracle sensitivity and negative tests |
 | POST | `/api/github/pr-comment` | PR comment markdown built only from the data supplied |
-| GET | `/api/badges/gate`, `/ledger`, `/network` | SVG badges |
+| GET | `/api/badges/gate`, `/ledger`, `/network` | Public SVG badges: only an allowlisted verdict (`PASS`/`WARN`/`FAIL`) or an integer score `0..=100` renders; anything else is `n/a` |
+| GET | `/api/badges/gate/{id}`, `/api/badges/ledger/{id}` | SVG badge derived from a stored run's real verdict / evidence-ledger score (`n/a` when nothing was measured) |
 | GET | `/checks` | Array of `{id,title,kinds,min_profile,tool,intrusive}` (includes `READYHAI_PLUGINS`) |
 | GET | `/api/settings` | Effective operator settings: `{path,exists,editable,version,effective:{integrations,toggle,vulndb:{enabled,path}},override_count,shadowing_env}` — `vulndb` reports the vulnerability-database state (`path: null` = default `<data>/vulns/vulns.jsonl`). Any authenticated role may read |
 | PUT | `/api/settings` | Admin only (RBAC on): save `{"integrations":{...},"toggle":[{"id","enabled"}],"vulndb":{"enabled","path"}}` to `<data>/settings.toml` atomically; `version` field is the optimistic-concurrency token from GET; an absent `vulndb` (or null `path`) keeps the stored values. `400` on an invalid body (e.g. `intrusive: "on"`, empty `vulndb.path`); `409` on a stale `version`. Takes effect on the next scan |
@@ -148,7 +149,7 @@ curl -s -H "$H" -X POST http://127.0.0.1:8080/api/agent/run \
   -d '{"target": "https://staging.example.com", "profile": "standard",
        "spec_url": null, "custom_instructions": "Focus on auth bypass and boundary validation"}'
 ```
-`AgentRunReport`: `id`, `status` (`running` while it executes, then `completed`, `failed` or `cancelled`), `steps`, `planned_cases`, `executed_results` (with `reproduction_curl`), `triaged_defects`, `evidence_ledger` (`value_score`, `authority_score`, `safety_score`, `evidence_score`, `gate_verdict` `GO|CONDITIONAL_GO|NO_GO`, `overall_readiness`), `attestation` (`SoftwareFactoryAttestation` with `release_readiness_score`, `gate_verdict`, `asvs_breakdown`, `release_directives`, and SHA-256 `attestation_digest`), `directives` (`SynthesizedDirectives` with focus areas, boundary rules, and canary token), and `graph_telemetry` (`GraphTelemetry` tracking station iterations and routing transitions). `evidence_score` is the share of executed cases that have a stored request/response evidence file (the target answered and the file exists), not a constant. A `cancelled` or `failed` run keeps what it did so far; its ledger describes partial results.
+`AgentRunReport`: `id`, `status` (`running` while it executes, then `completed`, `failed` or `cancelled`), `steps`, `planned_cases`, `executed_results` (with `reproduction_curl`), `triaged_defects`, `evidence_ledger` (`value_score`, `authority_score`, `safety_score`, `evidence_score`, `gate_verdict` `GO|CONDITIONAL_GO|NO_GO`, `overall_readiness`), `attestation` (`SoftwareFactoryAttestation` with `release_readiness_score` (`null` when readiness was not evaluated), `gate_verdict` (`GO|CONDITIONAL_GO|NO_GO|NOT_EVALUATED`), `asvs_breakdown` — `basis` plus observed-findings booleans and per-area `categories` (`code`, `name`, `score`, `passed`, `findings`, `status` `pass|fail|partial|not_evaluated`, `evidence_case_ids`) and `cases_conclusively_evaluated_pct`, `release_directives`, and the unkeyed canonical SHA-256 `attestation_digest`. The digest is an integrity check over the attestation's substance, not a signature (no key-based signing) and not an ASVS compliance certificate), `directives` (`SynthesizedDirectives` with focus areas, boundary rules, and canary token), and `graph_telemetry` (`GraphTelemetry` tracking station iterations and routing transitions). `evidence_score` is the share of executed cases that have a stored request/response evidence file (the target answered and the file exists), not a constant. A `cancelled` or `failed` run keeps what it did so far; its ledger describes partial results.
 
 The request is synchronous: the HTTP call returns the finished report, and the run id is known to the caller only then. A run in progress is visible in `GET /api/agent/runs` with `status: "running"` (its checkpoint is rewritten after every stage), which is where the id for a cancel comes from.
 
@@ -283,13 +284,15 @@ curl -s -H "$H" -X POST http://127.0.0.1:8080/api/mutate -H "Content-Type: appli
 ```
 Response: `repo`, `total_mutants`, `killed_mutants`, `survived_mutants`, `timed_out_mutants`, `mutation_score` (`(killed + timed_out) / total * 100%`), `oracle_quality`, `mutants[]` (file, line, operator, original, mutated, verdict, `recommended_test_assertion`).
 
+`max_mutants` is clamped to `1..=200` (a hostile value cannot turn into an unbounded repository walk), a `repo` that is not a directory answers `400`, and the work runs on the bounded file-job pool — when all 256 slots are busy for 500 ms the route answers `503` with `Retry-After: 1`.
+
 ---
 
 ### PR comment and badges
 
 `POST /api/github/pr-comment` builds the comment from the fields you send (`verdict` `PASS|WARN|FAIL`, `score`, `target`, `commit_sha`, `findings_count`, `ledger_conformance|rbac|resilience|observability`). Missing data is rendered as "not evaluated"; with no verdict the comment and badge say **NOT EVALUATED**. There are no default scores. Values are single-line sanitised before they enter markdown.
 
-`GET /api/badges/{gate,ledger,network}?status=...&score=...` returns an SVG. Query values are XML-escaped and cut to 24 characters. Missing or unrecognised input renders `n/a` (never PASS). Responses carry a restrictive CSP and `nosniff`.
+`GET /api/badges/{gate,ledger,network}?status=...&score=...` returns an SVG. No query text is ever interpolated into the SVG: `status` must be one of the engine's real verdicts (`PASS`, `WARN`, `FAIL`, case-insensitive) and `score` must be digits (`88` or `88/100`), clamped to `0..=100`. Missing, unrecognised or out-of-vocabulary input — including things like `status=<svg onload=...>` or `status=97` on a verdict badge — renders the literal `n/a` in grey, never a colour-coded pass. `GET /api/badges/gate/{id}` and `GET /api/badges/ledger/{id}` take no query parameters at all: they read the stored run (`run.json`'s verdict, the agent run's evidence-ledger readiness) and render `n/a` when the run produced no measurement. Both require a token, since a run's results are private. Responses carry a restrictive CSP and `nosniff`.
 
 ---
 

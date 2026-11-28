@@ -128,7 +128,7 @@ pub fn crawl_client() -> Option<reqwest::blocking::Client> {
 }
 
 pub fn crawl_client_timeout(ms: u64) -> Option<reqwest::blocking::Client> {
-    reqwest::blocking::Client::builder()
+    crate::network::utils::with_connect_timeout(reqwest::blocking::Client::builder())
         .timeout(Duration::from_millis(ms))
         .danger_accept_invalid_certs(true)
         .redirect(reqwest::redirect::Policy::none())

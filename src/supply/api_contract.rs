@@ -1,11 +1,15 @@
 use anyhow::Result;
-use regex::Regex;
 use serde_json::Value;
 
 use super::helpers::{src_rel, sv};
 use crate::ctx::Ctx;
 use crate::model::{Category, CheckOutput, CheckStatus, Finding, Severity};
 use crate::tools::{ToolSpec, gate, is_oversize, missing_image, partial, read_out, tool_failed};
+
+regex_cached!(
+    SPEC_HEAD,
+    r#"(?m)^\s*["']?(?:openapi|swagger)["']?\s*:\s*["']?[23]\."#
+);
 
 pub(crate) const MAX_SPECS: usize = 20;
 pub(crate) const MAX_READ: u64 = 4 * 1024 * 1024;
@@ -32,7 +36,7 @@ fn find_specs(ctx: &Ctx) -> Vec<String> {
     let Some(snap) = &ctx.snapshot else {
         return vec![];
     };
-    let head = Regex::new(r#"(?m)^\s*["']?(?:openapi|swagger)["']?\s*:\s*["']?[23]\."#).unwrap();
+    let head = &*SPEC_HEAD;
     let mut v = vec![];
     for f in &snap.files {
         let l = f.to_ascii_lowercase();

@@ -184,8 +184,8 @@ pub(crate) fn authorize(
 }
 
 pub(crate) fn http(timeout: Duration) -> Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder()
-        .timeout(timeout)
+    let b = crate::network::utils::with_connect_timeout(reqwest::blocking::Client::builder());
+    Ok(b.timeout(timeout)
         .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_secs(30))
         .build()?)

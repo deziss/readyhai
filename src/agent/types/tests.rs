@@ -1,6 +1,7 @@
 //! Unit tests for agent types, ledger, priority ordering, and lifecycle tokens.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use super::super::created_ledger::*;
     use super::super::execution::*;

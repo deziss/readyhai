@@ -1,6 +1,7 @@
 //! Comprehensive unit tests for engine storage, git operations, targets, and deadlines.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use std::collections::HashMap;
     use std::path::Path;

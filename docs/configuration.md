@@ -281,6 +281,7 @@ Any write route not explicitly classified is treated Admin-only (fail closed). T
 | `READYHAI_RBAC_BOOT_ADMIN` | `serve` | `0` removes the legacy token's break-glass admin while RBAC is on. |
 | `READYHAI_TOOLS_LOCK` | all tool runs | Path to a lock file overriding the embedded one. |
 | `READYHAI_GIT_TIMEOUT_SECS` | git clones, `agent --diff-base` | Wall-clock limit of a `git clone` (default 300, 10 to 3600, never longer than the run deadline) and of the agent's `git diff` (default 60, 5 to 3600). |
+| `READYHAI_CONNECT_TIMEOUT_MS` | scan-side HTTP (web fetch, discovery, QA API, agent, LLM) | How long a request waits for a connection (TCP connect **and** TLS handshake) before it is called unreachable (default 5000, 100 to 30000). It never shortens how long an already-connected server may take to answer, so timing-based checks (`qa.api.slow_response`, time-delay blind SQLi) are unaffected. A target that accepts the socket and then goes silent is given up on in this window instead of holding the run open to its deadline. |
 | `READYHAI_PUBLIC_IP`, `READYHAI_EGRESS_IP` | network lab, agent | Egress IP to report instead of asking public IP-echo services (api.ipify.org, checkip.amazonaws.com, icanhazip.com, ifconfig.me). |
 
 **Scope and MCP**

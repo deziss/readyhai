@@ -312,6 +312,7 @@ pub(crate) fn boundary(ctx: &Ctx) -> Result<CheckOutput> {
     let Some(spec) = spec(ctx)? else {
         return Ok(no_spec());
     };
+    let total = ops(&spec).len();
     let mut proposed = 0usize;
     let mut ops_hit = 0usize;
     for op in ops(&spec) {
@@ -356,8 +357,13 @@ pub(crate) fn boundary(ctx: &Ctx) -> Result<CheckOutput> {
             ops_hit += 1;
         }
     }
-    let total = ops(&spec).len();
-    let out = if proposed == 0 {
+    // Zero proposals means "passed" only if there was something to inspect: a spec
+    // that exposes no operations was never measured, so it must not look clean.
+    let out = if total == 0 {
+        CheckOutput::status(CheckStatus::NotApplicable(
+            "spec exposes no operations".into(),
+        ))
+    } else if proposed == 0 {
         CheckOutput::status(CheckStatus::Passed)
     } else {
         CheckOutput::status(CheckStatus::Skipped(format!(
@@ -450,7 +456,11 @@ pub(crate) fn equivalence(ctx: &Ctx) -> Result<CheckOutput> {
             }
         }
     }
-    let out = if proposed == 0 {
+    let out = if ops(&spec).is_empty() {
+        CheckOutput::status(CheckStatus::NotApplicable(
+            "spec exposes no operations".into(),
+        ))
+    } else if proposed == 0 {
         CheckOutput::status(CheckStatus::Passed)
     } else {
         CheckOutput::status(CheckStatus::Skipped(format!(

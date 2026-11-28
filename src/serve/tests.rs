@@ -54,6 +54,7 @@ fn data_dir(name: &str) -> PathBuf {
 
 fn body_text(resp: Response) -> String {
     let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .unwrap();
     let b = rt
@@ -147,6 +148,8 @@ const ROUTES: &[(&str, &str)] = &[
     ("GET", "/api/badges/gate"),
     ("GET", "/api/badges/ledger"),
     ("GET", "/api/badges/network"),
+    ("GET", "/api/badges/gate/{id}"),
+    ("GET", "/api/badges/ledger/{id}"),
     ("GET", "/checks"),
     ("POST", "/runs"),
     ("GET", "/runs"),
@@ -542,6 +545,7 @@ fn delete_refuses_running_and_worker_never_resurrects_the_dir() {
     let d = data_dir("delete");
     let app = test_app();
     let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .unwrap();
 
@@ -1450,20 +1454,23 @@ fn discovery_scores_are_not_reported() {
 // ---------------------------------------------------------------- badges and PR comment
 
 #[test]
-fn badge_values_are_escaped() {
+fn badge_values_cannot_be_injected() {
     let evil = "\"><script>alert(1)</script>&'";
     for svg in [ledger_svg(Some(evil)), network_svg(Some(evil))] {
         assert!(!svg.contains("<script"), "{svg}");
-        assert!(!svg.contains("alert(1)</script>"), "{svg}");
-        assert!(
-            svg.contains("&lt;script&gt;") || svg.contains("&quot;&gt;&lt;"),
-            "{svg}"
-        );
+        assert!(!svg.contains("alert(1)"), "{svg}");
+        assert!(svg.contains("n/a"), "arbitrary text renders n/a: {svg}");
         assert_eq!(svg.matches('<').count(), svg.matches('>').count());
     }
-    // long values are cut
-    assert!(!ledger_svg(Some(&"A".repeat(500))).contains(&"A".repeat(BADGE_VALUE_MAX + 1)));
-    assert!(xml_escape("a\u{0}b\nc", 10) == "abc");
+    // a score-shaped string in the status slot, or a number out of range, never renders verbatim
+    assert!(gate_svg(Some("97")).contains("n/a"));
+    assert!(network_svg(Some("<svg-onload>alert(1)")).contains("n/a"));
+    assert!(ledger_svg(Some(&"A".repeat(500))).contains("n/a"));
+    // scores clamp to 0..=100
+    assert!(ledger_svg(Some("150")).contains(">100<"));
+    assert!(ledger_svg(Some("88/100")).contains(">88<"));
+    assert!(ledger_svg(Some("-5")).contains("n/a"));
+    assert!(ledger_svg(Some("")).contains("n/a"));
 }
 
 #[test]
@@ -1474,6 +1481,84 @@ fn badges_do_not_invent_a_pass() {
     assert!(gate_svg(Some("pass")).contains(">PASS<"));
     assert!(gate_svg(Some("FAIL")).contains(">FAIL<"));
     assert!(ledger_svg(None).contains("n/a") && !ledger_svg(None).contains("94"));
+}
+
+#[test]
+fn a_self_reported_badge_says_it_is_self_reported() {
+    // The public badges take their text from the query string, so a green one must never read as
+    // ReadyHai's own attestation. The /{id} badges, which read a stored run, carry the real label.
+    for svg in [
+        gate_svg(Some("PASS")),
+        ledger_svg(Some("94")),
+        network_svg(Some("PASS")),
+    ] {
+        assert!(
+            svg.contains("reported"),
+            "unverified badge self-labels: {svg}"
+        );
+        assert!(!svg.contains("ReadyHai"), "{svg}");
+    }
+    let verified = badge_svg("ReadyHai", verdict_color(Some("PASS")), "PASS");
+    assert!(verified.contains("ReadyHai") && !verified.contains("reported"));
+}
+
+#[test]
+fn run_badges_read_a_stored_run_instead_of_the_query_string() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _d = data_dir("badges-run");
+    let auth = format!("Bearer {TOKEN}");
+    let id = "20990101-000000-00000000000000b1";
+    std::fs::create_dir_all(crate::engine::run_dir(id)).unwrap();
+    std::fs::write(
+        crate::engine::run_dir(id).join("run.json"),
+        json!({ "id": id, "verdict": "WARN" }).to_string(),
+    )
+    .unwrap();
+    write_agent_run(id, "https://a.example/", "2099-01-01T00:00:00Z");
+    let (_rt, base) = test_server();
+    let c = client();
+    let get = |p: &str| {
+        c.get(format!("{base}{p}"))
+            .header("authorization", &auth)
+            .send()
+            .unwrap()
+    };
+    let svg = |p: &str| {
+        let r = get(p);
+        assert_eq!(r.status().as_u16(), 200, "{p}");
+        r.text().unwrap()
+    };
+    assert!(svg(&format!("/api/badges/gate/{id}")).contains(">WARN<"));
+    // the agent run has no ledger at all, so its score badge is not measured
+    assert!(svg(&format!("/api/badges/ledger/{id}")).contains("n/a"));
+    let id2 = "20990101-000000-00000000000000b2";
+    write_agent_run(id2, "https://a.example/", "2099-01-01T00:00:01Z");
+    let rep = crate::agent::agent_runs_dir().join(id2).join("report.json");
+    let text = std::fs::read_to_string(&rep).unwrap();
+    std::fs::write(
+        &rep,
+        text.replace(
+            "\"evidence_ledger\":null",
+            "\"evidence_ledger\":{\"overall_readiness\":0,\"gate_verdict\":\"SCANNED\",\
+             \"executive_summary\":\"\",\"exit_criteria_checklist\":[],\"evaluated\":false}",
+        ),
+    )
+    .unwrap();
+    // a discovery-only ledger scores nothing, so the badge must not show 0 as if it were measured
+    assert!(svg(&format!("/api/badges/ledger/{id2}")).contains("n/a"));
+    assert_eq!(
+        get("/api/badges/gate/no-such-run-9").status().as_u16(),
+        404,
+        "unknown run"
+    );
+    // traversal-shaped ids never reach the filesystem as a badge
+    assert_eq!(
+        get("/api/badges/gate/..%2F..%2Fetc").status().as_u16(),
+        400,
+        "encoded traversal"
+    );
+    let r = get("/api/badges/gate/%2e%2e").status().as_u16();
+    assert!(r == 400 || r == 404, "dot-dot: {r}");
 }
 
 #[test]
@@ -1569,6 +1654,43 @@ fn fix_route_synthesizes_remediation() {
     assert!(res.get("patches").is_some());
     assert!(res.get("pr_title").is_some());
     assert!(res.get("pr_body").is_some());
+}
+
+#[test]
+fn mutate_route_caps_max_mutants_and_refuses_missing_repos() {
+    let (_rt, base) = test_server();
+    let c = client();
+    let auth = format!("Bearer {TOKEN}");
+    // A hostile usize::MAX must not turn into an unbounded repo walk: the request is answered
+    // from the clamped budget instead of hanging.
+    let dir =
+        std::env::temp_dir().join(format!("readyhai-serve-mutate-cap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("app.py"),
+        "def f(x):\n    if x > 3:\n        return x + 1\n    return 0\n",
+    )
+    .unwrap();
+    let r = c
+        .post(format!("{base}/api/mutate"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"repo": dir, "max_mutants": usize::MAX}))
+        .send()
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 200);
+    let res: serde_json::Value = r.json().unwrap();
+    assert!(
+        res["total_mutants"].as_u64().unwrap() <= 200,
+        "mutants must respect the server ceiling"
+    );
+    // A repo that does not exist is a 400, not an empty success pretending to be a preview.
+    let r = c
+        .post(format!("{base}/api/mutate"))
+        .header("authorization", &auth)
+        .json(&serde_json::json!({"repo": "/nonexistent/readyhai-repo"}))
+        .send()
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 400);
 }
 
 #[test]
@@ -2143,4 +2265,60 @@ fn vulns_api_triage_requires_admin_when_rbac_is_on() {
 
     let _ = std::fs::remove_file(f);
     let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
+fn offload_runs_the_job_and_hands_back_its_value() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let got = super::guards::offload(|| 40 + 2).await.unwrap();
+        assert_eq!(got, 42);
+    });
+}
+#[test]
+fn a_full_offload_queue_is_shed_with_503_not_queued_forever() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        // One slot, and it is already taken: the caller below must be turned away promptly
+        // instead of queueing behind an unseen job.
+        let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let held = slots.clone().acquire_owned().await.unwrap();
+        let started = std::time::Instant::now();
+        let shed = super::guards::offload_bounded(
+            slots.clone(),
+            std::time::Duration::from_millis(120),
+            || unreachable!("a shed job must never reach the pool"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(shed.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "shedding took {:?}",
+            started.elapsed()
+        );
+        let body = axum::body::to_bytes(shed.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            String::from_utf8_lossy(&body).contains("too many concurrent file jobs"),
+            "shed body was {body:?}"
+        );
+        // And once the slot frees up again, work flows: shedding is not a permanent open circuit.
+        drop(held);
+        let ok = super::guards::offload_bounded(
+            slots,
+            std::time::Duration::from_millis(500),
+            || "served",
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok, "served");
+    });
 }

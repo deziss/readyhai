@@ -2,6 +2,14 @@
 
 use super::types::AiEvalReport;
 
+/// Percentage cell, or an explicit `n/a` for a metric that was not measured.
+fn pct(value: Option<f64>) -> String {
+    match value {
+        Some(v) => format!("{:.1}%", v * 100.0),
+        None => "n/a".into(),
+    }
+}
+
 pub fn print_table_report(report: &AiEvalReport, threshold: f64, ms: u128) {
     println!("\n=== ReadyHai GenAI & Agent Evaluation (eval-ai) ===");
     println!(
@@ -26,9 +34,9 @@ pub fn print_table_report(report: &AiEvalReport, threshold: f64, ms: u128) {
         let verdict = if r.passed { "PASS" } else { "FAIL" };
         let (rag, faith, rel, hall) = if let Some(ref t) = r.rag_triad {
             (
-                format!("{:.1}%", t.composite_score * 100.0),
-                format!("{:.1}%", t.faithfulness * 100.0),
-                format!("{:.1}%", t.answer_relevance * 100.0),
+                pct(t.composite_score),
+                pct(t.faithfulness),
+                pct(t.answer_relevance),
                 t.hallucination_count.to_string(),
             )
         } else {
@@ -66,6 +74,13 @@ pub fn print_table_report(report: &AiEvalReport, threshold: f64, ms: u128) {
         }
     }
     println!("{:-<70}\n", "");
+    if let Some(t) = report.results.iter().find_map(|r| r.rag_triad.as_ref()) {
+        println!(
+            "Scores are approximate lexical estimates ({t_method}).\n\
+             n/a = not measurable for that case (no retrieved context, no checkable claim, empty query).",
+            t_method = t.method
+        );
+    }
 }
 
 pub fn print_markdown_report(report: &AiEvalReport, ms: u128) {
@@ -79,6 +94,11 @@ pub fn print_markdown_report(report: &AiEvalReport, ms: u128) {
         report.total_cases
     );
 
+    let method = report
+        .results
+        .iter()
+        .find_map(|r| r.rag_triad.as_ref())
+        .map(|t| t.method.clone());
     println!(
         "| Case ID | Verdict | Overall Score | Faithfulness | Context Relevance | Answer Relevance | Hallucinations |"
     );
@@ -88,23 +108,30 @@ pub fn print_markdown_report(report: &AiEvalReport, ms: u128) {
         let verdict = if r.passed { "🟢 PASS" } else { "🔴 FAIL" };
         if let Some(ref t) = r.rag_triad {
             println!(
-                "| `{}` | {} | **{:.1}%** | {:.1}% | {:.1}% | {:.1}% | {} |",
+                "| `{}` | {} | **{}** | {} | {} | {} | {} |",
                 r.case_id,
                 verdict,
-                r.overall_score * 100.0,
-                t.faithfulness * 100.0,
-                t.context_relevance * 100.0,
-                t.answer_relevance * 100.0,
+                pct(r.overall_score),
+                pct(t.faithfulness),
+                pct(t.context_relevance),
+                pct(t.answer_relevance),
                 t.hallucination_count
             );
         } else {
             println!(
-                "| `{}` | {} | **{:.1}%** | - | - | - | 0 |",
+                "| `{}` | {} | **{}** | - | - | - | 0 |",
                 r.case_id,
                 verdict,
-                r.overall_score * 100.0
+                pct(r.overall_score)
             );
         }
+    }
+
+    if let Some(m) = method {
+        println!(
+            "\n> `n/a` means the metric had nothing to measure (no retrieved context, no checkable \
+             claim, empty query). Scores are approximate: {m}."
+        );
     }
 
     let mut all_hallucinations = Vec::new();

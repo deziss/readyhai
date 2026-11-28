@@ -1843,38 +1843,100 @@ fn test_stategraph_fatal_error_routing() {
     assert_eq!(station.current_state(), PipelineState::Failed);
 }
 
+/// A ledger that really evaluated something: pillars, a GO verdict and conclusive coverage rows.
+/// Attestation tests need this to exercise the evaluated path; `EvidenceLedger::default()` is an
+/// unevaluated ledger, which must yield NOT_EVALUATED.
+fn evaluated_ledger() -> crate::agent::types::EvidenceLedger {
+    use crate::agent::types::CoverageCell;
+    crate::agent::types::EvidenceLedger {
+        value_score: Some(95),
+        authority_score: Some(95),
+        safety_score: Some(95),
+        evidence_score: Some(95),
+        overall_readiness: 95,
+        evaluated: true,
+        computed_verdict: "GO".into(),
+        gate_verdict: "GO".into(),
+        verdict_basis: "computed from conclusive cases".into(),
+        coverage: vec![
+            CoverageCell {
+                technique: "authz".into(),
+                planned: 4,
+                pass: 4,
+                case_ids: vec!["TC-AUTHZ-1".into()],
+                evidence_files: vec!["evidence/TC-AUTHZ-1.json".into()],
+                ..Default::default()
+            },
+            CoverageCell {
+                technique: "injection".into(),
+                planned: 2,
+                pass: 2,
+                case_ids: vec!["TC-INJ-1".into()],
+                evidence_files: vec!["evidence/TC-INJ-1.json".into()],
+                ..Default::default()
+            },
+        ],
+        ..Default::default()
+    }
+}
+
 #[test]
 fn test_software_factory_attestation_clean_release() {
     use super::gate::software_factory_attestation;
-    use crate::agent::types::EvidenceLedger;
 
-    let mut ledger = EvidenceLedger::default();
-    ledger.overall_readiness = 95;
-    ledger.computed_verdict = "GO".into();
-
+    let ledger = evaluated_ledger();
     let attestation = software_factory_attestation(None, &ledger, &[]);
-    assert_eq!(attestation.release_readiness_score, 95);
+    // Honest facts: the score comes from the evaluated ledger, and the honest permissive directive
+    // replaces the old ALLOW_DEPLOYMENT, which granted approval the facts never supported.
+    assert_eq!(attestation.release_readiness_score, Some(95));
     assert_eq!(attestation.gate_verdict, "GO");
-    assert!(attestation.asvs_breakdown.level_1_compliant);
-    assert!(attestation.asvs_breakdown.level_2_compliant);
-    assert!(attestation.asvs_breakdown.level_3_compliant);
-    assert_eq!(attestation.asvs_breakdown.overall_coverage_pct, 100);
-    assert!(!attestation.attestation_digest.is_empty());
+    assert!(attestation.asvs_breakdown.no_critical_or_high_findings);
+    assert!(attestation.asvs_breakdown.no_observed_findings);
+    // Coverage is the conclusive share of the applicable cases (6 of 6), not a count of categories.
+    assert_eq!(
+        attestation.asvs_breakdown.cases_conclusively_evaluated_pct,
+        Some(100)
+    );
+    assert!(
+        attestation
+            .asvs_breakdown
+            .basis
+            .contains("not an OWASP ASVS certification")
+    );
+    assert_eq!(attestation.attestation_digest.len(), 64);
     assert!(
         attestation
             .release_directives
             .iter()
-            .any(|d| d.contains("ALLOW_DEPLOYMENT"))
+            .any(|d| d.contains("EVIDENCE_BACKED_GO"))
     );
+    // No fabricated compliance / certification language survives anywhere.
+    for d in &attestation.release_directives {
+        assert!(!d.contains("ALLOW_DEPLOYMENT"), "{d}");
+        assert!(!d.contains("ASVS_COMPLIANCE_CONFIRMED"), "{d}");
+        assert!(!d.contains("RELEASE_CERTIFIED"), "{d}");
+    }
+    // Areas no case tested report not_evaluated instead of pretending coverage.
+    let v8 = attestation
+        .asvs_breakdown
+        .categories
+        .iter()
+        .find(|c| c.code == "V8")
+        .expect("V2-V14 areas present");
+    assert_eq!(v8.status, "not_evaluated");
+    assert_eq!(v8.score, None);
 }
 
 #[test]
 fn test_software_factory_attestation_critical_block() {
     use super::gate::software_factory_attestation;
-    use crate::agent::types::{EvidenceLedger, TriagedDefect};
+    use crate::agent::types::TriagedDefect;
 
-    let mut ledger = EvidenceLedger::default();
-    ledger.overall_readiness = 90;
+    let ledger = {
+        let mut l = evaluated_ledger();
+        l.overall_readiness = 90;
+        l
+    };
 
     let defect = TriagedDefect {
         id: "DEF-CRIT-1".into(),
@@ -1886,10 +1948,12 @@ fn test_software_factory_attestation_critical_block() {
     };
 
     let attestation = software_factory_attestation(None, &ledger, &[defect]);
-    assert!(attestation.release_readiness_score <= 25);
+    assert!(attestation.release_readiness_score.unwrap_or(100) <= 25);
     assert_eq!(attestation.gate_verdict, "NO_GO");
-    assert!(!attestation.asvs_breakdown.level_1_compliant);
-    assert!(!attestation.asvs_breakdown.level_2_compliant);
+    // The observed-findings statements, not compliance levels, are what go false here.
+    assert!(!attestation.asvs_breakdown.no_critical_or_high_findings);
+    assert!(!attestation.asvs_breakdown.no_high_or_medium_above_threshold);
+    assert!(!attestation.asvs_breakdown.no_observed_findings);
     assert!(
         attestation
             .release_directives
@@ -2039,7 +2103,7 @@ fn test_verify_quality_gate_validation() {
     let no_replay = VerifyGateInput {
         k_replay_executed: false,
         juror_taint_evaluated: true,
-        unverified_false_positives: 0,
+        ..Default::default()
     };
     assert!(validate_verify_gate(&no_replay).is_err());
 
@@ -2047,7 +2111,7 @@ fn test_verify_quality_gate_validation() {
     let no_juror = VerifyGateInput {
         k_replay_executed: true,
         juror_taint_evaluated: false,
-        unverified_false_positives: 0,
+        ..Default::default()
     };
     assert!(validate_verify_gate(&no_juror).is_err());
 
@@ -2056,6 +2120,7 @@ fn test_verify_quality_gate_validation() {
         k_replay_executed: true,
         juror_taint_evaluated: true,
         unverified_false_positives: 2,
+        ..Default::default()
     };
     assert!(validate_verify_gate(&unverified_fps).is_err());
 
@@ -2064,9 +2129,24 @@ fn test_verify_quality_gate_validation() {
         k_replay_executed: true,
         juror_taint_evaluated: true,
         unverified_false_positives: 0,
+        ..Default::default()
     };
     let verdict = validate_verify_gate(&valid).expect("valid verify gate");
     assert!(verdict.passed);
+
+    // A juror that doubts a *reproduced* defect is a recorded disagreement, not a gate failure:
+    // the defect is kept precisely because the measurement outranks the opinion.
+    let disputed = VerifyGateInput {
+        juror_disagreements: 3,
+        ..valid
+    };
+    let verdict = validate_verify_gate(&disputed).expect("disagreement must not fail the gate");
+    assert!(verdict.passed);
+    assert!(
+        verdict.summary.contains("retained"),
+        "the disagreement has to be visible in the summary: {}",
+        verdict.summary
+    );
 }
 
 #[test]
@@ -2078,77 +2158,200 @@ fn test_release_quality_gate_validation() {
 
     // Invalid: critical defect present
     let crit_input = ReleaseGateInput {
-        value_score: 90,
-        authority_score: 90,
-        safety_score: 90,
-        evidence_score: 90,
+        value_score: Some(90),
+        authority_score: Some(90),
+        safety_score: Some(90),
+        evidence_score: Some(90),
         min_threshold: 70,
-        asvs_l1_compliant: true,
+        no_critical_or_high_findings: false,
         critical_defects: 1,
+        pillar_scores_measured: true,
     };
     assert!(validate_release_gate(&crit_input).is_err());
 
-    // Invalid: ASVS L1 non-compliant
-    let asvs_fail = ReleaseGateInput {
-        value_score: 90,
-        authority_score: 90,
-        safety_score: 90,
-        evidence_score: 90,
+    // Invalid: an observed high finding is still open. This is the honest replacement for the old
+    // "ASVS L1 non-compliant" case: what the gate can actually know is what was observed.
+    let open_high_findings = ReleaseGateInput {
+        value_score: Some(90),
+        authority_score: Some(90),
+        safety_score: Some(90),
+        evidence_score: Some(90),
         min_threshold: 70,
-        asvs_l1_compliant: false,
+        no_critical_or_high_findings: false,
         critical_defects: 0,
+        pillar_scores_measured: true,
     };
-    assert!(validate_release_gate(&asvs_fail).is_err());
+    assert!(validate_release_gate(&open_high_findings).is_err());
 
     // Invalid: safety score below threshold
     let low_safety = ReleaseGateInput {
-        value_score: 85,
-        authority_score: 85,
-        safety_score: 65, // Below 70
-        evidence_score: 85,
+        value_score: Some(85),
+        authority_score: Some(85),
+        safety_score: Some(65), // Below 70
+        evidence_score: Some(85),
         min_threshold: 70,
-        asvs_l1_compliant: true,
+        no_critical_or_high_findings: true,
         critical_defects: 0,
+        pillar_scores_measured: true,
     };
     assert!(validate_release_gate(&low_safety).is_err());
 
-    // Valid: Clean release with high scores
+    // Valid: clean release with measured pillar scores
     let valid_input = ReleaseGateInput {
-        value_score: 95,
-        authority_score: 90,
-        safety_score: 85,
-        evidence_score: 90,
+        value_score: Some(95),
+        authority_score: Some(90),
+        safety_score: Some(85),
+        evidence_score: Some(90),
         min_threshold: 70,
-        asvs_l1_compliant: true,
+        no_critical_or_high_findings: true,
         critical_defects: 0,
+        pillar_scores_measured: true,
     };
     let attestation = validate_release_gate(&valid_input).expect("release gate should pass");
     assert_eq!(attestation.gate_verdict, "GO");
-    assert!(attestation.release_readiness_score >= 80);
-    assert!(attestation.asvs_breakdown.level_1_compliant);
-    assert!(attestation.asvs_breakdown.level_2_compliant);
-    assert!(!attestation.attestation_digest.is_empty());
+    assert!(attestation.release_readiness_score.unwrap_or(0) >= 80);
+    assert!(attestation.asvs_breakdown.no_critical_or_high_findings);
+    assert_eq!(attestation.attestation_digest.len(), 64);
     assert!(
         attestation
             .release_directives
             .iter()
-            .any(|d| d.contains("ALLOW_DEPLOYMENT"))
+            .any(|d| d.contains("EVIDENCE_BACKED_GO"))
+    );
+    // The gate no longer invents ASVS categories, 100% coverage, or certification directives: with
+    // no ledger behind it, nothing was tested, so it says so instead.
+    for d in &attestation.release_directives {
+        assert!(!d.contains("ALLOW_DEPLOYMENT"), "{d}");
+        assert!(!d.contains("ASVS_COMPLIANCE_CONFIRMED"), "{d}");
+        assert!(!d.contains("RELEASE_CERTIFIED"), "{d}");
+    }
+    assert_eq!(attestation.asvs_breakdown.basis, super::gate::ASVS_BASIS);
+    assert_eq!(
+        attestation.asvs_breakdown.cases_conclusively_evaluated_pct,
+        None
+    );
+    assert!(
+        attestation
+            .asvs_breakdown
+            .categories
+            .iter()
+            .all(|c| c.status == "not_evaluated" && c.score.is_none())
     );
 
     // Valid: verdict representation
     let verdict = validate_release_gate_verdict(&valid_input).expect("release verdict");
     assert!(verdict.passed);
-    assert_eq!(verdict.checks.len(), 6);
+    assert_eq!(verdict.checks.len(), 8);
+    assert!(
+        verdict
+            .checks
+            .iter()
+            .any(|c| c.name == "no_critical_or_high_findings")
+    );
+    assert!(
+        verdict
+            .checks
+            .iter()
+            .any(|c| c.name == "attestation_digest_recorded" && c.detail.contains("Unkeyed"))
+    );
+
+    // A release that is not cleared must be logged as a FAILED gate that names every blocker.
+    let blocked = super::release_gate_verdict_for(
+        &valid_input,
+        &attestation,
+        &["run was cancelled before it finished; coverage is incomplete".to_string()],
+    );
+    assert!(
+        !blocked.passed,
+        "a blocked release can never log a passed gate"
+    );
+    assert!(
+        blocked.summary.contains("NOT cleared"),
+        "{}",
+        blocked.summary
+    );
+    assert!(
+        blocked
+            .checks
+            .iter()
+            .any(|c| c.name == "blocker" && !c.passed && c.detail.contains("cancelled")),
+        "{:?}",
+        blocked.checks
+    );
+
+    // The verdict reports the attestation it was given: same digest, same score. Guards against a
+    // run logging a second, evidence-free attestation that disagrees with the recorded one.
+    let digest_check = verdict
+        .checks
+        .iter()
+        .find(|c| c.name == "attestation_digest_recorded")
+        .expect("digest check");
+    assert!(
+        digest_check
+            .detail
+            .contains(&attestation.attestation_digest)
+    );
+    let cleared = super::release_gate_verdict_for(&valid_input, &attestation, &[]);
+    assert!(cleared.passed);
+    assert!(
+        cleared
+            .summary
+            .contains(&attestation.attestation_digest[..16]),
+        "{}",
+        cleared.summary
+    );
+
+    // Pillar scores that were never measured must not produce a score
+    let unmeasured = ReleaseGateInput {
+        value_score: Some(95),
+        authority_score: Some(90),
+        safety_score: Some(85),
+        evidence_score: Some(90),
+        min_threshold: 70,
+        no_critical_or_high_findings: true,
+        critical_defects: 0,
+        pillar_scores_measured: false,
+    };
+    let not_evaluated =
+        validate_release_gate(&unmeasured).expect("honest not-evaluated attestation");
+    assert_eq!(not_evaluated.gate_verdict, "NOT_EVALUATED");
+    assert_eq!(not_evaluated.release_readiness_score, None);
+    assert!(
+        not_evaluated
+            .asvs_breakdown
+            .categories
+            .iter()
+            .all(|c| c.status == "not_evaluated")
+    );
+    assert!(!not_evaluated.asvs_breakdown.no_critical_or_high_findings);
+
+    // An unmeasured attestation can never be logged as a cleared gate, even with no blockers.
+    let unmeasured_verdict = super::release_gate_verdict_for(&unmeasured, &not_evaluated, &[]);
+    assert!(
+        !unmeasured_verdict.passed,
+        "NOT_EVALUATED must not clear a release"
+    );
+    assert!(
+        unmeasured_verdict
+            .checks
+            .iter()
+            .any(|c| c.name == "blocker" && c.detail.contains("no conclusive evidence")),
+        "{:?}",
+        unmeasured_verdict.checks
+    );
 
     // Evaluation directly from EvidenceLedger
-    let mut ledger = EvidenceLedger::default();
-    ledger.value_score = Some(88);
-    ledger.authority_score = Some(85);
-    ledger.safety_score = Some(92);
-    ledger.evidence_score = Some(80);
+    let ledger = evaluated_ledger();
     let ledger_attestation =
         ReleaseGate::evaluate_ledger(&ledger, &[], 70).expect("ledger evaluation");
     assert_eq!(ledger_attestation.gate_verdict, "GO");
+    assert_eq!(ledger_attestation.release_readiness_score, Some(95));
+    assert_eq!(
+        ledger_attestation
+            .asvs_breakdown
+            .cases_conclusively_evaluated_pct,
+        Some(100)
+    );
 
     // Fails with critical defect
     let crit_defect = TriagedDefect {
@@ -2158,6 +2361,13 @@ fn test_release_quality_gate_validation() {
         ..Default::default()
     };
     assert!(ReleaseGate::evaluate_ledger(&ledger, &[crit_defect], 70).is_err());
+
+    // A ledger that evaluated nothing cannot be green-lit by pillar numbers either.
+    let blank = EvidenceLedger::default();
+    let blank_attestation =
+        ReleaseGate::evaluate_ledger(&blank, &[], 70).expect("honest not-evaluated attestation");
+    assert_eq!(blank_attestation.gate_verdict, "NOT_EVALUATED");
+    assert_eq!(blank_attestation.release_readiness_score, None);
 }
 
 #[test]
@@ -2245,7 +2455,7 @@ fn test_quality_gate_trait_dispatch() {
     let verify_in = VerifyGateInput {
         k_replay_executed: true,
         juror_taint_evaluated: true,
-        unverified_false_positives: 0,
+        ..Default::default()
     };
     assert!(verify.evaluate(&verify_in).is_ok());
 
@@ -2253,4 +2463,209 @@ fn test_quality_gate_trait_dispatch() {
     assert_eq!(release.gate_name(), "ReleaseGate");
     let release_in = ReleaseGateInput::default();
     assert!(release.evaluate(&release_in).is_ok());
+}
+
+/// A ledger that gathered nothing: the honest NOT_EVALUATED path must not approve a release.
+#[test]
+fn attestation_of_an_unevaluated_ledger_grants_nothing() {
+    use super::gate::software_factory_attestation;
+    use crate::agent::types::{BlockReason, Blocker, EvidenceLedger};
+
+    let mut ledger = EvidenceLedger::default();
+    ledger.blockers.push(Blocker {
+        reason: BlockReason::AuthWall,
+        detail: "all routes returned 401 and no credential was supplied".into(),
+        next_step: "supply --api-key".into(),
+        case_ids: vec![],
+    });
+
+    let attestation = software_factory_attestation(None, &ledger, &[]);
+    assert_eq!(attestation.gate_verdict, "NOT_EVALUATED");
+    assert_eq!(attestation.release_readiness_score, None);
+    assert_eq!(
+        attestation.asvs_breakdown.cases_conclusively_evaluated_pct,
+        None
+    );
+    assert!(!attestation.asvs_breakdown.no_critical_or_high_findings);
+
+    // No permissive directive of any kind, and the summary says nothing was evaluated.
+    for d in &attestation.release_directives {
+        for permissive in [
+            "ALLOW_DEPLOYMENT",
+            "RELEASE_CERTIFIED",
+            "ASVS_COMPLIANCE_CONFIRMED",
+            "EVIDENCE_BACKED_GO",
+        ] {
+            assert!(!d.contains(permissive), "{permissive} in {d}");
+        }
+    }
+    let blocker = attestation
+        .release_directives
+        .iter()
+        .find(|d| d.starts_with("NOT_EVALUATED:"))
+        .expect("a directive naming the blocker");
+    assert!(blocker.contains("auth wall"), "{blocker}");
+    assert!(blocker.contains("no credential was supplied"), "{blocker}");
+    let summary = attestation.advisory_summary.clone().unwrap_or_default();
+    assert!(summary.contains("nothing was evaluated"), "{summary}");
+
+    // Same honesty through the ReleaseGate entry point.
+    let via_gate = super::gates::ReleaseGate::evaluate_ledger(&ledger, &[], 70)
+        .expect("an unevaluated ledger still produces an honest attestation");
+    assert_eq!(via_gate.gate_verdict, "NOT_EVALUATED");
+    assert_eq!(via_gate.release_readiness_score, None);
+}
+
+#[test]
+fn attestation_areas_report_not_evaluated_when_no_case_tested_them() {
+    use super::gate::software_factory_attestation;
+
+    // The evaluated ledger covers `authz` and `injection` techniques only.
+    let ledger = evaluated_ledger();
+    let attestation = software_factory_attestation(None, &ledger, &[]);
+
+    let v14 = attestation
+        .asvs_breakdown
+        .categories
+        .iter()
+        .find(|c| c.code == "V14")
+        .expect("V14 present");
+    assert_eq!(v14.status, "not_evaluated");
+    assert_eq!(v14.score, None);
+    assert!(v14.evidence_case_ids.is_empty());
+    assert!(!v14.passed);
+    assert!(
+        attestation
+            .release_directives
+            .iter()
+            .any(|d| d.contains("COVERAGE_GAP_V14")),
+        "{:?}",
+        attestation.release_directives
+    );
+}
+
+#[test]
+fn attestation_area_covered_by_passing_evidence_reports_pass_with_case_ids() {
+    use super::gate::software_factory_attestation;
+
+    let ledger = evaluated_ledger();
+    let attestation = software_factory_attestation(None, &ledger, &[]);
+
+    let v4 = attestation
+        .asvs_breakdown
+        .categories
+        .iter()
+        .find(|c| c.code == "V4")
+        .expect("V4 present");
+    assert_eq!(v4.status, "pass");
+    assert!(v4.passed);
+    assert_eq!(v4.evidence_case_ids, vec!["TC-AUTHZ-1".to_string()]);
+    assert_eq!(v4.findings, 0);
+    // Two areas are covered (V2 and V4 share the authz technique, V5 the injection one).
+    let covered: Vec<&str> = attestation
+        .asvs_breakdown
+        .categories
+        .iter()
+        .filter(|c| c.status != "not_evaluated")
+        .map(|c| c.code.as_str())
+        .collect();
+    assert_eq!(covered, vec!["V2", "V4", "V5"]);
+}
+
+#[test]
+fn attestation_digest_commits_to_findings_and_directives_and_is_order_independent() {
+    use crate::agent::types::{CoverageCell, EvidenceLedger, TriagedDefect};
+
+    let defect = |sev: &str| TriagedDefect {
+        id: "DEF-1".into(),
+        title: "Broken access control".into(),
+        severity: sev.into(),
+        rule: "authz".into(),
+        component: "/api/items".into(),
+        case_ids: vec!["TC-2".into(), "TC-1".into()],
+        ..Default::default()
+    };
+    let ledger = |cells: Vec<CoverageCell>| EvidenceLedger {
+        coverage: cells,
+        ..Default::default()
+    };
+    let cell = |technique: &str, file: &str| CoverageCell {
+        technique: technique.into(),
+        planned: 1,
+        pass: 1,
+        case_ids: vec![format!("TC-{technique}")],
+        evidence_files: vec![file.into()],
+        ..Default::default()
+    };
+    let att = super::gate::assemble(
+        "NO_GO",
+        Some(40),
+        super::gate::build_breakdown(&[defect("high")], None, true),
+        vec!["CONDITIONAL_SIGN_OFF: 1 high-severity defect(s) require security engineering sign-off.".into()],
+        None,
+        &[defect("high")],
+        Some(&ledger(vec![
+            cell("authz", "evidence/a.json"),
+            cell("injection", "evidence/b.json"),
+        ])),
+    );
+    let base = att.attestation_digest.clone();
+    assert_eq!(base.len(), 64);
+
+    // A finding's severity is committed to.
+    let mut changed_severity = att.clone();
+    changed_severity.attestation_digest = super::gate::attestation_digest(
+        &changed_severity,
+        &[defect("critical")],
+        Some(&ledger(vec![
+            cell("authz", "evidence/a.json"),
+            cell("injection", "evidence/b.json"),
+        ])),
+    );
+    assert_ne!(changed_severity.attestation_digest, base);
+
+    // So is a directive.
+    let mut changed_directive = att.clone();
+    changed_directive
+        .release_directives
+        .push("STAGING_REVERIFY: extra".into());
+    changed_directive.attestation_digest = super::gate::attestation_digest(
+        &changed_directive,
+        &[defect("high")],
+        Some(&ledger(vec![
+            cell("authz", "evidence/a.json"),
+            cell("injection", "evidence/b.json"),
+        ])),
+    );
+    assert_ne!(changed_directive.attestation_digest, base);
+
+    // Evidence identity is committed to.
+    let swapped_evidence = super::gate::attestation_digest(
+        &att,
+        &[defect("high")],
+        Some(&ledger(vec![
+            cell("authz", "evidence/OTHER.json"),
+            cell("injection", "evidence/b.json"),
+        ])),
+    );
+    assert_ne!(swapped_evidence, base);
+
+    // Reordered inputs (defects and coverage rows) hash identically, and a JSON round trip of the
+    // attestation reproduces the digest because the timestamp is not part of it.
+    let reordered = super::gate::attestation_digest(
+        &att,
+        &[defect("high")],
+        Some(&ledger(vec![
+            cell("injection", "evidence/b.json"),
+            cell("authz", "evidence/a.json"),
+        ])),
+    );
+    assert_eq!(reordered, base);
+    let round_trip: crate::agent::types::SoftwareFactoryAttestation =
+        serde_json::from_str(&serde_json::to_string(&att).unwrap()).unwrap();
+    assert_eq!(
+        super::gate::attestation_digest(&round_trip, &[defect("high")], None),
+        super::gate::attestation_digest(&att, &[defect("high")], None)
+    );
+    assert_eq!(round_trip.attestation_digest, base);
 }

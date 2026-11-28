@@ -54,7 +54,7 @@ The full architectural specifications for this master plan are kept internally (
    - Upgraded core AST engine to `tree-sitter 0.27.2` (pure Rust runtime architecture) and `minijinja 3.1.0`.
    - Security scanner tool images refreshed to modern multi-arch releases: Syft `v1.57.1`, Grype `v0.121.3`, Semgrep `1.183.0`, Checkov `3.4.5`, Nuclei pinned to `v3.11.1`, k6 pinned to `v2.3.0`.
    - Resilience hardening: Exponential backoff retries on container image pulling; connection pool idle/keepalive socket hardening in HTTP clients.
-   - Production binary release optimization: `panic = "abort"` and `codegen-units = 1` for minimal footprint and maximum execution throughput.
+   - Production binary release optimization: `lto = "thin"`, `strip = true` and `codegen-units = 1` for a lean, fast release binary. `panic` stays `"unwind"` on purpose — the supervisors in `engine::orchestrator`, `agent::pipeline` and `agent::lead` turn a panic into a failed run via `catch_unwind`; `abort` would make a single panic in one scan kill the whole `serve` process.
    - Node 24 Active LTS ESM test runner alignment (`import.meta.dirname`).
 7. **Horizon 7 (v3.1.0) — Complete Architecture Modularization & Standalone Cross-Platform Single Binary**: **Done**
    - Full codebase modularization across 40 architectural slices deconstructing 82,460+ lines of monolith into isolated, decoupled submodules across `src/` (`agent`, `qa`, `serve`, `eval_ai`, `fix`, `bundle`, `report`, `scope`, `code_audit`, `android`, `tools`, etc.).
@@ -69,12 +69,12 @@ The full architectural specifications for this master plan are kept internally (
    - Attack DAG & Stateful Workflow Planner (`src/agent/plan/dag.rs`).
    - Adaptive ReAct mutation loop with live anomaly detection (`src/agent/react.rs`).
    - Contextual Taint Tracing Juror (`src/agent/verify/juror.rs`) with unified diff remediation synthesis.
-   - Readiness Gate & Software Factory Attestation (`src/agent/pipeline/gate.rs`) with ASVS V2–V14 compliance mapping and SHA-256 seal.
+   - Readiness Gate & Software Factory Attestation (`src/agent/pipeline/gate.rs`) with observed-findings mapping onto ASVS-shaped areas V2–V14 and an unkeyed SHA-256 integrity digest.
 9. **Horizon 9 (v3.3.0) — The Quad-Engineering Disciplines (Loop, Graph, Prompt, Software Factory)**: **Done**
    - **Loop Engineering**: Closed-loop OODA adaptive controller in `src/agent/react.rs`, continuous anomaly detection, mutation hypothesis synthesis (`ADAPTIVE_MUTATOR_ROLE`), and oscillation damping (`OscillationDamper`) to eliminate repetitive loops.
    - **Graph Engineering**: StateGraph execution engine with typed dynamic conditional routing (`RoutingCondition`), iteration tracking, execution telemetry (`GraphTelemetry`), Attack DAG dependency modeling with topological sorting, and prerequisite execution guards (`execute_guarded`).
    - **Prompt Engineering**: Centralized role-specialized prompt templates in `src/agent/prompts/` across all 6 stations with strict XML fencing (`<target_untrusted_content>`) and proactive injection tag sanitization (`neutralise_target_tags`).
-   - **Software Factory Engineering**: Formal station entrance/exit Quality Gates (`src/agent/pipeline/gates.rs`), evidence provenance, ASVS V2–V14 compliance mapping, and cryptographically signed Release Attestation.
+   - **Software Factory Engineering**: Formal station entrance/exit Quality Gates (`src/agent/pipeline/gates.rs`), evidence claims citing cases and evidence files, observed-findings mapping onto ASVS-shaped areas V2–V14, and a Release Attestation stamped with an unkeyed SHA-256 integrity digest (key-based signing not implemented).
 10. **Horizon 10 (v3.4.0) — Orchestrator Trust & Plugin Lanes**: **Done**
     - **Incomplete-run never PASS** (backlog item 4): SARIF `executionSuccessful: false` / error-level notifications / no-runs and non-zero exits with parseable output surface as `Partial` notes, so a scan that did not happen can never green-light the gate.
     - **Mon glue**: `readyhai tools pull` also pulls valid plugin images (dedup vs lock, digest-drift warnings, `--plugins DIR`); `readyhai doctor` prints per-pack plugin load/skip reasons from a validator shared with the loader.

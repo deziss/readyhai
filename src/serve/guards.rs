@@ -1,13 +1,15 @@
 //! Egress guards, scope verification, DNS preflight, and blocking pool executors.
 
-use super::types::{App, GUARD_TIMEOUT};
+use super::types::{App, GUARD_TIMEOUT, MAX_QUEUED_OFFLOADS, OFFLOAD_QUEUE_TIMEOUT};
 use crate::scope::{self, Scope};
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
 use std::path::Path as FsPath;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
 
 pub fn err(code: StatusCode, msg: impl Into<String>) -> Response {
     (code, Json(json!({"error": msg.into()}))).into_response()
@@ -63,13 +65,11 @@ pub async fn guard(app: &App, url: &str, intrusive: bool) -> Result<scope::Egres
 /// Instant DNS preflight reachability guard: detects unresolvable domains (NXDOMAIN)
 /// fast asynchronously (<50ms) to fail fast without starving the blocking worker pool.
 pub async fn preflight_host_dns(host: &str) -> Result<(), Response> {
-    #[cfg(test)]
-    {
+    // Unit tests never touch real DNS (see the resolver stub in `crate::scope::dns`).
+    if cfg!(test) {
         let _ = host;
-        return Ok(());
-    }
-    #[cfg(not(test))]
-    {
+        Ok(())
+    } else {
         if host.parse::<std::net::IpAddr>().is_ok()
             || host == "localhost"
             || host == "host.docker.internal"
@@ -121,12 +121,66 @@ pub async fn guard_spec(app: &App, spec: Option<String>) -> Result<Option<String
 }
 
 /// Run quick blocking work (file reads, listings, report generation) off the async workers.
+///
+/// Bounded on purpose. `tokio::task::spawn_blocking` queues without limit and grows its pool up to
+/// 512 threads, so a client hammering a report route under a slow disk buys a OS thread per queued
+/// job until a memory-limited container is OOM-killed and every in-flight scan dies with it. The
+/// permit is held for the whole job, and a caller that cannot get one within
+/// [`OFFLOAD_QUEUE_TIMEOUT`] gets `503` with `Retry-After` instead: a clean shed beats a crash.
 pub async fn offload<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, Response> {
-    tokio::task::spawn_blocking(f)
-        .await
-        .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "worker failed"))
+    offload_bounded(offload_slots(), OFFLOAD_QUEUE_TIMEOUT, f).await
+}
+
+/// The semaphore logic of [`offload`], with the limits passed in so the shedding behaviour is
+/// testable without occupying 256 real blocking threads.
+pub(super) async fn offload_bounded<T: Send + 'static>(
+    slots: Arc<Semaphore>,
+    queue_timeout: Duration,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, Response> {
+    let permit = match tokio::time::timeout(queue_timeout, slots.acquire_owned()).await {
+        Ok(Ok(p)) => p,
+        _ => {
+            return Err(too_much_blocking_work());
+        }
+    };
+    tokio::task::spawn_blocking(move || {
+        let out = f();
+        drop(permit);
+        out
+    })
+    .await
+    .map_err(|_| err(StatusCode::INTERNAL_SERVER_ERROR, "worker failed"))
+}
+
+/// Slots shared by every route using [`offload`]; see its doc comment. An `Arc` so a shed request
+/// does not have to borrow the whole `App`, which the badge and vulns routes do not carry.
+static OFFLOAD_SLOTS: std::sync::OnceLock<Arc<Semaphore>> = std::sync::OnceLock::new();
+
+fn offload_slots() -> Arc<Semaphore> {
+    OFFLOAD_SLOTS
+        .get_or_init(|| Arc::new(Semaphore::new(MAX_QUEUED_OFFLOADS)))
+        .clone()
+}
+
+fn too_much_blocking_work() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [
+            (
+                axum::http::header::RETRY_AFTER,
+                axum::http::HeaderValue::from_static("1"),
+            ),
+            (
+                axum::http::header::CONTENT_TYPE,
+                axum::http::HeaderValue::from_static("application/json"),
+            ),
+        ],
+        Json(json!({"error": "too many concurrent file jobs; retry shortly"})),
+    )
+        .into_response()
 }
 
 /// Run blocking work on the blocking pool, at most [`MAX_CONCURRENT_PROBES`] at a time. The

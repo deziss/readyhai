@@ -11,6 +11,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { apiRequest, notify, useApiTokenVersion } from "@/lib/api";
+import { AppearanceSettings } from "./AppearanceSettings";
 
 // Shared control styles, mirroring AgentHistoryView.
 const FOCUS = "focus-visible:outline-2 focus-visible:outline-rh-primary";
@@ -673,6 +674,14 @@ export function SettingsView({ onBackToStudio }: SettingsViewProps) {
 
       {/* Body */}
       <div className="flex-1 min-h-0 overflow-y-auto p-4 lg:p-6">
+        {/*
+          Browser preferences sit above the server document on purpose: they need no backend, so
+          they must stay reachable when the settings file is missing or unreadable.
+        */}
+        <div className="mx-auto mb-4 flex w-full max-w-4xl flex-col gap-4">
+          <AppearanceSettings />
+        </div>
+
         {loading && !doc ? (
           <p className="text-sm text-rh-muted">Loading settings...</p>
         ) : loadError && !doc ? (
